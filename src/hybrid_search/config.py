@@ -175,7 +175,8 @@ model = ""                    # Set after Phase 1 benchmark (e.g., "Alibaba-NLP/
 model_revision = ""           # Pinned HuggingFace commit hash
 model_sha256 = ""             # SHA256 of ONNX file
 model_path = ""               # Optional: local ONNX path (skip download)
-backend = "onnx"
+backend = "onnx"              # "onnx" | "sentence-transformers" | "ollama"
+ollama_model = ""             # Ollama model name (e.g., "nomic-embed-text")
 batch_size = 32
 max_tokens = 0                # 0 = auto-detect from model
 device = "cpu"                # "cpu" | "mps"

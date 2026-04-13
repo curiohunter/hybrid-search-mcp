@@ -9,6 +9,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -45,6 +46,10 @@ class IndexingResult:
             self.errors = []
 
 
+# Type for progress callbacks: (current_file_index, total_files, file_path)
+ProgressCallback = Callable[[int, int, str], None]
+
+
 class IndexingPipeline:
     """Orchestrates the full indexing flow for a project."""
 
@@ -58,6 +63,7 @@ class IndexingPipeline:
         project_path: str,
         project_name: str | None = None,
         force: bool = False,
+        on_progress: ProgressCallback | None = None,
     ) -> IndexingResult:
         """Index or re-index a project."""
         start = time.monotonic()
@@ -99,8 +105,14 @@ class IndexingPipeline:
 
             # Process added and changed files with periodic checkpoint
             all_files = scan.added + scan.changed
+            total_files = len(all_files)
             batch_interval = 10  # Checkpoint every N files to limit crash-loss window
             for i, file_path in enumerate(all_files):
+                if on_progress is not None:
+                    try:
+                        on_progress(i + 1, total_files, str(file_path.relative_to(abs_path)))
+                    except Exception:
+                        pass  # Progress callback failure is non-fatal
                 try:
                     self._process_file(db, vector_engine, bm25_engine, file_path, abs_path, pid)
                 except Exception as e:
@@ -137,9 +149,17 @@ class IndexingPipeline:
             if chunk_count != vector_count or chunk_count != bm25_count:
                 logger.warning(
                     "Consistency mismatch: SQLite=%d, Tantivy=%d, USearch=%d. "
-                    "Consider force re-index.",
+                    "Triggering automatic rebuild.",
                     chunk_count, bm25_count, vector_count,
                 )
+                if not force:
+                    # Auto-rebuild: close current stores and re-index with force
+                    db.close()
+                    result.errors.append(
+                        f"Auto-rebuild triggered: SQLite={chunk_count}, "
+                        f"Tantivy={bm25_count}, USearch={vector_count}"
+                    )
+                    return self.index_project(project_path=str(abs_path), project_name=name, force=True)
 
         finally:
             db.close()
