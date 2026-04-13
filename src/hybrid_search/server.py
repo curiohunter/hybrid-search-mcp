@@ -20,6 +20,7 @@ from hybrid_search.tools.index import handle_index_project, handle_index_status
 from hybrid_search.tools.projects import handle_list_projects, handle_remove_project
 from hybrid_search.tools.semantic_search import handle_semantic_search
 from hybrid_search.tools.symbols import handle_search_symbols
+from hybrid_search.tools.trace import handle_trace_callers, handle_trace_callees
 
 logger = logging.getLogger("hybrid_search")
 
@@ -156,6 +157,74 @@ def create_server(config: Config) -> Server:
                     "required": ["project"],
                 },
             ),
+            Tool(
+                name="trace_callers",
+                description=(
+                    "Find all functions that call the given function (reverse call graph). "
+                    "Provide chunk_id (precise) or symbol (name-based). "
+                    "If both given, chunk_id takes precedence."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Function/method name or qualified name (e.g., 'signIn' or 'AuthService.signIn')",
+                        },
+                        "chunk_id": {
+                            "type": "string",
+                            "description": "Chunk ID from a prior search result. More precise than symbol name.",
+                        },
+                        "project": {"type": "string"},
+                        "depth": {
+                            "type": "integer",
+                            "default": 2,
+                            "minimum": 1,
+                            "maximum": 10,
+                            "description": "Max depth of call graph traversal",
+                        },
+                        "min_confidence": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                            "default": "medium",
+                            "description": "Minimum resolution confidence for call edges",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="trace_callees",
+                description=(
+                    "Find all functions called by the given function (forward call graph). "
+                    "Provide chunk_id (precise) or symbol (name-based). "
+                    "If both given, chunk_id takes precedence."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Function/method name or qualified name",
+                        },
+                        "chunk_id": {
+                            "type": "string",
+                            "description": "Chunk ID from a prior search result",
+                        },
+                        "project": {"type": "string"},
+                        "depth": {
+                            "type": "integer",
+                            "default": 2,
+                            "minimum": 1,
+                            "maximum": 10,
+                        },
+                        "min_confidence": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                            "default": "medium",
+                        },
+                    },
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -231,6 +300,26 @@ def _dispatch_tool(
                 registry=registry,
                 project=args["project"],
                 keep_index=args.get("keep_index", False),
+            )
+        case "trace_callers":
+            return handle_trace_callers(
+                config=config,
+                registry=registry,
+                symbol=args.get("symbol"),
+                chunk_id=args.get("chunk_id"),
+                project=args.get("project"),
+                depth=args.get("depth", 2),
+                min_confidence=args.get("min_confidence", "medium"),
+            )
+        case "trace_callees":
+            return handle_trace_callees(
+                config=config,
+                registry=registry,
+                symbol=args.get("symbol"),
+                chunk_id=args.get("chunk_id"),
+                project=args.get("project"),
+                depth=args.get("depth", 2),
+                min_confidence=args.get("min_confidence", "medium"),
             )
         case _:
             return {"error": f"Unknown tool: {name}"}
