@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Generator
 
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "1"
+
+CONFIDENCE_LEVELS = ("low", "medium", "high")
+
+
+def _confidence_filter(min_confidence: str) -> tuple[str, ...]:
+    """Return confidence levels >= min_confidence."""
+    idx = CONFIDENCE_LEVELS.index(min_confidence) if min_confidence in CONFIDENCE_LEVELS else 0
+    return CONFIDENCE_LEVELS[idx:]
 
 SCHEMA_SQL = """\
 PRAGMA journal_mode=WAL;
@@ -335,6 +345,175 @@ class StoreDB:
             "SELECT COUNT(*) as cnt FROM files WHERE project_id = ?", (project_id,)
         )
         return cur.fetchone()["cnt"]
+
+    # -- call graph queries --
+
+    def get_callers(
+        self,
+        chunk_id: str,
+        project_id: str | None = None,
+        min_confidence: str = "low",
+    ) -> list[dict]:
+        """Find all chunks that call the given chunk (reverse call graph)."""
+        conf_levels = _confidence_filter(min_confidence)
+        placeholders = ",".join("?" for _ in conf_levels)
+        if project_id:
+            cur = self._conn.execute(
+                f"""SELECT ce.caller_chunk_id, ce.callee_name, ce.confidence,
+                           c.name, c.qualified_name, c.node_type,
+                           c.start_line, c.end_line,
+                           f.relative_path
+                    FROM call_edges ce
+                    JOIN chunks c ON c.id = ce.caller_chunk_id
+                    JOIN files f ON f.id = c.file_id
+                    WHERE ce.callee_chunk_id = ?
+                      AND ce.project_id = ?
+                      AND ce.confidence IN ({placeholders})""",
+                (chunk_id, project_id, *conf_levels),
+            )
+        else:
+            cur = self._conn.execute(
+                f"""SELECT ce.caller_chunk_id, ce.callee_name, ce.confidence,
+                           c.name, c.qualified_name, c.node_type,
+                           c.start_line, c.end_line,
+                           f.relative_path
+                    FROM call_edges ce
+                    JOIN chunks c ON c.id = ce.caller_chunk_id
+                    JOIN files f ON f.id = c.file_id
+                    WHERE ce.callee_chunk_id = ?
+                      AND ce.confidence IN ({placeholders})""",
+                (chunk_id, *conf_levels),
+            )
+        return [dict(row) for row in cur.fetchall()]
+
+    def get_callers_by_name(
+        self,
+        symbol: str,
+        project_id: str | None = None,
+        min_confidence: str = "low",
+    ) -> list[dict]:
+        """Find callers by callee symbol name (when chunk_id not available)."""
+        conf_levels = _confidence_filter(min_confidence)
+        placeholders = ",".join("?" for _ in conf_levels)
+        if project_id:
+            cur = self._conn.execute(
+                f"""SELECT ce.caller_chunk_id, ce.callee_name,
+                           ce.callee_chunk_id, ce.confidence,
+                           c.name, c.qualified_name, c.node_type,
+                           c.start_line, c.end_line,
+                           f.relative_path
+                    FROM call_edges ce
+                    JOIN chunks c ON c.id = ce.caller_chunk_id
+                    JOIN files f ON f.id = c.file_id
+                    WHERE (ce.callee_name = ? OR ce.callee_qualified_name = ?)
+                      AND ce.project_id = ?
+                      AND ce.confidence IN ({placeholders})""",
+                (symbol, symbol, project_id, *conf_levels),
+            )
+        else:
+            cur = self._conn.execute(
+                f"""SELECT ce.caller_chunk_id, ce.callee_name,
+                           ce.callee_chunk_id, ce.confidence,
+                           c.name, c.qualified_name, c.node_type,
+                           c.start_line, c.end_line,
+                           f.relative_path
+                    FROM call_edges ce
+                    JOIN chunks c ON c.id = ce.caller_chunk_id
+                    JOIN files f ON f.id = c.file_id
+                    WHERE (ce.callee_name = ? OR ce.callee_qualified_name = ?)
+                      AND ce.confidence IN ({placeholders})""",
+                (symbol, symbol, *conf_levels),
+            )
+        return [dict(row) for row in cur.fetchall()]
+
+    def get_callees(
+        self,
+        chunk_id: str,
+        project_id: str | None = None,
+        min_confidence: str = "low",
+    ) -> list[dict]:
+        """Find all chunks called by the given chunk (forward call graph)."""
+        conf_levels = _confidence_filter(min_confidence)
+        placeholders = ",".join("?" for _ in conf_levels)
+        if project_id:
+            cur = self._conn.execute(
+                f"""SELECT ce.callee_chunk_id, ce.callee_name,
+                           ce.callee_qualified_name, ce.confidence,
+                           ce.callee_module,
+                           c.name, c.qualified_name, c.node_type,
+                           c.start_line, c.end_line,
+                           f.relative_path
+                    FROM call_edges ce
+                    LEFT JOIN chunks c ON c.id = ce.callee_chunk_id
+                    LEFT JOIN files f ON f.id = c.file_id
+                    WHERE ce.caller_chunk_id = ?
+                      AND ce.project_id = ?
+                      AND ce.confidence IN ({placeholders})""",
+                (chunk_id, project_id, *conf_levels),
+            )
+        else:
+            cur = self._conn.execute(
+                f"""SELECT ce.callee_chunk_id, ce.callee_name,
+                           ce.callee_qualified_name, ce.confidence,
+                           ce.callee_module,
+                           c.name, c.qualified_name, c.node_type,
+                           c.start_line, c.end_line,
+                           f.relative_path
+                    FROM call_edges ce
+                    LEFT JOIN chunks c ON c.id = ce.callee_chunk_id
+                    LEFT JOIN files f ON f.id = c.file_id
+                    WHERE ce.caller_chunk_id = ?
+                      AND ce.confidence IN ({placeholders})""",
+                (chunk_id, *conf_levels),
+            )
+        return [dict(row) for row in cur.fetchall()]
+
+    def get_all_call_edges(self, project_id: str) -> list[dict]:
+        """Get all call edges for a project (for batch resolution)."""
+        cur = self._conn.execute(
+            """SELECT rowid, caller_chunk_id, callee_name, callee_qualified_name,
+                      callee_chunk_id, callee_module, confidence
+               FROM call_edges WHERE project_id = ?""",
+            (project_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    def update_call_edge_resolution(
+        self,
+        conn: sqlite3.Connection,
+        rowid: int,
+        callee_chunk_id: str,
+        callee_qualified_name: str | None,
+        confidence: str,
+    ) -> None:
+        """Update a call edge with resolved chunk ID and confidence."""
+        conn.execute(
+            """UPDATE call_edges
+               SET callee_chunk_id = ?, callee_qualified_name = ?, confidence = ?
+               WHERE rowid = ?""",
+            (callee_chunk_id, callee_qualified_name, confidence, rowid),
+        )
+
+    def find_chunk_by_qualified_name(
+        self, qualified_name: str, project_id: str
+    ) -> ChunkRecord | None:
+        """Find a chunk by exact qualified_name within a project."""
+        cur = self._conn.execute(
+            "SELECT * FROM chunks WHERE qualified_name = ? AND project_id = ?",
+            (qualified_name, project_id),
+        )
+        row = cur.fetchone()
+        return self._row_to_chunk(row) if row else None
+
+    def find_chunks_by_name(
+        self, name: str, project_id: str
+    ) -> list[ChunkRecord]:
+        """Find chunks by exact name within a project."""
+        cur = self._conn.execute(
+            "SELECT * FROM chunks WHERE name = ? AND project_id = ?",
+            (name, project_id),
+        )
+        return [self._row_to_chunk(row) for row in cur.fetchall()]
 
     def _row_to_chunk(self, row: sqlite3.Row) -> ChunkRecord:
         return ChunkRecord(

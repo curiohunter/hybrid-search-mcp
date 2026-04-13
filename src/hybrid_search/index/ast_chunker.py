@@ -2,6 +2,12 @@
 
 Supports TypeScript/JavaScript/Python (Phase 1).
 Falls back to blank-line chunking for unsupported languages.
+
+IMPORTANT: tree-sitter returns byte offsets in UTF-8. When extracting text
+with node.start_byte / node.end_byte, always index into the *bytes* object
+(source_bytes), not the Python str. Indexing into str with byte offsets
+produces garbage when the source contains multi-byte characters (e.g., Korean,
+em-dash).
 """
 
 from __future__ import annotations
@@ -60,6 +66,11 @@ CLASS_NODE_TYPES = {
 }
 
 
+def _node_text(source_bytes: bytes, node) -> str:
+    """Extract node text using byte offsets (correct for multi-byte sources)."""
+    return source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
 @dataclass
 class CodeChunk:
     id: str
@@ -98,16 +109,18 @@ def chunk_code_file(
     if ts_lang_obj is None:
         return _fallback_chunking(source, rel_path, project_id, language)
 
+    source_bytes = source.encode("utf-8")
+
     try:
         parser = ts.Parser(ts_lang_obj)
-        tree = parser.parse(source.encode())
+        tree = parser.parse(source_bytes)
     except Exception:
         logger.warning("TreeSitter parse failed for %s, using fallback", rel_path)
         return _fallback_chunking(source, rel_path, project_id, language)
 
     node_types = CHUNK_NODE_TYPES.get(language, set())
-    imports = _extract_imports(tree.root_node, language, source)
-    raw_chunks = _extract_chunks(tree.root_node, node_types, source, rel_path, project_id, language)
+    imports = _extract_imports(tree.root_node, language, source_bytes)
+    raw_chunks = _extract_chunks(tree.root_node, node_types, source_bytes, rel_path, project_id, language)
 
     # Post-process: split large, merge small
     processed = _split_large_chunks(raw_chunks, source, rel_path, project_id, language)
@@ -138,42 +151,40 @@ def _get_ts_language(language: str) -> ts.Language | None:
     return None
 
 
-def _extract_imports(root_node, ts_lang: str, source: str) -> list[str]:
+def _extract_imports(root_node, ts_lang: str, source_bytes: bytes) -> list[str]:
     """Extract import paths from the AST root."""
     imports: list[str] = []
     for child in root_node.children:
         if ts_lang in ("typescript", "javascript"):
             if child.type == "import_statement":
-                # Extract the module path from import string
                 for desc in _iter_descendants(child):
                     if desc.type == "string":
-                        text = source[desc.start_byte:desc.end_byte].strip("'\"")
+                        text = _node_text(source_bytes, desc).strip("'\"")
                         imports.append(text)
         elif ts_lang == "python":
             if child.type in ("import_statement", "import_from_statement"):
-                text = source[child.start_byte:child.end_byte]
-                imports.append(text)
+                imports.append(_node_text(source_bytes, child))
     return imports
 
 
 def _extract_chunks(
     root_node,
     node_types: set[str],
-    source: str,
+    source_bytes: bytes,
     rel_path: str,
     project_id: str,
     language: str,
 ) -> list[CodeChunk]:
     """Walk AST and extract chunks for matching node types."""
     chunks: list[CodeChunk] = []
-    _walk_node(root_node, node_types, source, rel_path, project_id, language, None, chunks)
+    _walk_node(root_node, node_types, source_bytes, rel_path, project_id, language, None, chunks)
     return chunks
 
 
 def _walk_node(
     node,
     node_types: set[str],
-    source: str,
+    source_bytes: bytes,
     rel_path: str,
     project_id: str,
     language: str,
@@ -182,16 +193,15 @@ def _walk_node(
 ) -> None:
     """Recursively walk AST nodes, extracting chunks."""
     if node.type in node_types:
-        name = _extract_name(node, source, language)
+        name = _extract_name(node, source_bytes, language)
         node_type = _classify_node_type(node, language)
-        content = source[node.start_byte:node.end_byte]
-        docstring = _extract_docstring(node, source, language)
-        calls = _extract_calls(node, source, language)
+        content = _node_text(source_bytes, node)
+        docstring = _extract_docstring(node, source_bytes, language)
+        calls = _extract_calls(node, source_bytes, language)
 
         # For classes: extract the header, then recurse into methods
         if node.type in CLASS_NODE_TYPES:
-            # Create chunk for class header (without method bodies)
-            header_content = _extract_class_header(node, source, language)
+            header_content = _extract_class_header(node, source_bytes, language)
             chunk_id = _make_chunk_id(project_id, rel_path, node.start_byte, node.end_byte)
             results.append(CodeChunk(
                 id=chunk_id,
@@ -211,10 +221,9 @@ def _walk_node(
                 parent_name=parent_name,
                 calls=calls,
             ))
-            # Recurse into class body with this class as parent
             for child in node.children:
                 _walk_node(
-                    child, node_types, source, rel_path,
+                    child, node_types, source_bytes, rel_path,
                     project_id, language, name, results,
                 )
             return
@@ -224,11 +233,10 @@ def _walk_node(
             for child in node.children:
                 if child.type in node_types and child.type != "export_statement":
                     _walk_node(
-                        child, node_types, source, rel_path,
+                        child, node_types, source_bytes, rel_path,
                         project_id, language, parent_name, results,
                     )
                     return
-            # If no nested declaration, treat the whole export as a chunk
             if not name:
                 name = f"export_L{node.start_point[0] + 1}"
 
@@ -257,27 +265,24 @@ def _walk_node(
 
     # Not a matching node type — recurse into children
     for child in node.children:
-        _walk_node(child, node_types, source, rel_path, project_id, language, parent_name, results)
+        _walk_node(child, node_types, source_bytes, rel_path, project_id, language, parent_name, results)
 
 
-def _extract_name(node, source: str, language: str) -> str:
+def _extract_name(node, source_bytes: bytes, language: str) -> str:
     """Extract the name of a function/class/type from its AST node."""
-    # Look for identifier child
     for child in node.children:
         if child.type in ("identifier", "type_identifier", "property_identifier"):
-            return source[child.start_byte:child.end_byte]
+            return _node_text(source_bytes, child)
 
-    # For arrow functions assigned to variables: look at parent
     if node.type == "arrow_function" and node.parent:
         for sibling in node.parent.children:
             if sibling.type in ("identifier", "property_identifier"):
-                return source[sibling.start_byte:sibling.end_byte]
+                return _node_text(source_bytes, sibling)
 
-    # For lexical_declaration (const/let), extract the variable name
     if node.type == "lexical_declaration":
         for child in _iter_descendants(node):
             if child.type in ("identifier", "property_identifier"):
-                return source[child.start_byte:child.end_byte]
+                return _node_text(source_bytes, child)
 
     return f"anonymous_L{node.start_point[0] + 1}"
 
@@ -301,21 +306,19 @@ def _classify_node_type(node, language: str) -> str:
     return type_map.get(node.type, "other")
 
 
-def _extract_docstring(node, source: str, language: str) -> str | None:
+def _extract_docstring(node, source_bytes: bytes, language: str) -> str | None:
     """Extract docstring/JSDoc from a node."""
     if language == "python":
-        # First statement in body might be a string expression
         for child in node.children:
             if child.type == "block":
                 for stmt in child.children:
                     if stmt.type == "expression_statement":
                         for expr in stmt.children:
                             if expr.type == "string":
-                                text = source[expr.start_byte:expr.end_byte]
+                                text = _node_text(source_bytes, expr)
                                 return text.strip("'\"").strip()
                     break
     elif language in ("typescript", "javascript"):
-        # Look for preceding comment node
         if node.parent:
             idx = None
             for i, sibling in enumerate(node.parent.children):
@@ -325,7 +328,7 @@ def _extract_docstring(node, source: str, language: str) -> str | None:
             if idx and idx > 0:
                 prev = node.parent.children[idx - 1]
                 if prev.type == "comment":
-                    text = source[prev.start_byte:prev.end_byte]
+                    text = _node_text(source_bytes, prev)
                     if text.startswith("/**"):
                         return _clean_jsdoc(text)
     return None
@@ -345,27 +348,42 @@ def _clean_jsdoc(text: str) -> str:
     return " ".join(cleaned).strip() or None  # type: ignore[return-value]
 
 
-def _extract_calls(node, source: str, language: str) -> list[str]:
+def _extract_calls(node, source_bytes: bytes, language: str) -> list[str]:
     """Extract function call names from within this node."""
     calls: list[str] = []
     for desc in _iter_descendants(node):
         if desc.type in ("call_expression", "call"):
-            # Get the function name part
-            func_node = desc.children[0] if desc.children else None
-            if func_node:
-                func_text = source[func_node.start_byte:func_node.end_byte]
-                # Simplify: take the last part of member expressions
-                parts = func_text.split(".")
-                calls.append(parts[-1] if parts else func_text)
+            name = _extract_call_name(desc, source_bytes, language)
+            if name:
+                calls.append(name)
     return calls
 
 
-def _extract_class_header(node, source: str, language: str) -> str:
+def _extract_call_name(call_node, source_bytes: bytes, language: str) -> str | None:
+    """Extract the clean function name from a call expression node."""
+    if not call_node.children:
+        return None
+
+    func_node = call_node.children[0]
+
+    # Direct identifier: foo()
+    if func_node.type in ("identifier", "type_identifier"):
+        return _node_text(source_bytes, func_node)
+
+    # Member expression: obj.method() — extract the method name
+    if func_node.type in ("member_expression", "attribute"):
+        for child in reversed(func_node.children):
+            if child.type in ("identifier", "property_identifier"):
+                return _node_text(source_bytes, child)
+
+    # Subscript expression or other complex forms — skip
+    return None
+
+
+def _extract_class_header(node, source_bytes: bytes, language: str) -> str:
     """Extract class header without method bodies — just signature + field declarations."""
-    lines = []
-    content = source[node.start_byte:node.end_byte]
-    for line in content.split("\n")[:5]:  # First few lines usually contain class declaration
-        lines.append(line)
+    content = _node_text(source_bytes, node)
+    lines = content.split("\n")[:5]
     return "\n".join(lines)
 
 
@@ -415,7 +433,6 @@ def _split_large_chunks(
                 break
 
         for i, part in enumerate(parts):
-            # Approximate line numbers
             prefix_lines = content[:content.index(part) if part in content[start:] else 0].count("\n")
             part_chunk = CodeChunk(
                 id=_make_chunk_id(project_id, rel_path, chunk.start_byte + i * 1000, chunk.end_byte),
@@ -458,7 +475,6 @@ def _merge_small_chunks(
         chunk_size = _non_ws_count(chunk.content)
 
         if chunk_size >= SMALL_CHUNK_THRESHOLD:
-            # Flush buffer first
             if buffer:
                 result.append(_merge_buffer(buffer, rel_path, project_id, language))
                 buffer = []
@@ -466,7 +482,6 @@ def _merge_small_chunks(
             result.append(chunk)
             continue
 
-        # Try to add to buffer
         if buffer_size + chunk_size > LARGE_CHUNK_THRESHOLD:
             result.append(_merge_buffer(buffer, rel_path, project_id, language))
             buffer = []
@@ -523,7 +538,6 @@ def _build_embedding_input(chunk: CodeChunk) -> str:
     """Build contextualizedText for embedding (§7 of design doc)."""
     parts: list[str] = []
 
-    # Header: [type] QualifiedName in file_path
     header = f"[{chunk.node_type}] "
     if chunk.parent_name:
         header += f"{chunk.parent_name}.{chunk.name}"
@@ -532,16 +546,13 @@ def _build_embedding_input(chunk: CodeChunk) -> str:
     header += f" in {chunk.file_path}"
     parts.append(header)
 
-    # Imports
     if chunk.imports:
         imports_str = ", ".join(chunk.imports[:10])
         parts.append(f"imports: {imports_str}")
 
-    # Docstring
     if chunk.docstring:
         parts.append(chunk.docstring)
 
-    # Content
     parts.append(chunk.content)
 
     return "passage: " + "\n".join(parts)
@@ -592,7 +603,6 @@ def _fallback_chunking(
         chunks.append(chunk)
         offset = source.index(block, offset) + len(block) if block in source[offset:] else offset + len(block)
 
-    # Split oversized blocks
     final: list[CodeChunk] = []
     for chunk in chunks:
         if _non_ws_count(chunk.content) > LARGE_CHUNK_THRESHOLD:

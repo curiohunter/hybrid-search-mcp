@@ -14,6 +14,7 @@ import numpy as np
 
 from hybrid_search.config import Config
 from hybrid_search.index.ast_chunker import CodeChunk, chunk_code_file
+from hybrid_search.index.callgraph import resolve_call_edges
 from hybrid_search.index.doc_chunker import chunk_doc_file
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.scanner import ScanResult, compute_file_hash, detect_language, scan_project
@@ -115,6 +116,15 @@ class IndexingPipeline:
             bm25_engine.commit()
             vector_engine.save()
 
+            # Resolve call edges (§12: link callee_name → callee_chunk_id)
+            if all_files:
+                try:
+                    edge_stats = resolve_call_edges(db, pid)
+                    logger.info("Call graph resolution: %s", edge_stats)
+                except Exception as e:
+                    logger.warning("Call graph resolution failed (non-fatal): %s", e)
+                    result.errors.append(f"call_graph_resolution: {e}")
+
             # Update stats
             file_count = db.get_file_count(pid)
             chunk_count = db.get_chunk_count(pid)
@@ -194,7 +204,12 @@ class IndexingPipeline:
         )
         db.upsert_file(conn, file_record_init)
 
-        # Step 1-2: Delete old chunks, insert new
+        # Step 1-2: Delete old call_edges first (explicit cleanup), then old chunks
+        existing_chunk_ids = [row["id"] for row in conn.execute(
+            "SELECT id FROM chunks WHERE file_id = ?", (file_id,)
+        ).fetchall()]
+        for old_cid in existing_chunk_ids:
+            db.delete_call_edges_by_caller(conn, old_cid)
         old_chunk_ids = db.delete_chunks_by_file(conn, file_id)
 
         chunk_records = [
@@ -286,6 +301,10 @@ class IndexingPipeline:
         project_id: str,
     ) -> None:
         """Clear all data for a project (for force re-index)."""
+        # Delete all call_edges for the project first
+        db._conn.execute("DELETE FROM call_edges WHERE project_id = ?", (project_id,))
+        db._conn.commit()
+
         all_files = db.get_all_files(project_id)
         for file_rec in all_files:
             with db.transaction() as conn:

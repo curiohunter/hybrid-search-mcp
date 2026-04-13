@@ -1,7 +1,7 @@
 # Hybrid Search MCP Server — Design Document
 
-> **Status**: Draft v4 | **Date**: 2026-04-13 | **Author**: Ian + Claude
-> **Review**: Codex review x3 + Brightdata 웹 리서치 반영 (v1 → v2 → v3 → v4)
+> **Status**: Draft v5 | **Date**: 2026-04-13 | **Author**: Ian + Claude
+> **Review**: Codex review x3 + Brightdata 웹 리서치 반영 (v1 → v2 → v3 → v4 → v5)
 
 ## 1. Problem Statement
 
@@ -1200,10 +1200,21 @@ MCP 서버의 `hybrid_search` tool description에 아래 가이드를 포함:
 
 **관찰**: MindVault 글로벌 폴백 시 무관한 프로젝트 결과가 대량 토큰 소비. 토큰 예산 축소 또는 글로벌 폴백 비활성화 권장.
 
-### Phase 3: Call Graph + 언어 확장
-- [ ] Call graph 추출 (import 기반 resolution, confidence 레벨)
-- [ ] `trace_callers` / `trace_callees` tools (chunk_id 지원)
-- [ ] Rust, Go, Ruby 등 추가 언어 지원
+### Phase 3: Call Graph + 언어 확장 (진행 중)
+
+#### Phase 3a: Call Graph ✅ 완료 (2026-04-13)
+- [x] **Call graph resolution** (`index/callgraph.py`): 3단계 confidence (High/Medium/Low) + common name 필터 (§12)
+- [x] **`trace_callers` / `trace_callees` tools** (`tools/trace.py`): visited set 순환 방지, 100노드 상한, partial 결과, chunk_id 우선/symbol 폴백 (§10.3, §10.4)
+- [x] **StoreDB call graph 쿼리**: get_callers, get_callers_by_name, get_callees, get_all_call_edges, update_call_edge_resolution, find_chunk_by_qualified_name, find_chunks_by_name
+- [x] **server.py 등록**: 총 9개 도구 (기존 7 + trace_callers + trace_callees)
+- [x] **pipeline.py 통합**: 인덱싱 완료 후 자동 call edge resolution 실행
+- [x] **AST byte offset 버그 수정**: tree-sitter byte offset vs Python str 인덱스 불일치 → `source_bytes` 도입. 멀티바이트 문자(한국어, em-dash 등) 포함 소스에서 이름/내용/call 추출 깨지던 근본 버그 해결
+- [x] **call extraction 개선**: `_extract_call_name()` 도입 — identifier/attribute 노드 타입 정확 매칭 (기존: `split(".")[-1]`로 garbage 포함)
+
+**Phase 3a 검증**: hybrid-search-mcp 자체 인덱싱 — 1,934 call edges, 0 dirty names, 146 resolved (132 medium). `trace_callers("upsert_file")` → 4 nodes (depth 2), `trace_callees("index_project")` → 13 nodes (depth 2).
+
+#### Phase 3b: 추가 언어 지원
+- [ ] Rust, Go, Ruby, Java, C/C++, Swift, Kotlin, SQL, CSS, HTML
 
 ### Phase 4: Polish
 - [ ] Apple Silicon MPS 가속
@@ -1263,3 +1274,5 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 5. **임베딩 입력 최적화**: 구조화된 입력(§7) vs raw code의 실제 retrieval 품질 차이는? → 벤치마크에서 A/B 비교
 6. **INSERT OR REPLACE + FK CASCADE**: SQLite에서 REPLACE는 DELETE+INSERT로 구현되어 FK CASCADE 발동. `ON CONFLICT DO UPDATE` 패턴 필수. (해결됨, 교훈으로 기록)
 7. **Python 3.13 sqlite3 호환성**: `isolation_level` 기본값과 `executescript` 동작이 3.12와 다름. `isolation_level=None` + 명시적 commit 필요. (해결됨, 교훈으로 기록)
+8. **tree-sitter byte offset vs Python str index**: tree-sitter는 UTF-8 byte offset을 반환하지만 Python str은 문자 단위 인덱싱. 멀티바이트 문자(한국어 주석, em-dash 등)가 소스에 있으면 `source[node.start_byte:node.end_byte]`가 잘못된 텍스트를 반환. 해결: `source_bytes = source.encode("utf-8")` 후 `source_bytes[start:end].decode()` 사용. (해결됨, Phase 3a에서 수정)
+9. **Reactive Wiki Layer (Phase 5 후보)**: Hybrid Search 결과를 wiki 페이지로 "컴파일"하여 반복 질문 시 검색 없이 즉시 답변. Makefile 의존성 그래프처럼 소스 파일 해시를 추적하고, 변경 시 stale 마킹 → diff 기반 부분 재컴파일. 핵심 도구 3개: `compile_to_wiki`, `check_wiki_staleness`, `refresh_wiki_page`. 전제 조건: Hybrid Search Phase 2 완성 + 실사용 패턴 데이터 축적. 위험: LLM 추론 비용, "반복 질문" 판단 정확도, wiki 폭증 관리.
