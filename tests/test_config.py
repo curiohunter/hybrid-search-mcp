@@ -44,19 +44,19 @@ class TestDefaultConfig:
 
 
 class TestEmbeddingConfig:
-    """EmbeddingConfig defaults for Ollama backend."""
+    """EmbeddingConfig defaults for OpenAI backend."""
 
-    def test_default_ollama_model(self) -> None:
+    def test_default_openai_model(self) -> None:
         emb = EmbeddingConfig()
-        assert emb.ollama_model == "qwen3-embedding:0.6b"
+        assert emb.openai_model == "text-embedding-3-small"
 
     def test_default_backend(self) -> None:
         emb = EmbeddingConfig()
-        assert emb.backend == "ollama"
+        assert emb.backend == "openai"
 
     def test_default_batch_size(self) -> None:
         emb = EmbeddingConfig()
-        assert emb.batch_size == 16
+        assert emb.batch_size == 100
 
 
 class TestSearchConfig:
@@ -142,7 +142,7 @@ path = "/home/user/project"
         cfg = load_config(config_path)
         assert cfg.log_level == "warning"
         # Everything else should be defaults
-        assert cfg.embedding.backend == "ollama"
+        assert cfg.embedding.backend == "openai"
         assert cfg.search.rrf_k == 60
 
     def test_data_dir_expansion(self, tmp_path: Path) -> None:

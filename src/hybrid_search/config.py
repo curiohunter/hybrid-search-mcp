@@ -40,14 +40,15 @@ MODEL_MAX_TOKENS: dict[str, int] = {
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    ollama_model: str = "qwen3-embedding:0.6b"
-    batch_size: int = 16
-    # Legacy fields — kept for config.toml backwards compat, not used by Ollama backend
+    openai_model: str = "text-embedding-3-small"
+    batch_size: int = 100  # OpenAI supports up to 2048 inputs per request
+    # Legacy fields — kept for config.toml backwards compat
+    ollama_model: str = ""
     model: str = ""
     model_revision: str = ""
     model_sha256: str = ""
     model_path: str = ""
-    backend: str = "ollama"
+    backend: str = "openai"
     max_tokens: int = 0
     device: str = ""
     onnx_threads: int = 0
@@ -120,17 +121,18 @@ def load_config(config_path: Path | None = None) -> Config:
 
     emb_raw = raw.get("embedding", {})
     embedding = EmbeddingConfig(
+        openai_model=emb_raw.get("openai_model", "text-embedding-3-small"),
+        batch_size=emb_raw.get("batch_size", 100),
+        ollama_model=emb_raw.get("ollama_model", ""),
         model=emb_raw.get("model", ""),
         model_revision=emb_raw.get("model_revision", ""),
         model_sha256=emb_raw.get("model_sha256", ""),
         model_path=emb_raw.get("model_path", ""),
-        backend=emb_raw.get("backend", "ollama"),
-        ollama_model=emb_raw.get("ollama_model", ""),
-        batch_size=emb_raw.get("batch_size", 32),
+        backend=emb_raw.get("backend", "openai"),
         max_tokens=emb_raw.get("max_tokens", 0),
-        device=emb_raw.get("device", "cpu"),
-        onnx_threads=emb_raw.get("onnx_threads", 6),
-        quantized=emb_raw.get("quantized", True),
+        device=emb_raw.get("device", ""),
+        onnx_threads=emb_raw.get("onnx_threads", 0),
+        quantized=emb_raw.get("quantized", False),
     )
 
     search_raw = raw.get("search", {})
