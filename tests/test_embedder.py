@@ -1,4 +1,4 @@
-"""Tests for Embedder — index/embedder.py (Ollama GPU backend)."""
+"""Tests for Embedder — index/embedder.py (OpenAI API backend)."""
 
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -6,80 +6,91 @@ from unittest.mock import patch, MagicMock
 import numpy as np
 
 from hybrid_search.config import EmbeddingConfig
-from hybrid_search.index.embedder import Embedder, OLLAMA_DEFAULT_URL
+from hybrid_search.index.embedder import Embedder, OPENAI_EMBED_URL
 
 
 class TestEmbedderBasics:
     """Basic Embedder construction and empty-input handling."""
 
-    def test_default_config_uses_ollama(self) -> None:
+    def test_default_config_uses_openai(self) -> None:
         cfg = EmbeddingConfig()
-        assert cfg.ollama_model == "qwen3-embedding:0.6b"
+        assert cfg.openai_model == "text-embedding-3-small"
+
+    def test_embedding_dim_is_1536(self) -> None:
+        cfg = EmbeddingConfig()
+        emb = Embedder(cfg)
+        assert emb.embedding_dim == 1536
 
     def test_embed_texts_empty_returns_empty_array(self) -> None:
-        cfg = EmbeddingConfig(ollama_model="test-model")
+        cfg = EmbeddingConfig()
         emb = Embedder(cfg)
-        emb._embedding_dim = 1024
         result = emb.embed_texts([])
-        assert result.shape == (0, 1024)
+        assert result.shape == (0, 1536)
 
 
-class TestOllamaBackend:
-    """Ollama backend validation (no live server needed)."""
+class TestOpenAIBackend:
+    """OpenAI backend validation (no live API needed)."""
 
-    def test_missing_ollama_model_raises(self) -> None:
-        cfg = EmbeddingConfig(ollama_model="")
+    def test_missing_api_key_raises(self) -> None:
+        cfg = EmbeddingConfig()
         emb = Embedder(cfg)
-        try:
-            emb._ensure_loaded()
-            assert False, "Should have raised ValueError"
-        except ValueError as e:
-            assert "ollama_model" in str(e)
+        emb._api_key = None
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("hybrid_search.index.embedder._load_dotenv_key", return_value=""):
+                try:
+                    emb._get_api_key()
+                    assert False, "Should have raised ValueError"
+                except ValueError as e:
+                    assert "OPENAI_API_KEY" in str(e)
 
-    def test_ollama_embed_request_builds_correct_payload(self) -> None:
-        cfg = EmbeddingConfig(ollama_model="qwen3-embedding:0.6b")
+    def test_embed_request_calls_correct_url(self) -> None:
+        cfg = EmbeddingConfig()
         emb = Embedder(cfg)
+        emb._api_key = "sk-test"
 
         mock_response = MagicMock()
-        mock_response.read.return_value = b'{"embeddings": [[0.1, 0.2, 0.3]]}'
+        mock_response.read.return_value = b'{"data": [{"embedding": [0.1, 0.2, 0.3], "index": 0}]}'
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
         with patch("urllib.request.urlopen", return_value=mock_response) as mock_open:
-            result = emb._ollama_embed_request(["test text"])
+            result = emb._openai_embed_request(["test text"])
             assert result == [[0.1, 0.2, 0.3]]
 
-            call_args = mock_open.call_args
-            req = call_args[0][0]
-            assert req.full_url == f"{OLLAMA_DEFAULT_URL}/api/embed"
-
-    def test_ollama_connection_error_gives_clear_message(self) -> None:
-        cfg = EmbeddingConfig(ollama_model="qwen3-embedding:0.6b")
-        emb = Embedder(cfg)
-
-        import urllib.error
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
-            try:
-                emb._ollama_embed_request(["test"])
-                assert False, "Should have raised ConnectionError"
-            except ConnectionError as e:
-                assert "Ollama server not reachable" in str(e)
+            req = mock_open.call_args[0][0]
+            assert req.full_url == OPENAI_EMBED_URL
 
     def test_embed_all_normalizes(self) -> None:
-        cfg = EmbeddingConfig(ollama_model="test-model", batch_size=2)
+        cfg = EmbeddingConfig(batch_size=2)
         emb = Embedder(cfg)
+        emb._api_key = "sk-test"
         emb._embedding_dim = 3
 
         mock_response = MagicMock()
-        mock_response.read.return_value = b'{"embeddings": [[3.0, 4.0, 0.0], [0.0, 1.0, 0.0]]}'
+        mock_response.read.return_value = b'{"data": [{"embedding": [3.0, 4.0, 0.0], "index": 0}, {"embedding": [0.0, 1.0, 0.0], "index": 1}]}'
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
         with patch("urllib.request.urlopen", return_value=mock_response):
             result = emb._embed_all(["a", "b"])
-            # Should be L2 normalized
             norms = np.linalg.norm(result, axis=1)
             np.testing.assert_allclose(norms, [1.0, 1.0], atol=1e-6)
+
+    def test_api_error_gives_clear_message(self) -> None:
+        cfg = EmbeddingConfig()
+        emb = Embedder(cfg)
+        emb._api_key = "sk-test"
+
+        import urllib.error
+        error = urllib.error.HTTPError(
+            OPENAI_EMBED_URL, 429, "Too Many Requests", {}, MagicMock(read=lambda: b'{"error":"rate limit"}')
+        )
+        with patch("urllib.request.urlopen", side_effect=error):
+            try:
+                emb._openai_embed_request(["test"])
+                assert False, "Should have raised ConnectionError"
+            except ConnectionError as e:
+                assert "OpenAI API error 429" in str(e)
 
 
 class TestHotReloadableConfig:

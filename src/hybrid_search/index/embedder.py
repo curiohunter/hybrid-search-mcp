@@ -1,15 +1,17 @@
-"""Embedding generation via Ollama (GPU).
+"""Embedding generation via OpenAI API.
 
-Uses Ollama's /api/embed endpoint for GPU-accelerated embedding.
-Supports Qwen3-Embedding, nomic-embed-text, etc.
+Uses text-embedding-3-small for lightweight, zero-local-resource embedding.
+No model loading, no GPU, no CPU overhead — just HTTP calls.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 import numpy as np
 
@@ -17,84 +19,114 @@ from hybrid_search.config import EmbeddingConfig
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_DEFAULT_URL = "http://localhost:11434"
+OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings"
+DEFAULT_MODEL = "text-embedding-3-small"
+DEFAULT_DIM = 1536
 
 
 class Embedder:
-    """Generates embeddings via Ollama GPU backend."""
+    """Generates embeddings via OpenAI API. Zero local resource usage."""
 
     def __init__(self, config: EmbeddingConfig, models_dir=None) -> None:
         self._config = config
-        self._embedding_dim: int | None = None
+        self._api_key: str | None = None
+        self._embedding_dim: int = DEFAULT_DIM
 
     @property
     def embedding_dim(self) -> int:
-        if self._embedding_dim is None:
-            self._ensure_loaded()
-        return self._embedding_dim  # type: ignore[return-value]
+        return self._embedding_dim
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
         """Embed a list of texts. Returns (N, dim) float32 array."""
-        self._ensure_loaded()
         if not texts:
             return np.empty((0, self._embedding_dim), dtype=np.float32)
         return self._embed_all(texts)
 
     def embed_query(self, query: str) -> np.ndarray:
-        """Embed a single query with 'query:' prefix. Returns (dim,) array."""
-        prefixed = f"query: {query}"
-        result = self.embed_texts([prefixed])
+        """Embed a single query. Returns (dim,) array."""
+        result = self.embed_texts([query])
         return result[0]
 
-    def _ensure_loaded(self) -> None:
-        if self._embedding_dim is not None:
-            return
-        ollama_model = self._config.ollama_model
-        if not ollama_model:
-            raise ValueError(
-                "No ollama_model configured. Set [embedding].ollama_model in config.toml "
-                "(e.g., 'qwen3-embedding:0.6b')"
-            )
-        logger.info("Testing Ollama embedding model: %s", ollama_model)
-        test_result = self._ollama_embed_request(["dimension probe"])
-        self._embedding_dim = len(test_result[0])
-        logger.info("Ollama model ready: %s, dim=%d", ollama_model, self._embedding_dim)
+    def _get_api_key(self) -> str:
+        if self._api_key:
+            return self._api_key
 
-    def _ollama_embed_request(self, texts: list[str]) -> list[list[float]]:
-        """Call Ollama POST /api/embed endpoint."""
-        url = f"{OLLAMA_DEFAULT_URL}/api/embed"
+        # 1. Environment variable
+        key = os.environ.get("OPENAI_API_KEY", "")
+
+        # 2. .env.local in project root (walk up from cwd)
+        if not key:
+            key = _load_dotenv_key("OPENAI_API_KEY")
+
+        if not key:
+            raise ValueError(
+                "OPENAI_API_KEY not found. Set it in environment or .env.local"
+            )
+        self._api_key = key
+        return key
+
+    def _openai_embed_request(self, texts: list[str]) -> list[list[float]]:
+        """Call OpenAI embeddings API."""
+        api_key = self._get_api_key()
+        model = self._config.openai_model or DEFAULT_MODEL
+
         payload = json.dumps({
-            "model": self._config.ollama_model,
+            "model": model,
             "input": texts,
         }).encode("utf-8")
 
         req = urllib.request.Request(
-            url, data=payload,
-            headers={"Content-Type": "application/json"},
+            OPENAI_EMBED_URL,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
         )
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            raise ConnectionError(
+                f"OpenAI API error {e.code}: {body}"
+            ) from e
         except urllib.error.URLError as e:
             raise ConnectionError(
-                f"Ollama server not reachable at {OLLAMA_DEFAULT_URL}. "
-                f"Is Ollama running? ('brew services start ollama') Error: {e}"
+                f"OpenAI API not reachable: {e}"
             ) from e
 
-        if "embeddings" not in data:
-            raise ValueError(f"Unexpected Ollama response: {list(data.keys())}")
-        return data["embeddings"]
+        # Response: {"data": [{"embedding": [...], "index": 0}, ...]}
+        embeddings = [item["embedding"] for item in data["data"]]
+        return embeddings
 
     def _embed_all(self, texts: list[str]) -> np.ndarray:
-        """Embed texts via Ollama in batches."""
+        """Embed texts via OpenAI API in batches."""
         all_embeddings: list[np.ndarray] = []
         batch_size = self._config.batch_size
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
-            raw = self._ollama_embed_request(batch)
+            raw = self._openai_embed_request(batch)
             all_embeddings.append(np.array(raw, dtype=np.float32))
         embeddings = np.vstack(all_embeddings)
-        # L2 normalize
+        # OpenAI returns normalized vectors, but verify
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms = np.clip(norms, a_min=1e-9, a_max=None)
         return (embeddings / norms).astype(np.float32)
+
+
+def _load_dotenv_key(key: str) -> str:
+    """Load a key from .env.local file, searching up from cwd."""
+    current = Path.cwd()
+    for _ in range(10):  # max 10 levels up
+        env_file = current / ".env.local"
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line.startswith(f"{key}="):
+                    return line.split("=", 1)[1].strip()
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return ""
