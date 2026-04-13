@@ -188,57 +188,67 @@ class IndexingPipeline:
         embedding_texts = [c.embedding_input for c in chunks]
         embeddings = self._embedder.embed_texts(embedding_texts)
 
-        # Multi-store update — use direct conn methods with explicit commit
-        conn = db._conn
-
-        # Step 0: Ensure file record exists (FK for chunks)
-        file_record_init = FileRecord(
-            id=file_id,
-            project_id=project_id,
-            relative_path=rel_path,
-            file_hash="",  # placeholder — updated at Step 5
-            file_size=stat.st_size,
-            file_mtime=str(stat.st_mtime),
-            language=language,
-            chunk_count=0,
-        )
-        db.upsert_file(conn, file_record_init)
-
-        # Step 1-2: Delete old call_edges first (explicit cleanup), then old chunks
-        existing_chunk_ids = [row["id"] for row in conn.execute(
-            "SELECT id FROM chunks WHERE file_id = ?", (file_id,)
-        ).fetchall()]
-        for old_cid in existing_chunk_ids:
-            db.delete_call_edges_by_caller(conn, old_cid)
-        old_chunk_ids = db.delete_chunks_by_file(conn, file_id)
-
-        chunk_records = [
-            ChunkRecord(
-                id=c.id,
-                file_id=file_id,
+        # Multi-store update — SQLite writes in a transaction for atomicity
+        with db.transaction() as conn:
+            # Step 0: Ensure file record exists (FK for chunks)
+            file_record_init = FileRecord(
+                id=file_id,
                 project_id=project_id,
-                name=c.name,
-                qualified_name=c.qualified_name,
-                node_type=c.node_type,
-                start_line=c.start_line,
-                end_line=c.end_line,
-                start_byte=c.start_byte,
-                end_byte=c.end_byte,
-                content=c.content,
-                embedding_input=c.embedding_input,
-                docstring=c.docstring,
-                parent_name=c.parent_name,
+                relative_path=rel_path,
+                file_hash="",  # placeholder — updated at Step 5
+                file_size=stat.st_size,
+                file_mtime=str(stat.st_mtime),
+                language=language,
+                chunk_count=0,
             )
-            for c in chunks
-        ]
-        db.insert_chunks(conn, chunk_records)
+            db.upsert_file(conn, file_record_init)
 
-        # Insert call edges (extracted by AST chunker)
-        for c in chunks:
-            if c.calls:
-                db.insert_call_edges(conn, c.id, c.calls, project_id)
+            # Step 1: Delete old call_edges, then old chunks
+            old_chunk_ids = db.get_chunk_ids_by_file(file_id)
+            for old_cid in old_chunk_ids:
+                db.delete_call_edges_by_caller(conn, old_cid)
+            db.delete_chunks_by_file(conn, file_id)
 
-        # Step 3: Update BM25 index (Tantivy)
+            # Step 2: Insert new chunks + call edges
+            chunk_records = [
+                ChunkRecord(
+                    id=c.id,
+                    file_id=file_id,
+                    project_id=project_id,
+                    name=c.name,
+                    qualified_name=c.qualified_name,
+                    node_type=c.node_type,
+                    start_line=c.start_line,
+                    end_line=c.end_line,
+                    start_byte=c.start_byte,
+                    end_byte=c.end_byte,
+                    content=c.content,
+                    embedding_input=c.embedding_input,
+                    docstring=c.docstring,
+                    parent_name=c.parent_name,
+                )
+                for c in chunks
+            ]
+            db.insert_chunks(conn, chunk_records)
+
+            for c in chunks:
+                if c.calls:
+                    db.insert_call_edges(conn, c.id, c.calls, project_id)
+
+            # Step 5: Update file record last (crash recovery marker)
+            file_record = FileRecord(
+                id=file_id,
+                project_id=project_id,
+                relative_path=rel_path,
+                file_hash=file_hash,
+                file_size=stat.st_size,
+                file_mtime=str(stat.st_mtime),
+                language=language,
+                chunk_count=len(chunks),
+            )
+            db.upsert_file(conn, file_record)
+
+        # Step 3: Update BM25 index (outside transaction — non-SQLite)
         if old_chunk_ids:
             bm25_engine.delete_batch(old_chunk_ids)
 
@@ -258,20 +268,6 @@ class IndexingPipeline:
         chunk_ids = [c.id for c in chunks]
         vector_engine.add_batch(chunk_ids, embeddings)
 
-        # Step 5: Update file record (last, for crash recovery)
-        file_record = FileRecord(
-            id=file_id,
-            project_id=project_id,
-            relative_path=rel_path,
-            file_hash=file_hash,
-            file_size=stat.st_size,
-            file_mtime=str(stat.st_mtime),
-            language=language,
-            chunk_count=len(chunks),
-        )
-        db.upsert_file(conn, file_record)
-        conn.commit()
-
     def _process_deletions(
         self,
         db: StoreDB,
@@ -289,6 +285,9 @@ class IndexingPipeline:
             with db.transaction() as conn:
                 old_chunk_ids = db.delete_chunks_by_file(conn, file_rec.id)
                 if old_chunk_ids:
+                    # Clean up dangling callee references (no FK on callee_chunk_id)
+                    for cid in old_chunk_ids:
+                        db.delete_call_edges_by_callee(conn, cid)
                     vector_engine.remove_batch(old_chunk_ids)
                     bm25_engine.delete_batch(old_chunk_ids)
                 db.delete_file(conn, file_rec.id)
@@ -301,11 +300,11 @@ class IndexingPipeline:
         project_id: str,
     ) -> None:
         """Clear all data for a project (for force re-index)."""
-        # Delete all call_edges for the project first
-        db._conn.execute("DELETE FROM call_edges WHERE project_id = ?", (project_id,))
-        db._conn.commit()
-
         all_files = db.get_all_files(project_id)
+        # Delete all call_edges for the project first (before chunks, to avoid FK issues)
+        with db.transaction() as conn:
+            db.delete_all_call_edges(conn, project_id)
+
         for file_rec in all_files:
             with db.transaction() as conn:
                 old_chunk_ids = db.delete_chunks_by_file(conn, file_rec.id)

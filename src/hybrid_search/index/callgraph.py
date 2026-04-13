@@ -47,12 +47,15 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
     qname_index: dict[str, str] = {}
     # name → list of chunk_ids (for name-only matching)
     name_index: dict[str, list[tuple[str, str]]] = {}  # name → [(chunk_id, qualified_name)]
+    # chunk_id → file_id (O(1) lookup instead of linear scan)
+    file_index: dict[str, str] = {}
 
     for chunk in all_chunks:
         if chunk.qualified_name:
             qname_index[chunk.qualified_name] = chunk.id
         if chunk.name:
             name_index.setdefault(chunk.name, []).append((chunk.id, chunk.qualified_name or ""))
+        file_index[chunk.id] = chunk.file_id
 
     stats = {"total": len(edges), "high": 0, "medium": 0, "low": 0, "unresolved": 0}
     updates: list[tuple[int, str, str | None, str]] = []  # (rowid, chunk_id, qname, confidence)
@@ -62,13 +65,14 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
         callee_module = edge.get("callee_module")
         rowid = edge["rowid"]
 
-        # Skip already resolved edges
+        # Skip edges already resolved at medium/high confidence.
+        # Re-resolve low-confidence edges — they may upgrade after more chunks are indexed.
         if edge.get("callee_chunk_id") and edge.get("confidence") != "low":
             continue
 
         resolved_id, resolved_qname, confidence = _resolve_single(
             callee_name, callee_module, edge.get("caller_chunk_id"),
-            qname_index, name_index, all_chunks, project_id,
+            qname_index, name_index, file_index, project_id,
         )
 
         if resolved_id:
@@ -77,12 +81,11 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
         else:
             stats["unresolved"] += 1
 
-    # Batch update
+    # Batch update within a transaction
     if updates:
-        conn = db._conn
-        for rowid, chunk_id, qname, confidence in updates:
-            db.update_call_edge_resolution(conn, rowid, chunk_id, qname, confidence)
-        conn.commit()
+        with db.transaction() as conn:
+            for rowid, chunk_id, qname, confidence in updates:
+                db.update_call_edge_resolution(conn, rowid, chunk_id, qname, confidence)
 
     logger.info(
         "Call edge resolution for %s: %d total, %d high, %d medium, %d low, %d unresolved",
@@ -98,28 +101,21 @@ def _resolve_single(
     caller_chunk_id: str | None,
     qname_index: dict[str, str],
     name_index: dict[str, list[tuple[str, str]]],
-    all_chunks: list,
+    file_index: dict[str, str],
     project_id: str,
 ) -> tuple[str | None, str | None, str]:
     """Try to resolve a single call edge. Returns (chunk_id, qualified_name, confidence)."""
 
     # Strategy 1 (High): import path + symbol name → qualified_name match
     if callee_module:
-        # Convert import path to possible file path patterns
-        # e.g., "./auth/signIn" → "auth/signIn.ts::signIn"
-        module_stem = PurePosixPath(callee_module).name
         for qname, chunk_id in qname_index.items():
-            # Check if the qualified name matches module path + callee name
             if callee_name in qname and _module_matches(callee_module, qname):
                 return chunk_id, qname, "high"
 
     # Strategy 2 (Medium): qualified_name contains the callee name
-    # e.g., "AuthService.signIn" → look for chunks with qualified_name ending in ".signIn"
     if "." in callee_name:
-        # Already qualified: try exact match
         if callee_name in qname_index:
             return qname_index[callee_name], callee_name, "medium"
-        # Try partial match on qualified names
         for qname, chunk_id in qname_index.items():
             if qname.endswith(f".{callee_name}") or qname.endswith(f"::{callee_name}"):
                 return chunk_id, qname, "medium"
@@ -128,7 +124,6 @@ def _resolve_single(
     candidates = name_index.get(callee_name, [])
     if len(candidates) == 1:
         chunk_id, qname = candidates[0]
-        # If common name, stay low confidence
         if callee_name.lower() in COMMON_NAMES:
             return chunk_id, qname, "low"
         return chunk_id, qname, "medium"
@@ -137,12 +132,10 @@ def _resolve_single(
     if candidates and callee_name.lower() not in COMMON_NAMES:
         # Pick the candidate in the same file as the caller if possible
         if caller_chunk_id:
-            caller_file = _get_file_from_chunks(caller_chunk_id, all_chunks)
+            caller_file = file_index.get(caller_chunk_id)
             for chunk_id, qname in candidates:
-                chunk_file = _get_file_from_chunks(chunk_id, all_chunks)
-                if chunk_file and chunk_file == caller_file:
+                if file_index.get(chunk_id) == caller_file:
                     return chunk_id, qname, "medium"
-        # Otherwise return first candidate as low confidence
         chunk_id, qname = candidates[0]
         return chunk_id, qname, "low"
 
@@ -151,18 +144,11 @@ def _resolve_single(
 
 def _module_matches(import_path: str, qualified_name: str) -> bool:
     """Check if an import path plausibly matches a qualified name's file path."""
-    # Strip leading "./" or "@/" from import path
-    clean = import_path.lstrip("./").lstrip("@/")
+    # Strip leading "./" or "@/" from import path (removeprefix, not lstrip)
+    clean = import_path.removeprefix("./").removeprefix("@/")
     # qualified_name format: "path/to/file.ts::functionName"
     file_part = qualified_name.split("::")[0] if "::" in qualified_name else ""
     # Check if the import path is a suffix of the file path (without extension)
     file_stem = str(PurePosixPath(file_part).with_suffix("")) if file_part else ""
     return file_stem.endswith(clean) or clean.endswith(file_stem)
 
-
-def _get_file_from_chunks(chunk_id: str, all_chunks: list) -> str | None:
-    """Get the file_id for a chunk from the pre-loaded list."""
-    for chunk in all_chunks:
-        if chunk.id == chunk_id:
-            return chunk.file_id
-    return None
