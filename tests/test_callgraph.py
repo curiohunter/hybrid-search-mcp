@@ -71,7 +71,9 @@ def _seed_db(db: StoreDB) -> None:
         ])
 
         # Call edges: handle_request → login, create_user, init (common name)
-        db.insert_call_edges(conn, "chunk-handle-request", ["login", "create_user", "init"], PROJECT_ID)
+        db.insert_call_edges(conn, "chunk-handle-request", [
+            ("login", None), ("create_user", None), ("init", None),
+        ], PROJECT_ID)
 
 
 class TestResolveSingle:
@@ -208,6 +210,404 @@ class TestResolveCallEdgesIntegration:
         stats2 = resolve_call_edges(db, PROJECT_ID)
         # Second run should not re-resolve already resolved edges (medium/high are skipped)
         assert stats2["unresolved"] <= stats1["unresolved"]
+
+
+class TestImportCallBinding:
+    """Phase 7 Step 1: Import-Call Binding tests."""
+
+    def test_high_confidence_with_module_from_import(self, tmp_path: Path) -> None:
+        """callee_module이 있으면 High confidence로 resolve."""
+        db = _make_db(tmp_path)
+        with db.transaction() as conn:
+            db.upsert_file(conn, FileRecord(
+                id="file-auth", project_id=PROJECT_ID,
+                relative_path="src/auth.ts", file_hash="h1",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(
+                    id="chunk-login", file_id="file-auth", project_id=PROJECT_ID,
+                    name="login", qualified_name="src/auth.ts::login",
+                    node_type="function",
+                ),
+            ])
+            db.upsert_file(conn, FileRecord(
+                id="file-handler", project_id=PROJECT_ID,
+                relative_path="src/handler.ts", file_hash="h2",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(
+                    id="chunk-handler", file_id="file-handler", project_id=PROJECT_ID,
+                    name="handleRequest", qualified_name="src/handler.ts::handleRequest",
+                    node_type="function",
+                ),
+            ])
+            # Call edge WITH module info (import-call binding)
+            db.insert_call_edges(conn, "chunk-handler", [
+                ("login", "./auth"),
+            ], PROJECT_ID)
+
+        stats = resolve_call_edges(db, PROJECT_ID)
+        assert stats["high"] == 1
+
+    def test_import_call_binding_ts(self, tmp_path: Path) -> None:
+        """TS: import { login } from './auth' → login() call has callee_module='./auth'."""
+        from hybrid_search.index.ast_chunker import chunk_code_file
+
+        ts_source = '''
+import { login, logout } from "./auth"
+import { createUser } from "./user"
+
+export function handleRequest() {
+    login()
+    createUser()
+    unknownFunc()
+}
+'''
+        f = tmp_path / "handler.ts"
+        f.write_text(ts_source)
+        chunks = chunk_code_file(f, tmp_path, "proj1", "typescript")
+        # Find handleRequest chunk
+        handler_chunk = next(c for c in chunks if c.name == "handleRequest")
+        calls_dict = {name: module for name, module in handler_chunk.calls}
+
+        assert calls_dict["login"] == "./auth"
+        assert calls_dict["createUser"] == "./user"
+        assert calls_dict["unknownFunc"] is None
+
+    def test_import_call_binding_python(self, tmp_path: Path) -> None:
+        """Python: from src.auth import login → login() call has callee_module='src.auth'."""
+        from hybrid_search.index.ast_chunker import chunk_code_file
+
+        py_source = '''
+from src.auth import login
+from src.billing import charge
+
+def handle_request():
+    login()
+    charge()
+    unknown_func()
+'''
+        f = tmp_path / "handler.py"
+        f.write_text(py_source)
+        chunks = chunk_code_file(f, tmp_path, "proj1", "python")
+        handler_chunk = next(c for c in chunks if c.name == "handle_request")
+        calls_dict = {name: module for name, module in handler_chunk.calls}
+
+        assert calls_dict["login"] == "src.auth"
+        assert calls_dict["charge"] == "src.billing"
+        assert calls_dict["unknown_func"] is None
+
+    def test_unmatched_call_has_none_module(self, tmp_path: Path) -> None:
+        """import에 없는 call은 callee_module=None, 기존 medium/low 로직으로 동작."""
+        from hybrid_search.index.ast_chunker import chunk_code_file
+
+        ts_source = '''
+import { login } from "./auth"
+
+export function handler() {
+    login()
+    someLocalFunc()
+}
+'''
+        f = tmp_path / "handler.ts"
+        f.write_text(ts_source)
+        chunks = chunk_code_file(f, tmp_path, "proj1", "typescript")
+        handler_chunk = next(c for c in chunks if c.name == "handler")
+        calls_dict = {name: module for name, module in handler_chunk.calls}
+
+        assert calls_dict["login"] == "./auth"
+        assert calls_dict["someLocalFunc"] is None
+
+    def test_insert_call_edges_with_module(self, tmp_path: Path) -> None:
+        """insert_call_edges correctly stores callee_module in DB."""
+        db = _make_db(tmp_path)
+        with db.transaction() as conn:
+            db.upsert_file(conn, FileRecord(
+                id="f1", project_id=PROJECT_ID,
+                relative_path="handler.ts", file_hash="h1",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(
+                    id="c1", file_id="f1", project_id=PROJECT_ID,
+                    name="handler", qualified_name="handler.ts::handler",
+                ),
+            ])
+            db.insert_call_edges(conn, "c1", [
+                ("login", "./auth"),
+                ("localFunc", None),
+            ], PROJECT_ID)
+
+        edges = db.get_all_call_edges(PROJECT_ID)
+        edge_dict = {e["callee_name"]: e["callee_module"] for e in edges}
+        assert edge_dict["login"] == "./auth"
+        assert edge_dict["localFunc"] is None
+
+
+class TestSelfMethodResolution:
+    """Phase 7 Step 3: this/self method call resolution."""
+
+    def test_self_method_binding_python(self, tmp_path: Path) -> None:
+        """Python: self.validate() in AuthService → call tagged with __self__::AuthService."""
+        from hybrid_search.index.ast_chunker import chunk_code_file
+
+        # Use large enough methods to avoid chunk merging
+        py_source = '''
+class AuthService:
+    def validate(self):
+        """ validate docstring for padding """
+        x = 1
+        y = 2
+        z = 3
+        a = 4
+        b = 5
+        c = 6
+        d = 7
+        e = 8
+        f = 9
+        g = 10
+        h = 11
+        i = 12
+        return True
+
+    def login(self):
+        """ login docstring for padding """
+        x = 1
+        y = 2
+        z = 3
+        a = 4
+        b = 5
+        c = 6
+        d = 7
+        e = 8
+        f = 9
+        g = 10
+        h = 11
+        i = 12
+        self.validate()
+        return True
+'''
+        f = tmp_path / "auth.py"
+        f.write_text(py_source)
+        chunks = chunk_code_file(f, tmp_path, "proj1", "python")
+        # Find any chunk containing self.validate() call
+        self_calls = [
+            (name, module)
+            for c in chunks for name, module in c.calls
+            if module and module.startswith("__self__")
+        ]
+        assert len(self_calls) >= 1
+        assert self_calls[0] == ("validate", "__self__::AuthService")
+
+    def test_this_method_binding_ts(self, tmp_path: Path) -> None:
+        """TS: this.validate() in AuthService → call tagged with __self__::AuthService."""
+        from hybrid_search.index.ast_chunker import chunk_code_file
+
+        ts_source = '''
+class AuthService {
+    validate() {
+        const x = 1;
+        const y = 2;
+        const z = 3;
+        const a = 4;
+        const b = 5;
+        const c = 6;
+        const d = 7;
+        const e = 8;
+        const f = 9;
+        const g = 10;
+        return true;
+    }
+
+    login() {
+        const x = 1;
+        const y = 2;
+        const z = 3;
+        const a = 4;
+        const b = 5;
+        const c = 6;
+        const d = 7;
+        const e = 8;
+        const f = 9;
+        const g = 10;
+        this.validate();
+        return true;
+    }
+}
+'''
+        f = tmp_path / "auth.ts"
+        f.write_text(ts_source)
+        chunks = chunk_code_file(f, tmp_path, "proj1", "typescript")
+        self_calls = [
+            (name, module)
+            for c in chunks for name, module in c.calls
+            if module and module.startswith("__self__")
+        ]
+        assert len(self_calls) >= 1
+        assert self_calls[0] == ("validate", "__self__::AuthService")
+
+    def test_self_method_resolves_high(self, tmp_path: Path) -> None:
+        """self method call resolves to High confidence via class_members index."""
+        db = _make_db(tmp_path)
+        with db.transaction() as conn:
+            db.upsert_file(conn, FileRecord(
+                id="file-auth", project_id=PROJECT_ID,
+                relative_path="src/auth.py", file_hash="h1",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(
+                    id="chunk-validate", file_id="file-auth", project_id=PROJECT_ID,
+                    name="validate", qualified_name="AuthService.validate",
+                    node_type="method", parent_name="AuthService",
+                ),
+                ChunkRecord(
+                    id="chunk-login", file_id="file-auth", project_id=PROJECT_ID,
+                    name="login", qualified_name="AuthService.login",
+                    node_type="method", parent_name="AuthService",
+                ),
+            ])
+            db.insert_call_edges(conn, "chunk-login", [
+                ("validate", "__self__::AuthService"),
+            ], PROJECT_ID)
+
+        stats = resolve_call_edges(db, PROJECT_ID)
+        assert stats["high"] == 1
+
+        # Verify the resolved edge
+        edges = db.get_all_call_edges(PROJECT_ID)
+        edge = next(e for e in edges if e["callee_name"] == "validate")
+        assert edge["callee_chunk_id"] == "chunk-validate"
+        assert edge["confidence"] == "high"
+
+
+class TestCommonNameRelaxation:
+    """Phase 7 Step 4: COMMON_NAMES with context upgrades confidence."""
+
+    def test_common_name_with_module_upgrades_to_medium(self) -> None:
+        """'init' with callee_module should resolve as medium, not low."""
+        qname_index = {"src/app.py::init": "chunk-init"}
+        name_index = {"init": [("chunk-init", "src/app.py::init")]}
+        file_index = {"chunk-init": "file-app"}
+
+        # Without module → low (existing behavior for common names)
+        chunk_id, qname, confidence = _resolve_single(
+            "init", None, None, qname_index, name_index, file_index, PROJECT_ID,
+        )
+        assert confidence == "low"
+
+        # With module (import context) → medium (Step 4: context upgrades)
+        chunk_id, qname, confidence = _resolve_single(
+            "init", "./app", None, qname_index, name_index, file_index, PROJECT_ID,
+        )
+        assert confidence in ("high", "medium")
+
+    def test_common_name_multiple_candidates_with_module(self) -> None:
+        """Multiple candidates for common name should still resolve when module context exists."""
+        qname_index = {
+            "src/a.py::get": "chunk-get-a",
+            "src/b.py::get": "chunk-get-b",
+        }
+        name_index = {
+            "get": [
+                ("chunk-get-a", "src/a.py::get"),
+                ("chunk-get-b", "src/b.py::get"),
+            ],
+        }
+        file_index = {"chunk-get-a": "file-a", "chunk-get-b": "file-b"}
+
+        # Without module → unresolved (common name with multiple candidates)
+        chunk_id, qname, confidence = _resolve_single(
+            "get", None, None, qname_index, name_index, file_index, PROJECT_ID,
+        )
+        assert chunk_id is None
+
+        # With module → attempts resolution
+        chunk_id, qname, confidence = _resolve_single(
+            "get", "./a", None, qname_index, name_index, file_index, PROJECT_ID,
+        )
+        # Should find a match now (has_context allows common name resolution)
+        assert chunk_id is not None
+
+
+class TestBuiltinFiltering:
+    """Phase 7: Built-in / library call filtering to reduce noise."""
+
+    def test_python_builtins_filtered(self, tmp_path: Path) -> None:
+        """Python built-in calls (len, print, range) should not appear in calls."""
+        from hybrid_search.index.ast_chunker import chunk_code_file
+
+        py_source = '''
+from src.auth import login
+
+def process():
+    data = list(range(10))
+    print(len(data))
+    result = login()
+    return str(result)
+'''
+        f = tmp_path / "handler.py"
+        f.write_text(py_source)
+        chunks = chunk_code_file(f, tmp_path, "proj1", "python")
+        handler = next(c for c in chunks if c.name == "process")
+        call_names = {name for name, _ in handler.calls}
+
+        # Built-ins should be filtered out
+        assert "len" not in call_names
+        assert "print" not in call_names
+        assert "range" not in call_names
+        assert "list" not in call_names
+        assert "str" not in call_names
+        # Project import should remain
+        assert "login" in call_names
+
+    def test_ts_builtins_filtered(self, tmp_path: Path) -> None:
+        """TS/JS built-in calls should be filtered."""
+        from hybrid_search.index.ast_chunker import chunk_code_file
+
+        ts_source = '''
+import { processData } from "./data"
+
+export function handler() {
+    console.log("start")
+    const x = parseInt("42")
+    const data = processData()
+    return data
+}
+'''
+        f = tmp_path / "handler.ts"
+        f.write_text(ts_source)
+        chunks = chunk_code_file(f, tmp_path, "proj1", "typescript")
+        handler = next(c for c in chunks if c.name == "handler")
+        call_names = {name for name, _ in handler.calls}
+
+        # Built-ins filtered
+        assert "log" not in call_names      # console.log → method builtin
+        assert "parseInt" not in call_names  # direct builtin
+        # Project import should remain
+        assert "processData" in call_names
+
+    def test_react_hooks_filtered(self, tmp_path: Path) -> None:
+        """React hooks (useState, useEffect) should be filtered."""
+        from hybrid_search.index.ast_chunker import chunk_code_file
+
+        tsx_source = '''
+import { fetchUser } from "./api"
+
+export function UserProfile() {
+    const state = useState(null)
+    useEffect(() => { fetchUser() }, [])
+    return null
+}
+'''
+        f = tmp_path / "profile.tsx"
+        f.write_text(tsx_source)
+        chunks = chunk_code_file(f, tmp_path, "proj1", "typescript")
+        # Find the chunk with calls
+        all_calls = [(name, mod) for c in chunks for name, mod in c.calls]
+        call_names = {name for name, _ in all_calls}
+
+        assert "useState" not in call_names
+        assert "useEffect" not in call_names
+        assert "fetchUser" in call_names
 
 
 class TestCommonNames:

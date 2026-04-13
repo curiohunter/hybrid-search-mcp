@@ -31,6 +31,50 @@ COMMON_NAMES = frozenset({
 })
 
 
+def _build_module_index(all_files: list, all_chunks: list) -> dict[str, list[tuple[str, str]]]:
+    """Build module path → [(chunk_id, chunk_name)] index for High confidence resolution.
+
+    Maps various forms of a file's import path to the chunks in that file.
+    e.g. "src/auth" → chunks from src/auth.ts, src/auth.py, src/auth/index.ts, etc.
+    """
+    # file_id → list of (chunk_id, chunk_name)
+    file_chunks: dict[str, list[tuple[str, str]]] = {}
+    for chunk in all_chunks:
+        file_chunks.setdefault(chunk.file_id, []).append((chunk.id, chunk.name or ""))
+
+    module_index: dict[str, list[tuple[str, str]]] = {}
+
+    for file_rec in all_files:
+        rel = file_rec.relative_path
+        chunks_in_file = file_chunks.get(file_rec.id, [])
+        if not chunks_in_file:
+            continue
+
+        # Generate possible import path forms
+        p = PurePosixPath(rel)
+        stem = str(p.with_suffix(""))  # "src/auth/login.ts" → "src/auth/login"
+
+        # Direct stem: "src/auth/login"
+        module_index.setdefault(stem, []).extend(chunks_in_file)
+
+        # With "./" prefix: "./auth/login"
+        if not stem.startswith("./"):
+            module_index.setdefault(f"./{stem}", []).extend(chunks_in_file)
+
+        # index file convention: "src/auth/index.ts" → "src/auth"
+        if p.stem == "index":
+            parent = str(p.parent)
+            module_index.setdefault(parent, []).extend(chunks_in_file)
+            if not parent.startswith("./"):
+                module_index.setdefault(f"./{parent}", []).extend(chunks_in_file)
+
+        # Python dotted path: "src/auth/login.py" → "src.auth.login"
+        dotted = stem.replace("/", ".")
+        module_index.setdefault(dotted, []).extend(chunks_in_file)
+
+    return module_index
+
+
 def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
     """Resolve all unresolved call edges for a project.
 
@@ -42,6 +86,7 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
 
     # Pre-build lookup indexes for the project
     all_chunks = db.get_chunks_by_project(project_id)
+    all_files = db.get_all_files(project_id)
 
     # qualified_name → chunk_id (exact match)
     qname_index: dict[str, str] = {}
@@ -50,12 +95,22 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
     # chunk_id → file_id (O(1) lookup instead of linear scan)
     file_index: dict[str, str] = {}
 
+    # parent_name → {name → [(chunk_id, qname)]} for self/this resolution (Step 3)
+    class_members: dict[str, dict[str, list[tuple[str, str]]]] = {}
+
     for chunk in all_chunks:
         if chunk.qualified_name:
             qname_index[chunk.qualified_name] = chunk.id
         if chunk.name:
             name_index.setdefault(chunk.name, []).append((chunk.id, chunk.qualified_name or ""))
         file_index[chunk.id] = chunk.file_id
+        if chunk.parent_name and chunk.name:
+            class_members.setdefault(chunk.parent_name, {}).setdefault(
+                chunk.name, [],
+            ).append((chunk.id, chunk.qualified_name or ""))
+
+    # Module path → chunks index (Step 2: import path resolution)
+    module_index = _build_module_index(all_files, all_chunks)
 
     stats = {"total": len(edges), "high": 0, "medium": 0, "low": 0, "unresolved": 0}
     updates: list[tuple[int, str, str | None, str]] = []  # (rowid, chunk_id, qname, confidence)
@@ -72,7 +127,8 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
 
         resolved_id, resolved_qname, confidence = _resolve_single(
             callee_name, callee_module, edge.get("caller_chunk_id"),
-            qname_index, name_index, file_index, project_id,
+            qname_index, name_index, file_index, project_id, module_index,
+            class_members,
         )
 
         if resolved_id:
@@ -103,11 +159,36 @@ def _resolve_single(
     name_index: dict[str, list[tuple[str, str]]],
     file_index: dict[str, str],
     project_id: str,
+    module_index: dict[str, list[tuple[str, str]]] | None = None,
+    class_members: dict[str, dict[str, list[tuple[str, str]]]] | None = None,
 ) -> tuple[str | None, str | None, str]:
     """Try to resolve a single call edge. Returns (chunk_id, qualified_name, confidence)."""
 
-    # Strategy 1 (High): import path + symbol name → qualified_name match
-    if callee_module:
+    # Strategy 0 (High): this/self method call → class member lookup
+    if callee_module and callee_module.startswith("__self__::") and class_members:
+        class_name = callee_module.removeprefix("__self__::")
+        members = class_members.get(class_name, {})
+        matches = members.get(callee_name, [])
+        if len(matches) == 1:
+            chunk_id, qname = matches[0]
+            return chunk_id, qname, "high"
+        elif len(matches) > 1:
+            # Multiple matches (e.g. overloaded) — pick first, medium confidence
+            chunk_id, qname = matches[0]
+            return chunk_id, qname, "medium"
+
+    # Strategy 1 (High): module index lookup — direct match via import path
+    if callee_module and not callee_module.startswith("__self__::") and module_index:
+        candidates = module_index.get(callee_module, [])
+        for chunk_id, chunk_name in candidates:
+            if chunk_name == callee_name:
+                qname = next(
+                    (q for q, cid in qname_index.items() if cid == chunk_id), None,
+                )
+                return chunk_id, qname, "high"
+
+    # Strategy 1b (High): fallback — scan qname_index for module match
+    if callee_module and not callee_module.startswith("__self__::"):
         for qname, chunk_id in qname_index.items():
             if callee_name in qname and _module_matches(callee_module, qname):
                 return chunk_id, qname, "high"
@@ -122,14 +203,15 @@ def _resolve_single(
 
     # Strategy 2b: exact name match with single candidate
     candidates = name_index.get(callee_name, [])
+    has_context = callee_module is not None  # Step 4: module info upgrades confidence
     if len(candidates) == 1:
         chunk_id, qname = candidates[0]
-        if callee_name.lower() in COMMON_NAMES:
+        if callee_name.lower() in COMMON_NAMES and not has_context:
             return chunk_id, qname, "low"
         return chunk_id, qname, "medium"
 
     # Strategy 3 (Low): name-only match with multiple candidates
-    if candidates and callee_name.lower() not in COMMON_NAMES:
+    if candidates and (callee_name.lower() not in COMMON_NAMES or has_context):
         # Pick the candidate in the same file as the caller if possible
         if caller_chunk_id:
             caller_file = file_index.get(caller_chunk_id)
