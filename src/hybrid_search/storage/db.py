@@ -319,17 +319,17 @@ class StoreDB:
         self,
         conn: sqlite3.Connection,
         caller_chunk_id: str,
-        calls: list[str],
+        calls: list[tuple[str, str | None]],
         project_id: str,
     ) -> None:
-        """Insert call edges from a chunk's extracted calls."""
+        """Insert call edges from a chunk's extracted calls (name, module) tuples."""
         if not calls:
             return
         conn.executemany(
             """INSERT INTO call_edges
-               (caller_chunk_id, callee_name, project_id, confidence)
-               VALUES (?, ?, ?, 'low')""",
-            [(caller_chunk_id, callee_name, project_id) for callee_name in calls],
+               (caller_chunk_id, callee_name, callee_module, project_id, confidence)
+               VALUES (?, ?, ?, ?, 'low')""",
+            [(caller_chunk_id, name, module, project_id) for name, module in calls],
         )
 
     def delete_call_edges_by_caller(self, conn: sqlite3.Connection, chunk_id: str) -> None:

@@ -160,7 +160,7 @@ class CodeChunk:
     start_byte: int = 0
     end_byte: int = 0
     parent_name: str | None = None
-    calls: list[str] = field(default_factory=list)
+    calls: list[tuple[str, str | None]] = field(default_factory=list)
 
 
 def chunk_code_file(
@@ -191,7 +191,8 @@ def chunk_code_file(
 
     node_types = CHUNK_NODE_TYPES.get(language, set())
     imports = _extract_imports(tree.root_node, language, source_bytes)
-    raw_chunks = _extract_chunks(tree.root_node, node_types, source_bytes, rel_path, project_id, language)
+    import_map = _extract_import_map(tree.root_node, language, source_bytes)
+    raw_chunks = _extract_chunks(tree.root_node, node_types, source_bytes, rel_path, project_id, language, import_map)
 
     # Post-process: split large, merge small
     processed = _split_large_chunks(raw_chunks, source, rel_path, project_id, language)
@@ -296,6 +297,175 @@ def _extract_imports(root_node, ts_lang: str, source_bytes: bytes) -> list[str]:
     return imports
 
 
+def _extract_import_map(root_node, ts_lang: str, source_bytes: bytes) -> dict[str, str]:
+    """Build a mapping of imported name → module path from AST root.
+
+    Used to connect call names to their import source for call graph resolution.
+    TS/JS: import { login } from "./auth" → {"login": "./auth"}
+    Python: from src.auth import login → {"login": "src.auth"}
+    Go: import "fmt" → {"fmt": "fmt"}
+    """
+    import_map: dict[str, str] = {}
+
+    for child in root_node.children:
+        if ts_lang in ("typescript", "javascript"):
+            if child.type == "import_statement":
+                module_path = None
+                names: list[str] = []
+                default_name = None
+                for desc in _iter_descendants(child):
+                    if desc.type == "string":
+                        module_path = _node_text(source_bytes, desc).strip("'\"")
+                    elif desc.type == "import_specifier":
+                        # import { X } from "..." or import { X as Y } from "..."
+                        children = list(desc.children)
+                        if children:
+                            # Last identifier is the local binding name
+                            for c in reversed(children):
+                                if c.type == "identifier":
+                                    names.append(_node_text(source_bytes, c))
+                                    break
+                    elif desc.type == "identifier" and desc.parent == child:
+                        # Default import: import X from "..."
+                        default_name = _node_text(source_bytes, desc)
+                    elif desc.type == "namespace_import":
+                        # import * as X from "..."
+                        for c in desc.children:
+                            if c.type == "identifier":
+                                names.append(_node_text(source_bytes, c))
+
+                if module_path:
+                    for name in names:
+                        import_map[name] = module_path
+                    if default_name:
+                        import_map[default_name] = module_path
+
+        elif ts_lang == "python":
+            if child.type == "import_from_statement":
+                # from X.Y import A, B   or   from X.Y import A as B
+                # AST: from → dotted_name(module) → import → dotted_name(name)*
+                module_name = None
+                seen_import_keyword = False
+                for sub in child.children:
+                    if sub.type in ("from",):
+                        continue
+                    elif sub.type == "import":
+                        seen_import_keyword = True
+                        continue
+                    elif not seen_import_keyword:
+                        # Before 'import' keyword → module name
+                        if sub.type in ("dotted_name", "relative_import"):
+                            module_name = _node_text(source_bytes, sub)
+                    else:
+                        # After 'import' keyword → imported names
+                        if sub.type == "dotted_name":
+                            name = _node_text(source_bytes, sub)
+                            if module_name:
+                                import_map[name] = module_name
+                        elif sub.type == "aliased_import":
+                            alias_children = list(sub.children)
+                            if len(alias_children) >= 2:
+                                local_name = _node_text(source_bytes, alias_children[-1])
+                                if module_name:
+                                    import_map[local_name] = module_name
+
+            elif child.type == "import_statement":
+                # import X.Y or import X.Y as Z
+                for sub in child.children:
+                    if sub.type == "dotted_name":
+                        full = _node_text(source_bytes, sub)
+                        short = full.rsplit(".", 1)[-1]
+                        import_map[short] = full
+                    elif sub.type == "aliased_import":
+                        alias_children = list(sub.children)
+                        if len(alias_children) >= 2:
+                            full = _node_text(source_bytes, alias_children[0])
+                            local_name = _node_text(source_bytes, alias_children[-1])
+                            import_map[local_name] = full
+
+        elif ts_lang == "go":
+            if child.type == "import_declaration":
+                for desc in _iter_descendants(child):
+                    if desc.type == "import_spec":
+                        path_node = None
+                        alias = None
+                        for sub in desc.children:
+                            if sub.type == "interpreted_string_literal":
+                                path_node = _node_text(source_bytes, sub).strip('"')
+                            elif sub.type == "package_identifier":
+                                alias = _node_text(source_bytes, sub)
+                        if path_node:
+                            name = alias or path_node.rsplit("/", 1)[-1]
+                            import_map[name] = path_node
+                    elif desc.type == "interpreted_string_literal" and desc.parent and desc.parent.type == "import_declaration":
+                        # Single import: import "fmt"
+                        path = _node_text(source_bytes, desc).strip('"')
+                        name = path.rsplit("/", 1)[-1]
+                        import_map[name] = path
+
+        elif ts_lang == "java":
+            if child.type == "import_declaration":
+                text = _node_text(source_bytes, child)
+                # import com.example.Auth; → "Auth" → "com.example.Auth"
+                # import com.example.*; → skip (wildcard)
+                clean = text.removeprefix("import ").removesuffix(";").strip()
+                if not clean.endswith("*"):
+                    short = clean.rsplit(".", 1)[-1]
+                    import_map[short] = clean
+
+        elif ts_lang == "rust":
+            if child.type == "use_declaration":
+                text = _node_text(source_bytes, child)
+                # use crate::auth::login; → "login" → "crate::auth"
+                clean = text.removeprefix("use ").removesuffix(";").strip()
+                if "::" in clean:
+                    parts = clean.split("::")
+                    module = "::".join(parts[:-1])
+                    name = parts[-1]
+                    if name.startswith("{"):
+                        # use crate::auth::{login, logout};
+                        names_str = name.strip("{}")
+                        for n in names_str.split(","):
+                            n = n.strip()
+                            if n:
+                                import_map[n] = module
+                    else:
+                        import_map[name] = module
+
+        elif ts_lang == "ruby":
+            if child.type == "call":
+                text = _node_text(source_bytes, child)
+                if text.startswith("require_relative"):
+                    # require_relative "./auth" → module = "./auth"
+                    match = re.search(r'''['"]([^'"]+)['"]''', text)
+                    if match:
+                        path = match.group(1)
+                        name = Path(path).stem
+                        import_map[name] = path
+                elif text.startswith("require"):
+                    match = re.search(r'''['"]([^'"]+)['"]''', text)
+                    if match:
+                        path = match.group(1)
+                        name = path.rsplit("/", 1)[-1]
+                        import_map[name] = path
+
+        elif ts_lang == "kotlin":
+            if child.type == "import":
+                text = _node_text(source_bytes, child)
+                clean = text.removeprefix("import ").strip()
+                short = clean.rsplit(".", 1)[-1]
+                module = clean.rsplit(".", 1)[0] if "." in clean else clean
+                import_map[short] = module
+
+        elif ts_lang == "swift":
+            if child.type == "import_declaration":
+                text = _node_text(source_bytes, child)
+                clean = text.removeprefix("import ").strip()
+                import_map[clean] = clean
+
+    return import_map
+
+
 def _extract_chunks(
     root_node,
     node_types: set[str],
@@ -303,10 +473,11 @@ def _extract_chunks(
     rel_path: str,
     project_id: str,
     language: str,
+    import_map: dict[str, str] | None = None,
 ) -> list[CodeChunk]:
     """Walk AST and extract chunks for matching node types."""
     chunks: list[CodeChunk] = []
-    _walk_node(root_node, node_types, source_bytes, rel_path, project_id, language, None, chunks)
+    _walk_node(root_node, node_types, source_bytes, rel_path, project_id, language, None, chunks, import_map or {})
     return chunks
 
 
@@ -319,6 +490,7 @@ def _walk_node(
     language: str,
     parent_name: str | None,
     results: list[CodeChunk],
+    import_map: dict[str, str] | None = None,
 ) -> None:
     """Recursively walk AST nodes, extracting chunks."""
     if node.type in node_types:
@@ -326,7 +498,7 @@ def _walk_node(
         node_type = _classify_node_type(node, language)
         content = _node_text(source_bytes, node)
         docstring = _extract_docstring(node, source_bytes, language)
-        calls = _extract_calls(node, source_bytes, language)
+        calls = _extract_calls(node, source_bytes, language, import_map or {}, parent_name)
 
         # For classes: extract the header, then recurse into methods
         if node.type in CLASS_NODE_TYPES:
@@ -353,7 +525,7 @@ def _walk_node(
             for child in node.children:
                 _walk_node(
                     child, node_types, source_bytes, rel_path,
-                    project_id, language, name, results,
+                    project_id, language, name, results, import_map,
                 )
             return
 
@@ -363,7 +535,7 @@ def _walk_node(
                 if child.type in node_types and child.type != "export_statement":
                     _walk_node(
                         child, node_types, source_bytes, rel_path,
-                        project_id, language, parent_name, results,
+                        project_id, language, parent_name, results, import_map,
                     )
                     return
             if not name:
@@ -394,7 +566,7 @@ def _walk_node(
 
     # Not a matching node type — recurse into children
     for child in node.children:
-        _walk_node(child, node_types, source_bytes, rel_path, project_id, language, parent_name, results)
+        _walk_node(child, node_types, source_bytes, rel_path, project_id, language, parent_name, results, import_map)
 
 
 def _extract_name(node, source_bytes: bytes, language: str) -> str:
@@ -625,27 +797,109 @@ def _clean_jsdoc(text: str) -> str:
     return " ".join(cleaned).strip() or None  # type: ignore[return-value]
 
 
-def _extract_calls(node, source_bytes: bytes, language: str) -> list[str]:
-    """Extract function call names from within this node."""
-    calls: list[str] = []
+# Built-in / standard library DIRECT function calls (no receiver) that can never
+# resolve to project chunks. Only unambiguous builtins — no names that could also
+# be project functions (e.g. "parse", "format", "resolve" are kept).
+_BUILTIN_CALLS: frozenset[str] = frozenset({
+    # Python builtins (unambiguous)
+    "len", "print", "range", "type", "str", "int", "float", "bool", "list",
+    "dict", "set", "tuple", "isinstance", "issubclass", "hasattr", "getattr",
+    "setattr", "delattr", "super", "enumerate", "zip", "sorted", "reversed",
+    "abs", "min", "max", "sum", "all", "any", "repr", "id", "dir", "vars",
+    "globals", "locals", "iter", "next", "hash", "callable", "chr", "ord",
+    "hex", "oct", "bin", "property", "staticmethod", "classmethod", "object",
+    # TS/JS globals (unambiguous)
+    "parseInt", "parseFloat", "isNaN", "isFinite",
+    "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent",
+    "setTimeout", "clearTimeout", "setInterval", "clearInterval",
+    "requestAnimationFrame", "cancelAnimationFrame",
+    "alert", "confirm", "atob", "btoa",
+    "require",
+    # React hooks (library, not project)
+    "useState", "useEffect", "useCallback", "useMemo", "useRef",
+    "useContext", "useReducer", "useLayoutEffect", "useImperativeHandle",
+    "useDebugValue", "useTransition", "useDeferredValue", "useId",
+    "forwardRef", "memo", "lazy",
+    # Go builtins
+    "make", "append", "copy", "panic", "recover", "cap",
+    # Rust macros
+    "println", "eprintln", "dbg", "todo", "unimplemented", "unreachable",
+    "vec",
+})
+
+# Method names on CLEARLY non-project receivers (console.*, JSON.*, Math.*, DOM).
+# Keep this minimal — ambiguous names like map/filter/find could be project methods.
+_BUILTIN_METHOD_CALLS: frozenset[str] = frozenset({
+    # console.* (TS/JS)
+    "log", "warn", "error", "info", "debug", "trace", "assert",
+    # JSON.* (TS/JS)
+    "stringify",
+    # Math.* (TS/JS)
+    "floor", "ceil", "random", "sqrt", "pow",
+    # DOM methods (clearly browser API)
+    "getElementById", "getElementsByClassName", "getElementsByTagName",
+    "querySelector", "querySelectorAll",
+    "addEventListener", "removeEventListener",
+    "getAttribute", "setAttribute", "removeAttribute",
+    "appendChild", "removeChild", "insertBefore", "replaceChild",
+    "createElement", "createTextNode",
+    "preventDefault", "stopPropagation", "stopImmediatePropagation",
+    # Rust macro-like
+    "unwrap", "expect",
+})
+
+
+def _extract_calls(
+    node,
+    source_bytes: bytes,
+    language: str,
+    import_map: dict[str, str] | None = None,
+    parent_name: str | None = None,
+) -> list[tuple[str, str | None]]:
+    """Extract function call names with their import module from within this node.
+
+    Filters out built-in / standard library calls that can never resolve to project chunks.
+    For this/self method calls, uses parent_name (containing class) to build a
+    qualified module hint like "ClassName.methodName" → module = "__self__::ClassName".
+    """
+    calls: list[tuple[str, str | None]] = []
+    imap = import_map or {}
     for desc in _iter_descendants(node):
         if desc.type in ("call_expression", "call"):
-            name = _extract_call_name(desc, source_bytes, language)
-            if name:
-                calls.append(name)
+            name, is_self_call, is_method_call = _extract_call_name_ex(desc, source_bytes, language)
+            if not name:
+                continue
+            # Filter out built-in / library calls
+            if name in _BUILTIN_CALLS:
+                continue
+            if is_method_call and not is_self_call and name in _BUILTIN_METHOD_CALLS:
+                continue
+
+            if is_self_call and parent_name:
+                module = f"__self__::{parent_name}"
+            else:
+                module = imap.get(name)
+            calls.append((name, module))
     return calls
 
 
-def _extract_call_name(call_node, source_bytes: bytes, language: str) -> str | None:
-    """Extract the clean function name from a call expression node."""
+def _extract_call_name_ex(
+    call_node, source_bytes: bytes, language: str,
+) -> tuple[str | None, bool, bool]:
+    """Extract function name from a call expression.
+
+    Returns (name, is_self_call, is_method_call).
+    - is_self_call: True when the call is on this/self (e.g., this.login(), self.login()).
+    - is_method_call: True when the call is on any object (e.g., obj.method()).
+    """
     if not call_node.children:
-        return None
+        return None, False, False
 
     func_node = call_node.children[0]
 
     # Direct identifier: foo()
     if func_node.type in ("identifier", "type_identifier"):
-        return _node_text(source_bytes, func_node)
+        return _node_text(source_bytes, func_node), False, False
 
     # Member expression: obj.method() — extract the method name
     if func_node.type in (
@@ -654,12 +908,27 @@ def _extract_call_name(call_node, source_bytes: bytes, language: str) -> str | N
         "field_expression",                     # Rust
         "scoped_identifier",                    # Rust (path::func)
     ):
+        method_name = None
+        is_self = False
         for child in reversed(func_node.children):
             if child.type in ("identifier", "property_identifier", "field_identifier"):
-                return _node_text(source_bytes, child)
+                method_name = _node_text(source_bytes, child)
+                break
+
+        # Check if the object is this/self
+        if func_node.children:
+            obj_node = func_node.children[0]
+            if obj_node.type in ("this", "self"):
+                is_self = True
+            elif obj_node.type == "identifier":
+                obj_text = _node_text(source_bytes, obj_node)
+                if obj_text in ("this", "self"):
+                    is_self = True
+
+        return method_name, is_self, True  # is_method_call = True
 
     # Subscript expression or other complex forms — skip
-    return None
+    return None, False, False
 
 
 def _extract_class_header(node, source_bytes: bytes, language: str) -> str:
