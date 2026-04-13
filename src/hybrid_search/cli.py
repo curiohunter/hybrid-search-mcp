@@ -125,6 +125,9 @@ def cmd_reindex(args: argparse.Namespace) -> None:
             _sync_args = _ap.Namespace(cwd=project_path)
             cmd_sync_wiki(_sync_args)
 
+    # Re-check staleness after sync (cleans up STALE.md when all pages are fresh)
+    _mark_stale_wikis(config, registry, project_name)
+
     # Gap detection for new files
     _write_gap_flag(cwd, result.files_added)
 
