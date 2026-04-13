@@ -1,15 +1,32 @@
-"""Wiki page storage with dependency tracking and staleness detection."""
+"""Wiki page storage with dependency tracking, staleness detection, and graph traversal."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import re
 import sqlite3
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+# [[link_text]] pattern — matches wikilinks in wiki page content
+_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+
+
+def _extract_snippet(content: str, max_len: int = 200) -> str:
+    """Extract first meaningful line from wiki content as a snippet."""
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith(">") or stripped.startswith("|"):
+            continue
+        if len(stripped) > max_len:
+            return stripped[:max_len] + "…"
+        return stripped
+    return content[:max_len] + "…" if len(content) > max_len else content
 
 
 def normalize_query(query: str) -> str:
@@ -31,6 +48,16 @@ def _now_iso() -> str:
 
 
 @dataclass
+class LinkedPage:
+    """Summary of a linked wiki page for graph expansion."""
+    page_id: str
+    title: str
+    link_text: str
+    snippet: str
+    hop: int
+
+
+@dataclass
 class WikiPage:
     id: str
     project_id: str
@@ -45,6 +72,7 @@ class WikiPage:
     version: int
     stale: bool | None = None
     changed_files: list[str] | None = None
+    linked_pages: list[LinkedPage] = field(default_factory=list)
 
 
 class WikiStore:
@@ -111,6 +139,9 @@ class WikiStore:
                 (page_id, dep["file_id"], dep["file_hash"], chunk_ids_json),
             )
 
+        # Extract and store wikilinks
+        self._sync_wikilinks(page_id, project_id, content)
+
         evicted = self._evict_lru(project_id)
 
         return {"page_id": page_id, "query_key": query_key, "evicted_count": evicted}
@@ -145,6 +176,7 @@ class WikiStore:
         )
 
         staleness = self._check_page_staleness(row["id"])
+        linked = self._expand_graph(row["id"], row["project_id"], max_hops=2)
 
         return WikiPage(
             id=row["id"],
@@ -160,6 +192,7 @@ class WikiStore:
             version=row["version"],
             stale=staleness["stale"],
             changed_files=staleness["changed_files"],
+            linked_pages=linked,
         )
 
     def check_staleness(
@@ -238,6 +271,9 @@ class WikiStore:
                         (file_row["file_hash"], page_id, dep["file_id"]),
                     )
 
+        # Re-sync wikilinks from updated content
+        self._sync_wikilinks(page_id, row["project_id"], content)
+
         new_row = self._conn.execute(
             "SELECT version FROM wiki_pages WHERE id = ?", (page_id,)
         ).fetchone()
@@ -295,6 +331,134 @@ class WikiStore:
             "changed_files": changed_files,
             "total_dependencies": len(deps),
         }
+
+    # -- wikilink graph --
+
+    def _sync_wikilinks(
+        self, page_id: str, project_id: str, content: str
+    ) -> None:
+        """Parse [[link_text]] from content and upsert wiki_links rows."""
+        self._conn.execute(
+            "DELETE FROM wiki_links WHERE source_page_id = ?", (page_id,)
+        )
+
+        link_texts = _WIKILINK_RE.findall(content)
+        if not link_texts:
+            return
+
+        for text in dict.fromkeys(link_texts):  # dedupe, preserve order
+            # Resolve link_text → target page by title match (case-insensitive)
+            target = self._conn.execute(
+                """SELECT id FROM wiki_pages
+                   WHERE project_id = ? AND LOWER(title) = LOWER(?)""",
+                (project_id, text),
+            ).fetchone()
+            if target is None:
+                # Try matching by query_key
+                query_key = normalize_query(text)
+                target_id = _page_id(project_id, query_key)
+                exists = self._conn.execute(
+                    "SELECT id FROM wiki_pages WHERE id = ?", (target_id,)
+                ).fetchone()
+                if exists is None:
+                    continue
+                target_page_id = target_id
+            else:
+                target_page_id = target["id"]
+
+            if target_page_id == page_id:
+                continue  # skip self-links
+
+            self._conn.execute(
+                """INSERT OR IGNORE INTO wiki_links
+                   (source_page_id, target_page_id, link_text)
+                   VALUES (?, ?, ?)""",
+                (page_id, target_page_id, text),
+            )
+
+    def _expand_graph(
+        self,
+        start_page_id: str,
+        project_id: str,
+        max_hops: int = 2,
+        max_pages: int = 10,
+    ) -> list[LinkedPage]:
+        """BFS from start page, following wikilinks up to max_hops.
+
+        Returns linked pages with their hop distance and a content snippet.
+        """
+        visited: set[str] = {start_page_id}
+        queue: deque[tuple[str, int]] = deque()  # (page_id, hop)
+        result: list[LinkedPage] = []
+
+        # Seed: outgoing links from start page
+        outgoing = self._conn.execute(
+            "SELECT target_page_id, link_text FROM wiki_links WHERE source_page_id = ?",
+            (start_page_id,),
+        ).fetchall()
+        for row in outgoing:
+            if row["target_page_id"] not in visited:
+                queue.append((row["target_page_id"], 1))
+                visited.add(row["target_page_id"])
+
+        # Also include incoming links (pages that link TO this page)
+        incoming = self._conn.execute(
+            "SELECT source_page_id, link_text FROM wiki_links WHERE target_page_id = ?",
+            (start_page_id,),
+        ).fetchall()
+        for row in incoming:
+            if row["source_page_id"] not in visited:
+                queue.append((row["source_page_id"], 1))
+                visited.add(row["source_page_id"])
+
+        while queue and len(result) < max_pages:
+            page_id, hop = queue.popleft()
+
+            page_row = self._conn.execute(
+                "SELECT id, title, content FROM wiki_pages WHERE id = ? AND project_id = ?",
+                (page_id, project_id),
+            ).fetchone()
+            if page_row is None:
+                continue
+
+            # Build snippet: first non-empty, non-heading line, truncated
+            snippet = _extract_snippet(page_row["content"])
+
+            # Find link_text used to reach this page
+            link_row = self._conn.execute(
+                """SELECT link_text FROM wiki_links
+                   WHERE (source_page_id = ? AND target_page_id = ?)
+                      OR (source_page_id = ? AND target_page_id = ?)
+                   LIMIT 1""",
+                (start_page_id, page_id, page_id, start_page_id),
+            ).fetchone()
+            link_text = link_row["link_text"] if link_row else page_row["title"]
+
+            result.append(LinkedPage(
+                page_id=page_id,
+                title=page_row["title"],
+                link_text=link_text,
+                snippet=snippet,
+                hop=hop,
+            ))
+
+            # Expand further if within hop limit
+            if hop < max_hops:
+                neighbors = self._conn.execute(
+                    """SELECT target_page_id AS neighbor_id FROM wiki_links
+                       WHERE source_page_id = ?
+                       UNION
+                       SELECT source_page_id AS neighbor_id FROM wiki_links
+                       WHERE target_page_id = ?""",
+                    (page_id, page_id),
+                ).fetchall()
+                for n in neighbors:
+                    neighbor_id = n["neighbor_id"]
+                    if neighbor_id not in visited:
+                        queue.append((neighbor_id, hop + 1))
+                        visited.add(neighbor_id)
+
+        return result
 
     def _evict_lru(self, project_id: str) -> int:
         """Evict oldest-accessed pages when over the limit."""
