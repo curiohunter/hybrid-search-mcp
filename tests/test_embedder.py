@@ -1,4 +1,4 @@
-"""Tests for Embedder — index/embedder.py (backend selection, Ollama validation)."""
+"""Tests for Embedder — index/embedder.py (Ollama GPU backend)."""
 
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -9,48 +9,36 @@ from hybrid_search.config import EmbeddingConfig
 from hybrid_search.index.embedder import Embedder, OLLAMA_DEFAULT_URL
 
 
-class TestEmbedderBackendSelection:
-    """Backend auto-selection from config."""
+class TestEmbedderBasics:
+    """Basic Embedder construction and empty-input handling."""
 
-    def test_default_backend_is_onnx(self) -> None:
+    def test_default_config_uses_ollama(self) -> None:
         cfg = EmbeddingConfig()
-        emb = Embedder(cfg, Path("/tmp/models"))
-        assert emb._backend == "onnx"
-
-    def test_st_backend(self) -> None:
-        cfg = EmbeddingConfig(backend="sentence-transformers")
-        emb = Embedder(cfg, Path("/tmp/models"))
-        assert emb._backend == "sentence-transformers"
-
-    def test_ollama_backend(self) -> None:
-        cfg = EmbeddingConfig(backend="ollama", ollama_model="nomic-embed-text")
-        emb = Embedder(cfg, Path("/tmp/models"))
-        assert emb._backend == "ollama"
+        assert cfg.ollama_model == "qwen3-embedding:0.6b"
 
     def test_embed_texts_empty_returns_empty_array(self) -> None:
-        cfg = EmbeddingConfig(backend="sentence-transformers", model="fake")
-        emb = Embedder(cfg, Path("/tmp/models"))
-        emb._embedding_dim = 384
-        emb._model = MagicMock()  # Skip real loading
+        cfg = EmbeddingConfig(ollama_model="test-model")
+        emb = Embedder(cfg)
+        emb._embedding_dim = 1024
         result = emb.embed_texts([])
-        assert result.shape == (0, 384)
+        assert result.shape == (0, 1024)
 
 
 class TestOllamaBackend:
     """Ollama backend validation (no live server needed)."""
 
     def test_missing_ollama_model_raises(self) -> None:
-        cfg = EmbeddingConfig(backend="ollama", ollama_model="")
-        emb = Embedder(cfg, Path("/tmp/models"))
+        cfg = EmbeddingConfig(ollama_model="")
+        emb = Embedder(cfg)
         try:
-            emb._ensure_loaded_ollama()
+            emb._ensure_loaded()
             assert False, "Should have raised ValueError"
         except ValueError as e:
             assert "ollama_model" in str(e)
 
     def test_ollama_embed_request_builds_correct_payload(self) -> None:
-        cfg = EmbeddingConfig(backend="ollama", ollama_model="nomic-embed-text")
-        emb = Embedder(cfg, Path("/tmp/models"))
+        cfg = EmbeddingConfig(ollama_model="qwen3-embedding:0.6b")
+        emb = Embedder(cfg)
 
         mock_response = MagicMock()
         mock_response.read.return_value = b'{"embeddings": [[0.1, 0.2, 0.3]]}'
@@ -61,14 +49,13 @@ class TestOllamaBackend:
             result = emb._ollama_embed_request(["test text"])
             assert result == [[0.1, 0.2, 0.3]]
 
-            # Verify the request was made to the correct URL
             call_args = mock_open.call_args
             req = call_args[0][0]
             assert req.full_url == f"{OLLAMA_DEFAULT_URL}/api/embed"
 
     def test_ollama_connection_error_gives_clear_message(self) -> None:
-        cfg = EmbeddingConfig(backend="ollama", ollama_model="nomic-embed-text")
-        emb = Embedder(cfg, Path("/tmp/models"))
+        cfg = EmbeddingConfig(ollama_model="qwen3-embedding:0.6b")
+        emb = Embedder(cfg)
 
         import urllib.error
         with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
@@ -77,6 +64,22 @@ class TestOllamaBackend:
                 assert False, "Should have raised ConnectionError"
             except ConnectionError as e:
                 assert "Ollama server not reachable" in str(e)
+
+    def test_embed_all_normalizes(self) -> None:
+        cfg = EmbeddingConfig(ollama_model="test-model", batch_size=2)
+        emb = Embedder(cfg)
+        emb._embedding_dim = 3
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"embeddings": [[3.0, 4.0, 0.0], [0.0, 1.0, 0.0]]}'
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            result = emb._embed_all(["a", "b"])
+            # Should be L2 normalized
+            norms = np.linalg.norm(result, axis=1)
+            np.testing.assert_allclose(norms, [1.0, 1.0], atol=1e-6)
 
 
 class TestHotReloadableConfig:
@@ -101,7 +104,6 @@ class TestHotReloadableConfig:
         config_path.write_text("[general]\nlog_level = 'info'\n")
         hrc = _HotReloadableConfig(Config(), config_path)
 
-        # Modify file (ensure mtime advances)
         time.sleep(0.05)
         config_path.write_text("[general]\nlog_level = 'debug'\n")
         os.utime(config_path, (time.time() + 1, time.time() + 1))
@@ -119,11 +121,9 @@ class TestHotReloadableConfig:
         config_path.write_text("[general]\nlog_level = 'info'\n")
         hrc = _HotReloadableConfig(Config(), config_path)
 
-        # Write invalid TOML
         time.sleep(0.05)
         config_path.write_text("invalid {{{{ toml content")
         os.utime(config_path, (time.time() + 1, time.time() + 1))
 
-        # Should not crash, should keep old config
         assert hrc.check_reload() is False
         assert hrc.config.log_level == "info"
