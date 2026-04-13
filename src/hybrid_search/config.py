@@ -49,6 +49,7 @@ class EmbeddingConfig:
     batch_size: int = 32
     max_tokens: int = 0
     device: str = "cpu"
+    onnx_threads: int = 6  # Performance cores on Apple Silicon (M1-M4)
 
     @property
     def effective_max_tokens(self) -> int:
@@ -80,12 +81,19 @@ class ProjectEntry:
 
 
 @dataclass(frozen=True)
+class WikiConfig:
+    max_pages_per_project: int = 100
+    eviction_policy: str = "lru"  # "lru" only for now
+
+
+@dataclass(frozen=True)
 class Config:
     data_dir: Path = DEFAULT_DATA_DIR
     log_level: str = "info"
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
+    wiki: WikiConfig = field(default_factory=WikiConfig)
     projects: tuple[ProjectEntry, ...] = ()
 
     @property
@@ -126,6 +134,7 @@ def load_config(config_path: Path | None = None) -> Config:
         batch_size=emb_raw.get("batch_size", 32),
         max_tokens=emb_raw.get("max_tokens", 0),
         device=emb_raw.get("device", "cpu"),
+        onnx_threads=emb_raw.get("onnx_threads", 6),
     )
 
     search_raw = raw.get("search", {})
@@ -145,6 +154,12 @@ def load_config(config_path: Path | None = None) -> Config:
         ),
     )
 
+    wiki_raw = raw.get("wiki", {})
+    wiki = WikiConfig(
+        max_pages_per_project=wiki_raw.get("max_pages_per_project", 100),
+        eviction_policy=wiki_raw.get("eviction_policy", "lru"),
+    )
+
     projects = tuple(
         ProjectEntry(name=p["name"], path=p["path"])
         for p in raw.get("projects", [])
@@ -157,6 +172,7 @@ def load_config(config_path: Path | None = None) -> Config:
         embedding=embedding,
         search=search,
         indexing=indexing,
+        wiki=wiki,
         projects=projects,
     )
 
@@ -180,6 +196,7 @@ ollama_model = ""             # Ollama model name (e.g., "nomic-embed-text")
 batch_size = 32
 max_tokens = 0                # 0 = auto-detect from model
 device = "cpu"                # "cpu" | "mps"
+onnx_threads = 6              # ONNX intra_op threads (default: 6, match Performance cores)
 
 [search]
 default_limit = 10

@@ -1224,12 +1224,81 @@ MCP 서버의 `hybrid_search` tool description에 아래 가이드를 포함:
 - [x] `_extract_call_name()` — Go selector_expression, Rust scoped_identifier/field_expression
 - [x] `pyproject.toml` 11개 tree-sitter grammar 의존성 추가
 
-### Phase 4: Polish
-- [ ] Apple Silicon MPS 가속
-- [ ] Ollama 폴백 (벤치마크 통과 모델만)
-- [ ] 인덱싱 진행률 알림
-- [ ] 크래시 복구 & 인덱스 자동 rebuild
-- [ ] config.toml 핫 리로드
+### Phase 4: Polish ✅ 완료 (2026-04-13)
+- [x] Apple Silicon MPS 가속 — ONNX: CoreMLExecutionProvider 자동 감지, ST: `device="mps"` 전달
+- [x] Ollama 백엔드 — `POST /api/embed` HTTP API (`backend = "ollama"`, `ollama_model = "nomic-embed-text"`)
+- [x] 인덱싱 진행률 알림 — `ProgressCallback(current, total, path)` pipeline→tools 콜백 체인
+- [x] 크래시 복구 & 인덱스 자동 rebuild — consistency mismatch → force rebuild, `file_hash=""` partial write 감지
+- [x] config.toml 핫 리로드 — `_HotReloadableConfig` mtime 감지 + mutable state dict 패턴
+- [x] ONNX 백엔드 완전 구현 — `_embed_onnx_batch()` mean pooling + L2 normalize
+- [x] 테스트 확충 — 133개 테스트 (9개 파일)
+
+### Phase 5: Reactive Wiki Layer ✅ 완료 (2026-04-13)
+- [x] `WikiConfig` — `max_pages_per_project=100`, `eviction_policy="lru"`
+- [x] DB 스키마 확장 — `wiki_pages` + `wiki_dependencies` 테이블 (SCHEMA_VERSION=2)
+- [x] `WikiStore` — compile/lookup/staleness/refresh/eviction (LRU), 파일 해시 스냅샷 기반 변경 감지
+- [x] `compile_to_wiki` tool — Claude가 검색 결과를 wiki 페이지로 저장, `source_chunk_ids`로 의존성 자동 추적
+- [x] `lookup_wiki` tool — normalized query 또는 tag로 캐시된 wiki 조회 + staleness 즉시 반환
+- [x] `check_wiki_staleness` tool — 단일/전체 wiki 페이지 stale 여부 확인
+- [x] `refresh_wiki_page` tool — stale 페이지 콘텐츠 갱신 + 파일 해시 재스냅샷
+- [x] 테스트 28개 추가 — 총 161개 테스트 (10개 파일)
+
+### Phase 5.5: CWD 프로젝트 부스트 ✅ 완료 (2026-04-13)
+- [x] `hybrid_search`에 `cwd` 파라미터 추가
+- [x] `_detect_primary_project()` — cwd에서 등록된 프로젝트 자동 감지
+- [x] BM25: primary project 2:1 weighted interleave (`_weighted_interleave()`)
+- [x] Vector: primary project cosine +0.05 부스트
+- [x] 테스트 14개 추가 — 총 175개 테스트 (12개 파일)
+
+### Phase 6: Karpathy Wiki Architecture (설계 완료, 미구현)
+
+> 핵심 전환: "매번 검색" → "컴파일된 지식 축적". 검색 자체를 없애는 것이 목표.
+
+#### 6a: Background Indexing (토큰 0, 인간 개입 0)
+```
+git commit
+  └→ post-commit hook:
+     1. hybrid_search CLI delta reindex (인덱스 최신화)
+     2. 변경된 파일 → 관련 wiki stale 마킹 (파일 해시 비교, 확정적)
+     3. 새 파일/디렉토리 추가 → "wiki 커버리지 gap" 플래그
+```
+- CLI 엔트리포인트: `python -m hybrid_search.cli reindex --cwd .`
+- settings.json post-commit hook 등록
+
+#### 6b: Wiki on Disk (CLAUDE.md에서 직접 참조)
+```
+{project}/.hybrid-search/wiki/index.md    ← 모든 페이지 목록
+{project}/.hybrid-search/wiki/auth.md     ← 인증 시스템 아키텍처
+{project}/.hybrid-search/wiki/tuition.md  ← 학원비 결제 흐름
+```
+- SQLite wiki_pages는 메타데이터/staleness 추적용으로 유지
+- CLAUDE.md에서 `wiki/index.md` 참조 → 대화 시작 시 토큰 0으로 컨텍스트 확보
+- wiki 파일은 .gitignore에 추가 (프로젝트별 생성, 공유 불필요)
+
+#### 6c: Bootstrap + Lazy Recompile
+- `/bootstrap-wiki` 스킬: 프로젝트 초기 wiki 자동 생성 (hybrid_search + 코드 분석, 1회)
+- Lazy recompile: stale wiki를 읽을 때만 diff 기반 부분 재컴파일
+- 새 파일/디렉토리 gap 감지 → 다음 대화에서 자동 wiki 페이지 생성
+
+#### 6d: /search 스킬 (필요할 때만)
+```
+1. wiki/index.md에 있나? → Read로 끝
+2. 없으면 → hybrid_search 실행
+3. 결과 좋으면 → wiki에 컴파일
+4. 없으면 → Grep/Glob 폴백
+```
+
+#### 6e: MindVault hook 비활성화
+- wiki/index.md가 MindVault auto-inject를 대체
+- MindVault의 그래프 관계 데이터는 bootstrap-wiki에서 활용 가능
+
+#### 확정적 파이프라인 (실험 구간 없음)
+| 트리거 | 동작 | 확정성 |
+|--------|------|:------:|
+| git commit + 기존 파일 변경 | stale 마킹 | 확정적 (해시 비교) |
+| git commit + 새 파일/디렉토리 | gap 플래그 | 확정적 (파일 존재 여부) |
+| wiki 읽기 + stale | diff 기반 lazy recompile | 확정적 (변경분만) |
+| gap 감지 + 대화 시작 | 자동 wiki 생성 | 확정적 (새 파일 분석) |
 
 ## 17. Dependencies (Python)
 
@@ -1288,8 +1357,8 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 
 ### Open
 1. ~~**bge-m3 Sparse Vector**~~ → bge-m3는 CPU에서 너무 느려서 실사용 불가. e5-small + Tantivy BM25 조합으로 확정
-2. **인덱스 크기**: breeze 155파일 = 326 chunks. 8개 프로젝트 추정치 재계산 필요
-3. **MPS 가속 효과**: Apple Silicon에서 ONNX + MPS가 CPU 대비 얼마나 빠른가? → Phase 4에서 측정
+2. ~~**인덱스 크기**~~ → valuein-homepage 1,757파일 = 9,559 chunks (229초 CPU). breeze 대비 11.3x 파일, 29.3x 청크. 대규모 프로젝트에서도 에러 0, 5분 이내 인덱싱 완료
+3. ~~**MPS 가속 효과**~~ → M3 Pro에서 sentence-transformers + MPS: 192.9초 vs CPU 229.3초 = **19% 가속**. e5-small(33M)은 경량 모델이라 GPU 전송 오버헤드 대비 폭 제한적. Qwen3-0.6B에서는 더 큰 차이 예상
 4. **MindVault 장기 통합**: Hybrid Search가 안정화되면 MindVault의 BM25를 대체하고, MindVault는 Graph/Wiki에 집중하는 구조로 갈 수 있는가?
 5. **임베딩 입력 최적화**: 구조화된 입력(§7) vs raw code의 실제 retrieval 품질 차이는? → 벤치마크에서 A/B 비교
 6. **INSERT OR REPLACE + FK CASCADE**: SQLite에서 REPLACE는 DELETE+INSERT로 구현되어 FK CASCADE 발동. `ON CONFLICT DO UPDATE` 패턴 필수. (해결됨, 교훈으로 기록)

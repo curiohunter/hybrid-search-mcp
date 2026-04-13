@@ -149,7 +149,7 @@ class Embedder:
 
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        sess_options.intra_op_num_threads = 4
+        sess_options.intra_op_num_threads = self._config.onnx_threads
 
         self._model = ort.InferenceSession(
             str(model_path), sess_options=sess_options, providers=providers,

@@ -137,6 +137,7 @@ class SearchOrchestrator:
         file_pattern: str | None = None,
         node_types: list[str] | None = None,
         bm25_weight: float | None = None,
+        cwd: str | None = None,
     ) -> HybridSearchResponse:
         """Execute hybrid BM25 + Vector search with RRF fusion."""
         start = time.monotonic()
@@ -156,6 +157,11 @@ class SearchOrchestrator:
         else:
             project_infos = self._registry.list_all()
 
+        # Auto-detect primary project from cwd
+        primary_project_id: str | None = None
+        if cwd and not project and len(project_infos) > 1:
+            primary_project_id = self._detect_primary_project(cwd, project_infos)
+
         if not project_infos:
             return HybridSearchResponse(
                 results=[], query_type=qtype, effective_bm25_weight=effective_weight,
@@ -174,6 +180,7 @@ class SearchOrchestrator:
         else:
             bm25_ids, vector_ids, total, skipped = self._search_cross_project(
                 project_infos, query, query_vector, retrieval_depth, file_pattern, node_types,
+                primary_project_id=primary_project_id,
             )
 
         # RRF fusion
@@ -235,6 +242,26 @@ class SearchOrchestrator:
 
         return bm25_ids, vector_ids, total, []
 
+    @staticmethod
+    def _detect_primary_project(
+        cwd: str, project_infos: list[ProjectInfo]
+    ) -> str | None:
+        """Find the registered project whose path contains the cwd (or vice versa)."""
+        cwd_path = Path(cwd).resolve()
+        for pinfo in project_infos:
+            project_path = Path(pinfo.path).resolve()
+            try:
+                cwd_path.relative_to(project_path)
+                return pinfo.id
+            except ValueError:
+                pass
+            try:
+                project_path.relative_to(cwd_path)
+                return pinfo.id
+            except ValueError:
+                pass
+        return None
+
     def _search_cross_project(
         self,
         project_infos: list[ProjectInfo],
@@ -243,9 +270,15 @@ class SearchOrchestrator:
         depth: int,
         file_pattern: str | None,
         node_types: list[str] | None,
+        primary_project_id: str | None = None,
     ) -> tuple[list[str], list[str], int, list[str]]:
-        """Cross-project search: interleave BM25 ranks, merge vector by cosine (§13)."""
+        """Cross-project search: interleave BM25 ranks, merge vector by cosine (§13).
+
+        When primary_project_id is set (from cwd detection), primary project
+        gets priority in BM25 interleave and a cosine boost in vector results.
+        """
         per_project_bm25: list[list[str]] = []
+        primary_bm25: list[str] | None = None
         all_vector: list[tuple[str, float]] = []  # (chunk_id, similarity)
         total = 0
         skipped: list[str] = []
@@ -276,6 +309,7 @@ class SearchOrchestrator:
             return bm25_ids, vec_pairs, count
 
         # Execute with timeout
+        primary_chunk_ids: set[str] = set()
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {executor.submit(search_one, p): p for p in project_infos}
             for future in futures:
@@ -283,17 +317,35 @@ class SearchOrchestrator:
                 try:
                     bm25_ids, vec_pairs, count = future.result(timeout=PROJECT_TIMEOUT_S)
                     if bm25_ids is not None:
-                        per_project_bm25.append(bm25_ids)
+                        if primary_project_id and pinfo.id == primary_project_id:
+                            primary_bm25 = bm25_ids
+                            primary_chunk_ids.update(bm25_ids)
+                            primary_chunk_ids.update(cid for cid, _ in vec_pairs)
+                        else:
+                            per_project_bm25.append(bm25_ids)
                         all_vector.extend(vec_pairs)
                         total += count
                 except (FutureTimeoutError, Exception) as e:
                     logger.warning("Project %s timed out or failed: %s", pinfo.name, e)
                     skipped.append(pinfo.name)
 
-        # BM25: round-robin interleave (§13)
-        merged_bm25 = _interleave_round_robin(per_project_bm25)
+        # BM25: primary-first interleave
+        if primary_bm25 is not None:
+            # Put primary project first, then round-robin the rest
+            secondary_bm25 = _interleave_round_robin(per_project_bm25)
+            merged_bm25 = _weighted_interleave(primary_bm25, secondary_bm25, primary_ratio=2)
+            logger.info("CWD boost: primary project gets 2:1 BM25 interleave priority")
+        else:
+            merged_bm25 = _interleave_round_robin(per_project_bm25)
 
-        # Vector: sort by cosine similarity descending
+        # Vector: sort by cosine similarity, with boost for primary project
+        if primary_project_id and primary_chunk_ids:
+            # Boost primary project results by 5% cosine similarity
+            CWD_BOOST = 0.05
+            all_vector = [
+                (cid, sim + CWD_BOOST) if cid in primary_chunk_ids else (cid, sim)
+                for cid, sim in all_vector
+            ]
         all_vector.sort(key=lambda x: x[1], reverse=True)
         merged_vector = [cid for cid, _ in all_vector]
 
@@ -346,6 +398,35 @@ class SearchOrchestrator:
                 db.close()
 
         return results
+
+
+def _weighted_interleave(
+    primary: list[str], secondary: list[str], primary_ratio: int = 2
+) -> list[str]:
+    """Interleave primary and secondary lists with a ratio (e.g., 2:1 = 2 primary per 1 secondary)."""
+    seen: set[str] = set()
+    result: list[str] = []
+    pi, si = 0, 0
+
+    while pi < len(primary) or si < len(secondary):
+        # Take `primary_ratio` items from primary
+        for _ in range(primary_ratio):
+            while pi < len(primary) and primary[pi] in seen:
+                pi += 1
+            if pi < len(primary):
+                result.append(primary[pi])
+                seen.add(primary[pi])
+                pi += 1
+
+        # Take 1 item from secondary
+        while si < len(secondary) and secondary[si] in seen:
+            si += 1
+        if si < len(secondary):
+            result.append(secondary[si])
+            seen.add(secondary[si])
+            si += 1
+
+    return result
 
 
 def _interleave_round_robin(lists: list[list[str]]) -> list[str]:
