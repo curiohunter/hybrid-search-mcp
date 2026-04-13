@@ -13,6 +13,7 @@ def handle_hybrid_search(
     file_pattern: str | None = None,
     node_types: list[str] | None = None,
     bm25_weight: float | None = None,
+    cwd: str | None = None,
 ) -> dict:
     """Handle hybrid_search tool call."""
     response = orchestrator.hybrid_search(
@@ -22,6 +23,7 @@ def handle_hybrid_search(
         file_pattern=file_pattern,
         node_types=node_types,
         bm25_weight=bm25_weight,
+        cwd=cwd,
     )
 
     return {
