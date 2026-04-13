@@ -150,7 +150,8 @@ class Embedder:
         from transformers import AutoTokenizer
 
         model_path = self._resolve_model_path()
-        logger.info("Loading ONNX model from %s", model_path)
+        q_tag = " (INT8 quantized)" if "quantized" in model_path.name else ""
+        logger.info("Loading ONNX model from %s%s", model_path, q_tag)
 
         providers = ["CPUExecutionProvider"]
         if self._config.device == "mps":
@@ -212,7 +213,17 @@ class Embedder:
             )
 
         model_dir = self._models_dir / self._config.model.replace("/", "_")
-        onnx_path = model_dir / "model.onnx"
+
+        # Prefer quantized model (INT8, ~3x faster, 4x smaller)
+        onnx_filename = "model_quantized.onnx" if self._config.quantized else "model.onnx"
+        onnx_path = model_dir / onnx_filename
+
+        # Fallback: if quantized requested but only full model exists, use full
+        if not onnx_path.exists() and self._config.quantized:
+            full_path = model_dir / "model.onnx"
+            if full_path.exists():
+                logger.info("Quantized model not found, falling back to full model")
+                onnx_path = full_path
 
         if onnx_path.exists():
             # Verify checksum if configured
@@ -230,6 +241,42 @@ class Embedder:
 
     def _download_model(self, model_dir: Path, onnx_path: Path) -> Path:
         """Download ONNX model from HuggingFace Hub."""
+        from huggingface_hub import hf_hub_download
+
+        onnx_filename = onnx_path.name  # "model_quantized.onnx" or "model.onnx"
+
+        # For quantized models, try downloading from Xenova's repo first (pre-quantized)
+        if self._config.quantized and onnx_filename == "model_quantized.onnx":
+            xenova_repo = f"Xenova/{self._config.model.split('/')[-1]}"
+            try:
+                logger.info("Downloading quantized model from %s...", xenova_repo)
+                model_dir.mkdir(parents=True, exist_ok=True)
+                downloaded = hf_hub_download(
+                    repo_id=xenova_repo,
+                    filename="onnx/model_quantized.onnx",
+                    local_dir=str(model_dir),
+                )
+                # Move from onnx/ subdirectory to model_dir root
+                src = Path(downloaded)
+                dst = model_dir / "model_quantized.onnx"
+                if src != dst:
+                    src.rename(dst)
+                    # Clean up empty onnx/ dir
+                    try:
+                        src.parent.rmdir()
+                    except OSError:
+                        pass
+
+                # Download tokenizer from original repo
+                self._download_tokenizer(model_dir)
+                logger.info("INT8 quantized model ready: %s (%.1f MB)", dst, dst.stat().st_size / 1e6)
+                return dst
+            except Exception as e:
+                logger.warning("Xenova quantized model not available (%s), falling back to full model", e)
+                onnx_filename = "model.onnx"
+                onnx_path = model_dir / onnx_filename
+
+        # Standard download from original repo
         if not self._config.model_revision:
             raise ValueError(
                 "model_revision is required for download. "
@@ -241,29 +288,17 @@ class Embedder:
                 "Set [embedding].model_sha256 in config.toml"
             )
 
-        from huggingface_hub import hf_hub_download
-
         logger.info("Downloading model %s (revision: %s)...", self._config.model, self._config.model_revision)
         model_dir.mkdir(parents=True, exist_ok=True)
 
         downloaded = hf_hub_download(
             repo_id=self._config.model,
-            filename="model.onnx",
+            filename=onnx_filename,
             revision=self._config.model_revision,
             local_dir=str(model_dir),
         )
 
-        # Also download tokenizer files
-        for fname in ["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"]:
-            try:
-                hf_hub_download(
-                    repo_id=self._config.model,
-                    filename=fname,
-                    revision=self._config.model_revision,
-                    local_dir=str(model_dir),
-                )
-            except Exception:
-                pass  # Not all models have all tokenizer files
+        self._download_tokenizer(model_dir)
 
         # Verify checksum
         actual_hash = _file_sha256(Path(downloaded))
@@ -276,6 +311,21 @@ class Embedder:
 
         logger.info("Model downloaded and verified: %s", onnx_path)
         return onnx_path
+
+    def _download_tokenizer(self, model_dir: Path) -> None:
+        """Download tokenizer files from the original HuggingFace model repo."""
+        from huggingface_hub import hf_hub_download
+
+        for fname in ["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"]:
+            try:
+                hf_hub_download(
+                    repo_id=self._config.model,
+                    filename=fname,
+                    revision=self._config.model_revision or None,
+                    local_dir=str(model_dir),
+                )
+            except Exception:
+                pass  # Not all models have all tokenizer files
 
     def _embed_onnx_batch(self, texts: list[str]) -> np.ndarray:
         """Embed a batch of texts using ONNX Runtime."""

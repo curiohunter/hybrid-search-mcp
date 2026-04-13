@@ -50,6 +50,7 @@ class EmbeddingConfig:
     max_tokens: int = 0
     device: str = "cpu"
     onnx_threads: int = 6  # Performance cores on Apple Silicon (M1-M4)
+    quantized: bool = True  # Use INT8 quantized ONNX model (~3x faster, 4x smaller)
 
     @property
     def effective_max_tokens(self) -> int:
@@ -135,6 +136,7 @@ def load_config(config_path: Path | None = None) -> Config:
         max_tokens=emb_raw.get("max_tokens", 0),
         device=emb_raw.get("device", "cpu"),
         onnx_threads=emb_raw.get("onnx_threads", 6),
+        quantized=emb_raw.get("quantized", True),
     )
 
     search_raw = raw.get("search", {})
