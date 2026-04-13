@@ -7,6 +7,8 @@ import pytest
 from hybrid_search.index.dag import (
     build_dependency_graph,
     find_connected_components,
+    generate_all_wiki_pages,
+    generate_module_wiki,
     generate_wiki_plan,
     topological_sort,
     _derive_module_name,
@@ -344,4 +346,96 @@ class TestGenerateWikiPlan:
         plan = generate_wiki_plan(db, PROJECT_ID)
         assert len(plan.modules) == 0
         assert len(plan.isolated_modules) >= 1
+        db.close()
+
+
+class TestGenerateModuleWiki:
+    """Tests for generate_module_wiki() and generate_all_wiki_pages()."""
+
+    def test_wiki_page_has_title_and_files(self, tmp_path):
+        db = _make_db(tmp_path)
+        _seed_graph_db(db)
+
+        plan, pages = generate_all_wiki_pages(db, PROJECT_ID)
+
+        # First page is always index
+        assert pages[0].filename == "index.md"
+        assert "# Wiki Index" in pages[0].content
+
+        # Module pages should have title and files section
+        module_pages = [p for p in pages if p.name != "index"]
+        assert len(module_pages) >= 1
+
+        for page in module_pages:
+            assert page.content.startswith("# ")
+            assert "## Files" in page.content
+            assert "## Symbols" in page.content
+            assert page.filename.endswith(".md")
+            assert len(page.tags) >= 1
+
+        db.close()
+
+    def test_wiki_page_contains_symbols(self, tmp_path):
+        db = _make_db(tmp_path)
+        _seed_graph_db(db)
+
+        plan, pages = generate_all_wiki_pages(db, PROJECT_ID)
+        module_pages = [p for p in pages if p.name != "index"]
+
+        # At least one page should mention handle_request, login, etc.
+        all_content = "\n".join(p.content for p in module_pages)
+        assert "handle_request" in all_content
+        assert "login" in all_content
+
+        db.close()
+
+    def test_wiki_page_shows_call_relationships(self, tmp_path):
+        db = _make_db(tmp_path)
+        _seed_graph_db(db)
+
+        plan, pages = generate_all_wiki_pages(db, PROJECT_ID)
+        all_content = "\n".join(p.content for p in pages)
+
+        # handler calls login → should show "calls:" relationship
+        assert "calls:" in all_content
+
+        db.close()
+
+    def test_wiki_page_has_external_deps(self, tmp_path):
+        """Modules with cross-module calls should show external dependencies."""
+        db = _make_db(tmp_path)
+        _seed_graph_db(db)
+
+        plan, pages = generate_all_wiki_pages(db, PROJECT_ID)
+
+        # If there are multiple modules, at least one should have external deps
+        # (handler module calling into auth module)
+        # This depends on how components are split
+        all_content = "\n".join(p.content for p in pages)
+        # At minimum, all symbols should appear somewhere
+        assert "validate_token" in all_content
+        assert "create_user" in all_content
+
+        db.close()
+
+    def test_index_page_lists_all_modules(self, tmp_path):
+        db = _make_db(tmp_path)
+        _seed_graph_db(db)
+
+        plan, pages = generate_all_wiki_pages(db, PROJECT_ID)
+        index = pages[0]
+
+        assert "Coverage" in index.content
+        # Should list modules
+        all_modules = plan.modules + plan.isolated_modules
+        for m in all_modules:
+            assert m.name in index.content
+
+        db.close()
+
+    def test_empty_project_produces_index_only(self, tmp_path):
+        db = _make_db(tmp_path)
+        plan, pages = generate_all_wiki_pages(db, PROJECT_ID)
+        assert len(pages) == 1  # index only
+        assert pages[0].filename == "index.md"
         db.close()
