@@ -1,0 +1,644 @@
+[
+  {
+    "model": "e5-small",
+    "recall@1": 0.7667,
+    "recall@3": 0.9,
+    "recall@5": 0.9333,
+    "mrr": 0.8343,
+    "avg_sim": 0.8388,
+    "embed_time_s": 4.7,
+    "by_category": {
+      "korean_nl": {
+        "recall@1": 0.4,
+        "recall@3": 0.7,
+        "recall@5": 0.8,
+        "mrr": 0.5696,
+        "avg_sim": 0.7934
+      },
+      "english_nl": {
+        "recall@1": 0.9,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.9333,
+        "avg_sim": 0.8715
+      },
+      "mixed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "avg_sim": 0.8516
+      }
+    },
+    "per_query": [
+      {
+        "query": "로그인 처리",
+        "category": "korean_nl",
+        "sim": 0.8251,
+        "rank": 1
+      },
+      {
+        "query": "학원비 납부 현황",
+        "category": "korean_nl",
+        "sim": 0.7567,
+        "rank": 11
+      },
+      {
+        "query": "학생 출석 체크",
+        "category": "korean_nl",
+        "sim": 0.8143,
+        "rank": 2
+      },
+      {
+        "query": "환불 계산",
+        "category": "korean_nl",
+        "sim": 0.8296,
+        "rank": 1
+      },
+      {
+        "query": "상담 기록 분석",
+        "category": "korean_nl",
+        "sim": 0.7881,
+        "rank": 2
+      },
+      {
+        "query": "수업 일정 관리",
+        "category": "korean_nl",
+        "sim": 0.7785,
+        "rank": 14
+      },
+      {
+        "query": "교재 배정하기",
+        "category": "korean_nl",
+        "sim": 0.7803,
+        "rank": 3
+      },
+      {
+        "query": "직원 목록 조회",
+        "category": "korean_nl",
+        "sim": 0.8121,
+        "rank": 1
+      },
+      {
+        "query": "비대면 수업 개설",
+        "category": "korean_nl",
+        "sim": 0.7606,
+        "rank": 1
+      },
+      {
+        "query": "학생 성적 채점",
+        "category": "korean_nl",
+        "sim": 0.789,
+        "rank": 5
+      },
+      {
+        "query": "authentication callback handler",
+        "category": "english_nl",
+        "sim": 0.8328,
+        "rank": 3
+      },
+      {
+        "query": "generate monthly tuition fees",
+        "category": "english_nl",
+        "sim": 0.8983,
+        "rank": 1
+      },
+      {
+        "query": "bulk attendance check in",
+        "category": "english_nl",
+        "sim": 0.8723,
+        "rank": 1
+      },
+      {
+        "query": "send payment invoice",
+        "category": "english_nl",
+        "sim": 0.8798,
+        "rank": 1
+      },
+      {
+        "query": "student credit balance",
+        "category": "english_nl",
+        "sim": 0.8783,
+        "rank": 1
+      },
+      {
+        "query": "recurring calendar events expansion",
+        "category": "english_nl",
+        "sim": 0.8861,
+        "rank": 1
+      },
+      {
+        "query": "create student record",
+        "category": "english_nl",
+        "sim": 0.8659,
+        "rank": 1
+      },
+      {
+        "query": "AI generated learning comments",
+        "category": "english_nl",
+        "sim": 0.876,
+        "rank": 1
+      },
+      {
+        "query": "dashboard statistics and metrics",
+        "category": "english_nl",
+        "sim": 0.8508,
+        "rank": 1
+      },
+      {
+        "query": "delete user account",
+        "category": "english_nl",
+        "sim": 0.8743,
+        "rank": 1
+      },
+      {
+        "query": "checkIn 함수가 뭐하는지",
+        "category": "mixed",
+        "sim": 0.8487,
+        "rank": 1
+      },
+      {
+        "query": "tuition 월별 생성 로직",
+        "category": "mixed",
+        "sim": 0.8592,
+        "rank": 1
+      },
+      {
+        "query": "PaysSam webhook 처리",
+        "category": "mixed",
+        "sim": 0.8643,
+        "rank": 1
+      },
+      {
+        "query": "student withdrawal 환불 프로세스",
+        "category": "mixed",
+        "sim": 0.871,
+        "rank": 1
+      },
+      {
+        "query": "RemoteRoom 도움 요청 기능",
+        "category": "mixed",
+        "sim": 0.8653,
+        "rank": 1
+      },
+      {
+        "query": "Meeting actionItem 상태 관리",
+        "category": "mixed",
+        "sim": 0.8566,
+        "rank": 1
+      },
+      {
+        "query": "consultation 이탈 위험도 분석",
+        "category": "mixed",
+        "sim": 0.8283,
+        "rank": 1
+      },
+      {
+        "query": "Supabase 서버 클라이언트 생성",
+        "category": "mixed",
+        "sim": 0.8504,
+        "rank": 1
+      },
+      {
+        "query": "textbook grading 섹션별 문제",
+        "category": "mixed",
+        "sim": 0.8289,
+        "rank": 1
+      },
+      {
+        "query": "admission 입시 결과 등록",
+        "category": "mixed",
+        "sim": 0.8429,
+        "rank": 1
+      }
+    ]
+  },
+  {
+    "model": "e5-base",
+    "recall@1": 0.7667,
+    "recall@3": 0.9333,
+    "recall@5": 0.9667,
+    "mrr": 0.8604,
+    "avg_sim": 0.841,
+    "embed_time_s": 9.9,
+    "by_category": {
+      "korean_nl": {
+        "recall@1": 0.6,
+        "recall@3": 0.8,
+        "recall@5": 0.9,
+        "mrr": 0.7311,
+        "avg_sim": 0.8081
+      },
+      "english_nl": {
+        "recall@1": 0.8,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.9,
+        "avg_sim": 0.8651
+      },
+      "mixed": {
+        "recall@1": 0.9,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.95,
+        "avg_sim": 0.8499
+      }
+    },
+    "per_query": [
+      {
+        "query": "로그인 처리",
+        "category": "korean_nl",
+        "sim": 0.8378,
+        "rank": 1
+      },
+      {
+        "query": "학원비 납부 현황",
+        "category": "korean_nl",
+        "sim": 0.7757,
+        "rank": 9
+      },
+      {
+        "query": "학생 출석 체크",
+        "category": "korean_nl",
+        "sim": 0.844,
+        "rank": 1
+      },
+      {
+        "query": "환불 계산",
+        "category": "korean_nl",
+        "sim": 0.8268,
+        "rank": 1
+      },
+      {
+        "query": "상담 기록 분석",
+        "category": "korean_nl",
+        "sim": 0.8014,
+        "rank": 2
+      },
+      {
+        "query": "수업 일정 관리",
+        "category": "korean_nl",
+        "sim": 0.7972,
+        "rank": 5
+      },
+      {
+        "query": "교재 배정하기",
+        "category": "korean_nl",
+        "sim": 0.811,
+        "rank": 1
+      },
+      {
+        "query": "직원 목록 조회",
+        "category": "korean_nl",
+        "sim": 0.8303,
+        "rank": 1
+      },
+      {
+        "query": "비대면 수업 개설",
+        "category": "korean_nl",
+        "sim": 0.7566,
+        "rank": 1
+      },
+      {
+        "query": "학생 성적 채점",
+        "category": "korean_nl",
+        "sim": 0.7998,
+        "rank": 2
+      },
+      {
+        "query": "authentication callback handler",
+        "category": "english_nl",
+        "sim": 0.8199,
+        "rank": 2
+      },
+      {
+        "query": "generate monthly tuition fees",
+        "category": "english_nl",
+        "sim": 0.8982,
+        "rank": 2
+      },
+      {
+        "query": "bulk attendance check in",
+        "category": "english_nl",
+        "sim": 0.8534,
+        "rank": 1
+      },
+      {
+        "query": "send payment invoice",
+        "category": "english_nl",
+        "sim": 0.8878,
+        "rank": 1
+      },
+      {
+        "query": "student credit balance",
+        "category": "english_nl",
+        "sim": 0.8729,
+        "rank": 1
+      },
+      {
+        "query": "recurring calendar events expansion",
+        "category": "english_nl",
+        "sim": 0.8748,
+        "rank": 1
+      },
+      {
+        "query": "create student record",
+        "category": "english_nl",
+        "sim": 0.8535,
+        "rank": 1
+      },
+      {
+        "query": "AI generated learning comments",
+        "category": "english_nl",
+        "sim": 0.8659,
+        "rank": 1
+      },
+      {
+        "query": "dashboard statistics and metrics",
+        "category": "english_nl",
+        "sim": 0.8568,
+        "rank": 1
+      },
+      {
+        "query": "delete user account",
+        "category": "english_nl",
+        "sim": 0.8674,
+        "rank": 1
+      },
+      {
+        "query": "checkIn 함수가 뭐하는지",
+        "category": "mixed",
+        "sim": 0.8316,
+        "rank": 2
+      },
+      {
+        "query": "tuition 월별 생성 로직",
+        "category": "mixed",
+        "sim": 0.8612,
+        "rank": 1
+      },
+      {
+        "query": "PaysSam webhook 처리",
+        "category": "mixed",
+        "sim": 0.8771,
+        "rank": 1
+      },
+      {
+        "query": "student withdrawal 환불 프로세스",
+        "category": "mixed",
+        "sim": 0.8545,
+        "rank": 1
+      },
+      {
+        "query": "RemoteRoom 도움 요청 기능",
+        "category": "mixed",
+        "sim": 0.8601,
+        "rank": 1
+      },
+      {
+        "query": "Meeting actionItem 상태 관리",
+        "category": "mixed",
+        "sim": 0.8736,
+        "rank": 1
+      },
+      {
+        "query": "consultation 이탈 위험도 분석",
+        "category": "mixed",
+        "sim": 0.8282,
+        "rank": 1
+      },
+      {
+        "query": "Supabase 서버 클라이언트 생성",
+        "category": "mixed",
+        "sim": 0.8424,
+        "rank": 1
+      },
+      {
+        "query": "textbook grading 섹션별 문제",
+        "category": "mixed",
+        "sim": 0.8269,
+        "rank": 1
+      },
+      {
+        "query": "admission 입시 결과 등록",
+        "category": "mixed",
+        "sim": 0.8435,
+        "rank": 1
+      }
+    ]
+  },
+  {
+    "model": "Qwen3-Emb-0.6B",
+    "recall@1": 0.8333,
+    "recall@3": 0.9667,
+    "recall@5": 0.9667,
+    "mrr": 0.9024,
+    "avg_sim": 0.7071,
+    "embed_time_s": 31.4,
+    "by_category": {
+      "korean_nl": {
+        "recall@1": 0.7,
+        "recall@3": 0.9,
+        "recall@5": 0.9,
+        "mrr": 0.8071,
+        "avg_sim": 0.6314
+      },
+      "english_nl": {
+        "recall@1": 0.9,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.95,
+        "avg_sim": 0.754
+      },
+      "mixed": {
+        "recall@1": 0.9,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.95,
+        "avg_sim": 0.736
+      }
+    },
+    "per_query": [
+      {
+        "query": "로그인 처리",
+        "category": "korean_nl",
+        "sim": 0.6092,
+        "rank": 1
+      },
+      {
+        "query": "학원비 납부 현황",
+        "category": "korean_nl",
+        "sim": 0.6267,
+        "rank": 2
+      },
+      {
+        "query": "학생 출석 체크",
+        "category": "korean_nl",
+        "sim": 0.7403,
+        "rank": 1
+      },
+      {
+        "query": "환불 계산",
+        "category": "korean_nl",
+        "sim": 0.6738,
+        "rank": 1
+      },
+      {
+        "query": "상담 기록 분석",
+        "category": "korean_nl",
+        "sim": 0.7125,
+        "rank": 1
+      },
+      {
+        "query": "수업 일정 관리",
+        "category": "korean_nl",
+        "sim": 0.535,
+        "rank": 14
+      },
+      {
+        "query": "교재 배정하기",
+        "category": "korean_nl",
+        "sim": 0.6515,
+        "rank": 1
+      },
+      {
+        "query": "직원 목록 조회",
+        "category": "korean_nl",
+        "sim": 0.6237,
+        "rank": 1
+      },
+      {
+        "query": "비대면 수업 개설",
+        "category": "korean_nl",
+        "sim": 0.5697,
+        "rank": 1
+      },
+      {
+        "query": "학생 성적 채점",
+        "category": "korean_nl",
+        "sim": 0.5717,
+        "rank": 2
+      },
+      {
+        "query": "authentication callback handler",
+        "category": "english_nl",
+        "sim": 0.5318,
+        "rank": 1
+      },
+      {
+        "query": "generate monthly tuition fees",
+        "category": "english_nl",
+        "sim": 0.8016,
+        "rank": 2
+      },
+      {
+        "query": "bulk attendance check in",
+        "category": "english_nl",
+        "sim": 0.7921,
+        "rank": 1
+      },
+      {
+        "query": "send payment invoice",
+        "category": "english_nl",
+        "sim": 0.7609,
+        "rank": 1
+      },
+      {
+        "query": "student credit balance",
+        "category": "english_nl",
+        "sim": 0.8181,
+        "rank": 1
+      },
+      {
+        "query": "recurring calendar events expansion",
+        "category": "english_nl",
+        "sim": 0.7688,
+        "rank": 1
+      },
+      {
+        "query": "create student record",
+        "category": "english_nl",
+        "sim": 0.7561,
+        "rank": 1
+      },
+      {
+        "query": "AI generated learning comments",
+        "category": "english_nl",
+        "sim": 0.8357,
+        "rank": 1
+      },
+      {
+        "query": "dashboard statistics and metrics",
+        "category": "english_nl",
+        "sim": 0.756,
+        "rank": 1
+      },
+      {
+        "query": "delete user account",
+        "category": "english_nl",
+        "sim": 0.7193,
+        "rank": 1
+      },
+      {
+        "query": "checkIn 함수가 뭐하는지",
+        "category": "mixed",
+        "sim": 0.677,
+        "rank": 1
+      },
+      {
+        "query": "tuition 월별 생성 로직",
+        "category": "mixed",
+        "sim": 0.8099,
+        "rank": 1
+      },
+      {
+        "query": "PaysSam webhook 처리",
+        "category": "mixed",
+        "sim": 0.7277,
+        "rank": 1
+      },
+      {
+        "query": "student withdrawal 환불 프로세스",
+        "category": "mixed",
+        "sim": 0.7821,
+        "rank": 1
+      },
+      {
+        "query": "RemoteRoom 도움 요청 기능",
+        "category": "mixed",
+        "sim": 0.7382,
+        "rank": 2
+      },
+      {
+        "query": "Meeting actionItem 상태 관리",
+        "category": "mixed",
+        "sim": 0.8136,
+        "rank": 1
+      },
+      {
+        "query": "consultation 이탈 위험도 분석",
+        "category": "mixed",
+        "sim": 0.7652,
+        "rank": 1
+      },
+      {
+        "query": "Supabase 서버 클라이언트 생성",
+        "category": "mixed",
+        "sim": 0.6649,
+        "rank": 1
+      },
+      {
+        "query": "textbook grading 섹션별 문제",
+        "category": "mixed",
+        "sim": 0.6306,
+        "rank": 1
+      },
+      {
+        "query": "admission 입시 결과 등록",
+        "category": "mixed",
+        "sim": 0.7507,
+        "rank": 1
+      }
+    ]
+  }
+]

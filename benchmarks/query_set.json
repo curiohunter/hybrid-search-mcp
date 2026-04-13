@@ -1,0 +1,217 @@
+{
+  "description": "Benchmark query set for hybrid search evaluation",
+  "project": "valuein_homepage",
+  "project_path": "/Users/ian/project/claude_project/valuein_homepage",
+  "queries": [
+    {
+      "id": "KR01",
+      "category": "korean_nl",
+      "query": "로그인 처리",
+      "expected_files": ["app/(auth)/login/actions.ts", "app/(auth)/login/login-form.tsx"],
+      "expected_symbols": ["login-form", "actions"]
+    },
+    {
+      "id": "KR02",
+      "category": "korean_nl",
+      "query": "학원비 납부 현황",
+      "expected_files": ["services/tuition-service.ts", "types/tuition.ts"],
+      "expected_symbols": ["getTuitionFees", "TuitionFee", "PaymentStatus"]
+    },
+    {
+      "id": "KR03",
+      "category": "korean_nl",
+      "query": "학생 출석 체크",
+      "expected_files": ["services/attendance-service.ts", "types/attendance.ts"],
+      "expected_symbols": ["checkIn", "checkOut", "Attendance"]
+    },
+    {
+      "id": "KR04",
+      "category": "korean_nl",
+      "query": "환불 계산",
+      "expected_files": ["services/withdrawal-service.ts", "types/withdrawal.ts"],
+      "expected_symbols": ["calculateWithdrawal", "WithdrawalCalculation"]
+    },
+    {
+      "id": "KR05",
+      "category": "korean_nl",
+      "query": "상담 기록 분석",
+      "expected_files": ["services/consultation-ai-service.ts", "services/consultation-requests.ts"],
+      "expected_symbols": ["analyzeConsultation", "createConsultationRequest"]
+    },
+    {
+      "id": "KR06",
+      "category": "korean_nl",
+      "query": "수업 일정 관리",
+      "expected_files": ["services/calendar.ts", "types/calendar.ts"],
+      "expected_symbols": ["getEvents", "createEvent", "CalendarEvent"]
+    },
+    {
+      "id": "KR07",
+      "category": "korean_nl",
+      "query": "교재 배정하기",
+      "expected_files": ["services/textbook-service.ts", "types/textbook.ts"],
+      "expected_symbols": ["assignTextbook", "bulkAssignTextbook"]
+    },
+    {
+      "id": "KR08",
+      "category": "korean_nl",
+      "query": "직원 목록 조회",
+      "expected_files": ["services/employee-service.ts", "types/employee.ts"],
+      "expected_symbols": ["getEmployees", "Employee"]
+    },
+    {
+      "id": "KR09",
+      "category": "korean_nl",
+      "query": "비대면 수업 개설",
+      "expected_files": ["services/remote-room-teacher-service.ts", "types/remote-room.ts"],
+      "expected_symbols": ["createRemoteRoom", "openRoom", "RemoteRoom"]
+    },
+    {
+      "id": "KR10",
+      "category": "korean_nl",
+      "query": "학생 성적 채점",
+      "expected_files": ["services/textbook-grading-service.ts"],
+      "expected_symbols": ["upsertGradingResult", "getGradingResults"]
+    },
+    {
+      "id": "EN01",
+      "category": "english_nl",
+      "query": "authentication callback handler",
+      "expected_files": ["app/api/auth/callback/route.ts", "app/api/auth/callback/google/route.ts"],
+      "expected_symbols": ["GET"]
+    },
+    {
+      "id": "EN02",
+      "category": "english_nl",
+      "query": "generate monthly tuition fees",
+      "expected_files": ["services/tuition-service.ts"],
+      "expected_symbols": ["generateMonthlyTuition"]
+    },
+    {
+      "id": "EN03",
+      "category": "english_nl",
+      "query": "bulk attendance check in",
+      "expected_files": ["services/attendance-bulk-service.ts"],
+      "expected_symbols": ["bulkCheckIn", "bulkCheckOut"]
+    },
+    {
+      "id": "EN04",
+      "category": "english_nl",
+      "query": "send payment invoice",
+      "expected_files": ["services/payssam-service.ts"],
+      "expected_symbols": ["sendInvoice", "getActiveBill"]
+    },
+    {
+      "id": "EN05",
+      "category": "english_nl",
+      "query": "student credit balance",
+      "expected_files": ["services/credit-service.ts", "types/credit.ts"],
+      "expected_symbols": ["getCreditBalance", "StudentCredit"]
+    },
+    {
+      "id": "EN06",
+      "category": "english_nl",
+      "query": "recurring calendar events expansion",
+      "expected_files": ["lib/recurrence.ts", "services/calendar.ts"],
+      "expected_symbols": ["expandAllEvents", "toFullCalendarEvent"]
+    },
+    {
+      "id": "EN07",
+      "category": "english_nl",
+      "query": "create student record",
+      "expected_files": ["services/student-service.ts"],
+      "expected_symbols": ["createStudent"]
+    },
+    {
+      "id": "EN08",
+      "category": "english_nl",
+      "query": "AI generated learning comments",
+      "expected_files": ["services/ai-comment-service.ts"],
+      "expected_symbols": ["generateComment", "buildPrompt"]
+    },
+    {
+      "id": "EN09",
+      "category": "english_nl",
+      "query": "dashboard statistics and metrics",
+      "expected_files": ["services/analytics-service.ts", "hooks/use-dashboard-stats.ts"],
+      "expected_symbols": ["getDashboardStats", "trackEvent"]
+    },
+    {
+      "id": "EN10",
+      "category": "english_nl",
+      "query": "delete user account",
+      "expected_files": ["app/api/auth/delete-user/route.ts"],
+      "expected_symbols": ["DELETE"]
+    },
+    {
+      "id": "MX01",
+      "category": "mixed",
+      "query": "checkIn 함수가 뭐하는지",
+      "expected_files": ["services/attendance-service.ts"],
+      "expected_symbols": ["checkIn"]
+    },
+    {
+      "id": "MX02",
+      "category": "mixed",
+      "query": "tuition 월별 생성 로직",
+      "expected_files": ["services/tuition-service.ts"],
+      "expected_symbols": ["generateMonthlyTuition"]
+    },
+    {
+      "id": "MX03",
+      "category": "mixed",
+      "query": "PaysSam webhook 처리",
+      "expected_files": ["services/payssam-service.ts"],
+      "expected_symbols": ["handlePaysSamWebhook"]
+    },
+    {
+      "id": "MX04",
+      "category": "mixed",
+      "query": "student withdrawal 환불 프로세스",
+      "expected_files": ["services/withdrawal-service.ts"],
+      "expected_symbols": ["calculateWithdrawal", "completeWithdrawal"]
+    },
+    {
+      "id": "MX05",
+      "category": "mixed",
+      "query": "RemoteRoom 도움 요청 기능",
+      "expected_files": ["services/remote-room-student-service.ts"],
+      "expected_symbols": ["requestHelp", "uploadHelpPhoto"]
+    },
+    {
+      "id": "MX06",
+      "category": "mixed",
+      "query": "Meeting actionItem 상태 관리",
+      "expected_files": ["services/meeting-service.ts", "types/meeting.ts"],
+      "expected_symbols": ["createActionItem", "ActionItemStatus"]
+    },
+    {
+      "id": "MX07",
+      "category": "mixed",
+      "query": "consultation 이탈 위험도 분석",
+      "expected_files": ["services/consultation-ai-service.ts", "types/consultation.ts"],
+      "expected_symbols": ["analyzeConsultation", "ConsultationChurnRisk"]
+    },
+    {
+      "id": "MX08",
+      "category": "mixed",
+      "query": "Supabase 서버 클라이언트 생성",
+      "expected_files": ["lib/auth/server.ts"],
+      "expected_symbols": ["createServerClient"]
+    },
+    {
+      "id": "MX09",
+      "category": "mixed",
+      "query": "textbook grading 섹션별 문제",
+      "expected_files": ["services/textbook-grading-service.ts"],
+      "expected_symbols": ["getSectionsByTextbook", "getProblemsBySection"]
+    },
+    {
+      "id": "MX10",
+      "category": "mixed",
+      "query": "admission 입시 결과 등록",
+      "expected_files": ["services/admission-service.ts", "types/admission.ts"],
+      "expected_symbols": ["createAdmission", "AdmissionResult"]
+    }
+  ]
+}
