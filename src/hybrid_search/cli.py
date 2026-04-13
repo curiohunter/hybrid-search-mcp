@@ -182,6 +182,118 @@ def cmd_stale(args: argparse.Namespace) -> None:
         db.close()
 
 
+def cmd_sync_wiki(args: argparse.Namespace) -> None:
+    """Sync disk wiki files to DB for staleness tracking."""
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if not match:
+        print(f"No registered project found for: {cwd}")
+        return
+
+    name, project_path = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        return
+
+    # Find wiki files on disk
+    wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
+    if not wiki_dir.exists():
+        print(f"No wiki directory found: {wiki_dir}")
+        return
+
+    wiki_files = sorted(wiki_dir.glob("*.md"))
+    wiki_files = [f for f in wiki_files if f.name != "index.md"]
+
+    if not wiki_files:
+        print("No wiki pages found (only index.md).")
+        return
+
+    # Open DB
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print("No index found. Run reindex first.")
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        wiki_store = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
+        synced = 0
+
+        for wiki_file in wiki_files:
+            content = wiki_file.read_text()
+            title = _extract_title(content)
+            tags = _extract_tags(wiki_file.stem, content)
+
+            # Extract referenced file paths from wiki content
+            file_deps = _resolve_wiki_deps(db, pinfo.id, content)
+
+            with db.transaction():
+                wiki_store.compile_page(
+                    project_id=pinfo.id,
+                    query=wiki_file.stem.replace("-", " "),
+                    title=title,
+                    content=content,
+                    tags=tags,
+                    file_dependencies=file_deps,
+                )
+            synced += 1
+            dep_count = len(file_deps)
+            print(f"  Synced: {wiki_file.name} ({title}, {dep_count} deps)")
+
+        print(f"Done: {synced} wiki pages synced to DB.")
+    finally:
+        db.close()
+
+
+def _extract_title(content: str) -> str:
+    """Extract title from first # heading."""
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("# ") and not line.startswith("## "):
+            return line[2:].strip()
+    return "Untitled"
+
+
+def _extract_tags(stem: str, content: str) -> list[str]:
+    """Generate tags from filename stem and content headings."""
+    tags = [stem]
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("## ") and line != "## 개요":
+            tag = line[3:].strip().lower().replace(" ", "-")
+            if len(tag) < 30:
+                tags.append(tag)
+    return tags[:10]
+
+
+def _resolve_wiki_deps(db: StoreDB, project_id: str, content: str) -> list[dict]:
+    """Find files referenced in wiki content (backtick paths) and snapshot their hashes."""
+    import re
+
+    # Match paths in backticks like `path/to/file.ts`
+    path_pattern = re.compile(r"`([a-zA-Z0-9_./-]+\.[a-zA-Z]{1,10})`")
+    referenced_paths = set(path_pattern.findall(content))
+
+    file_deps: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for ref_path in referenced_paths:
+        file_rec = db.get_file_by_path(project_id, ref_path)
+        if file_rec and file_rec.id not in seen_ids:
+            file_deps.append({
+                "file_id": file_rec.id,
+                "file_hash": file_rec.file_hash,
+                "chunk_ids": [],
+            })
+            seen_ids.add(file_rec.id)
+
+    return file_deps
+
+
 def cmd_install_hook(args: argparse.Namespace) -> None:
     """Install post-commit hook in a project's .git/hooks/."""
     import subprocess
@@ -257,6 +369,9 @@ def main() -> None:
     p_hook = sub.add_parser("install-hook", help="Install post-commit hook in a project")
     p_hook.add_argument("--cwd", default=".", help="Project directory")
 
+    p_sync = sub.add_parser("sync-wiki", help="Sync disk wiki files to DB for staleness tracking")
+    p_sync.add_argument("--cwd", default=".", help="Project directory")
+
     args = parser.parse_args()
 
     if args.command == "reindex":
@@ -267,6 +382,8 @@ def main() -> None:
         cmd_stale(args)
     elif args.command == "install-hook":
         cmd_install_hook(args)
+    elif args.command == "sync-wiki":
+        cmd_sync_wiki(args)
     else:
         parser.print_help()
         sys.exit(1)
