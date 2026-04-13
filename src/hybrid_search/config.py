@@ -40,24 +40,18 @@ MODEL_MAX_TOKENS: dict[str, int] = {
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
+    ollama_model: str = "qwen3-embedding:0.6b"
+    batch_size: int = 16
+    # Legacy fields — kept for config.toml backwards compat, not used by Ollama backend
     model: str = ""
     model_revision: str = ""
     model_sha256: str = ""
     model_path: str = ""
-    backend: str = "onnx"
-    ollama_model: str = ""
-    batch_size: int = 32
+    backend: str = "ollama"
     max_tokens: int = 0
-    device: str = "cpu"
-    onnx_threads: int = 6  # Performance cores on Apple Silicon (M1-M4)
-    quantized: bool = True  # Use INT8 quantized ONNX model (~3x faster, 4x smaller)
-
-    @property
-    def effective_max_tokens(self) -> int:
-        if self.max_tokens > 0:
-            return self.max_tokens
-        model_short = self.model.split("/")[-1] if self.model else ""
-        return MODEL_MAX_TOKENS.get(model_short, 512)
+    device: str = ""
+    onnx_threads: int = 0
+    quantized: bool = False
 
 
 @dataclass(frozen=True)
@@ -130,7 +124,7 @@ def load_config(config_path: Path | None = None) -> Config:
         model_revision=emb_raw.get("model_revision", ""),
         model_sha256=emb_raw.get("model_sha256", ""),
         model_path=emb_raw.get("model_path", ""),
-        backend=emb_raw.get("backend", "onnx"),
+        backend=emb_raw.get("backend", "ollama"),
         ollama_model=emb_raw.get("ollama_model", ""),
         batch_size=emb_raw.get("batch_size", 32),
         max_tokens=emb_raw.get("max_tokens", 0),
@@ -189,16 +183,8 @@ data_dir = "~/.hybrid-search"
 log_level = "info"
 
 [embedding]
-model = ""                    # Set after Phase 1 benchmark (e.g., "Alibaba-NLP/gte-multilingual-base")
-model_revision = ""           # Pinned HuggingFace commit hash
-model_sha256 = ""             # SHA256 of ONNX file
-model_path = ""               # Optional: local ONNX path (skip download)
-backend = "onnx"              # "onnx" | "sentence-transformers" | "ollama"
-ollama_model = ""             # Ollama model name (e.g., "nomic-embed-text")
-batch_size = 32
-max_tokens = 0                # 0 = auto-detect from model
-device = "cpu"                # "cpu" | "mps"
-onnx_threads = 6              # ONNX intra_op threads (default: 6, match Performance cores)
+ollama_model = "qwen3-embedding:0.6b"  # Ollama model (GPU accelerated)
+batch_size = 16
 
 [search]
 default_limit = 10
