@@ -31,15 +31,32 @@ BM25(Tantivy/Rust) + Vector(USearch/C++ HNSW) 하이브리드 검색 엔진. RRF
 
 DAG 구축 → connected components (BFS) → Kahn's topological sort → 모듈 이름 자동 유도. 결정론적(deterministic) wiki — LLM 없이 파일 목록, entry point, 콜 관계 기술. Staleness 추적: `wiki_dependencies` 테이블의 file_hash 스냅샷.
 
+### Wikilink 그래프 (GraphRAG) ✅
+
+Wiki 페이지 내 `[[링크]]` 패턴을 자동 파싱하여 페이지 간 방향성 그래프를 구축. `wiki_links` 테이블(source_page_id, target_page_id, link_text)에 저장.
+
+| 기능 | 구현 | 파일 |
+|------|------|------|
+| 링크 파싱 + DB 동기화 | `_sync_wikilinks()` | `storage/wiki.py:337` |
+| BFS 양방향 그래프 탐색 | `_expand_graph()` | `storage/wiki.py:379` |
+| 조회 시 자동 확장 | `lookup_page()` → `linked_pages` | `storage/wiki.py:179` |
+
+`lookup_page()` 호출 시 `_expand_graph(max_hops=2, max_pages=10)`가 자동 실행되어 연결된 페이지의 title, snippet, hop 거리를 반환한다. outgoing + incoming 양방향 탐색.
+
 ### 현재 상태 요약
 
 ```
-인덱싱: 4개 프로젝트 등록, valuein-homepage 1,770파일/9,806청크
-검색:   한→영 크로스 언어 동작, RRF fusion 정상
-Wiki:   구조적 페이지 자동 생성 (call graph 기반 모듈 분해)
+인덱싱:    4개 프로젝트 등록, valuein-homepage 1,770파일/9,806청크
+검색:      한→영 크로스 언어 동작, RRF fusion 정상
+Wiki:      구조적 페이지 자동 생성 (call graph 기반 모듈 분해)
+Wikilink:  페이지 간 [[링크]] 그래프 + BFS 탐색 동작
 ```
 
-**여기까지의 한계**: wiki 페이지가 _구조적 레퍼런스_ 이지 _이해 문서_ 가 아님. 파일 목록과 콜 관계는 나열하지만, "왜 이렇게 설계했는지", "이 모듈이 전체에서 어떤 역할인지"를 설명하지 않는다.
+**여기까지의 한계 2가지**:
+
+1. **설명 부재**: wiki 페이지가 _구조적 레퍼런스_ 이지 _이해 문서_ 가 아님. 파일 목록과 콜 관계는 나열하지만, "왜 이렇게 설계했는지", "이 모듈이 전체에서 어떤 역할인지"를 설명하지 않는다.
+
+2. **stale 감지는 되지만 자동 갱신이 안 됨**: file_hash 변경으로 stale은 감지되지만, wiki 내용을 현재 코드에 맞게 갱신하는 것은 수동이다. 특히 **새 기능 추가**(예: wikilink 그래프 기능 구현)가 기존 wiki에 자동 반영되지 않는다. 결정론적 방법으로는 "코드 변경의 의미"를 이해할 수 없기 때문이며, **이것이 Phase 9(LLM 합성)가 필수인 근본 이유**다.
 
 ---
 
@@ -213,26 +230,36 @@ Step 4: 검증 (자동)
 
 #### 9.4 지식 복리 (Compounding Updates)
 
-Karpathy의 핵심 아이디어를 staleness 인프라 위에 구현:
+Karpathy의 핵심 아이디어를 staleness + wikilink 그래프 인프라 위에 구현.
+
+**이미 구현된 인프라**:
+- `wiki_links` 테이블 + `_sync_wikilinks()` — 페이지 간 `[[링크]]` 그래프 ✅
+- `_expand_graph()` — BFS 양방향 탐색으로 연결 페이지 식별 ✅
+- `wiki_dependencies` + file_hash 비교 — stale 감지 ✅
+
+**Phase 9에서 추가할 것**: stale 감지 → **LLM 자동 재합성** 파이프라인
 
 ```
 코드 변경 (git commit)
   │
   ▼
-Delta reindex (기존)
+Delta reindex (✅ 구현됨)
   │
   ▼
-Staleness 감지 (기존: file_hash 비교)
+Staleness 감지 (✅ 구현됨: file_hash 비교)
   │
   ▼
-[ 새로운 로직 ]
+[ Phase 9 — 새로운 로직 ]
   │
   ├─ 직접 변경: stale 페이지의 합성 섹션 재생성
+  │    └─ LLM이 변경된 코드를 읽고 wiki 내용 갱신
   │
-  └─ 간접 영향: wikilink로 연결된 페이지의
-     "연관 모듈" 섹션만 선택적 재합성
-     (전체 재합성 아님 — 비용 제어)
+  └─ 간접 영향: _expand_graph()로 연결 페이지 식별 (✅ 구현됨)
+     └─ 연결된 페이지의 "연관 모듈" 섹션만 선택적 재합성
+        (전체 재합성 아님 — 비용 제어)
 ```
+
+**현재 gap**: stale 감지 → 자동 갱신 사이의 "코드 변경의 의미를 이해"하는 단계가 없다. file_hash가 바뀐 건 알지만, "어떤 함수가 추가됐고 wiki의 어떤 섹션을 어떻게 고쳐야 하는지"는 결정론적으로 판단 불가. **이것이 LLM 합성이 필수인 이유.**
 
 **비용 모델**:
 | 시나리오 | 재합성 범위 | 예상 토큰 |

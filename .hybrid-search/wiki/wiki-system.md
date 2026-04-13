@@ -3,10 +3,10 @@
 
 ## 개요
 
-Wiki 시스템은 코드베이스 분석 결과를 구조화된 페이지로 저장하고, 소스 파일 변경 시 자동으로 staleness를 감지하는 반응형(reactive) 문서 계층이다. 두 가지 저장소(디스크 `.md` + SQLite DB)를 동기화하며, MCP 도구와 CLI 양쪽에서 접근 가능하다.
+Wiki 시스템은 코드베이스 분석 결과를 구조화된 페이지로 저장하고, 소스 파일 변경 시 자동으로 staleness를 감지하며, `[[wikilink]]` 그래프로 페이지 간 관계를 추적하는 반응형(reactive) 문서 계층이다. 두 가지 저장소(디스크 `.md` + SQLite DB)를 동기화하며, MCP 도구와 CLI 양쪽에서 접근 가능하다.
 
 핵심 파일:
-- `src/hybrid_search/storage/wiki.py` — WikiStore 클래스 (CRUD + staleness)
+- `src/hybrid_search/storage/wiki.py` — WikiStore 클래스 (CRUD + staleness + wikilink 그래프)
 - `src/hybrid_search/tools/wiki.py` — MCP 도구 핸들러 4개
 - `src/hybrid_search/cli.py` — CLI 명령 6개
 
@@ -84,6 +84,67 @@ DB 스키마 (`storage/db.py`):
 - wiki 디렉토리 존재 시: `sync-wiki` 자동 실행
 - 파일 변경/삭제 시: `_mark_stale_wikis()` 호출
 - 새 파일 추가 시: `.hybrid-search/wiki-gaps.txt`에 gap 플래그 기록
+
+## Wikilink 그래프 (GraphRAG)
+
+Wiki 페이지 내 `[[링크 텍스트]]` 패턴을 자동 파싱하여 페이지 간 방향성 그래프를 구축한다. 페이지 조회 시 연결된 페이지를 BFS로 자동 확장하여 반환한다.
+
+### DB 스키마 (`wiki_links` 테이블)
+
+```sql
+CREATE TABLE wiki_links (
+    source_page_id TEXT NOT NULL,
+    target_page_id TEXT NOT NULL,
+    link_text TEXT NOT NULL,
+    PRIMARY KEY (source_page_id, target_page_id, link_text)
+);
+CREATE INDEX idx_wiki_links_source ON wiki_links(source_page_id);
+CREATE INDEX idx_wiki_links_target ON wiki_links(target_page_id);
+```
+
+### `_sync_wikilinks()` — 링크 파싱 + DB 동기화
+
+`compile_page()` 및 `refresh_page()` 호출 시 자동 실행된다:
+
+1. 해당 페이지의 기존 wiki_links 행 전체 삭제
+2. `_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")`로 content에서 링크 텍스트 추출
+3. 각 링크 텍스트에 대해:
+   - 먼저 title 기반 매칭 (case-insensitive): `LOWER(title) = LOWER(link_text)`
+   - 실패 시 query_key 기반 매칭: `normalize_query(link_text)` → `_page_id()` 계산 후 조회
+   - self-link는 건너뜀
+4. `INSERT OR IGNORE`로 wiki_links에 upsert
+
+### `_expand_graph()` — BFS 그래프 탐색
+
+`lookup_page()` 호출 시 자동 실행되어 `WikiPage.linked_pages`에 결과를 채운다.
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `max_hops` | 2 | BFS 최대 깊이 |
+| `max_pages` | 10 | 반환할 최대 연결 페이지 수 |
+
+탐색 방식:
+1. **양방향 시드**: outgoing(`source→target`) + incoming(`target→source`) 링크 모두 수집
+2. **BFS**: deque 기반, visited set으로 순환 방지
+3. **각 페이지마다**: title, snippet(첫 의미 있는 줄, 200자), hop 거리, link_text 반환
+4. **hop 내 확장**: `max_hops` 이내면 해당 페이지의 이웃도 큐에 추가
+
+반환 타입: `list[LinkedPage]` — `LinkedPage(page_id, title, link_text, snippet, hop)`
+
+### 활용 시나리오
+
+- **CLAUDE.md 규칙**: "wiki에 `[[링크]]`가 있으면 연결된 페이지도 반드시 읽을 것"
+- **검색 확장**: `hybrid_search` → wiki 조회 → linked_pages로 연관 맥락 자동 확보
+- **Phase 9 (계획)**: LLM 합성 시 "연관 모듈" 섹션의 데이터 소스로 사용
+- **지식 복리**: 코드 변경 → stale 감지 → wikilink로 간접 영향 페이지 식별
+
+### 현재 한계
+
+| 한계 | 설명 |
+|------|------|
+| 단방향 생성 | wiki 페이지 내 `[[텍스트]]`에서만 링크 생성. 코드의 call graph edge → wikilink 자동 생성은 미구현 |
+| stale 전파 없음 | A→B 링크에서 B가 stale이 되어도 A는 stale로 마킹되지 않음 |
+| 새 기능 감지 불가 | 파일에 새 함수/클래스 추가 시 기존 wiki에 자동 반영 안 됨 (file_hash 변경은 감지하지만 wiki 내용 갱신은 수동) |
 
 ## bootstrap-wiki 스킬과의 관계
 
