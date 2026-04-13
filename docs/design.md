@@ -1186,12 +1186,19 @@ MCP 서버의 `hybrid_search` tool description에 아래 가이드를 포함:
 - [x] BM25Engine read_only 모드 (검색 시 리소스 충돌 방지)
 - [x] 10파일 간격 배치 checkpoint (크래시 손실 최소화)
 
-### Phase 2.5: 실사용 검증 🔄 진행 중
+### Phase 2.5: 실사용 검증 ✅ 완료 (2026-04-13)
 - [x] breeze 프로젝트 인덱싱 완료 (155파일, 326 chunks)
 - [x] 글로벌 MCP 서버 등록 (`~/.claude.json`)
-- [ ] breeze에서 실제 한국어→영어 검색 E2E 테스트
-- [ ] MindVault 컨텍스트와 hybrid_search 결과 비교 체감
-- [ ] 문제 발견 시 즉시 수정
+- [x] breeze에서 실제 한국어→영어 검색 E2E 테스트 — "로그인 인증 기능" → middleware.ts:6, get-user.ts:5 등 정확한 코드+라인 반환 확인
+- [x] MindVault 컨텍스트와 hybrid_search 결과 비교 체감 → **역할 분리 확인**: MindVault=문서 관계/배경 지식, Hybrid Search=정밀 코드 검색
+
+**실사용 베스트 프랙티스**:
+1. 대화 시작 → MindVault 자동 주입 (배경 컨텍스트, 가볍게)
+2. "이 기능 어디있지?" → `hybrid_search`로 정밀 코드 검색
+3. "왜 이렇게 설계했지?" → MindVault 문서/결정 이력 조회
+4. 코드 수정 → Grep/Read로 직접 확인
+
+**관찰**: MindVault 글로벌 폴백 시 무관한 프로젝트 결과가 대량 토큰 소비. 토큰 예산 축소 또는 글로벌 폴백 비활성화 권장.
 
 ### Phase 3: Call Graph + 언어 확장
 - [ ] Call graph 추출 (import 기반 resolution, confidence 레벨)
