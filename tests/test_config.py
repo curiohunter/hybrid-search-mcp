@@ -44,35 +44,19 @@ class TestDefaultConfig:
 
 
 class TestEmbeddingConfig:
-    """EmbeddingConfig with effective_max_tokens auto-detection."""
+    """EmbeddingConfig defaults for Ollama backend."""
 
-    def test_explicit_max_tokens(self) -> None:
-        emb = EmbeddingConfig(max_tokens=256)
-        assert emb.effective_max_tokens == 256
-
-    def test_auto_detect_e5_small(self) -> None:
-        emb = EmbeddingConfig(model="intfloat/multilingual-e5-small")
-        assert emb.effective_max_tokens == 512
-
-    def test_auto_detect_qwen3(self) -> None:
-        emb = EmbeddingConfig(model="Alibaba-NLP/Qwen3-Embedding-0.6B")
-        assert emb.effective_max_tokens == 8192
-
-    def test_unknown_model_defaults_512(self) -> None:
-        emb = EmbeddingConfig(model="some/unknown-model")
-        assert emb.effective_max_tokens == 512
-
-    def test_empty_model_defaults_512(self) -> None:
+    def test_default_ollama_model(self) -> None:
         emb = EmbeddingConfig()
-        assert emb.effective_max_tokens == 512
+        assert emb.ollama_model == "qwen3-embedding:0.6b"
 
     def test_default_backend(self) -> None:
         emb = EmbeddingConfig()
-        assert emb.backend == "onnx"
+        assert emb.backend == "ollama"
 
-    def test_default_device(self) -> None:
+    def test_default_batch_size(self) -> None:
         emb = EmbeddingConfig()
-        assert emb.device == "cpu"
+        assert emb.batch_size == 16
 
 
 class TestSearchConfig:
@@ -145,7 +129,6 @@ path = "/home/user/project"
         assert cfg.embedding.model == "intfloat/multilingual-e5-base"
         assert cfg.embedding.backend == "sentence-transformers"
         assert cfg.embedding.batch_size == 64
-        assert cfg.embedding.effective_max_tokens == 1024
         assert cfg.search.default_limit == 20
         assert cfg.search.rrf_k == 30
         assert cfg.search.default_bm25_weight == 0.7
@@ -159,7 +142,7 @@ path = "/home/user/project"
         cfg = load_config(config_path)
         assert cfg.log_level == "warning"
         # Everything else should be defaults
-        assert cfg.embedding.backend == "onnx"
+        assert cfg.embedding.backend == "ollama"
         assert cfg.search.rrf_k == 60
 
     def test_data_dir_expansion(self, tmp_path: Path) -> None:
