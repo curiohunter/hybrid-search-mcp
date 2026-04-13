@@ -110,8 +110,12 @@ class StoreDB:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn = sqlite3.connect(
+            str(db_path), check_same_thread=False, isolation_level=None,
+        )
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -128,11 +132,16 @@ class StoreDB:
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
         """Context manager for explicit transactions."""
-        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+        except Exception as e:
+            logger.error("BEGIN IMMEDIATE failed (in_transaction=%s): %s", self._conn.in_transaction, e)
+            raise
         try:
             yield self._conn
             self._conn.execute("COMMIT")
-        except Exception:
+        except Exception as e:
+            logger.error("Transaction failed, rolling back: %s", e)
             self._conn.execute("ROLLBACK")
             raise
 
@@ -207,10 +216,20 @@ class StoreDB:
         ]
 
     def upsert_file(self, conn: sqlite3.Connection, record: FileRecord) -> None:
+        # Use INSERT + UPDATE instead of INSERT OR REPLACE.
+        # REPLACE = DELETE + INSERT, which triggers FK CASCADE and wipes chunks.
         conn.execute(
-            """INSERT OR REPLACE INTO files
+            """INSERT INTO files
                (id, project_id, relative_path, file_hash, file_size, file_mtime, language, chunk_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   project_id = excluded.project_id,
+                   relative_path = excluded.relative_path,
+                   file_hash = excluded.file_hash,
+                   file_size = excluded.file_size,
+                   file_mtime = excluded.file_mtime,
+                   language = excluded.language,
+                   chunk_count = excluded.chunk_count""",
             (
                 record.id,
                 record.project_id,
