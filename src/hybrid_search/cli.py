@@ -357,6 +357,91 @@ def cmd_call_graph_stats(args: argparse.Namespace) -> None:
         db.close()
 
 
+def cmd_generate_wiki(args: argparse.Namespace) -> None:
+    """Generate wiki pages from module tree and sync to DB."""
+    from hybrid_search.index.dag import generate_all_wiki_pages
+
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if not match:
+        print(f"No registered project found for: {cwd}")
+        return
+
+    name, project_path = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        return
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print("No index found. Run reindex first.")
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        print(f"Generating wiki for: {name}")
+        plan, pages = generate_all_wiki_pages(db, pinfo.id)
+
+        if not pages:
+            print("No modules found. Run reindex first.")
+            return
+
+        # Write to disk
+        wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
+        wiki_dir.mkdir(parents=True, exist_ok=True)
+        written = 0
+        for page in pages:
+            page_path = wiki_dir / page.filename
+            page_path.write_text(page.content, encoding="utf-8")
+            written += 1
+
+        print(f"  Wrote {written} pages to {wiki_dir}")
+
+        # Sync to DB
+        wiki_store = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
+        synced = 0
+        for page in pages:
+            if page.name == "index":
+                continue  # index.md is disk-only
+
+            # Build file dependencies for staleness tracking
+            file_deps = []
+            seen_file_ids: set[str] = set()
+            for fid in page.file_ids:
+                if fid in seen_file_ids:
+                    continue
+                seen_file_ids.add(fid)
+                file_rec = db.get_file(fid)
+                if file_rec:
+                    file_deps.append({
+                        "file_id": fid,
+                        "file_hash": file_rec.file_hash,
+                        "chunk_ids": [cid for cid in page.chunk_ids],
+                    })
+
+            with db.transaction():
+                wiki_store.compile_page(
+                    project_id=pinfo.id,
+                    query=page.name.replace("-", " "),
+                    title=page.title,
+                    content=page.content,
+                    tags=page.tags,
+                    file_dependencies=file_deps,
+                )
+            synced += 1
+
+        print(f"  Synced {synced} pages to DB")
+        print(f"  Coverage: {plan.covered_chunks}/{plan.total_chunks} chunks ({plan.coverage*100:.1f}%)")
+        print(f"  Modules: {len(plan.modules)} graph-based + {len(plan.isolated_modules)} isolated")
+
+    finally:
+        db.close()
+
+
 def cmd_generate_wiki_plan(args: argparse.Namespace) -> None:
     """Generate module tree from call graph for CodeWiki auto wiki generation."""
     from hybrid_search.index.dag import generate_wiki_plan
@@ -445,7 +530,6 @@ def cmd_generate_wiki_plan(args: argparse.Namespace) -> None:
 def cmd_verify_wiki(args: argparse.Namespace) -> None:
     """Verify wiki coverage against the module tree."""
     from hybrid_search.index.dag import generate_wiki_plan
-    from hybrid_search.storage.wiki import WikiStore
 
     config = load_config()
     registry = ProjectRegistry(config.global_dir)
@@ -470,7 +554,7 @@ def cmd_verify_wiki(args: argparse.Namespace) -> None:
     db = StoreDB(idx_paths.store_db)
     try:
         plan = generate_wiki_plan(db, pinfo.id)
-        wiki = WikiStore(db, config.wiki if hasattr(config, "wiki") else None)
+        wiki = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
         existing_pages = wiki.list_pages(pinfo.id)
         existing_titles = {p["title"].lower() for p in existing_pages}
 
@@ -595,6 +679,9 @@ def main() -> None:
     p_verify = sub.add_parser("verify-wiki", help="Verify wiki coverage against module tree")
     p_verify.add_argument("--cwd", default=".", help="Project directory")
 
+    p_genwiki = sub.add_parser("generate-wiki", help="Generate wiki pages from module tree")
+    p_genwiki.add_argument("--cwd", default=".", help="Project directory")
+
     args = parser.parse_args()
 
     if args.command == "reindex":
@@ -613,6 +700,8 @@ def main() -> None:
         cmd_generate_wiki_plan(args)
     elif args.command == "verify-wiki":
         cmd_verify_wiki(args)
+    elif args.command == "generate-wiki":
+        cmd_generate_wiki(args)
     else:
         parser.print_help()
         sys.exit(1)

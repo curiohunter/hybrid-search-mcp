@@ -444,6 +444,220 @@ def _split_large_module(
     return sub_modules
 
 
+@dataclass
+class WikiPageContent:
+    """Generated wiki page content for a module."""
+
+    name: str
+    filename: str       # slug.md
+    title: str
+    content: str
+    tags: list[str]
+    file_ids: list[str]  # for dependency tracking
+    chunk_ids: list[str]
+
+
+def generate_module_wiki(
+    module: ModuleNode,
+    chunk_map: dict[str, ChunkRecord],
+    file_map: dict[str, FileRecord],
+    forward: dict[str, set[str]],
+    reverse: dict[str, set[str]],
+) -> WikiPageContent:
+    """Generate structured wiki markdown for a single module.
+
+    Produces a deterministic code-structure summary (no LLM needed):
+    - Module overview with file list
+    - Entry points (zero in-degree)
+    - Functions/classes with call relationships
+    - Internal dependency map
+    """
+    lines: list[str] = []
+    title = module.name.replace("-", " ").replace("_", " ").title()
+    lines.append(f"# {title}")
+    lines.append("")
+
+    # Collect chunk records for this module
+    chunks = [chunk_map[cid] for cid in module.chunks if cid in chunk_map]
+
+    # Group chunks by file
+    file_chunks: dict[str, list[ChunkRecord]] = defaultdict(list)
+    for chunk in chunks:
+        file_chunks[chunk.file_id].append(chunk)
+
+    # --- Overview ---
+    lines.append(f"**Files**: {module.file_count} | **Symbols**: {module.chunk_count}")
+    lines.append("")
+
+    # --- Files ---
+    lines.append("## Files")
+    lines.append("")
+    for fpath in module.files:
+        lines.append(f"- `{fpath}`")
+    lines.append("")
+
+    # --- Entry Points ---
+    if module.entry_points:
+        lines.append("## Entry Points")
+        lines.append("")
+        for ep in module.entry_points:
+            lines.append(f"- `{ep}`")
+        lines.append("")
+
+    # --- Symbols per file ---
+    lines.append("## Symbols")
+    lines.append("")
+
+    file_ids_used: list[str] = []
+    for file_id, file_chunks_list in sorted(
+        file_chunks.items(),
+        key=lambda kv: file_map.get(kv[0], FileRecord(id="", project_id="", relative_path="zzz", file_hash="")).relative_path,
+    ):
+        file_rec = file_map.get(file_id)
+        if not file_rec:
+            continue
+        file_ids_used.append(file_id)
+
+        lines.append(f"### `{file_rec.relative_path}`")
+        lines.append("")
+
+        for chunk in sorted(file_chunks_list, key=lambda c: c.start_line or 0):
+            node_type = chunk.node_type or "symbol"
+            name = chunk.name or "(anonymous)"
+            line_info = f"L{chunk.start_line}" if chunk.start_line else ""
+
+            # Callees from this chunk
+            callees = forward.get(chunk.id, set())
+            callee_names = []
+            for cid in callees:
+                callee = chunk_map.get(cid)
+                if callee:
+                    callee_names.append(callee.name or callee.qualified_name or cid)
+
+            # Callers into this chunk
+            callers = reverse.get(chunk.id, set())
+            caller_names = []
+            for cid in callers:
+                caller = chunk_map.get(cid)
+                if caller:
+                    caller_names.append(caller.name or caller.qualified_name or cid)
+
+            prefix = "→" if chunk.id in {ep_id for ep_id in module.chunks if chunk.qualified_name in module.entry_points} else "-"
+            lines.append(f"- **{name}** ({node_type}, {line_info})")
+
+            if callee_names:
+                lines.append(f"  - calls: {', '.join(sorted(callee_names)[:8])}")
+            if caller_names:
+                lines.append(f"  - called by: {', '.join(sorted(caller_names)[:8])}")
+
+        lines.append("")
+
+    # --- Dependency summary ---
+    all_callees_outside: list[str] = []
+    all_callers_outside: list[str] = []
+    module_chunk_set = set(module.chunks)
+
+    for cid in module.chunks:
+        for callee_id in forward.get(cid, set()):
+            if callee_id not in module_chunk_set:
+                callee = chunk_map.get(callee_id)
+                if callee:
+                    all_callees_outside.append(callee.qualified_name or callee.name or callee_id)
+        for caller_id in reverse.get(cid, set()):
+            if caller_id not in module_chunk_set:
+                caller = chunk_map.get(caller_id)
+                if caller:
+                    all_callers_outside.append(caller.qualified_name or caller.name or caller_id)
+
+    if all_callees_outside or all_callers_outside:
+        lines.append("## External Dependencies")
+        lines.append("")
+        if all_callees_outside:
+            lines.append("**Calls out to:**")
+            for dep in sorted(set(all_callees_outside))[:10]:
+                lines.append(f"- `{dep}`")
+            lines.append("")
+        if all_callers_outside:
+            lines.append("**Called by:**")
+            for dep in sorted(set(all_callers_outside))[:10]:
+                lines.append(f"- `{dep}`")
+            lines.append("")
+
+    content = "\n".join(lines)
+    slug = module.name.lower().replace(" ", "-").replace("(", "").replace(")", "")
+    tags = [module.name]
+    for fpath in module.files[:5]:
+        tag = PurePosixPath(fpath).stem
+        if tag not in tags:
+            tags.append(tag)
+
+    return WikiPageContent(
+        name=module.name,
+        filename=f"{slug}.md",
+        title=title,
+        content=content,
+        tags=tags,
+        file_ids=file_ids_used,
+        chunk_ids=list(module.chunks),
+    )
+
+
+def generate_all_wiki_pages(
+    db: StoreDB, project_id: str,
+) -> tuple[WikiPlan, list[WikiPageContent]]:
+    """Generate wiki pages for all modules in a project.
+
+    Returns (plan, pages) where pages are in topological order (leaves first).
+    """
+    edges = db.get_all_call_edges(project_id)
+    all_chunks = db.get_chunks_by_project(project_id)
+    all_files = db.get_all_files(project_id)
+
+    chunk_map: dict[str, ChunkRecord] = {c.id: c for c in all_chunks}
+    file_map: dict[str, FileRecord] = {f.id: f for f in all_files}
+
+    forward, reverse = build_dependency_graph(edges)
+    plan = generate_wiki_plan(db, project_id)
+
+    pages: list[WikiPageContent] = []
+    all_modules = plan.modules + plan.isolated_modules
+
+    for module in all_modules:
+        page = generate_module_wiki(module, chunk_map, file_map, forward, reverse)
+        pages.append(page)
+
+    # Generate index page
+    index_lines = ["# Wiki Index", ""]
+    if plan.modules:
+        index_lines.append(f"## Modules ({len(plan.modules)})")
+        index_lines.append("")
+        for m in plan.modules:
+            index_lines.append(f"- [{m.name}]({m.name.lower().replace(' ', '-')}.md) — {m.file_count} files, {m.chunk_count} symbols")
+        index_lines.append("")
+
+    if plan.isolated_modules:
+        index_lines.append(f"## Isolated ({len(plan.isolated_modules)})")
+        index_lines.append("")
+        for m in plan.isolated_modules:
+            slug = m.name.lower().replace(" ", "-").replace("(", "").replace(")", "")
+            index_lines.append(f"- [{m.name}]({slug}.md) — {m.file_count} files, {m.chunk_count} symbols")
+        index_lines.append("")
+
+    index_lines.append(f"**Coverage**: {plan.covered_chunks}/{plan.total_chunks} chunks ({plan.coverage*100:.1f}%)")
+
+    pages.insert(0, WikiPageContent(
+        name="index",
+        filename="index.md",
+        title="Wiki Index",
+        content="\n".join(index_lines),
+        tags=["index"],
+        file_ids=[],
+        chunk_ids=[],
+    ))
+
+    return plan, pages
+
+
 def _deduplicate_names(modules: list[ModuleNode]) -> None:
     """Append numeric suffix to duplicate module names in-place."""
     name_count: dict[str, int] = defaultdict(int)
