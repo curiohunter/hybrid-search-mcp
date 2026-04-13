@@ -60,11 +60,21 @@ class Embedder:
     # ── sentence-transformers backend ──
 
     def _ensure_loaded_st(self) -> None:
+        import torch
         from sentence_transformers import SentenceTransformer
+
+        # Limit PyTorch CPU threads to avoid saturating all cores during indexing.
+        # ONNX backend uses onnx_threads config; apply the same limit here.
+        max_threads = self._config.onnx_threads or 4
+        torch.set_num_threads(max_threads)
+        torch.set_num_interop_threads(max(1, max_threads // 2))
 
         model_name = self._config.model
         device = self._config.device  # "cpu" or "mps"
-        logger.info("Loading model via sentence-transformers: %s (device=%s)", model_name, device)
+        logger.info(
+            "Loading model via sentence-transformers: %s (device=%s, threads=%d)",
+            model_name, device, max_threads,
+        )
         self._model = SentenceTransformer(model_name, trust_remote_code=True, device=device)
         dim = self._model.get_embedding_dimension()
         self._embedding_dim = dim
