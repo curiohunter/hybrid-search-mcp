@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS call_edges (
 
 CREATE INDEX IF NOT EXISTS idx_callee_name ON call_edges(callee_name);
 CREATE INDEX IF NOT EXISTS idx_callee_qualified ON call_edges(callee_qualified_name);
+CREATE INDEX IF NOT EXISTS idx_callee_chunk ON call_edges(callee_chunk_id);
 CREATE INDEX IF NOT EXISTS idx_caller ON call_edges(caller_chunk_id);
 """
 
@@ -301,6 +302,19 @@ class StoreDB:
     def delete_call_edges_by_caller(self, conn: sqlite3.Connection, chunk_id: str) -> None:
         """Delete all call edges where this chunk is the caller."""
         conn.execute("DELETE FROM call_edges WHERE caller_chunk_id = ?", (chunk_id,))
+
+    def delete_call_edges_by_callee(self, conn: sqlite3.Connection, chunk_id: str) -> None:
+        """Delete dangling call edges that reference a deleted callee chunk."""
+        conn.execute("DELETE FROM call_edges WHERE callee_chunk_id = ?", (chunk_id,))
+
+    def delete_all_call_edges(self, conn: sqlite3.Connection, project_id: str) -> None:
+        """Delete all call edges for a project."""
+        conn.execute("DELETE FROM call_edges WHERE project_id = ?", (project_id,))
+
+    def get_chunk_ids_by_file(self, file_id: str) -> list[str]:
+        """Get all chunk IDs for a file (read-only, no transaction needed)."""
+        cur = self._conn.execute("SELECT id FROM chunks WHERE file_id = ?", (file_id,))
+        return [row["id"] for row in cur.fetchall()]
 
     def delete_chunks_by_file(self, conn: sqlite3.Connection, file_id: str) -> list[str]:
         """Delete all chunks for a file, returning their IDs."""
