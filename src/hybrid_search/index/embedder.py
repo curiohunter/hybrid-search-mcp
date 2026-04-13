@@ -146,8 +146,14 @@ class Embedder:
     # ── ONNX backend ──
 
     def _ensure_loaded_onnx(self) -> None:
+        import os
         import onnxruntime as ort
         from transformers import AutoTokenizer
+
+        max_threads = self._config.onnx_threads
+        # Env-level thread caps — catches numpy/MKL/OpenMP that ONNX settings miss
+        for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            os.environ[var] = str(max_threads)
 
         model_path = self._resolve_model_path()
         q_tag = " (INT8 quantized)" if "quantized" in model_path.name else ""
@@ -160,7 +166,8 @@ class Embedder:
 
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        sess_options.intra_op_num_threads = self._config.onnx_threads
+        sess_options.intra_op_num_threads = max_threads
+        sess_options.inter_op_num_threads = max(1, max_threads // 2)
 
         self._model = ort.InferenceSession(
             str(model_path), sess_options=sess_options, providers=providers,
