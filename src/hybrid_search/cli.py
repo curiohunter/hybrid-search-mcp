@@ -135,7 +135,7 @@ def cmd_reindex(args: argparse.Namespace) -> None:
 
 
 def _mark_stale_wikis(config, registry: ProjectRegistry, project_name: str) -> None:
-    """Mark wiki pages as stale when their source files changed."""
+    """Mark wiki pages as stale and write STALE.md for Claude auto-refresh."""
     pinfo = registry.get_by_name(project_name)
     if not pinfo:
         return
@@ -149,9 +149,45 @@ def _mark_stale_wikis(config, registry: ProjectRegistry, project_name: str) -> N
     try:
         wiki = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
         stale_pages = wiki.check_staleness(pinfo.id)
-        stale_count = sum(1 for p in stale_pages if p["stale"])
-        if stale_count > 0:
-            print(f"Wiki: {stale_count} stale page(s) detected")
+        stale_items = [p for p in stale_pages if p["stale"]]
+
+        # Find project root for writing STALE.md
+        project_path = pinfo.path if hasattr(pinfo, "path") else None
+        if not project_path:
+            for p in registry.list_all():
+                if p.name == project_name:
+                    project_path = p.path
+                    break
+
+        if stale_items and project_path:
+            stale_md_path = Path(project_path) / ".hybrid-search" / "wiki" / "STALE.md"
+            lines = [
+                "# Stale Wiki Pages",
+                "",
+                "> 이 파일은 자동 생성됩니다. 아래 페이지들의 소스 코드가 변경되었습니다.",
+                "> 각 페이지를 읽고, 변경된 소스 파일을 확인한 후, wiki 내용을 갱신하세요.",
+                "> 모든 페이지를 갱신하면 이 파일을 삭제하세요.",
+                "",
+            ]
+            for p in stale_items:
+                changed = ", ".join(p["changed_files"][:5]) if p["changed_files"] else "unknown"
+                lines.append(f"- **{p['title']}** (page_id: `{p['page_id']}`)")
+                lines.append(f"  - 변경된 파일: {changed}")
+            lines.append("")
+
+            stale_md_path.parent.mkdir(parents=True, exist_ok=True)
+            stale_md_path.write_text("\n".join(lines))
+            print(f"Wiki: {len(stale_items)} stale page(s) → STALE.md written")
+        elif not stale_items and project_path:
+            # Remove STALE.md if no stale pages
+            stale_md_path = Path(project_path) / ".hybrid-search" / "wiki" / "STALE.md"
+            if stale_md_path.exists():
+                stale_md_path.unlink()
+                print("Wiki: all pages fresh, STALE.md removed")
+        else:
+            stale_count = len(stale_items)
+            if stale_count > 0:
+                print(f"Wiki: {stale_count} stale page(s) detected")
     finally:
         db.close()
 
