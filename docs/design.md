@@ -921,11 +921,15 @@ CREATE INDEX idx_caller ON call_edges(caller_chunk_id);
 
 **Common name 필터**: `run`, `init`, `get`, `set`, `render`, `handle`, `process`, `validate`, `update`, `create` 같은 흔한 이름은 low confidence로 태깅하고, trace 결과에서 confidence 표시.
 
-### 한계
+### 현재 한계 (Phase 7에서 해결 예정)
 
-- **동적 디스패치**: `this.method()` 같은 경우 정확한 resolve 어려움
-- **Cross-file resolve**: import를 따라가야 하므로 best-effort
-- **v1 전략**: 이름 + import 경로 기반 매칭. confidence 레벨로 noise 관리
+| 한계 | 원인 | Phase 7 해결 |
+|------|------|:----------:|
+| Resolution rate ~7.5% | `callee_module`이 항상 NULL (import-call 미연결) | Step 1: Import-Call 바인딩 |
+| High confidence 0% | module 정보 없이 이름만으로 매칭 | Step 1+2 |
+| `this.method()` 미해결 | receiver class 미추적 | Step 3: Receiver 추적 |
+| COMMON_NAMES 일괄 차단 | context 없이 이름만으로 판별 불가 | Step 4: 정책 완화 |
+| Cross-file resolve best-effort | import path → file 역인덱스 없음 | Step 2: 역인덱스 |
 
 ## 13. Storage Design
 
@@ -1154,151 +1158,198 @@ MCP 서버의 `hybrid_search` tool description에 아래 가이드를 포함:
 
 ## 16. Implementation Phases
 
-### Phase 1: MVP — 한국어→영어 코드 검색 증명 ✅ 완료 (2026-04-13)
+### Phase 1~4: 핵심 검색 파이프라인 ✅ 완료
 
-> **목표**: "로그인" → `signIn()` 매칭이 동작하는 최소 파이프라인
+> 상세: HANDOFF.md 참조
 
-- [x] **임베딩 모델 벤치마크** → e5-small, e5-base, Qwen3-Embedding-0.6B 비교. **Qwen3 승리** (KR R@1=0.70). 속도 이유로 **e5-small로 운영** 결정 (90초 vs 8분). gte-multilingual-base는 custom modeling code 호환성 문제로 제외.
-- [x] MCP 서버 뼈대 (mcp[cli] SDK)
-- [x] File scanner + (size, mtime) prefilter + SHA256 delta detection
-- [x] **AST chunker**: TypeScript/JavaScript + Python (tree-sitter 개별 패키지, tree-sitter-languages는 Python 3.13 미지원)
-- [x] 문서 chunker (markdown heading 분할)
-- [x] Embedding 생성 — **sentence-transformers 백엔드** 추가 (Qwen3 ONNX 미지원 대응). ONNX 백엔드도 유지.
-- [x] USearch 벡터 인덱스
-- [x] `semantic_search` tool (필터 포함)
-- [x] `search_symbols` tool
-- [x] `index_project` tool
-- [x] `index_status` / `list_projects` / `remove_project` tools
+- Phase 1: MVP (semantic search, AST chunking, 13개 MCP 도구)
+- Phase 2: Hybrid BM25+Vector (RRF fusion, 쿼리 분류)
+- Phase 3a: Call Graph (3단계 confidence, trace 도구)
+- Phase 3b: 14개 AST 언어 지원
+- Phase 4: Polish (ONNX/Ollama/MPS, 크래시 복구, 핫 리로드)
 
-**MVP 검증**: breeze 프로젝트 155파일, 326 chunks, 90초, 에러 0. 글로벌 MCP 등록 완료.
+### Phase 5: Reactive Wiki Layer ✅ 완료
 
-**발견된 버그 및 수정사항**:
-- `INSERT OR REPLACE` + `FK ON DELETE CASCADE` → chunks 전멸 버그. `ON CONFLICT DO UPDATE`로 수정.
-- Python 3.13의 `isolation_level` 기본 동작 변경 → `isolation_level=None` + 명시적 commit으로 수정.
-- `file_path` 필드에 file_id(해시) 반환 → `files` 테이블에서 `relative_path` 조회로 수정.
+- `compile_to_wiki` / `lookup_wiki` / `check_wiki_staleness` / `refresh_wiki_page` 4개 MCP 도구
+- WikiStore (LRU eviction, 파일 해시 스냅샷 기반 staleness)
+- DB: `wiki_pages` + `wiki_dependencies` 테이블
 
-### Phase 2: Hybrid + BM25 ✅ 완료 (2026-04-13)
-- [x] Tantivy-py BM25 인덱스 (content + name + qualified_name + docstring)
-- [x] RRF fusion 구현 (k=60, 쿼리 분류 기반 가중치)
-- [x] 쿼리 분류기 (EXACT_SYMBOL / KOREAN_NL / ENGLISH_NL) — SCREAMING_SNAKE, dot-qualified name 포함
-- [x] `hybrid_search` tool
-- [x] 멀티 프로젝트 + cross-project 검색 (round-robin interleave, 2초 타임아웃)
-- [x] BM25Engine read_only 모드 (검색 시 리소스 충돌 방지)
-- [x] 10파일 간격 배치 checkpoint (크래시 손실 최소화)
+### Phase 6: Background Indexing + Wiki Infra ✅ 완료
 
-### Phase 2.5: 실사용 검증 ✅ 완료 (2026-04-13)
-- [x] breeze 프로젝트 인덱싱 완료 (155파일, 326 chunks)
-- [x] 글로벌 MCP 서버 등록 (`~/.claude.json`)
-- [x] breeze에서 실제 한국어→영어 검색 E2E 테스트 — "로그인 인증 기능" → middleware.ts:6, get-user.ts:5 등 정확한 코드+라인 반환 확인
-- [x] MindVault 컨텍스트와 hybrid_search 결과 비교 체감 → **역할 분리 확인**: MindVault=문서 관계/배경 지식, Hybrid Search=정밀 코드 검색
+- CLI (`hybrid_search.cli`): reindex, status, stale, install-hook, sync-wiki
+- post-commit hook → delta reindex → wiki auto-sync (확정적 파이프라인)
+- 3개 스킬: `/bootstrap-wiki`, `/save-wiki`, `/search`
+- CWD 프로젝트 부스트 (BM25 2:1 interleave + cosine +0.05)
 
-**실사용 베스트 프랙티스**:
-1. 대화 시작 → MindVault 자동 주입 (배경 컨텍스트, 가볍게)
-2. "이 기능 어디있지?" → `hybrid_search`로 정밀 코드 검색
-3. "왜 이렇게 설계했지?" → MindVault 문서/결정 이력 조회
-4. 코드 수정 → Grep/Read로 직접 확인
+### Phase 7: Call Graph Resolution 90%+ (미구현)
 
-**관찰**: MindVault 글로벌 폴백 시 무관한 프로젝트 결과가 대량 토큰 소비. 토큰 예산 축소 또는 글로벌 폴백 비활성화 권장.
+> **목표**: resolution rate를 7.5% → 90%+ 로 올려서 CodeWiki식 자동 wiki 생성의 전제 조건을 충족
 
-### Phase 3: Call Graph + 언어 확장 (진행 중)
+#### 현재 상태와 근본 원인
 
-#### Phase 3a: Call Graph ✅ 완료 (2026-04-13)
-- [x] **Call graph resolution** (`index/callgraph.py`): 3단계 confidence (High/Medium/Low) + common name 필터 (§12)
-- [x] **`trace_callers` / `trace_callees` tools** (`tools/trace.py`): visited set 순환 방지, 100노드 상한, partial 결과, chunk_id 우선/symbol 폴백 (§10.3, §10.4)
-- [x] **StoreDB call graph 쿼리**: get_callers, get_callers_by_name, get_callees, get_all_call_edges, update_call_edge_resolution, find_chunk_by_qualified_name, find_chunks_by_name
-- [x] **server.py 등록**: 총 9개 도구 (기존 7 + trace_callers + trace_callees)
-- [x] **pipeline.py 통합**: 인덱싱 완료 후 자동 call edge resolution 실행
-- [x] **AST byte offset 버그 수정**: tree-sitter byte offset vs Python str 인덱스 불일치 → `source_bytes` 도입. 멀티바이트 문자(한국어, em-dash 등) 포함 소스에서 이름/내용/call 추출 깨지던 근본 버그 해결
-- [x] **call extraction 개선**: `_extract_call_name()` 도입 — identifier/attribute 노드 타입 정확 매칭 (기존: `split(".")[-1]`로 garbage 포함)
+| Confidence | 조건 | 현재 발동률 |
+|:----------:|------|:----------:|
+| High | callee_module + callee_name 모두 매칭 | **0%** (callee_module이 항상 NULL) |
+| Medium | 이름이 유일하거나 같은 파일 내 매칭 | ~10% |
+| Low | 이름만 매칭 + COMMON_NAMES 아닌 경우 | ~5% |
+| 미해결 | 매칭 실패 또는 COMMON_NAMES | ~85% |
 
-**Phase 3a 검증**: hybrid-search-mcp 자체 인덱싱 — 1,934 call edges, 0 dirty names, 146 resolved (132 medium). `trace_callers("upsert_file")` → 4 nodes (depth 2), `trace_callees("index_project")` → 13 nodes (depth 2).
+**근본 원인**: `_extract_imports()`가 import를 추출하고 `_extract_call_name()`이 call을 추출하지만, **두 정보를 연결하지 않는다**. call edge에 `callee_module=NULL`이 들어가서 High confidence가 절대 발동하지 않음.
 
-#### Phase 3b: 추가 언어 지원 ✅ 완료 (2026-04-13)
-- [x] **14개 AST 언어**: TS, JS, Python (Phase 1) + Rust, Go, Ruby, Java, C, C++, Swift, Kotlin, CSS, SCSS, SQL (Phase 3b)
-- [x] **HTML**: fallback blank-line chunking (element 단위 AST 청킹은 무의미)
-- [x] `CHUNK_NODE_TYPES` 14개 언어 매핑, `CLASS_NODE_TYPES` 10개 노드 타입
-- [x] `_get_ts_language()` 13개 grammar 분기 (CSS=SCSS 공유)
-- [x] `_extract_name()` — C/C++ function_declarator, Go type_spec, namespace_identifier 등 언어별 이름 추출
-- [x] `_extract_imports()` — Rust(use), Go(import), Java(import), Ruby(require), Kotlin(import), Swift(import), C/C++(#include)
-- [x] `_extract_docstring()` — Rust(///), Go(//), Ruby(#), Java(Javadoc)
-- [x] `_extract_call_name()` — Go selector_expression, Rust scoped_identifier/field_expression
-- [x] `pyproject.toml` 11개 tree-sitter grammar 의존성 추가
+#### Step 1: Import-Call 바인딩 (예상 7.5% → ~55%)
 
-### Phase 4: Polish ✅ 완료 (2026-04-13)
-- [x] Apple Silicon MPS 가속 — ONNX: CoreMLExecutionProvider 자동 감지, ST: `device="mps"` 전달
-- [x] Ollama 백엔드 — `POST /api/embed` HTTP API (`backend = "ollama"`, `ollama_model = "nomic-embed-text"`)
-- [x] 인덱싱 진행률 알림 — `ProgressCallback(current, total, path)` pipeline→tools 콜백 체인
-- [x] 크래시 복구 & 인덱스 자동 rebuild — consistency mismatch → force rebuild, `file_hash=""` partial write 감지
-- [x] config.toml 핫 리로드 — `_HotReloadableConfig` mtime 감지 + mutable state dict 패턴
-- [x] ONNX 백엔드 완전 구현 — `_embed_onnx_batch()` mean pooling + L2 normalize
-- [x] 테스트 확충 — 133개 테스트 (9개 파일)
+**가장 큰 ROI. import 정보는 이미 추출하고 있는데 call과 연결만 안 하고 있을 뿐.**
 
-### Phase 5: Reactive Wiki Layer ✅ 완료 (2026-04-13)
-- [x] `WikiConfig` — `max_pages_per_project=100`, `eviction_policy="lru"`
-- [x] DB 스키마 확장 — `wiki_pages` + `wiki_dependencies` 테이블 (SCHEMA_VERSION=2)
-- [x] `WikiStore` — compile/lookup/staleness/refresh/eviction (LRU), 파일 해시 스냅샷 기반 변경 감지
-- [x] `compile_to_wiki` tool — Claude가 검색 결과를 wiki 페이지로 저장, `source_chunk_ids`로 의존성 자동 추적
-- [x] `lookup_wiki` tool — normalized query 또는 tag로 캐시된 wiki 조회 + staleness 즉시 반환
-- [x] `check_wiki_staleness` tool — 단일/전체 wiki 페이지 stale 여부 확인
-- [x] `refresh_wiki_page` tool — stale 페이지 콘텐츠 갱신 + 파일 해시 재스냅샷
-- [x] 테스트 28개 추가 — 총 161개 테스트 (10개 파일)
+```python
+# 현재: call만 추출
+calls = ["login", "charge"]
 
-### Phase 5.5: CWD 프로젝트 부스트 ✅ 완료 (2026-04-13)
-- [x] `hybrid_search`에 `cwd` 파라미터 추가
-- [x] `_detect_primary_project()` — cwd에서 등록된 프로젝트 자동 감지
-- [x] BM25: primary project 2:1 weighted interleave (`_weighted_interleave()`)
-- [x] Vector: primary project cosine +0.05 부스트
-- [x] 테스트 14개 추가 — 총 175개 테스트 (12개 파일)
+# 개선: import와 연결
+calls = [
+    {"name": "login", "module": "src/auth"},      # from src.auth import login
+    {"name": "charge", "module": "src/billing"},   # from src.billing import charge
+]
+```
 
-### Phase 6: Karpathy Wiki Architecture (설계 완료, 미구현)
+구현:
+- `ast_chunker.py`: `_extract_imports()`의 반환값을 `dict[str, str]` (name → module) 으로 변경
+- `ast_chunker.py`: chunk 생성 시 `imports_map`을 chunk metadata에 포함
+- `callgraph.py`: resolve 시 `callee_module`과 `imports_map`을 매칭하여 High confidence 부여
+- 코드 변경량: ast_chunker.py ~50줄, callgraph.py ~20줄
 
-> 핵심 전환: "매번 검색" → "컴파일된 지식 축적". 검색 자체를 없애는 것이 목표.
+#### Step 2: Module Path → File 역인덱스 (누적 ~70-75%)
 
-#### 6a: Background Indexing (토큰 0, 인간 개입 0)
+```python
+# 현재: qualified_name으로만 검색
+"src/auth.py::login" → chunk_id_123
+
+# 개선: import path로도 검색
+"src/auth" → ["src/auth.py::login", "src/auth.py::logout", ...]
+"./auth"   → (같은 결과, 상대경로 해석)
+```
+
+구현:
+- `db.py`: `files` 테이블에서 import path → file_id 매핑 쿼리 추가
+- `callgraph.py`: module path로 파일을 찾고, 해당 파일의 chunk 중 이름 매칭
+- 코드 변경량: db.py ~30줄, callgraph.py ~20줄
+
+#### Step 3: 메서드 Receiver 추적 (누적 ~85-90%)
+
+```python
+# 현재: this.validate() → callee_name="validate" (COMMON_NAME, 해결 불가)
+# 개선: this.validate() → callee_name="validate", parent_class="AuthService"
+#       → AuthService.validate()로 매칭
+```
+
+구현:
+- `ast_chunker.py`: `this`/`self`의 containing class를 추적하여 call에 parent_class 추가
+- `callgraph.py`: parent_class + callee_name으로 qualified_name 매칭 (`parent_name` 필드 활용)
+- 코드 변경량: ast_chunker.py ~30줄, callgraph.py ~15줄
+
+#### Step 4: COMMON_NAMES 정책 완화 (누적 ~90-95%)
+
+Step 1-3이 되면 `validate`, `render` 같은 이름도 module+class 정보로 구별 가능.
+
+- `callgraph.py`: COMMON_NAMES를 "무조건 low"에서 "context 없을 때만 low"로 변경
+- 코드 변경량: callgraph.py ~10줄
+
+#### 검증 계획
+
+```bash
+# Phase 7 구현 전후 비교
+python -m hybrid_search.cli reindex --cwd /path/to/project --force
+python -m hybrid_search.cli call-graph-stats --cwd /path/to/project
+# 출력: total_edges, resolved, high, medium, low, unresolved, resolution_rate
+```
+
+valuein-homepage(1,757파일)에서 resolution rate 90%+ 달성 시 Phase 8 진행.
+
+### Phase 8: CodeWiki 자동 Wiki 생성 (미구현, Phase 7 전제)
+
+> **목표**: Call graph 위상정렬로 프로젝트의 모든 도메인 기능을 빠짐없이 자동 식별하여 wiki를 생성. 디렉토리 스캔이 아닌 의존성 그래프 기반.
+> **근거**: CodeWiki (ACL 2026) — AST + 의존성 그래프 → 위상정렬 → 계층적 모듈 분해 → 리프부터 상향식 문서 생성
+
+#### 왜 Call Graph 기반이 디렉토리 스캔보다 나은가
+
+| 문제 | 디렉토리 스캔 | Call Graph 위상정렬 |
+|------|:------------:|:------------------:|
+| `services/makeup-service.ts` (보강) | services/ 폴더 1개로 뭉뚱그려짐 | 독립 모듈로 식별 |
+| `services/textbook-grading-service.ts` (교재채점) | 같은 services/ | 독립 모듈로 식별 |
+| "상담관리"가 여러 파일에 걸쳐있음 | 빠뜨리기 쉬움 | call graph에서 연결된 파일 클러스터로 묶임 |
+| "입학테스트"가 services/ + app/ + hooks/에 분산 | 각각 별도 페이지 | 하나의 기능 모듈로 인식 |
+
+#### 8a: 모듈 트리 자동 생성 (`generate-wiki-plan`)
+
+CodeWiki 논문의 3단계 파이프라인을 CLI에 구현:
+
+```
+Step 1: 의존성 그래프 구성
+  - call_edges + imports로 방향성 그래프 G=(V,E) 구축
+  - V = chunks (함수/클래스), E = calls/imports
+
+Step 2: 엔트리 포인트 식별 + 위상정렬
+  - zero-in-degree 노드 = 최상위 엔트리 (페이지 라우트, API 핸들러 등)
+  - 위상정렬로 처리 순서 결정
+  - 연결된 컴포넌트(connected component) = 1개 기능 모듈
+
+Step 3: 모듈 트리 → 페이지 목록
+  - 각 연결 컴포넌트를 1개 wiki 페이지로 매핑
+  - 복잡도(chunk 수)가 임계값 초과 시 하위 분해
+  - 고립 노드(call edge 없음)는 디렉토리 기반 폴백
+```
+
+```bash
+python -m hybrid_search.cli generate-wiki-plan --cwd /path/to/project
+# 출력:
+# Module Tree (21 modules):
+# 1. auth-system (5 files, 12 chunks) — app/(auth)/, lib/auth/, proxy.ts
+# 2. tuition-billing (8 files, 23 chunks) — services/tuition-*, hooks/use-tuition*
+# 3. makeup-attendance (3 files, 8 chunks) — services/makeup-service.ts, hooks/use-makeup*
+# 4. textbook-grading (4 files, 11 chunks) — services/textbook-grading-*, hooks/use-textbook*
+# 5. consultation (6 files, 15 chunks) — services/consultation-*, hooks/use-consultation*
+# ...
+```
+
+#### 8b: 리프 → 부모 상향식 Wiki 생성
+
+CodeWiki의 Hierarchical Synthesis:
+
+```
+1. 리프 모듈: 병렬 Agent가 직접 코드 읽고 wiki 페이지 작성
+2. 부모 모듈: 자식 wiki를 합성하여 아키텍처 개요 생성
+3. architecture.md: 모든 모듈 wiki를 합성하여 최상위 개요
+```
+
+#### 8c: 검수 자동화
+
+```bash
+python -m hybrid_search.cli verify-wiki --cwd /path/to/project
+# 출력:
+# Module Tree: 21 modules
+# Wiki pages: 21/21 (100%)
+# Coverage: 1,423/1,757 files covered (81%)
+# Uncovered: 334 files (node_modules 제외 후 실질 12 files)
+# Dependencies tracked: 156 deps
+```
+
+#### 8d: 전체 파이프라인 (완전 자동)
+
 ```
 git commit
-  └→ post-commit hook:
-     1. hybrid_search CLI delta reindex (인덱스 최신화)
-     2. 변경된 파일 → 관련 wiki stale 마킹 (파일 해시 비교, 확정적)
-     3. 새 파일/디렉토리 추가 → "wiki 커버리지 gap" 플래그
-```
-- CLI 엔트리포인트: `python -m hybrid_search.cli reindex --cwd .`
-- settings.json post-commit hook 등록
+  └→ post-commit hook
+     └→ delta reindex
+        └→ call graph re-resolve
+           └→ module tree 변경 감지
+              └→ 변경된 모듈의 wiki만 stale 마킹
+                 └→ 다음 대화에서 lazy recompile
 
-#### 6b: Wiki on Disk (CLAUDE.md에서 직접 참조)
+/bootstrap-wiki (최초 1회)
+  └→ generate-wiki-plan (call graph 기반)
+     └→ 사용자 확인
+        └→ 병렬 Agent 생성
+           └→ sync-wiki (DB 동기화)
+              └→ verify-wiki (검수)
 ```
-{project}/.hybrid-search/wiki/index.md    ← 모든 페이지 목록
-{project}/.hybrid-search/wiki/auth.md     ← 인증 시스템 아키텍처
-{project}/.hybrid-search/wiki/tuition.md  ← 학원비 결제 흐름
-```
-- SQLite wiki_pages는 메타데이터/staleness 추적용으로 유지
-- CLAUDE.md에서 `wiki/index.md` 참조 → 대화 시작 시 토큰 0으로 컨텍스트 확보
-- wiki 파일은 .gitignore에 추가 (프로젝트별 생성, 공유 불필요)
-
-#### 6c: Bootstrap + Lazy Recompile
-- `/bootstrap-wiki` 스킬: 프로젝트 초기 wiki 자동 생성 (hybrid_search + 코드 분석, 1회)
-- Lazy recompile: stale wiki를 읽을 때만 diff 기반 부분 재컴파일
-- 새 파일/디렉토리 gap 감지 → 다음 대화에서 자동 wiki 페이지 생성
-
-#### 6d: /search 스킬 (필요할 때만)
-```
-1. wiki/index.md에 있나? → Read로 끝
-2. 없으면 → hybrid_search 실행
-3. 결과 좋으면 → wiki에 컴파일
-4. 없으면 → Grep/Glob 폴백
-```
-
-#### 6e: MindVault hook 비활성화
-- wiki/index.md가 MindVault auto-inject를 대체
-- MindVault의 그래프 관계 데이터는 bootstrap-wiki에서 활용 가능
-
-#### 확정적 파이프라인 (실험 구간 없음)
-| 트리거 | 동작 | 확정성 |
-|--------|------|:------:|
-| git commit + 기존 파일 변경 | stale 마킹 | 확정적 (해시 비교) |
-| git commit + 새 파일/디렉토리 | gap 플래그 | 확정적 (파일 존재 여부) |
-| wiki 읽기 + stale | diff 기반 lazy recompile | 확정적 (변경분만) |
-| gap 감지 + 대화 시작 | 자동 wiki 생성 | 확정적 (새 파일 분석) |
 
 ## 17. Dependencies (Python)
 
