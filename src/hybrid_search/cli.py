@@ -652,6 +652,124 @@ def cmd_verify_wiki(args: argparse.Namespace) -> None:
         db.close()
 
 
+def cmd_search_symbols(args: argparse.Namespace) -> None:
+    """Search for symbols (functions, classes) by name."""
+    import json as json_mod
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+
+    if match:
+        name, _ = match
+        pinfo = registry.get_by_name(name)
+        project_infos = [pinfo] if pinfo else []
+    else:
+        project_infos = registry.list_all()
+
+    results: list[dict] = []
+    for pinfo in project_infos:
+        project_dir = get_project_dir(config.projects_dir, pinfo.id)
+        idx_paths = IndexPaths(project_dir)
+        if not idx_paths.store_db.exists():
+            continue
+        db = StoreDB(idx_paths.store_db)
+        try:
+            chunks = db.search_chunks_by_name(args.name, pinfo.id)
+            for chunk in chunks:
+                if args.type and chunk.node_type != args.type:
+                    continue
+                file_rec = db.get_file(chunk.file_id)
+                results.append({
+                    "project": pinfo.name,
+                    "name": chunk.name,
+                    "qualified_name": chunk.qualified_name,
+                    "node_type": chunk.node_type,
+                    "file": file_rec.relative_path if file_rec else chunk.file_id,
+                    "line": chunk.start_line,
+                })
+        finally:
+            db.close()
+
+    if args.json:
+        print(json_mod.dumps(results, indent=2, ensure_ascii=False))
+    else:
+        if not results:
+            print(f"No symbols matching '{args.name}'")
+            return
+        for r in results[:30]:
+            line = f"L{r['line']}" if r.get("line") else ""
+            print(f"  {r['qualified_name'] or r['name']} ({r['node_type']}) — {r['file']}:{line}")
+        if len(results) > 30:
+            print(f"  ... and {len(results) - 30} more")
+
+
+def cmd_remove_project(args: argparse.Namespace) -> None:
+    """Unregister a project and optionally delete its index data."""
+    import shutil
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    pinfo = registry.get_by_name(args.name)
+    if not pinfo:
+        print(f"Project '{args.name}' not found")
+        return
+
+    if not args.keep_index:
+        project_dir = get_project_dir(config.projects_dir, pinfo.id)
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+            print(f"Deleted index: {project_dir}")
+
+    registry.remove(pinfo.id)
+    print(f"Removed project: {args.name}")
+
+
+def cmd_lookup_wiki(args: argparse.Namespace) -> None:
+    """Look up a wiki page by query."""
+    import json as json_mod
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if not match:
+        print(f"No registered project found for: {cwd}")
+        return
+
+    name, _ = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        return
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print("No index found.")
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        wiki = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
+        page = wiki.lookup_page(pinfo.id, query=args.query, tag=args.tag)
+        if not page:
+            print(f"No wiki page found for: {args.query or args.tag}")
+            return
+
+        if args.json:
+            print(json_mod.dumps({
+                "title": page.title, "stale": page.stale,
+                "version": page.version, "content": page.content,
+            }, indent=2, ensure_ascii=False))
+        else:
+            stale_mark = " [STALE]" if page.stale else ""
+            print(f"{page.title}{stale_mark} (v{page.version})")
+            print(page.content)
+    finally:
+        db.close()
+
+
 def cmd_install_hook(args: argparse.Namespace) -> None:
     """Install post-commit hook in a project's .git/hooks/."""
     import subprocess
@@ -745,6 +863,22 @@ def main() -> None:
     p_genwiki = sub.add_parser("generate-wiki", help="Generate wiki pages from module tree")
     p_genwiki.add_argument("--cwd", default=".", help="Project directory")
 
+    p_sym = sub.add_parser("search-symbols", help="Search symbols by name")
+    p_sym.add_argument("name", help="Symbol name or pattern")
+    p_sym.add_argument("--cwd", default=".", help="Project directory")
+    p_sym.add_argument("--type", help="Filter: function, class, method, etc.")
+    p_sym.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_rm = sub.add_parser("remove-project", help="Unregister a project")
+    p_rm.add_argument("name", help="Project name")
+    p_rm.add_argument("--keep-index", action="store_true", help="Keep index data on disk")
+
+    p_lookup = sub.add_parser("lookup-wiki", help="Look up a wiki page by query")
+    p_lookup.add_argument("query", nargs="?", help="Question to look up")
+    p_lookup.add_argument("--tag", help="Look up by tag instead")
+    p_lookup.add_argument("--cwd", default=".", help="Project directory")
+    p_lookup.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
     if args.command == "reindex":
@@ -765,6 +899,12 @@ def main() -> None:
         cmd_verify_wiki(args)
     elif args.command == "generate-wiki":
         cmd_generate_wiki(args)
+    elif args.command == "search-symbols":
+        cmd_search_symbols(args)
+    elif args.command == "remove-project":
+        cmd_remove_project(args)
+    elif args.command == "lookup-wiki":
+        cmd_lookup_wiki(args)
     else:
         parser.print_help()
         sys.exit(1)
