@@ -232,7 +232,30 @@ reindex --wiki (명시적)
         └→ generate-wiki (모듈 트리 → wiki 생성 + DB sync)
 ```
 
-**총 코드**: ~9,200줄 (34개 파일) | **MCP 도구**: 13개 | **테스트**: 218개 (13개 파일) | **CLI 명령**: 9개 | **스킬**: 3개
+### MCP 도구 슬림화: 13→3 ✅
+
+**이유**: MCP 도구 스키마가 매 대화 시스템 프롬프트에 로드되어 토큰 소모. 관리/wiki 도구 10개를 CLI로 이관.
+
+| 잔류 MCP 도구 | 이유 |
+|:------------:|------|
+| `hybrid_search` | 핵심 검색 (semantic_search 병합: bm25_weight=0) |
+| `trace_callers` | 대화 중 역방향 call graph 추적 |
+| `trace_callees` | 대화 중 순방향 call graph 추적 |
+
+| CLI로 이관 (10개) | CLI 명령 |
+|:----------------:|----------|
+| `index_project` | `reindex` |
+| `index_status` | `status` |
+| `list_projects` | `status` |
+| `remove_project` | `remove-project` (신규) |
+| `search_symbols` | `search-symbols` (신규) |
+| `semantic_search` | `hybrid_search`에 병합 |
+| `compile_to_wiki` | `generate-wiki` |
+| `lookup_wiki` | `lookup-wiki` (신규) |
+| `check_wiki_staleness` | `stale` |
+| `refresh_wiki_page` | `sync-wiki` |
+
+**총 코드**: ~9,200줄 (34개 파일) | **MCP 도구**: 3개 | **테스트**: 218개 (13개 파일) | **CLI 명령**: 12개 | **스킬**: 3개
 
 ---
 
