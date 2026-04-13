@@ -1,7 +1,8 @@
 """AST-based code chunking using TreeSitter.
 
-Supports TypeScript/JavaScript/Python (Phase 1).
-Falls back to blank-line chunking for unsupported languages.
+Supports TypeScript/JavaScript/Python (Phase 1) + Rust/Go/Ruby/Java/C/C++/
+Swift/Kotlin/CSS/SQL (Phase 3b).
+Falls back to blank-line chunking for unsupported languages (e.g. HTML).
 
 IMPORTANT: tree-sitter returns byte offsets in UTF-8. When extracting text
 with node.start_byte / node.end_byte, always index into the *bytes* object
@@ -56,6 +57,68 @@ CHUNK_NODE_TYPES: dict[str, set[str]] = {
         "class_definition",
         "decorated_definition",
     },
+    # --- Phase 3b languages ---
+    "rust": {
+        "function_item",
+        "struct_item",
+        "enum_item",
+        "trait_item",
+        "impl_item",
+        "mod_item",
+        "type_item",
+    },
+    "go": {
+        "function_declaration",
+        "method_declaration",
+        "type_declaration",
+    },
+    "ruby": {
+        "method",
+        "class",
+        "module",
+        "singleton_method",
+    },
+    "java": {
+        "class_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "method_declaration",
+        "constructor_declaration",
+    },
+    "c": {
+        "function_definition",
+        "struct_specifier",
+        "type_definition",
+    },
+    "cpp": {
+        "function_definition",
+        "class_specifier",
+        "struct_specifier",
+        "namespace_definition",
+        "template_declaration",
+    },
+    "swift": {
+        "function_declaration",
+        "class_declaration",
+        "protocol_declaration",
+    },
+    "kotlin": {
+        "function_declaration",
+        "class_declaration",
+    },
+    "css": {
+        "rule_set",
+        "media_statement",
+        "keyframes_statement",
+    },
+    "scss": {
+        "rule_set",
+        "media_statement",
+        "keyframes_statement",
+    },
+    "sql": {
+        "statement",
+    },
 }
 
 # Node types that represent "class-like" containers
@@ -63,6 +126,14 @@ CLASS_NODE_TYPES = {
     "class_declaration",
     "class_definition",
     "interface_declaration",
+    # Phase 3b
+    "trait_item",       # Rust
+    "impl_item",        # Rust
+    "class",            # Ruby
+    "module",           # Ruby
+    "class_specifier",  # C++
+    "namespace_definition",  # C++
+    "protocol_declaration",  # Swift
 }
 
 
@@ -146,6 +217,38 @@ def _get_ts_language(language: str) -> ts.Language | None:
         elif language == "python":
             import tree_sitter_python
             return ts.Language(tree_sitter_python.language())
+        elif language == "rust":
+            import tree_sitter_rust
+            return ts.Language(tree_sitter_rust.language())
+        elif language == "go":
+            import tree_sitter_go
+            return ts.Language(tree_sitter_go.language())
+        elif language == "ruby":
+            import tree_sitter_ruby
+            return ts.Language(tree_sitter_ruby.language())
+        elif language == "java":
+            import tree_sitter_java
+            return ts.Language(tree_sitter_java.language())
+        elif language == "c":
+            import tree_sitter_c
+            return ts.Language(tree_sitter_c.language())
+        elif language == "cpp":
+            import tree_sitter_cpp
+            return ts.Language(tree_sitter_cpp.language())
+        elif language == "swift":
+            import tree_sitter_swift
+            return ts.Language(tree_sitter_swift.language())
+        elif language == "kotlin":
+            import tree_sitter_kotlin
+            return ts.Language(tree_sitter_kotlin.language())
+        elif language in ("css", "scss"):
+            import tree_sitter_css
+            return ts.Language(tree_sitter_css.language())
+        elif language == "sql":
+            import tree_sitter_sql
+            return ts.Language(tree_sitter_sql.language())
+        # HTML: no AST chunking (element-level chunks are meaningless)
+        # → falls through to blank-line fallback
     except ImportError:
         pass
     return None
@@ -163,6 +266,32 @@ def _extract_imports(root_node, ts_lang: str, source_bytes: bytes) -> list[str]:
                         imports.append(text)
         elif ts_lang == "python":
             if child.type in ("import_statement", "import_from_statement"):
+                imports.append(_node_text(source_bytes, child))
+        elif ts_lang == "rust":
+            if child.type == "use_declaration":
+                imports.append(_node_text(source_bytes, child))
+        elif ts_lang == "go":
+            if child.type == "import_declaration":
+                for desc in _iter_descendants(child):
+                    if desc.type == "interpreted_string_literal":
+                        text = _node_text(source_bytes, desc).strip('"')
+                        imports.append(text)
+        elif ts_lang == "java":
+            if child.type == "import_declaration":
+                imports.append(_node_text(source_bytes, child))
+        elif ts_lang == "ruby":
+            if child.type == "call":
+                text = _node_text(source_bytes, child)
+                if text.startswith(("require", "require_relative")):
+                    imports.append(text)
+        elif ts_lang == "kotlin":
+            if child.type == "import":
+                imports.append(_node_text(source_bytes, child))
+        elif ts_lang == "swift":
+            if child.type == "import_declaration":
+                imports.append(_node_text(source_bytes, child))
+        elif ts_lang in ("c", "cpp"):
+            if child.type == "preproc_include":
                 imports.append(_node_text(source_bytes, child))
     return imports
 
@@ -270,9 +399,76 @@ def _walk_node(
 
 def _extract_name(node, source_bytes: bytes, language: str) -> str:
     """Extract the name of a function/class/type from its AST node."""
+    # Common name node types across languages
+    _NAME_TYPES = {
+        "identifier", "type_identifier", "property_identifier",
+        "simple_identifier",  # Swift
+        "constant",           # Ruby (class/module names)
+        "field_identifier",   # Go method receiver
+        "package_identifier", # Go
+    }
+
+    # Java method_declaration: type_identifier is the *return type*, not the name.
+    # Must pick the plain identifier (method name) and skip type_identifier.
+    if node.type in ("method_declaration", "constructor_declaration") and language == "java":
+        for child in node.children:
+            if child.type == "identifier":
+                return _node_text(source_bytes, child)
+
     for child in node.children:
-        if child.type in ("identifier", "type_identifier", "property_identifier"):
+        if child.type in _NAME_TYPES:
             return _node_text(source_bytes, child)
+
+    # C/C++ function_definition: name is inside function_declarator child
+    if node.type == "function_definition":
+        for child in node.children:
+            if child.type == "function_declarator":
+                for gc in child.children:
+                    if gc.type in _NAME_TYPES:
+                        return _node_text(source_bytes, gc)
+
+    # C++ class_specifier/struct_specifier: name is type_identifier direct child
+    if node.type in ("class_specifier", "struct_specifier"):
+        for child in node.children:
+            if child.type in _NAME_TYPES:
+                return _node_text(source_bytes, child)
+
+    # C++ namespace_definition: uses namespace_identifier
+    if node.type == "namespace_definition":
+        for child in node.children:
+            if child.type == "namespace_identifier":
+                return _node_text(source_bytes, child)
+
+    # Go type_declaration: name is inside type_spec child
+    if node.type == "type_declaration":
+        for child in node.children:
+            if child.type == "type_spec":
+                for gc in child.children:
+                    if gc.type in _NAME_TYPES:
+                        return _node_text(source_bytes, gc)
+
+    # Go method_declaration: receiver + name
+    if node.type == "method_declaration":
+        for child in node.children:
+            if child.type == "field_identifier":
+                return _node_text(source_bytes, child)
+
+    # C++ template_declaration: look inside for the actual declaration name
+    if node.type == "template_declaration":
+        for child in node.children:
+            if child.type in ("function_definition", "class_specifier", "struct_specifier"):
+                return _extract_name(child, source_bytes, language)
+
+    # CSS rule_set: use selector text as name
+    if node.type == "rule_set":
+        for child in node.children:
+            if child.type == "selectors":
+                return _node_text(source_bytes, child).strip()
+
+    # SQL statement: extract table/view name from first few tokens
+    if node.type == "statement":
+        text = _node_text(source_bytes, node)[:80].strip()
+        return text.split("\n")[0].strip()
 
     if node.type == "arrow_function" and node.parent:
         for sibling in node.parent.children:
@@ -290,6 +486,7 @@ def _extract_name(node, source_bytes: bytes, language: str) -> str:
 def _classify_node_type(node, language: str) -> str:
     """Map AST node type to a simpler classification."""
     type_map = {
+        # Phase 1: TS/JS/Python
         "function_declaration": "function",
         "function_definition": "function",
         "method_definition": "method",
@@ -302,6 +499,31 @@ def _classify_node_type(node, language: str) -> str:
         "decorated_definition": "function",
         "lexical_declaration": "variable",
         "export_statement": "export",
+        # Phase 3b
+        "function_item": "function",       # Rust
+        "struct_item": "struct",           # Rust
+        "enum_item": "enum",              # Rust
+        "trait_item": "trait",            # Rust
+        "impl_item": "impl",             # Rust
+        "mod_item": "module",            # Rust
+        "type_item": "type",             # Rust
+        "method_declaration": "method",    # Go, Java
+        "type_declaration": "type",        # Go
+        "method": "method",               # Ruby
+        "class": "class",                 # Ruby
+        "module": "module",               # Ruby
+        "singleton_method": "method",      # Ruby
+        "constructor_declaration": "constructor",  # Java
+        "struct_specifier": "struct",      # C, C++
+        "type_definition": "type",         # C
+        "class_specifier": "class",        # C++
+        "namespace_definition": "namespace",  # C++
+        "template_declaration": "template",   # C++
+        "protocol_declaration": "protocol",   # Swift
+        "rule_set": "rule",                # CSS
+        "media_statement": "media",        # CSS
+        "keyframes_statement": "keyframes",  # CSS
+        "statement": "statement",          # SQL
     }
     return type_map.get(node.type, "other")
 
@@ -318,7 +540,8 @@ def _extract_docstring(node, source_bytes: bytes, language: str) -> str | None:
                                 text = _node_text(source_bytes, expr)
                                 return text.strip("'\"").strip()
                     break
-    elif language in ("typescript", "javascript"):
+    elif language in ("typescript", "javascript", "java"):
+        # JSDoc / Javadoc: /** ... */ preceding the node
         if node.parent:
             idx = None
             for i, sibling in enumerate(node.parent.children):
@@ -331,6 +554,60 @@ def _extract_docstring(node, source_bytes: bytes, language: str) -> str | None:
                     text = _node_text(source_bytes, prev)
                     if text.startswith("/**"):
                         return _clean_jsdoc(text)
+    elif language == "rust":
+        # Rust doc comments: /// or //! preceding the node
+        if node.parent:
+            idx = None
+            for i, sibling in enumerate(node.parent.children):
+                if sibling == node:
+                    idx = i
+                    break
+            if idx and idx > 0:
+                doc_lines: list[str] = []
+                for j in range(idx - 1, -1, -1):
+                    prev = node.parent.children[j]
+                    if prev.type == "line_comment":
+                        text = _node_text(source_bytes, prev)
+                        if text.startswith("///") or text.startswith("//!"):
+                            doc_lines.insert(0, text.lstrip("/!").strip())
+                        else:
+                            break
+                    else:
+                        break
+                if doc_lines:
+                    return " ".join(doc_lines)
+    elif language == "go":
+        # Go doc comments: // preceding the node
+        if node.parent:
+            idx = None
+            for i, sibling in enumerate(node.parent.children):
+                if sibling == node:
+                    idx = i
+                    break
+            if idx and idx > 0:
+                prev = node.parent.children[idx - 1]
+                if prev.type == "comment":
+                    text = _node_text(source_bytes, prev)
+                    return text.lstrip("/").strip()
+    elif language == "ruby":
+        # Ruby: # comment lines preceding the node
+        if node.parent:
+            idx = None
+            for i, sibling in enumerate(node.parent.children):
+                if sibling == node:
+                    idx = i
+                    break
+            if idx and idx > 0:
+                doc_lines: list[str] = []
+                for j in range(idx - 1, -1, -1):
+                    prev = node.parent.children[j]
+                    if prev.type == "comment":
+                        text = _node_text(source_bytes, prev).lstrip("#").strip()
+                        doc_lines.insert(0, text)
+                    else:
+                        break
+                if doc_lines:
+                    return " ".join(doc_lines)
     return None
 
 
@@ -371,9 +648,14 @@ def _extract_call_name(call_node, source_bytes: bytes, language: str) -> str | N
         return _node_text(source_bytes, func_node)
 
     # Member expression: obj.method() — extract the method name
-    if func_node.type in ("member_expression", "attribute"):
+    if func_node.type in (
+        "member_expression", "attribute",       # TS/JS, Python
+        "selector_expression",                  # Go
+        "field_expression",                     # Rust
+        "scoped_identifier",                    # Rust (path::func)
+    ):
         for child in reversed(func_node.children):
-            if child.type in ("identifier", "property_identifier"):
+            if child.type in ("identifier", "property_identifier", "field_identifier"):
                 return _node_text(source_bytes, child)
 
     # Subscript expression or other complex forms — skip

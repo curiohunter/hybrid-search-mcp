@@ -104,7 +104,17 @@ def detect_language(file_path: Path) -> str | None:
 
 
 def _is_changed(abs_path: Path, db_rec: FileRecord) -> bool:
-    """Fast prefilter: check (size, mtime) first, then SHA256 if needed."""
+    """Fast prefilter: check (size, mtime) first, then SHA256 if needed.
+
+    Crash recovery: file_hash="" means a previous indexing run crashed mid-write
+    (the file record was created with placeholder hash, but the final update never
+    committed). Always re-process these files.
+    """
+    # Crash recovery: empty hash = partial write from crashed indexing
+    if not db_rec.file_hash:
+        logger.info("Partial write detected for %s, scheduling re-index", db_rec.relative_path)
+        return True
+
     try:
         stat = abs_path.stat()
     except OSError:

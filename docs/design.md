@@ -1213,8 +1213,16 @@ MCP 서버의 `hybrid_search` tool description에 아래 가이드를 포함:
 
 **Phase 3a 검증**: hybrid-search-mcp 자체 인덱싱 — 1,934 call edges, 0 dirty names, 146 resolved (132 medium). `trace_callers("upsert_file")` → 4 nodes (depth 2), `trace_callees("index_project")` → 13 nodes (depth 2).
 
-#### Phase 3b: 추가 언어 지원
-- [ ] Rust, Go, Ruby, Java, C/C++, Swift, Kotlin, SQL, CSS, HTML
+#### Phase 3b: 추가 언어 지원 ✅ 완료 (2026-04-13)
+- [x] **14개 AST 언어**: TS, JS, Python (Phase 1) + Rust, Go, Ruby, Java, C, C++, Swift, Kotlin, CSS, SCSS, SQL (Phase 3b)
+- [x] **HTML**: fallback blank-line chunking (element 단위 AST 청킹은 무의미)
+- [x] `CHUNK_NODE_TYPES` 14개 언어 매핑, `CLASS_NODE_TYPES` 10개 노드 타입
+- [x] `_get_ts_language()` 13개 grammar 분기 (CSS=SCSS 공유)
+- [x] `_extract_name()` — C/C++ function_declarator, Go type_spec, namespace_identifier 등 언어별 이름 추출
+- [x] `_extract_imports()` — Rust(use), Go(import), Java(import), Ruby(require), Kotlin(import), Swift(import), C/C++(#include)
+- [x] `_extract_docstring()` — Rust(///), Go(//), Ruby(#), Java(Javadoc)
+- [x] `_extract_call_name()` — Go selector_expression, Rust scoped_identifier/field_expression
+- [x] `pyproject.toml` 11개 tree-sitter grammar 의존성 추가
 
 ### Phase 4: Polish
 - [ ] Apple Silicon MPS 가속
@@ -1240,6 +1248,18 @@ dependencies = [
     "tree-sitter-python>=0.23",    # Python grammar
     "tree-sitter-javascript>=0.23",# JavaScript grammar
     "tree-sitter-typescript>=0.23",# TypeScript grammar
+    # Phase 3b: 10 additional languages
+    "tree-sitter-rust>=0.24",
+    "tree-sitter-go>=0.25",
+    "tree-sitter-ruby>=0.23",
+    "tree-sitter-java>=0.23",
+    "tree-sitter-c>=0.24",
+    "tree-sitter-cpp>=0.23",
+    "tree-sitter-swift>=0.0.1",
+    "tree-sitter-kotlin>=1.0",
+    "tree-sitter-css>=0.25",
+    "tree-sitter-html>=0.23",
+    "tree-sitter-sql>=0.3",
     "pathspec>=0.12",              # .gitignore parsing
 ]
 # Note: tree-sitter-languages는 Python 3.13 미지원으로 개별 grammar 패키지 사용
