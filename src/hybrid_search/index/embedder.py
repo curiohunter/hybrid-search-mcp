@@ -70,9 +70,11 @@ class Embedder:
         api_key = self._get_api_key()
         model = self._config.openai_model or DEFAULT_MODEL
 
+        truncated = [self._truncate(t) for t in texts]
+
         payload = json.dumps({
             "model": model,
-            "input": texts,
+            "input": truncated,
         }).encode("utf-8")
 
         req = urllib.request.Request(
@@ -99,6 +101,18 @@ class Embedder:
         # Response: {"data": [{"embedding": [...], "index": 0}, ...]}
         embeddings = [item["embedding"] for item in data["data"]]
         return embeddings
+
+    _enc = None  # lazy-loaded tiktoken encoder
+
+    def _truncate(self, text: str, max_tokens: int = 8000) -> str:
+        """Truncate text to fit within OpenAI's 8192 token limit."""
+        if Embedder._enc is None:
+            import tiktoken
+            Embedder._enc = tiktoken.encoding_for_model("text-embedding-3-small")
+        tokens = Embedder._enc.encode(text)
+        if len(tokens) <= max_tokens:
+            return text
+        return Embedder._enc.decode(tokens[:max_tokens])
 
     def _embed_all(self, texts: list[str]) -> np.ndarray:
         """Embed texts via OpenAI API in batches."""
