@@ -1,13 +1,15 @@
 """Indexing pipeline — orchestrates scanner → chunker → embedder → index update.
 
 Implements the multi-store update order from §13 of the design doc.
+Uses 2-pass architecture for efficient cross-file embedding batching.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -29,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 DOC_LANGUAGES = {"markdown", "json", "yaml", "toml"}
 
+# Flush embedding buffer and write to stores after accumulating this many chunks.
+# Keeps memory bounded while still batching efficiently across files.
+EMBED_FLUSH_THRESHOLD = 128
+
 
 @dataclass
 class IndexingResult:
@@ -44,6 +50,20 @@ class IndexingResult:
     def __post_init__(self):
         if self.errors is None:
             self.errors = []
+
+
+@dataclass
+class _FileChunkResult:
+    """Intermediate result from Pass 1 (chunking only, no embedding yet)."""
+
+    file_id: str
+    rel_path: str
+    file_hash: str
+    file_size: int
+    file_mtime: str
+    language: str
+    chunks: list[CodeChunk]
+    old_chunk_ids: list[str] = field(default_factory=list)
 
 
 # Type for progress callbacks: (current_file_index, total_files, file_path)
@@ -103,26 +123,48 @@ class IndexingPipeline:
             # Process deletions
             self._process_deletions(db, vector_engine, bm25_engine, pid, scan.deleted)
 
-            # Process added and changed files with periodic checkpoint
+            # ── 2-pass indexing ──
             all_files = scan.added + scan.changed
             total_files = len(all_files)
-            batch_interval = 10  # Checkpoint every N files to limit crash-loss window
+
+            # Accumulation buffer for cross-file embedding batching
+            pending: list[_FileChunkResult] = []
+            pending_chunk_count = 0
+
             for i, file_path in enumerate(all_files):
                 if on_progress is not None:
                     try:
                         on_progress(i + 1, total_files, str(file_path.relative_to(abs_path)))
                     except Exception:
                         pass  # Progress callback failure is non-fatal
-                try:
-                    self._process_file(db, vector_engine, bm25_engine, file_path, abs_path, pid)
-                except Exception as e:
-                    logger.error("Error processing %s: %s", file_path, e)
-                    result.errors.append(f"{file_path}: {e}")
 
-                # Periodic checkpoint: commit Tantivy + save USearch every N files
-                if (i + 1) % batch_interval == 0:
-                    bm25_engine.commit()
-                    vector_engine.save()
+                # Pass 1: chunk only (no embedding)
+                try:
+                    fcr = self._chunk_file(db, file_path, abs_path, pid)
+                except Exception as e:
+                    logger.error("Error chunking %s: %s", file_path, e)
+                    result.errors.append(f"{file_path}: {e}")
+                    continue
+
+                if fcr is None:
+                    continue
+
+                pending.append(fcr)
+                pending_chunk_count += len(fcr.chunks)
+
+                # Flush when buffer is full
+                if pending_chunk_count >= EMBED_FLUSH_THRESHOLD:
+                    self._flush_pending(
+                        pending, db, vector_engine, bm25_engine, pid, result,
+                    )
+                    pending.clear()
+                    pending_chunk_count = 0
+
+            # Flush remaining
+            if pending:
+                self._flush_pending(
+                    pending, db, vector_engine, bm25_engine, pid, result,
+                )
 
             # Final commit
             bm25_engine.commit()
@@ -172,68 +214,120 @@ class IndexingPipeline:
         )
         return result
 
-    def _process_file(
+    # ── Pass 1: chunk only ──
+
+    def _chunk_file(
         self,
         db: StoreDB,
-        vector_engine: VectorEngine,
-        bm25_engine: BM25Engine,
         file_path: Path,
         project_root: Path,
         project_id: str,
-    ) -> None:
-        """Process a single file: chunk → embed → store."""
+    ) -> _FileChunkResult | None:
+        """Chunk a single file without embedding. Returns None if skipped."""
         rel_path = str(file_path.relative_to(project_root))
         language = detect_language(file_path)
         if language is None:
-            return
+            return None
 
         source = file_path.read_text(errors="replace")
         file_hash = compute_file_hash(file_path)
         stat = file_path.stat()
-
-        # Generate file ID
-        import hashlib
         file_id = hashlib.sha256(f"{project_id}:{rel_path}".encode()).hexdigest()[:16]
 
-        # Chunk the file
         if language in DOC_LANGUAGES:
             chunks = chunk_doc_file(file_path, project_root, project_id, language, source)
         else:
             chunks = chunk_code_file(file_path, project_root, project_id, language, source)
 
         if not chunks:
-            return
+            return None
 
-        # Generate embeddings
-        embedding_texts = [c.embedding_input for c in chunks]
-        embeddings = self._embedder.embed_texts(embedding_texts)
+        old_chunk_ids = db.get_chunk_ids_by_file(file_id)
 
+        return _FileChunkResult(
+            file_id=file_id,
+            rel_path=rel_path,
+            file_hash=file_hash,
+            file_size=stat.st_size,
+            file_mtime=str(stat.st_mtime),
+            language=language,
+            chunks=chunks,
+            old_chunk_ids=old_chunk_ids,
+        )
+
+    # ── Pass 2: batch embed + store ──
+
+    def _flush_pending(
+        self,
+        pending: list[_FileChunkResult],
+        db: StoreDB,
+        vector_engine: VectorEngine,
+        bm25_engine: BM25Engine,
+        project_id: str,
+        result: IndexingResult,
+    ) -> None:
+        """Batch-embed all pending chunks and write to stores."""
+        # Collect all embedding texts across files
+        all_texts: list[str] = []
+        for fcr in pending:
+            for chunk in fcr.chunks:
+                all_texts.append(chunk.embedding_input)
+
+        # Single batched embedding call across all pending files
+        all_embeddings = self._embedder.embed_texts(all_texts)
+
+        # Distribute embeddings back to files and write to stores
+        embed_offset = 0
+        for fcr in pending:
+            n_chunks = len(fcr.chunks)
+            file_embeddings = all_embeddings[embed_offset : embed_offset + n_chunks]
+            embed_offset += n_chunks
+
+            try:
+                self._store_file(db, vector_engine, bm25_engine, fcr, file_embeddings, project_id)
+            except Exception as e:
+                logger.error("Error storing %s: %s", fcr.rel_path, e)
+                result.errors.append(f"{fcr.rel_path}: {e}")
+
+        # Checkpoint after each flush
+        bm25_engine.commit()
+        vector_engine.save()
+
+    def _store_file(
+        self,
+        db: StoreDB,
+        vector_engine: VectorEngine,
+        bm25_engine: BM25Engine,
+        fcr: _FileChunkResult,
+        embeddings: np.ndarray,
+        project_id: str,
+    ) -> None:
+        """Write chunked + embedded file data to all stores."""
         # Multi-store update — SQLite writes in a transaction for atomicity
         with db.transaction() as conn:
             # Step 0: Ensure file record exists (FK for chunks)
             file_record_init = FileRecord(
-                id=file_id,
+                id=fcr.file_id,
                 project_id=project_id,
-                relative_path=rel_path,
+                relative_path=fcr.rel_path,
                 file_hash="",  # placeholder — updated at Step 5
-                file_size=stat.st_size,
-                file_mtime=str(stat.st_mtime),
-                language=language,
+                file_size=fcr.file_size,
+                file_mtime=fcr.file_mtime,
+                language=fcr.language,
                 chunk_count=0,
             )
             db.upsert_file(conn, file_record_init)
 
             # Step 1: Delete old call_edges, then old chunks
-            old_chunk_ids = db.get_chunk_ids_by_file(file_id)
-            for old_cid in old_chunk_ids:
+            for old_cid in fcr.old_chunk_ids:
                 db.delete_call_edges_by_caller(conn, old_cid)
-            db.delete_chunks_by_file(conn, file_id)
+            db.delete_chunks_by_file(conn, fcr.file_id)
 
             # Step 2: Insert new chunks + call edges
             chunk_records = [
                 ChunkRecord(
                     id=c.id,
-                    file_id=file_id,
+                    file_id=fcr.file_id,
                     project_id=project_id,
                     name=c.name,
                     qualified_name=c.qualified_name,
@@ -247,32 +341,32 @@ class IndexingPipeline:
                     docstring=c.docstring,
                     parent_name=c.parent_name,
                 )
-                for c in chunks
+                for c in fcr.chunks
             ]
             db.insert_chunks(conn, chunk_records)
 
-            for c in chunks:
+            for c in fcr.chunks:
                 if c.calls:
                     db.insert_call_edges(conn, c.id, c.calls, project_id)
 
             # Step 5: Update file record last (crash recovery marker)
             file_record = FileRecord(
-                id=file_id,
+                id=fcr.file_id,
                 project_id=project_id,
-                relative_path=rel_path,
-                file_hash=file_hash,
-                file_size=stat.st_size,
-                file_mtime=str(stat.st_mtime),
-                language=language,
-                chunk_count=len(chunks),
+                relative_path=fcr.rel_path,
+                file_hash=fcr.file_hash,
+                file_size=fcr.file_size,
+                file_mtime=fcr.file_mtime,
+                language=fcr.language,
+                chunk_count=len(fcr.chunks),
             )
             db.upsert_file(conn, file_record)
 
         # Step 3: Update BM25 index (outside transaction — non-SQLite)
-        if old_chunk_ids:
-            bm25_engine.delete_batch(old_chunk_ids)
+        if fcr.old_chunk_ids:
+            bm25_engine.delete_batch(fcr.old_chunk_ids)
 
-        for c in chunks:
+        for c in fcr.chunks:
             bm25_engine.add(
                 chunk_id=c.id,
                 name=c.name,
@@ -282,10 +376,10 @@ class IndexingPipeline:
             )
 
         # Step 4: Update vector index
-        if old_chunk_ids:
-            vector_engine.remove_batch(old_chunk_ids)
+        if fcr.old_chunk_ids:
+            vector_engine.remove_batch(fcr.old_chunk_ids)
 
-        chunk_ids = [c.id for c in chunks]
+        chunk_ids = [c.id for c in fcr.chunks]
         vector_engine.add_batch(chunk_ids, embeddings)
 
     def _process_deletions(
