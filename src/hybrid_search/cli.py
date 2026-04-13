@@ -95,6 +95,15 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     if result.files_changed > 0 or result.files_deleted > 0:
         _mark_stale_wikis(config, registry, project_name)
 
+    # Auto sync wiki if wiki directory exists
+    wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
+    if wiki_dir.exists() and any(wiki_dir.glob("*.md")):
+        print("Auto-syncing wiki to DB...")
+        # Reuse sync logic inline
+        import argparse as _ap
+        _sync_args = _ap.Namespace(cwd=project_path)
+        cmd_sync_wiki(_sync_args)
+
     # Gap detection for new files
     _write_gap_flag(cwd, result.files_added)
 
