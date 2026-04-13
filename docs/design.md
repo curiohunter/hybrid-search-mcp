@@ -1154,30 +1154,44 @@ MCP 서버의 `hybrid_search` tool description에 아래 가이드를 포함:
 
 ## 16. Implementation Phases
 
-### Phase 1: MVP — 한국어→영어 코드 검색 증명
+### Phase 1: MVP — 한국어→영어 코드 검색 증명 ✅ 완료 (2026-04-13)
 
 > **목표**: "로그인" → `signIn()` 매칭이 동작하는 최소 파이프라인
 
-- [ ] **임베딩 모델 벤치마크** (e5-base vs gte-multilingual vs bge-m3, 30개 쿼리셋)
-- [ ] MCP 서버 뼈대 (mcp[cli] SDK)
-- [ ] File scanner + (size, mtime) prefilter + SHA256 delta detection
-- [ ] **AST chunker**: TypeScript/JavaScript + Python (핵심 3개 언어)
-- [ ] 문서 chunker (markdown heading 분할)
-- [ ] Embedding 생성 (벤치마크 승자 모델, ONNX)
-- [ ] USearch 벡터 인덱스
-- [ ] `semantic_search` tool (필터 포함)
-- [ ] `search_symbols` tool
-- [ ] `index_project` tool
-- [ ] `index_status` / `list_projects` tools
+- [x] **임베딩 모델 벤치마크** → e5-small, e5-base, Qwen3-Embedding-0.6B 비교. **Qwen3 승리** (KR R@1=0.70). 속도 이유로 **e5-small로 운영** 결정 (90초 vs 8분). gte-multilingual-base는 custom modeling code 호환성 문제로 제외.
+- [x] MCP 서버 뼈대 (mcp[cli] SDK)
+- [x] File scanner + (size, mtime) prefilter + SHA256 delta detection
+- [x] **AST chunker**: TypeScript/JavaScript + Python (tree-sitter 개별 패키지, tree-sitter-languages는 Python 3.13 미지원)
+- [x] 문서 chunker (markdown heading 분할)
+- [x] Embedding 생성 — **sentence-transformers 백엔드** 추가 (Qwen3 ONNX 미지원 대응). ONNX 백엔드도 유지.
+- [x] USearch 벡터 인덱스
+- [x] `semantic_search` tool (필터 포함)
+- [x] `search_symbols` tool
+- [x] `index_project` tool
+- [x] `index_status` / `list_projects` / `remove_project` tools
 
-**MVP 검증 기준**: breeze 프로젝트에서 한국어 쿼리 10개 → Recall@10 > 0.7
+**MVP 검증**: breeze 프로젝트 155파일, 326 chunks, 90초, 에러 0. 글로벌 MCP 등록 완료.
 
-### Phase 2: Hybrid + BM25
-- [ ] Tantivy-py BM25 인덱스
-- [ ] RRF fusion 구현
-- [ ] 쿼리 분류기 (EXACT_SYMBOL / KOREAN_NL / ENGLISH_NL)
-- [ ] `hybrid_search` tool
-- [ ] 멀티 프로젝트 + cross-project 검색
+**발견된 버그 및 수정사항**:
+- `INSERT OR REPLACE` + `FK ON DELETE CASCADE` → chunks 전멸 버그. `ON CONFLICT DO UPDATE`로 수정.
+- Python 3.13의 `isolation_level` 기본 동작 변경 → `isolation_level=None` + 명시적 commit으로 수정.
+- `file_path` 필드에 file_id(해시) 반환 → `files` 테이블에서 `relative_path` 조회로 수정.
+
+### Phase 2: Hybrid + BM25 ✅ 완료 (2026-04-13)
+- [x] Tantivy-py BM25 인덱스 (content + name + qualified_name + docstring)
+- [x] RRF fusion 구현 (k=60, 쿼리 분류 기반 가중치)
+- [x] 쿼리 분류기 (EXACT_SYMBOL / KOREAN_NL / ENGLISH_NL) — SCREAMING_SNAKE, dot-qualified name 포함
+- [x] `hybrid_search` tool
+- [x] 멀티 프로젝트 + cross-project 검색 (round-robin interleave, 2초 타임아웃)
+- [x] BM25Engine read_only 모드 (검색 시 리소스 충돌 방지)
+- [x] 10파일 간격 배치 checkpoint (크래시 손실 최소화)
+
+### Phase 2.5: 실사용 검증 🔄 진행 중
+- [x] breeze 프로젝트 인덱싱 완료 (155파일, 326 chunks)
+- [x] 글로벌 MCP 서버 등록 (`~/.claude.json`)
+- [ ] breeze에서 실제 한국어→영어 검색 E2E 테스트
+- [ ] MindVault 컨텍스트와 hybrid_search 결과 비교 체감
+- [ ] 문제 발견 시 즉시 수정
 
 ### Phase 3: Call Graph + 언어 확장
 - [ ] Call graph 추출 (import 기반 resolution, confidence 레벨)
@@ -1201,12 +1215,16 @@ dependencies = [
     "mcp[cli]>=1.0",              # MCP SDK
     "tantivy>=0.22",               # BM25 (Rust-backed)
     "usearch>=2.0",                # HNSW vector index
-    "onnxruntime>=1.17",           # ONNX model inference
-    "transformers>=4.40",          # Tokenizer only (not full model)
-    "tree-sitter>=0.22",           # AST parsing
-    "tree-sitter-languages>=1.10", # Language grammars (bundled)
+    "onnxruntime>=1.17",           # ONNX model inference (optional backend)
+    "sentence-transformers>=5.0",  # Primary embedding backend
+    "transformers>=4.40",          # Tokenizer
+    "tree-sitter>=0.23",           # AST parsing
+    "tree-sitter-python>=0.23",    # Python grammar
+    "tree-sitter-javascript>=0.23",# JavaScript grammar
+    "tree-sitter-typescript>=0.23",# TypeScript grammar
     "pathspec>=0.12",              # .gitignore parsing
 ]
+# Note: tree-sitter-languages는 Python 3.13 미지원으로 개별 grammar 패키지 사용
 
 [project.optional-dependencies]
 gpu = ["onnxruntime-silicon>=1.17"]  # Apple MPS support
@@ -1216,7 +1234,7 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 ## 18. Open Questions
 
 ### Resolved
-- ~~bge-m3 vs multilingual-e5~~ → Phase 1에서 벤치마크 후 결정, Qwen-3 추가 (§7)
+- ~~bge-m3 vs multilingual-e5~~ → 벤치마크 완료: Qwen3-0.6B(R@1=0.83) > e5-base(0.77) > e5-small(0.77). 운영은 e5-small(속도), 품질 필요시 Qwen3 전환 (§7)
 - ~~Call graph 정확도~~ → confidence 레벨 + common name 필터로 noise 관리 (§12)
 - ~~meta.db/chunks.db 불일치~~ → store.db 단일 통합 (§13)
 - ~~callgraph/ 디렉토리 vs store.db~~ → callgraph/ 제거, call_edges는 store.db 내 (§5, §12)
@@ -1231,8 +1249,10 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 - ~~도구 응답 스키마 부재~~ → trace, index_status 응답 형식 추가 (§10)
 
 ### Open
-1. **bge-m3 Sparse Vector**: bge-m3의 자체 sparse vector를 Tantivy BM25 대신 쓰면 파이프라인 단순화 가능. 벤치마크에서 BM25 대비 품질 비교 필요
-2. **인덱스 크기**: 8개 프로젝트 * 평균 5K 파일 = 40K 파일의 인덱스가 디스크/메모리에 적합한가? → Phase 1 완료 후 실측
+1. ~~**bge-m3 Sparse Vector**~~ → bge-m3는 CPU에서 너무 느려서 실사용 불가. e5-small + Tantivy BM25 조합으로 확정
+2. **인덱스 크기**: breeze 155파일 = 326 chunks. 8개 프로젝트 추정치 재계산 필요
 3. **MPS 가속 효과**: Apple Silicon에서 ONNX + MPS가 CPU 대비 얼마나 빠른가? → Phase 4에서 측정
 4. **MindVault 장기 통합**: Hybrid Search가 안정화되면 MindVault의 BM25를 대체하고, MindVault는 Graph/Wiki에 집중하는 구조로 갈 수 있는가?
 5. **임베딩 입력 최적화**: 구조화된 입력(§7) vs raw code의 실제 retrieval 품질 차이는? → 벤치마크에서 A/B 비교
+6. **INSERT OR REPLACE + FK CASCADE**: SQLite에서 REPLACE는 DELETE+INSERT로 구현되어 FK CASCADE 발동. `ON CONFLICT DO UPDATE` 패턴 필수. (해결됨, 교훈으로 기록)
+7. **Python 3.13 sqlite3 호환성**: `isolation_level` 기본값과 `executescript` 동작이 3.12와 다름. `isolation_level=None` + 명시적 commit 필요. (해결됨, 교훈으로 기록)
