@@ -21,6 +21,12 @@ from hybrid_search.tools.projects import handle_list_projects, handle_remove_pro
 from hybrid_search.tools.semantic_search import handle_semantic_search
 from hybrid_search.tools.symbols import handle_search_symbols
 from hybrid_search.tools.trace import handle_trace_callers, handle_trace_callees
+from hybrid_search.tools.wiki import (
+    handle_compile_to_wiki,
+    handle_lookup_wiki,
+    handle_check_wiki_staleness,
+    handle_refresh_wiki_page,
+)
 
 logger = logging.getLogger("hybrid_search")
 
@@ -121,6 +127,10 @@ def create_server(config: Config, config_path: Path | None = None) -> Server:
                             "minimum": 0.0,
                             "maximum": 1.0,
                             "description": "Weight for BM25 (0-1). Auto-classified if omitted.",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Current working directory. When set, boosts results from the matching project.",
                         },
                     },
                     "required": ["query"],
@@ -278,6 +288,87 @@ def create_server(config: Config, config_path: Path | None = None) -> Server:
                     },
                 },
             ),
+            Tool(
+                name="compile_to_wiki",
+                description=(
+                    "Save a compiled wiki page from search results. "
+                    "Claude writes the content; the server tracks which source files were used "
+                    "so it can detect when the page becomes stale."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project name"},
+                        "query": {"type": "string", "description": "The question this wiki page answers"},
+                        "title": {"type": "string", "description": "Page title"},
+                        "content": {"type": "string", "description": "Markdown content (written by you)"},
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Topic tags for secondary lookup",
+                        },
+                        "source_chunk_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Chunk IDs from search results used to write this page",
+                        },
+                    },
+                    "required": ["project", "query", "title", "content"],
+                },
+            ),
+            Tool(
+                name="lookup_wiki",
+                description=(
+                    "Look up a cached wiki page by query or tag. "
+                    "Returns the page content with staleness status. "
+                    "Use before re-searching to check if a compiled answer already exists."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project name"},
+                        "query": {"type": "string", "description": "Question to look up"},
+                        "tag": {"type": "string", "description": "Tag to search by"},
+                    },
+                    "required": ["project"],
+                },
+            ),
+            Tool(
+                name="check_wiki_staleness",
+                description=(
+                    "Check if wiki pages are stale (source files changed since compilation). "
+                    "Omit page_id to check all pages in the project."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project name"},
+                        "page_id": {"type": "string", "description": "Specific page ID, or omit for all"},
+                    },
+                    "required": ["project"],
+                },
+            ),
+            Tool(
+                name="refresh_wiki_page",
+                description=(
+                    "Update a stale wiki page with new content. "
+                    "Re-snapshots file hashes so staleness resets."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project name"},
+                        "page_id": {"type": "string", "description": "Page ID to refresh"},
+                        "content": {"type": "string", "description": "Updated markdown content"},
+                        "source_chunk_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "New chunk IDs if sources changed",
+                        },
+                    },
+                    "required": ["project", "page_id", "content"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -313,6 +404,7 @@ def _dispatch_tool(
                 file_pattern=args.get("file_pattern"),
                 node_types=args.get("node_types"),
                 bm25_weight=args.get("bm25_weight"),
+                cwd=args.get("cwd"),
             )
         case "semantic_search":
             return handle_semantic_search(
@@ -374,6 +466,41 @@ def _dispatch_tool(
                 project=args.get("project"),
                 depth=args.get("depth", 2),
                 min_confidence=args.get("min_confidence", "medium"),
+            )
+        case "compile_to_wiki":
+            return handle_compile_to_wiki(
+                config=config,
+                registry=registry,
+                project=args["project"],
+                query=args["query"],
+                title=args["title"],
+                content=args["content"],
+                tags=args.get("tags"),
+                source_chunk_ids=args.get("source_chunk_ids"),
+            )
+        case "lookup_wiki":
+            return handle_lookup_wiki(
+                config=config,
+                registry=registry,
+                project=args["project"],
+                query=args.get("query"),
+                tag=args.get("tag"),
+            )
+        case "check_wiki_staleness":
+            return handle_check_wiki_staleness(
+                config=config,
+                registry=registry,
+                project=args["project"],
+                page_id=args.get("page_id"),
+            )
+        case "refresh_wiki_page":
+            return handle_refresh_wiki_page(
+                config=config,
+                registry=registry,
+                project=args["project"],
+                page_id=args["page_id"],
+                content=args["content"],
+                source_chunk_ids=args.get("source_chunk_ids"),
             )
         case _:
             return {"error": f"Unknown tool: {name}"}

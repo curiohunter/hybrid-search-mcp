@@ -11,7 +11,7 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 
@@ -82,6 +82,34 @@ CREATE INDEX IF NOT EXISTS idx_callee_name ON call_edges(callee_name);
 CREATE INDEX IF NOT EXISTS idx_callee_qualified ON call_edges(callee_qualified_name);
 CREATE INDEX IF NOT EXISTS idx_callee_chunk ON call_edges(callee_chunk_id);
 CREATE INDEX IF NOT EXISTS idx_caller ON call_edges(caller_chunk_id);
+
+CREATE TABLE IF NOT EXISTS wiki_pages (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    query_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tags TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    accessed_at TEXT NOT NULL,
+    access_count INTEGER DEFAULT 1,
+    version INTEGER DEFAULT 1,
+    UNIQUE(project_id, query_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wiki_project ON wiki_pages(project_id);
+CREATE INDEX IF NOT EXISTS idx_wiki_accessed ON wiki_pages(accessed_at);
+
+CREATE TABLE IF NOT EXISTS wiki_dependencies (
+    wiki_page_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    file_hash_at_compile TEXT NOT NULL,
+    chunk_ids TEXT,
+    FOREIGN KEY (wiki_page_id) REFERENCES wiki_pages(id) ON DELETE CASCADE,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    PRIMARY KEY (wiki_page_id, file_id)
+);
 """
 
 
@@ -158,6 +186,11 @@ class StoreDB:
 
     def close(self) -> None:
         self._conn.close()
+
+    def wiki_store(self, max_pages: int = 100) -> "WikiStore":
+        """Create a WikiStore bound to this database's connection."""
+        from hybrid_search.storage.wiki import WikiStore
+        return WikiStore(self._conn, max_pages=max_pages)
 
     # -- index_meta --
 
