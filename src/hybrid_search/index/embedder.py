@@ -1,6 +1,6 @@
-"""Embedding generation using ONNX Runtime with HuggingFace tokenizer.
+"""Embedding generation — supports ONNX Runtime and sentence-transformers backends.
 
-Supports multilingual models (gte-multilingual-base, bge-m3, etc.).
+Supports multilingual models (Qwen3-Embedding-0.6B, multilingual-e5-base, etc.).
 Implements batch processing and truncation policy per §7.
 """
 
@@ -16,25 +16,20 @@ from hybrid_search.config import EmbeddingConfig
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded globals
-_session = None
-_tokenizer = None
-_embedding_dim: int | None = None
-
 
 class Embedder:
-    """Generates embeddings using ONNX Runtime."""
+    """Generates embeddings. Backend auto-selected from config."""
 
     def __init__(self, config: EmbeddingConfig, models_dir: Path) -> None:
         self._config = config
         self._models_dir = models_dir
-        self._session = None
-        self._tokenizer = None
+        self._model = None  # SentenceTransformer or ONNX session
+        self._tokenizer = None  # Only for ONNX backend
         self._embedding_dim: int | None = None
+        self._backend = config.backend  # "sentence-transformers" or "onnx"
 
     @property
     def embedding_dim(self) -> int:
-        """Return embedding dimension (initializes model if needed)."""
         if self._embedding_dim is None:
             self._ensure_loaded()
         return self._embedding_dim  # type: ignore[return-value]
@@ -45,15 +40,9 @@ class Embedder:
         if not texts:
             return np.empty((0, self._embedding_dim), dtype=np.float32)
 
-        all_embeddings: list[np.ndarray] = []
-        batch_size = self._config.batch_size
-
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            embeddings = self._embed_batch(batch)
-            all_embeddings.append(embeddings)
-
-        return np.vstack(all_embeddings)
+        if self._backend == "sentence-transformers":
+            return self._embed_st(texts)
+        return self._embed_onnx_all(texts)
 
     def embed_query(self, query: str) -> np.ndarray:
         """Embed a single query with 'query:' prefix. Returns (dim,) array."""
@@ -61,21 +50,38 @@ class Embedder:
         result = self.embed_texts([prefixed])
         return result[0]
 
-    def _ensure_loaded(self) -> None:
-        """Lazy-load ONNX model and tokenizer."""
-        if self._session is not None:
-            return
+    # ── sentence-transformers backend ──
 
+    def _ensure_loaded_st(self) -> None:
+        from sentence_transformers import SentenceTransformer
+
+        model_name = self._config.model
+        logger.info("Loading model via sentence-transformers: %s", model_name)
+        self._model = SentenceTransformer(model_name, trust_remote_code=True)
+        dim = self._model.get_embedding_dimension()
+        self._embedding_dim = dim
+        logger.info("Model loaded: dim=%d", dim)
+
+    def _embed_st(self, texts: list[str]) -> np.ndarray:
+        embeddings = self._model.encode(
+            texts,
+            batch_size=self._config.batch_size,
+            show_progress_bar=False,
+            normalize_embeddings=True,
+        )
+        return np.asarray(embeddings, dtype=np.float32)
+
+    # ── ONNX backend ──
+
+    def _ensure_loaded_onnx(self) -> None:
         import onnxruntime as ort
         from transformers import AutoTokenizer
 
         model_path = self._resolve_model_path()
-        logger.info("Loading embedding model from %s", model_path)
+        logger.info("Loading ONNX model from %s", model_path)
 
-        # Configure ONNX Runtime
         providers = ["CPUExecutionProvider"]
         if self._config.device == "mps":
-            # CoreML on Apple Silicon
             if "CoreMLExecutionProvider" in ort.get_available_providers():
                 providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
 
@@ -83,25 +89,38 @@ class Embedder:
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.intra_op_num_threads = 4
 
-        self._session = ort.InferenceSession(
-            str(model_path),
-            sess_options=sess_options,
-            providers=providers,
+        self._model = ort.InferenceSession(
+            str(model_path), sess_options=sess_options, providers=providers,
         )
 
-        # Load tokenizer
         model_name = self._config.model
         if self._config.model_path:
-            # Local model — tokenizer might be alongside
             tokenizer_path = Path(self._config.model_path).parent
             self._tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
         else:
             self._tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-        # Detect embedding dimension from a test inference
-        test_emb = self._embed_batch(["test"])
+        test_emb = self._embed_onnx_batch(["test"])
         self._embedding_dim = test_emb.shape[1]
-        logger.info("Embedding model loaded: dim=%d", self._embedding_dim)
+        logger.info("ONNX model loaded: dim=%d", self._embedding_dim)
+
+    def _embed_onnx_all(self, texts: list[str]) -> np.ndarray:
+        all_embeddings: list[np.ndarray] = []
+        batch_size = self._config.batch_size
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            all_embeddings.append(self._embed_onnx_batch(batch))
+        return np.vstack(all_embeddings)
+
+    # ── common ──
+
+    def _ensure_loaded(self) -> None:
+        if self._model is not None:
+            return
+        if self._backend == "sentence-transformers":
+            self._ensure_loaded_st()
+        else:
+            self._ensure_loaded_onnx()
 
     def _resolve_model_path(self) -> Path:
         """Find or download the ONNX model file."""
@@ -184,7 +203,7 @@ class Embedder:
         logger.info("Model downloaded and verified: %s", onnx_path)
         return onnx_path
 
-    def _embed_batch(self, texts: list[str]) -> np.ndarray:
+    def _embed_onnx_batch(self, texts: list[str]) -> np.ndarray:
         """Embed a batch of texts using ONNX Runtime."""
         max_tokens = self._config.effective_max_tokens
 
@@ -205,11 +224,11 @@ class Embedder:
         }
 
         # Some models also expect token_type_ids
-        input_names = {inp.name for inp in self._session.get_inputs()}
+        input_names = {inp.name for inp in self._model.get_inputs()}
         if "token_type_ids" in input_names:
             feeds["token_type_ids"] = np.zeros_like(input_ids)
 
-        outputs = self._session.run(None, feeds)
+        outputs = self._model.run(None, feeds)
 
         # Usually last_hidden_state is the first output
         hidden_states = outputs[0]
