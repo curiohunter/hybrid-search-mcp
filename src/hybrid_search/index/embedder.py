@@ -1,4 +1,4 @@
-"""Embedding generation — supports ONNX Runtime and sentence-transformers backends.
+"""Embedding generation — supports ONNX Runtime, sentence-transformers, and Ollama backends.
 
 Supports multilingual models (Qwen3-Embedding-0.6B, multilingual-e5-base, etc.).
 Implements batch processing and truncation policy per §7.
@@ -7,7 +7,10 @@ Implements batch processing and truncation policy per §7.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +18,8 @@ import numpy as np
 from hybrid_search.config import EmbeddingConfig
 
 logger = logging.getLogger(__name__)
+
+OLLAMA_DEFAULT_URL = "http://localhost:11434"
 
 
 class Embedder:
@@ -42,6 +47,8 @@ class Embedder:
 
         if self._backend == "sentence-transformers":
             return self._embed_st(texts)
+        if self._backend == "ollama":
+            return self._embed_ollama_all(texts)
         return self._embed_onnx_all(texts)
 
     def embed_query(self, query: str) -> np.ndarray:
@@ -56,11 +63,12 @@ class Embedder:
         from sentence_transformers import SentenceTransformer
 
         model_name = self._config.model
-        logger.info("Loading model via sentence-transformers: %s", model_name)
-        self._model = SentenceTransformer(model_name, trust_remote_code=True)
+        device = self._config.device  # "cpu" or "mps"
+        logger.info("Loading model via sentence-transformers: %s (device=%s)", model_name, device)
+        self._model = SentenceTransformer(model_name, trust_remote_code=True, device=device)
         dim = self._model.get_embedding_dimension()
         self._embedding_dim = dim
-        logger.info("Model loaded: dim=%d", dim)
+        logger.info("Model loaded: dim=%d, device=%s", dim, device)
 
     def _embed_st(self, texts: list[str]) -> np.ndarray:
         embeddings = self._model.encode(
@@ -70,6 +78,60 @@ class Embedder:
             normalize_embeddings=True,
         )
         return np.asarray(embeddings, dtype=np.float32)
+
+    # ── Ollama backend ──
+
+    def _ensure_loaded_ollama(self) -> None:
+        ollama_model = self._config.ollama_model
+        if not ollama_model:
+            raise ValueError(
+                "No ollama_model configured. Set [embedding].ollama_model in config.toml "
+                "(e.g., 'nomic-embed-text' or 'mxbai-embed-large')"
+            )
+        logger.info("Testing Ollama embedding model: %s", ollama_model)
+        # Probe with a test embedding to get dimension
+        test_result = self._ollama_embed_request(["dimension probe"])
+        self._embedding_dim = len(test_result[0])
+        logger.info("Ollama model ready: %s, dim=%d", ollama_model, self._embedding_dim)
+
+    def _ollama_embed_request(self, texts: list[str]) -> list[list[float]]:
+        """Call Ollama POST /api/embed endpoint."""
+        url = f"{OLLAMA_DEFAULT_URL}/api/embed"
+        payload = json.dumps({
+            "model": self._config.ollama_model,
+            "input": texts,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.URLError as e:
+            raise ConnectionError(
+                f"Ollama server not reachable at {OLLAMA_DEFAULT_URL}. "
+                f"Is Ollama running? Error: {e}"
+            ) from e
+
+        if "embeddings" not in data:
+            raise ValueError(f"Unexpected Ollama response: {list(data.keys())}")
+        return data["embeddings"]
+
+    def _embed_ollama_all(self, texts: list[str]) -> np.ndarray:
+        """Embed texts via Ollama in batches."""
+        all_embeddings: list[np.ndarray] = []
+        batch_size = self._config.batch_size
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            raw = self._ollama_embed_request(batch)
+            all_embeddings.append(np.array(raw, dtype=np.float32))
+        embeddings = np.vstack(all_embeddings)
+        # L2 normalize
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms = np.clip(norms, a_min=1e-9, a_max=None)
+        return (embeddings / norms).astype(np.float32)
 
     # ── ONNX backend ──
 
@@ -115,10 +177,12 @@ class Embedder:
     # ── common ──
 
     def _ensure_loaded(self) -> None:
-        if self._model is not None:
+        if self._model is not None or (self._backend == "ollama" and self._embedding_dim is not None):
             return
         if self._backend == "sentence-transformers":
             self._ensure_loaded_st()
+        elif self._backend == "ollama":
+            self._ensure_loaded_ollama()
         else:
             self._ensure_loaded_onnx()
 

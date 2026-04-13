@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from hybrid_search.index.pipeline import IndexingPipeline
+import logging
+from typing import Callable
+
+from hybrid_search.index.pipeline import IndexingPipeline, ProgressCallback
+
+logger = logging.getLogger(__name__)
 
 
 def handle_index_project(
@@ -10,9 +15,14 @@ def handle_index_project(
     project_path: str,
     project_name: str | None = None,
     force: bool = False,
+    on_progress: ProgressCallback | None = None,
 ) -> dict:
     """Handle index_project tool call."""
-    result = pipeline.index_project(project_path, project_name, force)
+    def _default_progress(current: int, total: int, path: str) -> None:
+        logger.info("Indexing [%d/%d] %s", current, total, path)
+
+    cb = on_progress or _default_progress
+    result = pipeline.index_project(project_path, project_name, force, on_progress=cb)
     return {
         "project_id": result.project_id,
         "project_name": result.project_name,

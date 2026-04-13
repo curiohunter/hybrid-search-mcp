@@ -10,7 +10,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from hybrid_search.config import Config, load_config
+from hybrid_search.config import Config, DEFAULT_DATA_DIR, load_config
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.pipeline import IndexingPipeline
 from hybrid_search.project import ProjectRegistry
@@ -25,15 +25,68 @@ from hybrid_search.tools.trace import handle_trace_callers, handle_trace_callees
 logger = logging.getLogger("hybrid_search")
 
 
-def create_server(config: Config) -> Server:
+class _HotReloadableConfig:
+    """Watches config.toml mtime and reloads when changed."""
+
+    def __init__(self, config: Config, config_path: Path) -> None:
+        self.config = config
+        self._config_path = config_path
+        self._last_mtime: float = self._get_mtime()
+
+    def _get_mtime(self) -> float:
+        try:
+            return self._config_path.stat().st_mtime
+        except FileNotFoundError:
+            return 0.0
+
+    def check_reload(self) -> bool:
+        """Check if config file changed and reload if so. Returns True if reloaded."""
+        current_mtime = self._get_mtime()
+        if current_mtime <= self._last_mtime:
+            return False
+        try:
+            new_config = load_config(self._config_path)
+            self.config = new_config
+            self._last_mtime = current_mtime
+            logger.info("Config reloaded from %s", self._config_path)
+            return True
+        except Exception as e:
+            logger.warning("Config reload failed, keeping previous: %s", e)
+            return False
+
+
+def create_server(config: Config, config_path: Path | None = None) -> Server:
     """Create and configure the MCP server with all tools."""
     server = Server("hybrid-search-mcp")
+
+    # Hot-reloadable config wrapper
+    actual_path = config_path or (DEFAULT_DATA_DIR / "config.toml")
+    hot_config = _HotReloadableConfig(config, actual_path)
 
     # Initialize shared resources
     registry = ProjectRegistry(config.global_dir)
     embedder = Embedder(config.embedding, config.models_dir)
     pipeline = IndexingPipeline(config, registry, embedder)
     orchestrator = SearchOrchestrator(config, registry, embedder)
+
+    # Mutable state container for hot-reload closure
+    _state = {"config": config, "embedder": embedder, "pipeline": pipeline, "orchestrator": orchestrator}
+
+    def _maybe_reload() -> tuple[Config, Embedder, IndexingPipeline, SearchOrchestrator]:
+        """Check for config changes and rebuild components if needed."""
+        if hot_config.check_reload():
+            new_cfg = hot_config.config
+            old_cfg = _state["config"]
+            # Rebuild embedder if model/backend changed
+            new_embedder = _state["embedder"]
+            if new_cfg.embedding != old_cfg.embedding:
+                logger.info("Embedding config changed, reinitializing embedder")
+                new_embedder = Embedder(new_cfg.embedding, new_cfg.models_dir)
+            _state["config"] = new_cfg
+            _state["embedder"] = new_embedder
+            _state["pipeline"] = IndexingPipeline(new_cfg, registry, new_embedder)
+            _state["orchestrator"] = SearchOrchestrator(new_cfg, registry, new_embedder)
+        return _state["config"], _state["embedder"], _state["pipeline"], _state["orchestrator"]
 
     # -- Tool definitions --
 
@@ -230,7 +283,8 @@ def create_server(config: Config) -> Server:
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         try:
-            result = _dispatch_tool(name, arguments, config, registry, embedder, pipeline, orchestrator)
+            cfg, emb, pipe, orch = _maybe_reload()
+            result = _dispatch_tool(name, arguments, cfg, registry, emb, pipe, orch)
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
         except Exception as e:
             logger.exception("Tool %s failed", name)
