@@ -303,6 +303,210 @@ def _resolve_wiki_deps(db: StoreDB, project_id: str, content: str) -> list[dict]
     return file_deps
 
 
+def cmd_call_graph_stats(args: argparse.Namespace) -> None:
+    """Show call graph resolution statistics for a project."""
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if not match:
+        print(f"No registered project found for: {cwd}")
+        return
+
+    name, _ = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        return
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print("No index found. Run reindex first.")
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        edges = db.get_all_call_edges(pinfo.id)
+        total = len(edges)
+        if total == 0:
+            print(f"Project: {name} — no call edges found.")
+            return
+
+        high = sum(1 for e in edges if e["confidence"] == "high")
+        medium = sum(1 for e in edges if e["confidence"] == "medium")
+        resolved = sum(1 for e in edges if e["callee_chunk_id"] is not None)
+        unresolved = total - resolved
+
+        # Module-linked edges: import-call binding success (project-internal candidates)
+        with_mod = [e for e in edges if e.get("callee_module")]
+        mod_resolved = sum(1 for e in with_mod if e["callee_chunk_id"])
+        without_mod = [e for e in edges if not e.get("callee_module")]
+        nomod_resolved = sum(1 for e in without_mod if e["callee_chunk_id"])
+
+        # "Project dependency edges" = High + Medium (useful for CodeWiki / topo sort)
+        project_deps = high + medium
+
+        print(f"Project: {name}")
+        print(f"  Total edges:       {total}")
+        print(f"  Project deps:      {project_deps} (High {high} + Medium {medium})")
+        print(f"  All resolved:      {resolved}/{total} ({resolved/total*100:.1f}%)")
+        print(f"  With module:       {len(with_mod)} → resolved {mod_resolved} ({mod_resolved/max(len(with_mod),1)*100:.1f}%)")
+        print(f"  Without module:    {len(without_mod)} → resolved {nomod_resolved} ({nomod_resolved/max(len(without_mod),1)*100:.1f}%)")
+    finally:
+        db.close()
+
+
+def cmd_generate_wiki_plan(args: argparse.Namespace) -> None:
+    """Generate module tree from call graph for CodeWiki auto wiki generation."""
+    from hybrid_search.index.dag import generate_wiki_plan
+
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if not match:
+        print(f"No registered project found for: {cwd}")
+        return
+
+    name, _ = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        return
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print("No index found. Run reindex first.")
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        plan = generate_wiki_plan(db, pinfo.id)
+
+        print(f"Project: {name}")
+        print(f"Coverage: {plan.covered_chunks}/{plan.total_chunks} chunks ({plan.coverage*100:.1f}%)")
+        print()
+
+        if plan.modules:
+            print(f"Module Tree ({len(plan.modules)} modules):")
+            for i, mod in enumerate(plan.modules, 1):
+                entry_hint = ""
+                if mod.entry_points:
+                    entry_hint = f" — entry: {mod.entry_points[0]}"
+                rep = ", ".join(mod.representative_paths)
+                print(f"  {i:2d}. {mod.name} ({mod.file_count} files, {mod.chunk_count} chunks) — {rep}{entry_hint}")
+
+        if plan.isolated_modules:
+            print(f"\nIsolated ({len(plan.isolated_modules)} groups, directory-based fallback):")
+            for i, mod in enumerate(plan.isolated_modules, 1):
+                rep = ", ".join(mod.representative_paths)
+                print(f"  {i:2d}. {mod.name} ({mod.file_count} files, {mod.chunk_count} chunks) — {rep}")
+
+        # Write plan to .hybrid-search/wiki-plan.json for downstream use
+        if not args.dry_run:
+            import json
+            plan_dir = Path(cwd) / ".hybrid-search"
+            plan_dir.mkdir(parents=True, exist_ok=True)
+            plan_file = plan_dir / "wiki-plan.json"
+            plan_data = {
+                "project": name,
+                "total_chunks": plan.total_chunks,
+                "covered_chunks": plan.covered_chunks,
+                "coverage": round(plan.coverage, 4),
+                "modules": [
+                    {
+                        "name": m.name,
+                        "files": m.files,
+                        "chunk_count": m.chunk_count,
+                        "entry_points": m.entry_points,
+                        "representative_paths": m.representative_paths,
+                    }
+                    for m in plan.modules
+                ],
+                "isolated_modules": [
+                    {
+                        "name": m.name,
+                        "files": m.files,
+                        "chunk_count": m.chunk_count,
+                        "representative_paths": m.representative_paths,
+                    }
+                    for m in plan.isolated_modules
+                ],
+            }
+            plan_file.write_text(json.dumps(plan_data, indent=2, ensure_ascii=False))
+            print(f"\nPlan saved: {plan_file}")
+
+    finally:
+        db.close()
+
+
+def cmd_verify_wiki(args: argparse.Namespace) -> None:
+    """Verify wiki coverage against the module tree."""
+    from hybrid_search.index.dag import generate_wiki_plan
+    from hybrid_search.storage.wiki import WikiStore
+
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if not match:
+        print(f"No registered project found for: {cwd}")
+        return
+
+    name, _ = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        return
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print("No index found. Run reindex first.")
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        plan = generate_wiki_plan(db, pinfo.id)
+        wiki = WikiStore(db, config.wiki if hasattr(config, "wiki") else None)
+        existing_pages = wiki.list_pages(pinfo.id)
+        existing_titles = {p["title"].lower() for p in existing_pages}
+
+        all_modules = plan.modules + plan.isolated_modules
+        covered = sum(1 for m in all_modules if m.name.lower() in existing_titles)
+        total_files_in_modules = len({f for m in plan.modules for f in m.files})
+
+        all_files = db.get_all_files(pinfo.id)
+        total_files = len(all_files)
+
+        print(f"Project: {name}")
+        print(f"  Module Tree:    {len(plan.modules)} modules")
+        print(f"  Wiki pages:     {covered}/{len(all_modules)} ({covered/max(len(all_modules),1)*100:.0f}%)")
+        print(f"  File coverage:  {total_files_in_modules}/{total_files} files in modules ({total_files_in_modules/max(total_files,1)*100:.0f}%)")
+        print(f"  Chunk coverage: {plan.covered_chunks}/{plan.total_chunks} ({plan.coverage*100:.1f}%)")
+
+        # List missing modules
+        missing = [m for m in all_modules if m.name.lower() not in existing_titles]
+        if missing:
+            print(f"\n  Missing wiki pages ({len(missing)}):")
+            for m in missing[:20]:
+                print(f"    - {m.name} ({m.file_count} files)")
+
+        # Staleness check
+        staleness = wiki.check_staleness(pinfo.id)
+        stale_pages = [s for s in staleness if s.get("stale")]
+        if stale_pages:
+            print(f"\n  Stale pages ({len(stale_pages)}):")
+            for s in stale_pages:
+                changed = ", ".join(s.get("changed_files", [])[:3])
+                print(f"    - {s['title']}: {changed}")
+
+    finally:
+        db.close()
+
+
 def cmd_install_hook(args: argparse.Namespace) -> None:
     """Install post-commit hook in a project's .git/hooks/."""
     import subprocess
@@ -381,6 +585,16 @@ def main() -> None:
     p_sync = sub.add_parser("sync-wiki", help="Sync disk wiki files to DB for staleness tracking")
     p_sync.add_argument("--cwd", default=".", help="Project directory")
 
+    p_cg = sub.add_parser("call-graph-stats", help="Show call graph resolution statistics")
+    p_cg.add_argument("--cwd", default=".", help="Project directory")
+
+    p_plan = sub.add_parser("generate-wiki-plan", help="Generate module tree from call graph")
+    p_plan.add_argument("--cwd", default=".", help="Project directory")
+    p_plan.add_argument("--dry-run", action="store_true", help="Print plan without saving")
+
+    p_verify = sub.add_parser("verify-wiki", help="Verify wiki coverage against module tree")
+    p_verify.add_argument("--cwd", default=".", help="Project directory")
+
     args = parser.parse_args()
 
     if args.command == "reindex":
@@ -393,6 +607,12 @@ def main() -> None:
         cmd_install_hook(args)
     elif args.command == "sync-wiki":
         cmd_sync_wiki(args)
+    elif args.command == "call-graph-stats":
+        cmd_call_graph_stats(args)
+    elif args.command == "generate-wiki-plan":
+        cmd_generate_wiki_plan(args)
+    elif args.command == "verify-wiki":
+        cmd_verify_wiki(args)
     else:
         parser.print_help()
         sys.exit(1)
