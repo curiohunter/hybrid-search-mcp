@@ -95,14 +95,35 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     if result.files_changed > 0 or result.files_deleted > 0:
         _mark_stale_wikis(config, registry, project_name)
 
-    # Auto sync wiki if wiki directory exists
-    wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
-    if wiki_dir.exists() and any(wiki_dir.glob("*.md")):
-        print("Auto-syncing wiki to DB...")
-        # Reuse sync logic inline
+    # Call graph re-resolution after reindex
+    pinfo = registry.get_by_name(project_name)
+    if pinfo:
+        from hybrid_search.index.callgraph import resolve_call_edges
+        p_dir = get_project_dir(config.projects_dir, pinfo.id)
+        p_idx = IndexPaths(p_dir)
+        if p_idx.store_db.exists():
+            db = StoreDB(p_idx.store_db)
+            try:
+                stats = resolve_call_edges(db, pinfo.id)
+                resolved = stats["high"] + stats["medium"]
+                print(f"Call graph: {resolved} resolved ({stats['high']}H + {stats['medium']}M), {stats['unresolved']} unresolved")
+            finally:
+                db.close()
+
+    # Auto-generate wiki if --wiki flag
+    if getattr(args, "wiki", False):
+        print("Generating wiki from module tree...")
         import argparse as _ap
-        _sync_args = _ap.Namespace(cwd=project_path)
-        cmd_sync_wiki(_sync_args)
+        _wiki_args = _ap.Namespace(cwd=project_path)
+        cmd_generate_wiki(_wiki_args)
+    else:
+        # Auto sync existing wiki if wiki directory exists
+        wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
+        if wiki_dir.exists() and any(wiki_dir.glob("*.md")):
+            print("Auto-syncing wiki to DB...")
+            import argparse as _ap
+            _sync_args = _ap.Namespace(cwd=project_path)
+            cmd_sync_wiki(_sync_args)
 
     # Gap detection for new files
     _write_gap_flag(cwd, result.files_added)
@@ -529,7 +550,9 @@ def cmd_generate_wiki_plan(args: argparse.Namespace) -> None:
 
 def cmd_verify_wiki(args: argparse.Namespace) -> None:
     """Verify wiki coverage against the module tree."""
+    import json as json_mod
     from hybrid_search.index.dag import generate_wiki_plan
+    from hybrid_search.storage.wiki import normalize_query
 
     config = load_config()
     registry = ProjectRegistry(config.global_dir)
@@ -555,37 +578,75 @@ def cmd_verify_wiki(args: argparse.Namespace) -> None:
     try:
         plan = generate_wiki_plan(db, pinfo.id)
         wiki = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
-        existing_pages = wiki.list_pages(pinfo.id)
-        existing_titles = {p["title"].lower() for p in existing_pages}
+        existing_pages = wiki.list_pages(pinfo.id, limit=200)
+        existing_keys = {p["query_key"] for p in existing_pages}
 
         all_modules = plan.modules + plan.isolated_modules
-        covered = sum(1 for m in all_modules if m.name.lower() in existing_titles)
-        total_files_in_modules = len({f for m in plan.modules for f in m.files})
 
+        # Match modules to wiki pages by normalized query_key
+        matched: list[dict] = []
+        missing: list[dict] = []
+        for m in all_modules:
+            query_key = normalize_query(m.name.replace("-", " "))
+            if query_key in existing_keys:
+                matched.append({"name": m.name, "files": m.file_count, "chunks": m.chunk_count})
+            else:
+                missing.append({"name": m.name, "files": m.files, "chunks": m.chunk_count})
+
+        # File coverage: files in modules vs total
+        files_in_modules = {f for m in all_modules for f in m.files}
         all_files = db.get_all_files(pinfo.id)
-        total_files = len(all_files)
+        all_file_paths = {f.relative_path for f in all_files}
+        uncovered_files = sorted(all_file_paths - files_in_modules)
+
+        # Staleness
+        staleness = wiki.check_staleness(pinfo.id)
+        stale_pages = [s for s in staleness if s.get("stale")]
+        fresh_pages = [s for s in staleness if not s.get("stale")]
+
+        # --- Output ---
+        if args.json:
+            report = {
+                "project": name,
+                "modules": {"graph": len(plan.modules), "isolated": len(plan.isolated_modules)},
+                "wiki_pages": {"matched": len(matched), "missing": len(missing), "total": len(all_modules)},
+                "coverage": {
+                    "chunks": {"covered": plan.covered_chunks, "total": plan.total_chunks, "pct": round(plan.coverage * 100, 1)},
+                    "files": {"in_modules": len(files_in_modules), "total": len(all_file_paths), "uncovered": len(uncovered_files)},
+                },
+                "staleness": {"fresh": len(fresh_pages), "stale": len(stale_pages)},
+                "missing_pages": [{"name": m["name"], "file_count": len(m["files"])} for m in missing],
+                "stale_pages": [{"title": s["title"], "changed_files": s.get("changed_files", [])} for s in stale_pages],
+                "uncovered_files": uncovered_files[:50],
+            }
+            print(json_mod.dumps(report, indent=2, ensure_ascii=False))
+            return
 
         print(f"Project: {name}")
-        print(f"  Module Tree:    {len(plan.modules)} modules")
-        print(f"  Wiki pages:     {covered}/{len(all_modules)} ({covered/max(len(all_modules),1)*100:.0f}%)")
-        print(f"  File coverage:  {total_files_in_modules}/{total_files} files in modules ({total_files_in_modules/max(total_files,1)*100:.0f}%)")
+        print(f"  Module Tree:    {len(plan.modules)} graph + {len(plan.isolated_modules)} isolated")
+        print(f"  Wiki pages:     {len(matched)}/{len(all_modules)} matched ({len(matched)/max(len(all_modules),1)*100:.0f}%)")
+        print(f"  File coverage:  {len(files_in_modules)}/{len(all_file_paths)} files in modules ({len(files_in_modules)/max(len(all_file_paths),1)*100:.0f}%)")
         print(f"  Chunk coverage: {plan.covered_chunks}/{plan.total_chunks} ({plan.coverage*100:.1f}%)")
+        print(f"  Staleness:      {len(fresh_pages)} fresh, {len(stale_pages)} stale")
 
-        # List missing modules
-        missing = [m for m in all_modules if m.name.lower() not in existing_titles]
         if missing:
             print(f"\n  Missing wiki pages ({len(missing)}):")
             for m in missing[:20]:
-                print(f"    - {m.name} ({m.file_count} files)")
+                print(f"    - {m['name']} ({len(m['files'])} files, {m['chunks']} chunks)")
 
-        # Staleness check
-        staleness = wiki.check_staleness(pinfo.id)
-        stale_pages = [s for s in staleness if s.get("stale")]
         if stale_pages:
             print(f"\n  Stale pages ({len(stale_pages)}):")
             for s in stale_pages:
                 changed = ", ".join(s.get("changed_files", [])[:3])
-                print(f"    - {s['title']}: {changed}")
+                extra = f" +{len(s.get('changed_files', [])) - 3} more" if len(s.get("changed_files", [])) > 3 else ""
+                print(f"    - {s['title']}: {changed}{extra}")
+
+        if uncovered_files:
+            print(f"\n  Uncovered files ({len(uncovered_files)}):")
+            for f in uncovered_files[:15]:
+                print(f"    - {f}")
+            if len(uncovered_files) > 15:
+                print(f"    ... and {len(uncovered_files) - 15} more")
 
     finally:
         db.close()
@@ -657,6 +718,7 @@ def main() -> None:
     p_reindex = sub.add_parser("reindex", help="Delta reindex a project")
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
     p_reindex.add_argument("--force", action="store_true", help="Force full reindex")
+    p_reindex.add_argument("--wiki", action="store_true", help="Auto-generate wiki after reindex")
 
     p_status = sub.add_parser("status", help="Show index status")
 
@@ -678,6 +740,7 @@ def main() -> None:
 
     p_verify = sub.add_parser("verify-wiki", help="Verify wiki coverage against module tree")
     p_verify.add_argument("--cwd", default=".", help="Project directory")
+    p_verify.add_argument("--json", action="store_true", help="Output as JSON")
 
     p_genwiki = sub.add_parser("generate-wiki", help="Generate wiki pages from module tree")
     p_genwiki.add_argument("--cwd", default=".", help="Project directory")
