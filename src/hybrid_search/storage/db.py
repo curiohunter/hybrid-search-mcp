@@ -110,6 +110,18 @@ CREATE TABLE IF NOT EXISTS wiki_dependencies (
     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
     PRIMARY KEY (wiki_page_id, file_id)
 );
+
+CREATE TABLE IF NOT EXISTS wiki_links (
+    source_page_id TEXT NOT NULL,
+    target_page_id TEXT NOT NULL,
+    link_text TEXT NOT NULL,
+    FOREIGN KEY (source_page_id) REFERENCES wiki_pages(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_page_id) REFERENCES wiki_pages(id) ON DELETE CASCADE,
+    PRIMARY KEY (source_page_id, target_page_id, link_text)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wiki_links_source ON wiki_links(source_page_id);
+CREATE INDEX IF NOT EXISTS idx_wiki_links_target ON wiki_links(target_page_id);
 """
 
 

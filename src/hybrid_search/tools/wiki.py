@@ -126,7 +126,7 @@ def handle_lookup_wiki(
         if page is None:
             return {"found": False}
 
-        return {
+        result = {
             "found": True,
             "page_id": page.id,
             "title": page.title,
@@ -137,6 +137,19 @@ def handle_lookup_wiki(
             "version": page.version,
             "access_count": page.access_count,
         }
+
+        if page.linked_pages:
+            result["linked_pages"] = [
+                {
+                    "title": lp.title,
+                    "link_text": lp.link_text,
+                    "snippet": lp.snippet,
+                    "hop": lp.hop,
+                }
+                for lp in page.linked_pages
+            ]
+
+        return result
     finally:
         db.close()
 
