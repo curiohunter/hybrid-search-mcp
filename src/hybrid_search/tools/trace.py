@@ -17,6 +17,10 @@ from hybrid_search.storage.indexes import IndexPaths, get_project_dir
 MAX_NODES = 100
 
 
+class TraceError(Exception):
+    """Raised when trace setup fails (project not found, no index, etc.)."""
+
+
 def handle_trace_callers(
     config: Config,
     registry: ProjectRegistry,
@@ -30,19 +34,19 @@ def handle_trace_callers(
     if not symbol and not chunk_id:
         return {"error": "Either 'symbol' or 'chunk_id' is required"}
 
-    stores = _open_stores(config, registry, project)
-    if isinstance(stores, dict):
-        return stores  # error dict
+    try:
+        stores = _open_stores(config, registry, project)
+    except TraceError as e:
+        return {"error": str(e)}
 
     visited: set[str] = set()
     nodes: list[dict] = []
     truncated = False
 
     try:
-        # Resolve starting chunk(s)
         start_ids = _resolve_start(stores, chunk_id, symbol, project)
         if not start_ids:
-            return {"error": f"No matching chunk found for {'chunk_id=' + chunk_id if chunk_id else 'symbol=' + symbol}"}
+            return {"error": f"No matching chunk found for {'chunk_id=' + chunk_id if chunk_id else 'symbol=' + (symbol or '')}"}
 
         for start_id, start_project, db in start_ids:
             _trace_callers_recursive(
@@ -80,9 +84,10 @@ def handle_trace_callees(
     if not symbol and not chunk_id:
         return {"error": "Either 'symbol' or 'chunk_id' is required"}
 
-    stores = _open_stores(config, registry, project)
-    if isinstance(stores, dict):
-        return stores
+    try:
+        stores = _open_stores(config, registry, project)
+    except TraceError as e:
+        return {"error": str(e)}
 
     visited: set[str] = set()
     nodes: list[dict] = []
@@ -91,7 +96,7 @@ def handle_trace_callees(
     try:
         start_ids = _resolve_start(stores, chunk_id, symbol, project)
         if not start_ids:
-            return {"error": f"No matching chunk found for {'chunk_id=' + chunk_id if chunk_id else 'symbol=' + symbol}"}
+            return {"error": f"No matching chunk found for {'chunk_id=' + chunk_id if chunk_id else 'symbol=' + (symbol or '')}"}
 
         for start_id, start_project, db in start_ids:
             _trace_callees_recursive(
@@ -216,15 +221,16 @@ def _open_stores(
     config: Config,
     registry: ProjectRegistry,
     project: str | None,
-) -> list[tuple[str, str, StoreDB]] | dict:
+) -> list[tuple[str, str, StoreDB]]:
     """Open StoreDB instances for the target project(s).
 
-    Returns list of (project_id, project_name, db) or error dict.
+    Returns list of (project_id, project_name, db).
+    Raises TraceError if no valid stores found.
     """
     if project:
         info = registry.get_by_name(project)
         if info is None:
-            return {"error": f"Project '{project}' not found"}
+            raise TraceError(f"Project '{project}' not found")
         project_infos = [info]
     else:
         project_infos = registry.list_all()
@@ -237,7 +243,7 @@ def _open_stores(
             stores.append((pinfo.id, pinfo.name, StoreDB(idx_paths.store_db)))
 
     if not stores:
-        return {"error": "No indexed projects found"}
+        raise TraceError("No indexed projects found")
 
     return stores
 
@@ -251,6 +257,11 @@ def _resolve_start(
     """Resolve the starting chunk for traversal.
 
     Returns list of (chunk_id, project_id, db) tuples.
+
+    For symbol-based resolution, uses deterministic ordering:
+    exact qualified_name > exact name > fuzzy LIKE match.
+    When multiple fuzzy matches exist, returns ALL matches (not just the first)
+    so the caller can trace from each, producing complete results.
     """
     results: list[tuple[str, str, StoreDB]] = []
 
@@ -262,21 +273,25 @@ def _resolve_start(
                 results.append((chunk_id, pid, db))
                 return results
     elif symbol:
-        # Name-based search across stores
         for pid, pname, db in stores:
-            # Try exact qualified_name first
+            # Priority 1: exact qualified_name match (deterministic)
             chunk = db.find_chunk_by_qualified_name(symbol, pid)
             if chunk:
                 results.append((chunk.id, pid, db))
                 continue
-            # Try exact name
+
+            # Priority 2: exact name match
             chunks = db.find_chunks_by_name(symbol, pid)
             if chunks:
-                results.append((chunks[0].id, pid, db))
+                # Include all exact matches (not just first) for deterministic results
+                for c in chunks:
+                    results.append((c.id, pid, db))
                 continue
-            # Try fuzzy name search
+
+            # Priority 3: fuzzy LIKE match — include all matches
             chunks = db.search_chunks_by_name(symbol, pid)
             if chunks:
-                results.append((chunks[0].id, pid, db))
+                for c in chunks:
+                    results.append((c.id, pid, db))
 
     return results
