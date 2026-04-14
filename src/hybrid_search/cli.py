@@ -25,16 +25,79 @@ logger = logging.getLogger("hybrid_search.cli")
 
 
 def _detect_project(registry: ProjectRegistry, cwd: str) -> tuple[str, str] | None:
-    """Find registered project matching cwd. Returns (name, path) or None."""
+    """Find registered project matching cwd. Returns (name, path) or None.
+
+    Picks the most specific (longest path) match to avoid matching a parent
+    project like /Users/ian when /Users/ian/project/foo is the real target.
+    Skips home directory registrations.
+    """
     cwd_path = Path(cwd).resolve()
+    home = Path.home().resolve()
+    best: tuple[str, str] | None = None
+    best_depth = -1
+
     for pinfo in registry.list_all():
         project_path = Path(pinfo.path).resolve()
+        if project_path == home:
+            continue  # skip home directory
         try:
             cwd_path.relative_to(project_path)
-            return pinfo.name, pinfo.path
+            depth = len(project_path.parts)
+            if depth > best_depth:
+                best = (pinfo.name, pinfo.path)
+                best_depth = depth
         except ValueError:
             pass
-    return None
+    return best
+
+
+_CLAUDE_MD_MARKER = "<!-- hybrid-search -->"
+
+_CLAUDE_MD_SECTION = """<!-- hybrid-search -->
+## 검색 전략 — 의도 기반 라우팅
+
+고정 순서가 아니라 **질문 유형에 따라 1차 도구를 선택**하고, 부족하면 fallback으로 보충한다.
+
+| 질문 유형 | 신호 | 1차 | fallback |
+|-----------|------|-----|----------|
+| 구조/관계 | "누가 호출", 의존, 모듈 구조, 전체 그림 | Wiki | hybrid_search |
+| 기능 탐색 | 자연어, 한국어, 넓은 기능 질문 | hybrid_search | Wiki |
+| 정밀 조회 | 정확한 심볼명, 파일명, 에러 문자열 | Grep | Read |
+| 설계/맥락 | "왜 이렇게", QA 히스토리, 계획 문서 | hybrid_search | Wiki |
+| 스키마/DB | 마이그레이션, DDL, 테이블 구조 변화 | hybrid_search (node_types/file_pattern 활용) | Grep |
+
+**운영 규칙**:
+- 1차에서 답이 부족하면 도구를 **바꾸지 말고 보충**한다 (hybrid→wiki, wiki→hybrid, grep→read)
+- Wiki는 `.hybrid-search/wiki/index.md`에서 시작. `[[링크]]`가 있으면 따라갈 것
+- hybrid_search는 한국어 자연어 질의 + 코드/문서/계획 문서 크로스 도메인 검색이 강점
+"""
+
+
+def _ensure_claude_md(project_path: str) -> None:
+    """Add hybrid-search section to CLAUDE.md. Inserts at TOP for visibility."""
+    claude_md = Path(project_path) / "CLAUDE.md"
+
+    if claude_md.exists():
+        content = claude_md.read_text(encoding="utf-8")
+        if _CLAUDE_MD_MARKER in content:
+            return  # already patched
+        # Insert at TOP (after first heading if exists)
+        lines = content.split("\n")
+        insert_at = 0
+        for i, line in enumerate(lines):
+            if line.startswith("# "):
+                insert_at = i + 1
+                # Skip blank lines after heading
+                while insert_at < len(lines) and not lines[insert_at].strip():
+                    insert_at += 1
+                break
+        lines.insert(insert_at, _CLAUDE_MD_SECTION)
+        claude_md.write_text("\n".join(lines), encoding="utf-8")
+        print(f"CLAUDE.md: hybrid-search section added (top)")
+    else:
+        # Create new CLAUDE.md
+        claude_md.write_text(_CLAUDE_MD_SECTION.lstrip(), encoding="utf-8")
+        print(f"CLAUDE.md: created with hybrid-search instructions")
 
 
 def _write_gap_flag(cwd: str, files_added: int) -> None:
@@ -110,20 +173,24 @@ def cmd_reindex(args: argparse.Namespace) -> None:
             finally:
                 db.close()
 
-    # Auto-generate wiki if --wiki flag
-    if getattr(args, "wiki", False):
+    # --synthesize implies --wiki (wiki must exist before synthesis)
+    do_wiki = getattr(args, "wiki", False) or getattr(args, "synthesize", False)
+
+    wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
+    wiki_exists = wiki_dir.exists() and any(wiki_dir.glob("*.md"))
+
+    if do_wiki or not wiki_exists:
+        # Generate/regenerate wiki from module tree
         print("Generating wiki from module tree...")
         import argparse as _ap
         _wiki_args = _ap.Namespace(cwd=project_path)
         cmd_generate_wiki(_wiki_args)
-    else:
-        # Auto sync existing wiki if wiki directory exists
-        wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
-        if wiki_dir.exists() and any(wiki_dir.glob("*.md")):
-            print("Auto-syncing wiki to DB...")
-            import argparse as _ap
-            _sync_args = _ap.Namespace(cwd=project_path)
-            cmd_sync_wiki(_sync_args)
+    elif wiki_exists:
+        # Just sync existing wiki to DB
+        print("Auto-syncing wiki to DB...")
+        import argparse as _ap
+        _sync_args = _ap.Namespace(cwd=project_path)
+        cmd_sync_wiki(_sync_args)
 
     # Re-check staleness after sync (cleans up STALE.md when all pages are fresh)
     _mark_stale_wikis(config, registry, project_name)
@@ -131,6 +198,16 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # Auto-prepare synthesis for stale modules
     if getattr(args, "synthesize", False):
         _auto_prepare_synthesis(config, registry, project_name, project_path)
+
+    # Auto-patch CLAUDE.md with search instructions (once per project)
+    _ensure_claude_md(project_path)
+
+    # Auto-install post-commit hook (once per project)
+    hook_path = Path(project_path) / ".git" / "hooks" / "post-commit"
+    if not hook_path.exists() or "hybrid_search.cli" not in hook_path.read_text():
+        import argparse as _ap
+        _hook_args = _ap.Namespace(cwd=project_path)
+        cmd_install_hook(_hook_args)
 
     # Gap detection for new files
     _write_gap_flag(cwd, result.files_added)
@@ -1211,6 +1288,137 @@ def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
         db.close()
 
 
+def cmd_setup(args: argparse.Namespace) -> None:
+    """One-time global setup: register MCP server + Claude Code hooks."""
+    import json as _json
+
+    venv_python = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        venv_python = Path(sys.executable)
+    venv_str = str(venv_python)
+
+    # --- Step 1: ~/.claude.json — MCP server registration ---
+    claude_json = Path.home() / ".claude.json"
+    if claude_json.exists():
+        data = _json.loads(claude_json.read_text())
+    else:
+        data = {}
+
+    servers = data.setdefault("mcpServers", {})
+    if "hybrid-search" in servers:
+        existing_cmd = servers["hybrid-search"].get("command", "")
+        if existing_cmd == venv_str:
+            print(f"MCP server already registered: {claude_json}")
+        else:
+            servers["hybrid-search"] = {
+                "command": venv_str,
+                "args": ["-m", "hybrid_search.server"],
+            }
+            claude_json.write_text(_json.dumps(data, indent=2, ensure_ascii=False))
+            print(f"MCP server updated: {claude_json}")
+    else:
+        servers["hybrid-search"] = {
+            "command": venv_str,
+            "args": ["-m", "hybrid_search.server"],
+        }
+        claude_json.write_text(_json.dumps(data, indent=2, ensure_ascii=False))
+        print(f"MCP server registered: {claude_json}")
+
+    # --- Step 2: ~/.claude/settings.json — global hooks ---
+    settings_dir = Path.home() / ".claude"
+    settings_dir.mkdir(exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+
+    if settings_path.exists():
+        settings = _json.loads(settings_path.read_text())
+    else:
+        settings = {}
+
+    hooks = settings.setdefault("hooks", {})
+
+    # Check if our hooks already exist
+    pre_hooks = hooks.get("PreToolUse", [])
+    has_auto_index = any(
+        "hybrid-search/wiki" in str(h.get("hooks", [{}])[0].get("command", ""))
+        for h in pre_hooks
+        if isinstance(h, dict) and h.get("matcher") == "Read"
+    )
+    has_stale_check = any(
+        "STALE.md" in str(h.get("hooks", [{}])[0].get("command", ""))
+        for h in pre_hooks
+        if isinstance(h, dict) and h.get("matcher") == "Edit|Write"
+    )
+
+    if has_auto_index and has_stale_check:
+        print(f"Hooks already registered: {settings_path}")
+    else:
+        # Build fresh hook entries
+        auto_index_hook = {
+            "matcher": "Read",
+            "hooks": [{
+                "type": "command",
+                "command": (
+                    f'ROOT=$(git rev-parse --show-toplevel 2>/dev/null); '
+                    f'VENV={venv_str}; '
+                    f'[ -n "$ROOT" ] && [ -f "$VENV" ] && [ ! -d "$ROOT/.hybrid-search/wiki" ] && '
+                    f'mkdir -p "$ROOT/.hybrid-search" && '
+                    f'nohup sh -c \'"$1" -m hybrid_search.cli reindex --synthesize --cwd "$2" && '
+                    f'"$1" -m hybrid_search.cli install-hook --cwd "$2"\' _ "$VENV" "$ROOT" '
+                    f'> /dev/null 2>&1 & '
+                    f'echo "hybrid-search: first-time indexing started in background for $ROOT"'
+                ),
+            }],
+        }
+        stale_hook = {
+            "matcher": "Edit|Write",
+            "hooks": [{
+                "type": "command",
+                "command": (
+                    'ROOT=$(git rev-parse --show-toplevel 2>/dev/null) && '
+                    '[ -n "$ROOT" ] && [ -f "$ROOT/.hybrid-search/wiki/STALE.md" ] && '
+                    "echo 'STALE wiki pages detected — update them BEFORE editing code:' && "
+                    'cat "$ROOT/.hybrid-search/wiki/STALE.md"'
+                ),
+            }],
+        }
+        gap_hook = {
+            "matcher": "Edit|Write",
+            "hooks": [{
+                "type": "command",
+                "command": (
+                    'ROOT=$(git rev-parse --show-toplevel 2>/dev/null) && '
+                    '[ -n "$ROOT" ] && [ -f "$ROOT/.hybrid-search/wiki-gaps.txt" ] && '
+                    "echo 'Wiki gaps — new modules need wiki pages:' && "
+                    'cat "$ROOT/.hybrid-search/wiki-gaps.txt"'
+                ),
+            }],
+        }
+
+        # Remove old hybrid-search hooks, keep others
+        new_pre = [h for h in pre_hooks if not (
+            isinstance(h, dict) and (
+                "hybrid-search/wiki" in str(h.get("hooks", [{}])[0].get("command", ""))
+                or "STALE.md" in str(h.get("hooks", [{}])[0].get("command", ""))
+            )
+        )]
+        new_pre.extend([auto_index_hook, stale_hook])
+        hooks["PreToolUse"] = new_pre
+
+        post_hooks = hooks.get("PostToolUse", [])
+        new_post = [h for h in post_hooks if not (
+            isinstance(h, dict)
+            and "wiki-gaps.txt" in str(h.get("hooks", [{}])[0].get("command", ""))
+        )]
+        new_post.append(gap_hook)
+        hooks["PostToolUse"] = new_post
+
+        settings_path.write_text(_json.dumps(settings, indent=2, ensure_ascii=False))
+        print(f"Hooks registered: {settings_path}")
+
+    print()
+    print("Setup complete. Open any project in Claude Code — indexing starts automatically.")
+
+
 def cmd_install_hook(args: argparse.Namespace) -> None:
     """Install post-commit hook in a project's .git/hooks/."""
     import subprocess
@@ -1241,7 +1449,7 @@ def cmd_install_hook(args: argparse.Namespace) -> None:
     hook_content = f"""#!/bin/bash
 # Hybrid Search — auto delta-reindex on commit (background, non-blocking)
 PROJECT_DIR="$(git rev-parse --show-toplevel)"
-nohup "{venv_python}" -m hybrid_search.cli reindex --cwd "$PROJECT_DIR" > /dev/null 2>&1 &
+nohup "{venv_python}" -m hybrid_search.cli reindex --synthesize --cwd "$PROJECT_DIR" > /dev/null 2>&1 &
 """
 
     if hook_path.exists():
@@ -1273,6 +1481,8 @@ def main() -> None:
         description="Hybrid Search CLI — background indexing for git hooks",
     )
     sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("setup", help="One-time global setup: register MCP server + hooks in Claude Code")
 
     p_reindex = sub.add_parser("reindex", help="Delta reindex a project")
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
@@ -1334,7 +1544,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "reindex":
+    if args.command == "setup":
+        cmd_setup(args)
+    elif args.command == "reindex":
         cmd_reindex(args)
     elif args.command == "status":
         cmd_status(args)

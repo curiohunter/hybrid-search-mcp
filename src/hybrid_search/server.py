@@ -21,7 +21,6 @@ from hybrid_search.index.pipeline import IndexingPipeline
 from hybrid_search.project import ProjectRegistry
 from hybrid_search.search.orchestrator import SearchOrchestrator
 from hybrid_search.tools.hybrid_search import handle_hybrid_search
-from hybrid_search.tools.trace import handle_trace_callers, handle_trace_callees
 
 logger = logging.getLogger("hybrid_search")
 
@@ -117,38 +116,10 @@ def create_server(config: Config, config_path: Path | None = None) -> Server:
                         },
                         "cwd": {
                             "type": "string",
-                            "description": "Current working directory. Boosts results from the matching project.",
+                            "description": "Current working directory. Auto-scopes search to the matching project.",
                         },
                     },
                     "required": ["query"],
-                },
-            ),
-            Tool(
-                name="trace_callers",
-                description="Find all functions that call the given function (reverse call graph).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "symbol": {"type": "string", "description": "Function/method name or qualified name"},
-                        "chunk_id": {"type": "string", "description": "Chunk ID from a prior search result (more precise)"},
-                        "project": {"type": "string"},
-                        "depth": {"type": "integer", "default": 2, "minimum": 1, "maximum": 10},
-                        "min_confidence": {"type": "string", "enum": ["low", "medium", "high"], "default": "medium"},
-                    },
-                },
-            ),
-            Tool(
-                name="trace_callees",
-                description="Find all functions called by the given function (forward call graph).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "symbol": {"type": "string", "description": "Function/method name or qualified name"},
-                        "chunk_id": {"type": "string", "description": "Chunk ID from a prior search result"},
-                        "project": {"type": "string"},
-                        "depth": {"type": "integer", "default": 2, "minimum": 1, "maximum": 10},
-                        "min_confidence": {"type": "string", "enum": ["low", "medium", "high"], "default": "medium"},
-                    },
                 },
             ),
         ]
@@ -175,26 +146,6 @@ def create_server(config: Config, config_path: Path | None = None) -> Server:
                     node_types=args.get("node_types"),
                     bm25_weight=args.get("bm25_weight"),
                     cwd=args.get("cwd"),
-                )
-            case "trace_callers":
-                return handle_trace_callers(
-                    config=config,
-                    registry=registry,
-                    symbol=args.get("symbol"),
-                    chunk_id=args.get("chunk_id"),
-                    project=args.get("project"),
-                    depth=args.get("depth", 2),
-                    min_confidence=args.get("min_confidence", "medium"),
-                )
-            case "trace_callees":
-                return handle_trace_callees(
-                    config=config,
-                    registry=registry,
-                    symbol=args.get("symbol"),
-                    chunk_id=args.get("chunk_id"),
-                    project=args.get("project"),
-                    depth=args.get("depth", 2),
-                    min_confidence=args.get("min_confidence", "medium"),
                 )
             case _:
                 return {"error": f"Unknown tool: {name}"}

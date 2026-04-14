@@ -158,10 +158,13 @@ class SearchOrchestrator:
         else:
             project_infos = self._registry.list_all()
 
-        # Auto-detect primary project from cwd
+        # Auto-detect project from cwd — scope to that project only
         primary_project_id: str | None = None
-        if cwd and not project and len(project_infos) > 1:
-            primary_project_id = self._detect_primary_project(cwd, project_infos)
+        if cwd and not project:
+            detected_id = self._detect_primary_project(cwd, project_infos)
+            if detected_id:
+                project_infos = [p for p in project_infos if p.id == detected_id]
+                primary_project_id = detected_id
 
         if not project_infos:
             return HybridSearchResponse(
