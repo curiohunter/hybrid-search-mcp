@@ -72,21 +72,29 @@ E2E 검증 (AST Chunker 모듈):
 - 참조 검증: 108 verified, 29 removed (73% 검증률)
 - 28/28 pages synthesized, 중복 RAW 페이지 18개 정리
 
+### Phase 11: 의도 기반 검색 라우팅 + cwd 자동 스코핑 ✅
+
+| 변경 | 파일 | 설명 |
+|------|------|------|
+| cwd → project 스코핑 | `search/orchestrator.py` | cwd에서 프로젝트 감지 시 boost가 아닌 해당 프로젝트만 검색 |
+| 의도 기반 라우팅 | `CLAUDE.md`, `cli.py` | 고정 순서(wiki→hybrid→grep) → 질문 유형별 1차+fallback 체인 |
+| 임베딩 rate limit 대응 | `index/embedder.py` | 배치 간 0.2초 간격 추가 |
+| tiktoken 의존성 | `pyproject.toml` | 누락된 의존성 추가 |
+
+**실사용 벤치마크** (valuein-homepage, 1776파일/9810 chunks):
+- "학원비 세션 연동": hybrid+Wiki 3회/3초 vs Grep 15회/30초
+- "숙제분석 기능": hybrid+Wiki 2회 vs Grep 7회 (노이즈 85%)
+- 정확도: hybrid 90%+, Wiki가 도메인 전체 흐름 보충 → 완성도 50→90%
+
 ### 현재 상태 요약
 
 ```
-인덱싱:    4개 프로젝트 등록, valuein-homepage 1,770파일/9,806청크
-검색:      한→영 크로스 언어 동작, RRF fusion 정상
-Wiki:      구조적 페이지 자동 생성 (call graph 기반 모듈 분해)
-Wikilink:  페이지 간 [[링크]] 그래프 + BFS 탐색 동작
-Synthesis: Phase 9b 완료 — 28/28 모듈 합성, API 키 불필요
+인덱싱:    4개 프로젝트, valuein-homepage 1,776파일/9,810청크
+검색:      의도 기반 라우팅, cwd 자동 스코핑, 한→영 크로스 언어
+Wiki:      valuein 62페이지, mathontology 43페이지 (bootstrap-wiki 스킬)
+스킬:      /setup-hybrid-search → /bootstrap-wiki → /search → /maintain
+자동화:    post-commit delta reindex + stale mark + gap detect
 ```
-
-**Phase 9c-d로 해결된 한계**:
-
-1. ~~수동 트리거~~ → **자동화 완료**: `reindex --synthesize`로 stale 감지 → 자동 prepare. `find_indirectly_affected()`로 wikilink 이웃 모듈까지 전파.
-
-2. ~~참조 검증률 73%~~ → **2종 검증 완료**: `verify-synthesis` CLI로 file:line refs + symbol DB 존재 일괄 검증. `--fix`로 bad refs 자동 제거.
 
 ---
 
@@ -458,10 +466,76 @@ max_candidates = 20                  # RRF에서 가져올 후보 수
 
 ---
 
-### ~~Phase 11~~ — 삭제됨
+### Phase 12: Git Delta 인덱싱 + 영향 Wiki 부분 재생성 (계획)
 
-> Claude Code 자체가 LLM이므로 wiki + 검색 결과를 컨텍스트로 주입하면 직접 답변한다.
-> 별도 RAG 파이프라인은 중복 구현이므로 삭제. (Phase 10 rerank_hint와 동일 철학)
+> **목표**: 커밋 후 변경 파일만 빠르게 재인덱싱 + 영향받은 wiki만 자동 갱신.
+> **원칙**: "찾기는 싸게, 쓰기는 선택적으로, 전체 재빌드는 예외에서만"
+
+#### 12.1 현재 문제
+
+- post-commit hook이 `reindex`를 호출하면 **디스크 전체 파일 스캔** (os.walk)
+- 1776파일 프로젝트에서 파일 1개 수정해도 1776개 해시 비교
+- wiki 갱신은 stale 마킹만 하고 실제 갱신은 수동
+
+#### 12.2 구현 계획
+
+**Phase 12a: Git diff 기반 delta index**
+
+1. `get_changed_files_from_git(cwd, revspec="HEAD~1..HEAD")` 함수 추가
+   - 출력: added, modified, deleted, renamed
+   - 위치: `src/hybrid_search/index/scanner.py`
+
+2. `scan_project_subset(project_root, changed_paths, db, config)` 추가
+   - 변경 파일만 검사하고 DB와 비교
+   - fallback: git 정보 없으면 기존 전체 스캔
+
+3. `IndexingPipeline.index_project()` 확장
+   - 새 인자: `changed_paths: list[str] | None = None`
+   - 있으면 subset delta, 없으면 기존 전체 스캔
+
+4. CLI: `reindex --git-delta` 옵션 추가
+   - hook 기본값: `--git-delta`
+   - 수동 정리: `reindex --force`
+
+**Phase 12b: 영향 wiki 부분 재생성**
+
+1. 변경 파일 → 영향 모듈 매핑
+   - DB에서 변경 파일의 chunk_id 조회
+   - 기존 wiki_dependencies로 "이 파일이 속한 wiki page" 찾기
+
+2. 영향 wiki만 재생성
+   - 구조적 wiki: 자동 (결정론적, LLM 불필요)
+   - LLM 합성: stale 마킹만 (lazy refresh 또는 /maintain에서 처리)
+
+3. STALE.md 자동 정리
+   - 구조적 갱신 완료된 페이지는 stale에서 제거
+   - LLM 합성이 필요한 페이지만 stale 유지
+
+**Phase 12c: Hook 변경**
+
+```bash
+# Before
+nohup python -m hybrid_search.cli reindex --cwd "$PROJECT_DIR" > /dev/null 2>&1 &
+
+# After
+nohup python -m hybrid_search.cli reindex --git-delta --cwd "$PROJECT_DIR" > /dev/null 2>&1 &
+```
+
+실패 시 자동으로 전체 scan fallback.
+
+#### 12.3 예상 성능
+
+| 시나리오 | 현재 | Phase 12 후 |
+|----------|------|-------------|
+| 파일 1개 수정 | 1776파일 스캔 + 해시 비교 | git diff 1회 + 1파일 재임베딩 |
+| 파일 5개 수정 | 동일 | git diff 1회 + 5파일 재임베딩 |
+| 전체 리빌드 | `--force` | `--force` (변경 없음) |
+
+#### 12.4 Phase 13 후보: 도구 자체에 라우팅 내장
+
+코덱스 제안: CLAUDE.md 가이드라인 대신 도구 설계로 행동 강제.
+- hybrid_search 도구가 내부에서 의도 분류 + wiki 자동 보강 + 구조화된 응답 리턴
+- Claude가 라우팅 판단을 안 해도 1회 호출로 최적 결과
 
 ---
 
@@ -476,6 +550,9 @@ max_candidates = 20                  # RRF에서 가져올 후보 수
 | **9c** | 지식 복리 (incremental) ✅ | 9b | staleness skip + `reindex --synthesize` + wikilink 간접 전파 |
 | **9d** | 환각 검증 자동화 ✅ | 9b | `verify-synthesis` CLI (refs + symbols), `--fix` 자동 정리 |
 | **10** | LLM 재랭킹 ✅ | 없음 (9와 독립) | 검색 정확도 향상 |
+| **11** | 의도 기반 라우팅 + cwd 스코핑 ✅ | 없음 | 검색 효율 5x, 정확도 90%+ |
+| **12** | Git delta index + 영향 wiki 부분 재생성 | 11 | 커밋 후 인덱싱 속도 10x+ |
+| **13** | 도구 내장 라우팅 (코덱스 제안) | 12 | CLAUDE.md 의존 제거, 1회 호출 완결 |
 
 ### 9a 세부 태스크 (첫 번째 구현)
 
