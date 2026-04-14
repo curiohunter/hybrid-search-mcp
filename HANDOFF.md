@@ -1,7 +1,7 @@
 # Hybrid Search MCP — Handoff Document
 
 > **Date**: 2026-04-14 | **Branch**: main
-> **설계 문서**: `docs/design.md` (v6, Phase 1-9a 완료 + LLM 합성 로드맵)
+> **설계 문서**: `docs/design.md` (v6, Phase 1-9b 완료 + LLM 합성 로드맵)
 
 ## 프로젝트 한줄 요약
 
@@ -329,9 +329,9 @@ reindex --wiki (명시적)
   - "캘린더 일정 표시" → `calendar_events.md` + `schedule/page.tsx` (364ms)
 
 ### 공통
-- **임베딩 모델**: `intfloat/multilingual-e5-small` (sentence-transformers 백엔드)
-  - **권장 설정**: `device = "cpu"` + `onnx_threads = 6`
-  - **향후 최적화**: ONNX + INT8 arm64 quantization (예상 2.7-3.3x 가속)
+- **임베딩 모델**: OpenAI `text-embedding-3-small` (1536차원, HTTP API)
+  - **비용**: 인덱싱 ~$0.04/프로젝트, 검색 사실상 무료
+  - **로컬 리소스**: CPU/메모리 부하 제로 (urllib만 사용)
 
 ---
 
@@ -351,7 +351,6 @@ Phase 9b (전체 합성) 완료. 다음 후보:
 ## 아직 안 한 것
 
 ### Phase 9c-d: 지식 복리 + 환각 검증 자동화
-- 9c: stale → 자동 재합성 파이프라인 (wikilink 그래프로 간접 영향 전파)
 - 9c: stale → 자동 재합성 파이프라인 (wikilink 그래프로 간접 영향 전파)
 - 9d: 합성 결과의 파일:라인 출처 검증 자동화 + 사실 대조
 
@@ -439,6 +438,10 @@ python -m pytest tests/ -v
 
 10. **WikiStore 캡슐화**: `db._conn` 직접 접근 금지. synthesizer/CLI 등 외부에서는 WikiStore의 public 헬퍼 메서드(`get_page_row`, `find_page_by_title`, `get_page_file_hashes`, `get_page_deps`, `get_linked_page_ids`, `is_synthesized` 등) 사용.
 
+11. **Slug↔Title 매칭 주의** (Phase 9b): `finalize_module`에서 파일명 slug(예: `call-graph-&-module-tree`)를 DB 타이틀(예: `Call Graph & Module Tree`)로 변환할 때, `replace("-", " ")`만으로는 부족. `--` 포함 타이틀은 공백 4개가 되어 LIKE 불일치 발생. 해결: 원본 이름 → 대시-공백 변환 2단계 fallback.
+
+12. **합성 에이전트의 파일 쓰기 불안정**: Claude Code의 sub-agent(Agent 도구)에게 파일 쓰기를 위임하면 실제로 파일이 작성되지 않는 경우가 빈번. 핵심 파일 쓰기는 메인 세션에서 직접 수행하거나 Bash heredoc 사용이 안정적.
+
 ---
 
 ## 핵심 설계 결정 (빠른 참조)
@@ -446,7 +449,7 @@ python -m pytest tests/ -v
 | 결정 | 선택 | 이유 (design.md 참조) |
 |------|------|----------------------|
 | 언어 | Python + 네이티브 확장 | §4: MCP SDK 성숙, 핵심 연산은 C++/Rust |
-| 임베딩 | e5-small (sentence-transformers) | §7: 속도/크기 밸런스, 품질 필요시 Qwen3 전환. 3개 백엔드: ST/ONNX/Ollama |
+| 임베딩 | OpenAI text-embedding-3-small | §7: 로컬 리소스 제로, ~$0.04/프로젝트. urllib만 사용 |
 | BM25 | tantivy-py | §4: Rust 백엔드, Lucene급 성능 |
 | Vector DB | USearch HNSW | §4: C++ SIMD 최적화, M=16 |
 | 청크 크기 | 비공백 4000자 | §8: cAST 논문 근거, 줄 수보다 정확 |
@@ -458,3 +461,4 @@ python -m pytest tests/ -v
 | CLI | sync-wiki로 확정적 DB 동기화 | Phase 6a: 스킬 의존 대신 CLI로 확실한 실행 |
 | Wikilink | `[[링크]]` BFS 그래프 (max_hops=2) | Phase 8e: 페이지 간 관계 자동 추적 + 지식 복리 기반 |
 | Synthesis | Claude Code가 직접 합성, API 키 불필요 | Phase 9a: CLI prepare/finalize로 토큰 최소화 |
+| 전체 합성 | 28개 모듈 bottom-up 일괄, slug 2단계 fallback | Phase 9b: 참조 검증 73%, `_raw/` 백업 보존 |
