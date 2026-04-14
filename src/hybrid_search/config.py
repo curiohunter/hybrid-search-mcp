@@ -77,9 +77,20 @@ class ProjectEntry:
 
 
 @dataclass(frozen=True)
+class SynthesisConfig:
+    enabled: bool = False
+    backend: str = "claude"  # "claude" | "none"
+    model: str = "claude-sonnet-4-6"
+    api_key_env: str = "ANTHROPIC_API_KEY"
+    max_input_tokens: int = 30000
+    temperature: float = 0.2
+
+
+@dataclass(frozen=True)
 class WikiConfig:
     max_pages_per_project: int = 100
     eviction_policy: str = "lru"  # "lru" only for now
+    synthesis: SynthesisConfig = field(default_factory=SynthesisConfig)
 
 
 @dataclass(frozen=True)
@@ -153,9 +164,19 @@ def load_config(config_path: Path | None = None) -> Config:
     )
 
     wiki_raw = raw.get("wiki", {})
+    synth_raw = wiki_raw.get("synthesis", {})
+    synthesis = SynthesisConfig(
+        enabled=synth_raw.get("enabled", False),
+        backend=synth_raw.get("backend", "claude"),
+        model=synth_raw.get("model", "claude-sonnet-4-6"),
+        api_key_env=synth_raw.get("api_key_env", "ANTHROPIC_API_KEY"),
+        max_input_tokens=synth_raw.get("max_input_tokens", 30000),
+        temperature=synth_raw.get("temperature", 0.2),
+    )
     wiki = WikiConfig(
         max_pages_per_project=wiki_raw.get("max_pages_per_project", 100),
         eviction_policy=wiki_raw.get("eviction_policy", "lru"),
+        synthesis=synthesis,
     )
 
     projects = tuple(

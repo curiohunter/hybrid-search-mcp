@@ -809,6 +809,165 @@ def cmd_lookup_wiki(args: argparse.Namespace) -> None:
         db.close()
 
 
+def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
+    """Two-phase wiki synthesis: --prepare collects context, --finalize saves results.
+
+    Flow:
+      1. synthesize-wiki --prepare  → writes context files to _synthesis_input/
+      2. Claude Code reads context, writes synthesis to _synthesis_output/
+      3. synthesize-wiki --finalize → verifies refs, merges, saves to DB
+    """
+    from hybrid_search.index.synthesizer import (
+        collect_module_context,
+        estimate_tokens,
+        finalize_module,
+        prepare_context_file,
+    )
+
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if not match:
+        print(f"No registered project found for: {cwd}")
+        return
+
+    name, project_path = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        return
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print("No index found. Run reindex first.")
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        wiki_store = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
+        wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
+        input_dir = wiki_dir / "_synthesis_input"
+        output_dir = wiki_dir / "_synthesis_output"
+
+        # -- FINALIZE MODE --
+        if args.finalize:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_files = sorted(output_dir.glob("*.md"))
+            if not output_files:
+                print(f"No synthesis output found in {output_dir}")
+                print("Write synthesis to _synthesis_output/<module>.md first.")
+                return
+
+            finalized = 0
+            for out_file in output_files:
+                mod_name = out_file.stem
+                synthesis_content = out_file.read_text(encoding="utf-8")
+                if not synthesis_content.strip():
+                    print(f"  Skip: {mod_name} (empty)")
+                    continue
+
+                result = finalize_module(
+                    db, pinfo.id, mod_name, synthesis_content,
+                    project_path, wiki_dir,
+                )
+                if "error" in result:
+                    print(f"  Error: {result['error']}")
+                else:
+                    print(
+                        f"  Finalized: {mod_name} "
+                        f"({result['verified_refs']} refs OK, "
+                        f"{result['failed_refs']} removed)"
+                    )
+                    finalized += 1
+
+            # Clean up
+            if finalized > 0:
+                for f in output_files:
+                    f.unlink()
+                for f in input_dir.glob("*.md"):
+                    f.unlink()
+                print(f"\nDone: {finalized} module(s) finalized. Input/output files cleaned.")
+            return
+
+        # -- PREPARE / DRY-RUN MODE --
+
+        # Determine target modules
+        if args.module:
+            target_modules = [args.module]
+        else:
+            staleness = wiki_store.check_staleness(pinfo.id)
+            stale_pages = [p for p in staleness if p["stale"]]
+            if stale_pages:
+                target_modules = [p["title"] for p in stale_pages]
+            else:
+                all_pages = wiki_store.list_pages(pinfo.id, limit=200)
+                unsynthesized = []
+                for p in all_pages:
+                    row = db._conn.execute(
+                        "SELECT synthesis_model FROM wiki_pages WHERE id = ?",
+                        (p["page_id"],),
+                    ).fetchone()
+                    if row and not row["synthesis_model"]:
+                        unsynthesized.append(p["title"])
+                target_modules = unsynthesized
+
+        if not target_modules:
+            print("No modules to synthesize (all up-to-date).")
+            return
+
+        # Collect contexts
+        contexts: list[tuple[str, object]] = []
+        for mod_name in target_modules:
+            ctx = collect_module_context(db, pinfo.id, mod_name, project_path)
+            if ctx:
+                contexts.append((mod_name, ctx))
+            else:
+                print(f"  Skip: {mod_name} (no wiki page found)")
+
+        if not contexts:
+            print("No valid modules to synthesize.")
+            return
+
+        # Dry-run: show token estimates
+        if args.dry_run:
+            total_tokens = 0
+            print(f"Project: {name}")
+            print(f"\n{'Module':<30} {'Chunks':>6} {'Files':>5} {'Tokens':>10}")
+            print("-" * 55)
+            for mod_name, ctx in contexts:
+                est = estimate_tokens(ctx)
+                total_tokens += est["input_tokens"]
+                print(
+                    f"  {est['module']:<28} {est['source_chunks']:>6} "
+                    f"{est['files']:>5} {est['input_tokens']:>10}"
+                )
+            print("-" * 55)
+            print(f"  {'TOTAL':<28} {'':>6} {'':>5} {total_tokens:>10}")
+            print(f"\nTargets: {len(contexts)} module(s)")
+            return
+
+        # Prepare: write context files
+        input_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for mod_name, ctx in contexts:
+            slug = mod_name.lower().replace(" ", "-")
+            out_path = input_dir / f"{slug}.md"
+            prepare_context_file(ctx, out_path)
+            print(f"  Prepared: {out_path.name}")
+
+        print(f"\n{len(contexts)} context file(s) written to {input_dir}")
+        print(f"\nNext steps:")
+        print(f"  1. Read each file in {input_dir}/")
+        print(f"  2. Write synthesis to {output_dir}/<same-name>.md")
+        print(f"  3. Run: python -m hybrid_search.cli synthesize-wiki --finalize --cwd {args.cwd}")
+
+    finally:
+        db.close()
+
+
 def cmd_install_hook(args: argparse.Namespace) -> None:
     """Install post-commit hook in a project's .git/hooks/."""
     import subprocess
@@ -918,6 +1077,12 @@ def main() -> None:
     p_lookup.add_argument("--cwd", default=".", help="Project directory")
     p_lookup.add_argument("--json", action="store_true", help="Output as JSON")
 
+    p_synth = sub.add_parser("synthesize-wiki", help="LLM synthesis for wiki pages")
+    p_synth.add_argument("--module", help="Synthesize a specific module (default: all stale)")
+    p_synth.add_argument("--cwd", default=".", help="Project directory")
+    p_synth.add_argument("--dry-run", action="store_true", help="Show targets and token estimate only")
+    p_synth.add_argument("--finalize", action="store_true", help="Finalize: verify refs, merge, save to DB")
+
     args = parser.parse_args()
 
     if args.command == "reindex":
@@ -944,6 +1109,8 @@ def main() -> None:
         cmd_remove_project(args)
     elif args.command == "lookup-wiki":
         cmd_lookup_wiki(args)
+    elif args.command == "synthesize-wiki":
+        cmd_synthesize_wiki(args)
     else:
         parser.print_help()
         sys.exit(1)

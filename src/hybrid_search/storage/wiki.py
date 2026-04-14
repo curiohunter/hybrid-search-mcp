@@ -73,6 +73,10 @@ class WikiPage:
     stale: bool | None = None
     changed_files: list[str] | None = None
     linked_pages: list[LinkedPage] = field(default_factory=list)
+    synthesis_model: str | None = None
+    synthesis_version: int = 0
+    synthesis_hash: str | None = None
+    last_synthesized_at: str | None = None
 
 
 class WikiStore:
@@ -94,6 +98,8 @@ class WikiStore:
         content: str,
         tags: list[str] | None,
         file_dependencies: list[dict],
+        synthesis_model: str | None = None,
+        synthesis_hash: str | None = None,
     ) -> dict:
         """Store a wiki page with file dependency snapshots.
 
@@ -110,24 +116,41 @@ class WikiStore:
         ).fetchone()
 
         if existing:
-            self._conn.execute(
-                """UPDATE wiki_pages
-                   SET title = ?, content = ?, tags = ?, updated_at = ?,
-                       accessed_at = ?, version = version + 1
-                   WHERE id = ?""",
-                (title, content, tags_json, now, now, page_id),
-            )
+            if synthesis_model:
+                self._conn.execute(
+                    """UPDATE wiki_pages
+                       SET title = ?, content = ?, tags = ?, updated_at = ?,
+                           accessed_at = ?, version = version + 1,
+                           synthesis_model = ?, synthesis_hash = ?,
+                           synthesis_version = synthesis_version + 1,
+                           last_synthesized_at = ?
+                       WHERE id = ?""",
+                    (title, content, tags_json, now, now,
+                     synthesis_model, synthesis_hash, now, page_id),
+                )
+            else:
+                self._conn.execute(
+                    """UPDATE wiki_pages
+                       SET title = ?, content = ?, tags = ?, updated_at = ?,
+                           accessed_at = ?, version = version + 1
+                       WHERE id = ?""",
+                    (title, content, tags_json, now, now, page_id),
+                )
             self._conn.execute(
                 "DELETE FROM wiki_dependencies WHERE wiki_page_id = ?", (page_id,)
             )
         else:
+            synth_at = now if synthesis_model else None
             self._conn.execute(
                 """INSERT INTO wiki_pages
                    (id, project_id, query_key, title, content, tags,
-                    created_at, updated_at, accessed_at, access_count, version)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)""",
+                    created_at, updated_at, accessed_at, access_count, version,
+                    synthesis_model, synthesis_version, synthesis_hash, last_synthesized_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?)""",
                 (page_id, project_id, query_key, title, content, tags_json,
-                 now, now, now),
+                 now, now, now,
+                 synthesis_model, 1 if synthesis_model else 0,
+                 synthesis_hash, synth_at),
             )
 
         for dep in file_dependencies:
@@ -193,6 +216,10 @@ class WikiStore:
             stale=staleness["stale"],
             changed_files=staleness["changed_files"],
             linked_pages=linked,
+            synthesis_model=row["synthesis_model"],
+            synthesis_version=row["synthesis_version"] or 0,
+            synthesis_hash=row["synthesis_hash"],
+            last_synthesized_at=row["last_synthesized_at"],
         )
 
     def check_staleness(
