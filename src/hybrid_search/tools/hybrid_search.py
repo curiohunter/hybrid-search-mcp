@@ -1,8 +1,21 @@
-"""MCP tool: hybrid_search — BM25 + Vector with RRF fusion."""
+"""MCP tool: hybrid_search — BM25 + Vector with RRF fusion.
+
+When reranking is enabled, returns expanded candidates (top-20) for
+Claude Code to rerank by query intent — no external API calls needed.
+"""
 
 from __future__ import annotations
 
 from hybrid_search.search.orchestrator import SearchOrchestrator
+
+
+_RERANK_HINT = (
+    "[RERANK MODE] {n} candidates returned (more than requested limit {limit}). "
+    "These are ranked by RRF score (BM25 + vector fusion), but RRF cannot judge "
+    "query intent. You should reorder these results by relevance to the query "
+    '"{query}" — prioritize results that best match the user\'s intent, not just '
+    "keyword overlap. Present only the top {limit} most relevant results."
+)
 
 
 def handle_hybrid_search(
@@ -26,7 +39,7 @@ def handle_hybrid_search(
         cwd=cwd,
     )
 
-    return {
+    result: dict = {
         "results": [
             {
                 "chunk_id": r.chunk_id,
@@ -51,3 +64,12 @@ def handle_hybrid_search(
         "total_chunks_searched": response.total_chunks_searched,
         "skipped_projects": response.skipped_projects,
     }
+
+    if response.reranked and len(response.results) > limit:
+        result["rerank_hint"] = _RERANK_HINT.format(
+            n=len(response.results),
+            limit=limit,
+            query=query,
+        )
+
+    return result

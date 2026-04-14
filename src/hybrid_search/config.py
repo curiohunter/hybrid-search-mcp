@@ -56,11 +56,18 @@ class EmbeddingConfig:
 
 
 @dataclass(frozen=True)
+class RerankingConfig:
+    enabled: bool = False
+    max_candidates: int = 20
+
+
+@dataclass(frozen=True)
 class SearchConfig:
     default_limit: int = 10
     rrf_k: int = 60
     query_classifier: bool = True
     default_bm25_weight: float = 0.5
+    reranking: RerankingConfig = field(default_factory=RerankingConfig)
 
 
 @dataclass(frozen=True)
@@ -142,11 +149,17 @@ def load_config(config_path: Path | None = None) -> Config:
     )
 
     search_raw = raw.get("search", {})
+    rerank_raw = search_raw.get("reranking", {})
+    reranking = RerankingConfig(
+        enabled=rerank_raw.get("enabled", False),
+        max_candidates=rerank_raw.get("max_candidates", 20),
+    )
     search = SearchConfig(
         default_limit=search_raw.get("default_limit", 10),
         rrf_k=search_raw.get("rrf_k", 60),
         query_classifier=search_raw.get("query_classifier", True),
         default_bm25_weight=search_raw.get("default_bm25_weight", 0.5),
+        reranking=reranking,
     )
 
     idx_raw = raw.get("indexing", {})

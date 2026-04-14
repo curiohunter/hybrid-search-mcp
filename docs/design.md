@@ -411,9 +411,9 @@ ALTER TABLE wiki_pages ADD COLUMN last_synthesized_at TEXT;
 
 ---
 
-### Phase 10: LLM 재랭킹 (검색 품질 향상)
+### Phase 10: LLM 재랭킹 — Claude Code Native ✅
 
-> Phase 9 완료 후 진행. 현재 RRF 퓨전 결과를 LLM이 재랭킹.
+> Claude Code 자체가 LLM이므로 외부 API 키 불필요 (Phase 9a 원칙 동일).
 
 #### 10.1 현재 한계
 
@@ -427,27 +427,34 @@ RRF는 순위 기반 합산이라 "쿼리의 의도"를 이해하지 못함:
 쿼리
   │
   ▼
-기존 RRF (top-20 후보)
+기존 RRF (top-20 후보, enriched 메타데이터)
   │
   ▼
-LLM Re-ranker
-  │  Input: 쿼리 + 20개 후보의 (name, file_path, snippet)
-  │  Output: 재정렬된 순위 + 적합도 점수
+Claude Code (rerank_hint 지시)
+  │  Input: 쿼리 + 20개 후보의 (name, file_path, snippet, node_type)
+  │  Claude Code가 쿼리 의도에 맞게 재정렬
+  │  API 호출 0, 추가 비용 0, 지연 0
   │
   ▼
 최종 결과 (top-10)
 ```
 
-**비용 제어**: re-ranking은 snippet만 전송 (전체 코드 X). 20개 후보 × ~100토큰 = ~2K 토큰 입력.
-
 #### 10.3 설정
 
 ```toml
 [search.reranking]
-enabled = false                      # Phase 10 완료 전까지 기본 off
-model = "claude-haiku-4-5"           # 빠르고 저렴한 모델
+enabled = false                      # 기본 off, 명시적으로 켜야 동작
 max_candidates = 20                  # RRF에서 가져올 후보 수
 ```
+
+#### 10.4 구현 파일
+
+| 파일 | 역할 |
+|------|------|
+| `config.py` | `RerankingConfig` dataclass + TOML 파싱 |
+| `search/orchestrator.py` | reranking 시 `max_candidates`개 enriched 결과 반환 |
+| `tools/hybrid_search.py` | `rerank_hint` — Claude Code에게 재랭킹 지시 |
+| `tests/test_reranker.py` | 16개 테스트 (config, hint, 응답 필드) |
 
 ---
 
@@ -485,7 +492,7 @@ max_candidates = 20                  # RRF에서 가져올 후보 수
 | **9b** | Bottom-up 전체 합성 ✅ | 9a | 28/28 모듈 합성, 슬러그 매칭 버그 수정 |
 | **9c** | 지식 복리 (incremental) ✅ | 9b | staleness skip + `reindex --synthesize` + wikilink 간접 전파 |
 | **9d** | 환각 검증 자동화 ✅ | 9b | `verify-synthesis` CLI (refs + symbols), `--fix` 자동 정리 |
-| **10** | LLM 재랭킹 | 없음 (9와 독립) | 검색 정확도 향상 |
+| **10** | LLM 재랭킹 ✅ | 없음 (9와 독립) | 검색 정확도 향상 |
 | **11** | RAG 답변 생성 | 9b + 10 | 코드베이스 Q&A |
 
 ### 9a 세부 태스크 (첫 번째 구현)
