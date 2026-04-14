@@ -112,7 +112,12 @@ def collect_module_context(
 
     row = wiki_store.get_page_row(page_id)
     if row is None:
+        # Try original name first (handles titles with -- etc.)
         row = wiki_store.find_page_by_title(project_id, module_name)
+    if row is None:
+        # Try dash-replaced version (handles slugified filenames)
+        title_query = module_name.replace("-", " ")
+        row = wiki_store.find_page_by_title(project_id, title_query)
     if row is None:
         logger.warning("No wiki page found for module: %s", module_name)
         return None
@@ -370,8 +375,10 @@ def finalize_module(
     wiki_store = db.wiki_store()
     row = wiki_store.get_page_row(page_id)
     if row is None:
-        # Try title match
         row = wiki_store.find_page_by_title(project_id, module_name)
+    if row is None:
+        title_query = module_name.replace("-", " ")
+        row = wiki_store.find_page_by_title(project_id, title_query)
     if row is None:
         return {"error": f"No wiki page found for {module_name}"}
 

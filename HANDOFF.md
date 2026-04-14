@@ -265,6 +265,27 @@ reindex --wiki (명시적)
 
 **총 코드**: ~10,000줄 (36개 파일) | **MCP 도구**: 3개 | **테스트**: 241개 (14개 파일) | **CLI 명령**: 13개 | **스킬**: 3개
 
+### Phase 9b: 전체 모듈 Bottom-Up 합성 ✅
+
+| 항목 | 변경 |
+|------|:----:|
+| 28개 모듈 일괄 prepare → Claude Code 합성 → finalize | 완료 |
+| `finalize_module` 타이틀 매칭 버그 수정 (slug vs 원본 이름) | `index/synthesizer.py` |
+| 중복 RAW 페이지 정리 (18개 삭제) | DB cleanup |
+
+**실행 결과**:
+- 28/28 모듈 합성 완료 (100%)
+- 참조 검증: 총 108개 refs verified, 29개 removed (73% 검증률)
+- `_raw/` 백업: 20개 원본 결정론적 wiki 보존
+- DB: 28 pages, 28 synthesized (중복 없음)
+
+**발견된 버그 & 수정**:
+1. `finalize_module`에서 `find_page_by_title`에 raw slug(대시 포함)를 전달 → LIKE 매칭 실패
+   - 수정: 원본 이름 → 대시-공백 변환 순서로 2단계 fallback 시도
+2. `collect_module_context`에도 동일 패턴 적용
+3. `--` 포함 타이틀 (예: "Embedder -- OpenAI API Backend")은 `replace("-", " ")`로 4개 공백 생성 → LIKE 불일치
+   - 수정: 원본 이름 먼저 시도하는 fallback 체인
+
 ### MCP 도구 슬림화: 13→3 ✅
 
 **이유**: MCP 도구 스키마가 매 대화 시스템 프롬프트에 로드되어 토큰 소모. 관리/wiki 도구 10개를 CLI로 이관.
@@ -316,22 +337,21 @@ reindex --wiki (명시적)
 
 ## 즉시 해야 할 것
 
-Phase 9a (단일 모듈 합성) 완료. 다음 후보:
-
-### Phase 9b: 전체 모듈 합성
-- 28개 모듈 일괄 prepare → Claude Code 합성 → finalize
-- 현재 AST Chunker 1개만 E2E 검증됨
+Phase 9b (전체 합성) 완료. 다음 후보:
 
 ### Phase 9c: 지식 복리 (incremental)
 - reindex → stale 감지 → 자동 prepare → 합성 트리거
 - `_expand_graph()`로 간접 영향 모듈의 "연관 모듈" 섹션만 선택적 재합성
 
+### Phase 9d: 환각 검증 자동화
+- 합성 결과의 파일:라인 출처 검증 자동화 + 사실 대조
+
 ---
 
 ## 아직 안 한 것
 
-### Phase 9b-d: 전체 합성 + 지식 복리 + 환각 검증 자동화
-- 9b: 28개 모듈 bottom-up 일괄 합성
+### Phase 9c-d: 지식 복리 + 환각 검증 자동화
+- 9c: stale → 자동 재합성 파이프라인 (wikilink 그래프로 간접 영향 전파)
 - 9c: stale → 자동 재합성 파이프라인 (wikilink 그래프로 간접 영향 전파)
 - 9d: 합성 결과의 파일:라인 출처 검증 자동화 + 사실 대조
 

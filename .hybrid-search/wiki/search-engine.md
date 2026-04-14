@@ -1,5 +1,77 @@
 # Search Engine
-> 마지막 업데이트: 2026-04-14 | 상태: fresh
+> 마지막 업데이트: 2026-04-14 | 상태: fresh | synthesized: 2026-04-14
+
+## Overview
+
+The search engine module implements a hybrid retrieval system that runs BM25 keyword search (via Tantivy) and vector semantic search (via USearch HNSW) in parallel, then fuses the results using Reciprocal Rank Fusion (RRF). A query classifier automatically adjusts the BM25-vs-vector weight based on whether the query looks like a code symbol, Korean natural language, or English natural language, enabling a single API to handle all query types including cross-language Korean-English code search.
+
+## Key Design Decisions
+
+- **3-stage query classifier drives weight selection**: Instead of a fixed weight, `classify_query()` detects symbol patterns (camelCase, snake_case, dot-qualified), Korean character ratio, or defaults to English NL, mapping to BM25 weights of 0.80, 0.15, and 0.40 respectively (`src/hybrid_search/search/orchestrator.py:L55`)
+- **Mixed Korean+symbol queries get a middle weight of 0.40**: When a query contains both Korean characters and symbol patterns, the classifier returns `KOREAN_NL` type but `get_bm25_weight()` overrides with 0.40 (between 0.80 and 0.15) to balance both signals (`src/hybrid_search/search/orchestrator.py:L78`)
+- **Retrieval depth is 3x the requested limit**: Each channel fetches `limit * 3` results before fusion, giving RRF enough candidates to produce high-quality merged rankings (`src/hybrid_search/search/orchestrator.py:L132`)
+- **CWD-based primary project boosting**: In multi-project search, the project matching the current working directory gets a 2:1 BM25 interleave ratio and a +0.05 cosine similarity boost for vector results (`src/hybrid_search/search/orchestrator.py:L265`)
+- **USearch cosine distance converted to similarity**: USearch returns distance (1 - similarity), so the vector engine converts to similarity for consistent scoring (`src/hybrid_search/search/vector.py:L81`)
+- **BM25 schema mismatch auto-recovery in write mode**: If the Tantivy index has a different schema, write mode deletes and recreates the index; read-only mode gracefully returns None (`src/hybrid_search/search/bm25.py:L32`)
+- **Integer key mapping for USearch**: USearch requires integer keys, so `VectorEngine` maintains bidirectional `_key_to_id` / `_id_to_key` dictionaries with a monotonically increasing `_next_key` counter (`src/hybrid_search/search/vector.py:L19`)
+
+## Data Flow
+
+```
+query string
+  |
+  +-- classify_query() --> EXACT_SYMBOL / KOREAN_NL / ENGLISH_NL
+  |                          --> bm25_weight (0.80 / 0.15 / 0.40)
+  |
+  +-- Embedder.embed_query() --> query_vector (1536,)
+  |
+  +-- Single project?
+  |     |
+  |     +-- _search_single()
+  |           +-- BM25Engine.search(query, depth)  --> bm25_ids
+  |           +-- VectorEngine.search(vector, depth) --> vector_ids
+  |
+  +-- Multi project?
+  |     |
+  |     +-- _search_cross_project()
+  |           +-- ThreadPoolExecutor(max_workers=4)
+  |           |     +-- search_one() per project (timeout=2.0s)
+  |           |
+  |           +-- BM25 merge: round-robin interleave
+  |           |     (primary 2:1 weighted if CWD detected)
+  |           |
+  |           +-- Vector merge: global cosine sort
+  |                 (primary +0.05 boost if CWD detected)
+  |
+  +-- reciprocal_rank_fusion(bm25_ids, vector_ids, k=60, bm25_weight)
+  |     |
+  |     +-- RRF_score = bm25_w/(k+rank_bm25) + vec_w/(k+rank_vec)
+  |
+  +-- _enrich_results(fused[:limit])
+  |     +-- StoreDB lookup per chunk --> file_path, name, content, snippet
+  |
+  v
+HybridSearchResponse(results, query_type, bm25_weight, query_time_ms)
+```
+
+## Caveats
+
+- **`_build_filter()` loads all chunks for a project into memory**: When `file_pattern` or `node_types` are specified, `get_chunks_by_project()` fetches every chunk record to build a filter set, which could be expensive for very large projects (`src/hybrid_search/search/orchestrator.py:L447`)
+- **BM25 query parsing has double-fallback**: If `parse_query()` fails, the query is escaped with `_escape_tantivy_query()` and retried; if that also fails, an empty result is returned silently without logging (`src/hybrid_search/search/bm25.py:L107`)
+- **`_enrich_results()` opens new DB connections for each search**: Every search call creates fresh `StoreDB` instances for enrichment, which adds file handle overhead; connections are properly closed in a `finally` block (`src/hybrid_search/search/orchestrator.py:L354`)
+- **Cross-project search timeout is per-project, not total**: Each project gets `PROJECT_TIMEOUT_S = 2.0` seconds independently, so a search across N projects could take up to 2*N seconds in the worst case
+- **Vector re-add removes then re-inserts**: `VectorEngine.add()` calls `self._index.remove(old_key)` before adding with a new key, which means the `_next_key` counter grows monotonically even for updates, never reusing keys (`src/hybrid_search/search/vector.py:L81`)
+- **BM25 writer heap size is hardcoded**: The Tantivy writer uses `heap_size=50_000_000` (50MB) without configuration (`src/hybrid_search/search/bm25.py:L57`)
+
+## Related Modules
+
+- [[indexing-pipeline]] -- populates BM25 and Vector indexes that this module reads from
+- [[configuration-&-project-management]] -- provides `SearchConfig` (rrf_k, default_bm25_weight, query_classifier) and `ProjectRegistry` for project discovery
+- [[storage-(isolated)]] -- `StoreDB` is used for chunk metadata enrichment; `IndexPaths` locates per-project index directories
+- [[ast-chunker]] -- determines the chunk granularity (function, class, method) that forms the atomic search unit
+
+<details>
+<summary>Structure (auto-generated)</summary>
 
 ## 개요
 
@@ -106,3 +178,5 @@ RRF_score(chunk) = bm25_weight / (k + bm25_rank) + vector_weight / (k + vector_r
 
 **필터링**: `_build_filter()` -- file_pattern(fnmatch), node_types로 chunk ID 집합 생성.
 파일 경로 캐시로 N+1 쿼리를 방지한다.
+
+</details>
