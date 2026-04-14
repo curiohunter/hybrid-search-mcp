@@ -351,4 +351,4 @@ def _build_ignore_spec(
         except OSError:
             pass
 
-    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+    return pathspec.PathSpec.from_lines("gitignore", patterns)

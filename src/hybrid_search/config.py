@@ -209,8 +209,9 @@ data_dir = "~/.hybrid-search"
 log_level = "info"
 
 [embedding]
-ollama_model = "qwen3-embedding:0.6b"  # Ollama model (GPU accelerated)
-batch_size = 16
+backend = "openai"
+openai_model = "text-embedding-3-small"
+batch_size = 100
 
 [search]
 default_limit = 10
