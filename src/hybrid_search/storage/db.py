@@ -314,10 +314,12 @@ class StoreDB:
     def upsert_file(self, conn: sqlite3.Connection, record: FileRecord) -> None:
         # Use INSERT + UPDATE instead of INSERT OR REPLACE.
         # REPLACE = DELETE + INSERT, which triggers FK CASCADE and wipes chunks.
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         conn.execute(
             """INSERT INTO files
-               (id, project_id, relative_path, file_hash, file_size, file_mtime, language, chunk_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               (id, project_id, relative_path, file_hash, file_size, file_mtime, language, last_modified, chunk_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    project_id = excluded.project_id,
                    relative_path = excluded.relative_path,
@@ -325,6 +327,7 @@ class StoreDB:
                    file_size = excluded.file_size,
                    file_mtime = excluded.file_mtime,
                    language = excluded.language,
+                   last_modified = excluded.last_modified,
                    chunk_count = excluded.chunk_count""",
             (
                 record.id,
@@ -334,6 +337,7 @@ class StoreDB:
                 record.file_size,
                 record.file_mtime,
                 record.language,
+                now,
                 record.chunk_count,
             ),
         )
