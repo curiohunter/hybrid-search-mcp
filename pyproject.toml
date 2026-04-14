@@ -34,7 +34,7 @@ gpu = ["onnxruntime-silicon>=1.17"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [project.scripts]
-hybrid-search-mcp = "hybrid_search.server:main"
+hybrid-search-mcp = "hybrid_search.cli:main"
 
 [build-system]
 requires = ["hatchling"]
