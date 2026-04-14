@@ -11,7 +11,7 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 
@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
     accessed_at TEXT NOT NULL,
     access_count INTEGER DEFAULT 1,
     version INTEGER DEFAULT 1,
+    synthesis_model TEXT,
+    synthesis_version INTEGER DEFAULT 0,
+    synthesis_hash TEXT,
+    last_synthesized_at TEXT,
     UNIQUE(project_id, query_key)
 );
 
@@ -173,12 +177,44 @@ class StoreDB:
         self._conn.executescript(SCHEMA_SQL)
         # Set schema version if not present
         cur = self._conn.execute("SELECT value FROM index_meta WHERE key = 'schema_version'")
-        if cur.fetchone() is None:
+        row = cur.fetchone()
+        if row is None:
             self._conn.execute(
                 "INSERT INTO index_meta (key, value) VALUES ('schema_version', ?)",
                 (SCHEMA_VERSION,),
             )
             self._conn.commit()
+        else:
+            self._migrate_schema(row["value"])
+
+    def _migrate_schema(self, current_version: str) -> None:
+        """Run schema migrations from current_version to SCHEMA_VERSION."""
+        if current_version >= SCHEMA_VERSION:
+            return
+
+        if current_version < "3":
+            # v2 → v3: add synthesis columns to wiki_pages
+            existing_cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(wiki_pages)").fetchall()
+            }
+            for col, typedef in [
+                ("synthesis_model", "TEXT"),
+                ("synthesis_version", "INTEGER DEFAULT 0"),
+                ("synthesis_hash", "TEXT"),
+                ("last_synthesized_at", "TEXT"),
+            ]:
+                if col not in existing_cols:
+                    self._conn.execute(
+                        f"ALTER TABLE wiki_pages ADD COLUMN {col} {typedef}"
+                    )
+            logger.info("Migrated schema v2 → v3 (synthesis columns)")
+
+        self._conn.execute(
+            "UPDATE index_meta SET value = ? WHERE key = 'schema_version'",
+            (SCHEMA_VERSION,),
+        )
+        self._conn.commit()
 
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
