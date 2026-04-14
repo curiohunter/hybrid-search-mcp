@@ -52,39 +52,39 @@ class TestDetectPrimaryProject:
 
     def test_cwd_inside_project(self):
         projects = [
-            self._make_info("valuein", "/Users/ian/project/valuein_homepage"),
-            self._make_info("breeze", "/Users/ian/project/breeze"),
+            self._make_info("valuein", "/home/user/projects/valuein_homepage"),
+            self._make_info("breeze", "/home/user/projects/breeze"),
         ]
         result = SearchOrchestrator._detect_primary_project(
-            "/Users/ian/project/valuein_homepage/app/dashboard", projects
+            "/home/user/projects/valuein_homepage/app/dashboard", projects
         )
         assert result == "id_valuein"
 
     def test_cwd_is_project_root(self):
         projects = [
-            self._make_info("valuein", "/Users/ian/project/valuein_homepage"),
+            self._make_info("valuein", "/home/user/projects/valuein_homepage"),
         ]
         result = SearchOrchestrator._detect_primary_project(
-            "/Users/ian/project/valuein_homepage", projects
+            "/home/user/projects/valuein_homepage", projects
         )
         assert result == "id_valuein"
 
     def test_cwd_no_match(self):
         projects = [
-            self._make_info("valuein", "/Users/ian/project/valuein_homepage"),
+            self._make_info("valuein", "/home/user/projects/valuein_homepage"),
         ]
         result = SearchOrchestrator._detect_primary_project(
-            "/Users/ian/other/unrelated", projects
+            "/home/user/other/unrelated", projects
         )
         assert result is None
 
     def test_cwd_matches_first_project(self):
         projects = [
-            self._make_info("breeze", "/Users/ian/project/breeze"),
-            self._make_info("valuein", "/Users/ian/project/valuein_homepage"),
+            self._make_info("breeze", "/home/user/projects/breeze"),
+            self._make_info("valuein", "/home/user/projects/valuein_homepage"),
         ]
         result = SearchOrchestrator._detect_primary_project(
-            "/Users/ian/project/breeze/src", projects
+            "/home/user/projects/breeze/src", projects
         )
         assert result == "id_breeze"
 

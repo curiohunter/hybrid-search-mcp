@@ -1,160 +1,182 @@
 # Hybrid Search MCP
 
-코드베이스를 이해하는 AI를 만드는 도구.
-BM25 + Vector 하이브리드 검색으로 코드와 문서를 한국어/영어 크로스 언어 검색.
+Hybrid BM25 + Vector search for codebases.
+Cross-language search (Korean ↔ English) across code and docs.
 
 ---
 
-## 시작하기
+## Quick Start
 
-### 1회: 글로벌 설치
+### Requirements
 
-```
-/setup-hybrid-search
-```
+- Python 3.11+
+- OpenAI API key ([get one here](https://platform.openai.com/api-keys))
 
-MCP 서버 등록 + hook 설치 + Claude Code 재시작.
-
-### 프로젝트당 1회: 위키 생성
-
-```
-/bootstrap-wiki
-```
-
-인덱싱 + wiki 생성 + CLAUDE.md 업데이트 + post-commit hook 설치.
-
-### 이후: 그냥 쓰면 됨
-
-```
-"학원비 세션 연동 알려줘"          → hybrid_search가 찾아줌
-"handleSubmit 어디?"              → Grep이 찾아줌
-"이 모듈 전체 구조 알려줘"         → Wiki + hybrid_search 병렬
-```
-
-커밋할 때마다 자동으로 변경 파일만 재인덱싱 + 영향 wiki 갱신.
-
----
-
-## 스킬 5개
-
-| 스킬 | 언제 | 빈도 |
-|------|------|------|
-| `/setup-hybrid-search` | 첫 설치 | 글로벌 1회 |
-| `/bootstrap-wiki` | 프로젝트 온보딩 | 프로젝트당 1회 |
-| `/search` | 코드/문서 검색 | 매번 |
-| `/save-wiki` | 분석 결과 wiki 저장 | 선택적 |
-| `/maintain` | 인덱스/wiki 정리 | 가끔 |
-
----
-
-## 검색 전략 — 의도 기반 라우팅
-
-고정 순서가 아니라 질문 유형에 따라 최적 도구를 자동 선택:
-
-| 질문 유형 | 1차 | fallback | 예시 |
-|-----------|-----|----------|------|
-| 구조/관계 | Wiki | hybrid_search | "누가 이 함수 호출해?" |
-| 기능 탐색 | hybrid_search | Wiki | "숙제분석 기능 설명해줘" |
-| 정밀 조회 | Grep | Read | "handleSubmit 어디?" |
-| 설계/맥락 | hybrid_search | Wiki | "왜 이렇게 설계했어?" |
-| 스키마/DB | hybrid_search | Grep | "problems 테이블 히스토리" |
-
-### 실사용 벤치마크 (valuein-homepage, 1776파일)
-
-| 지표 | hybrid+Wiki | Grep+Read |
-|------|-------------|-----------|
-| 도구 호출 | 2~3회 | 10~15회 |
-| 소요 시간 | ~3초 | 20~30초 |
-| 정확도 | 90%+ | 노이즈 많음 |
-| 토큰 소비 | 적음 | 많음 |
-
----
-
-## 자동화
-
-| 트리거 | 동작 | 사용자 개입 |
-|--------|------|------------|
-| 커밋 | git delta reindex + 영향 wiki 갱신 | 없음 |
-| Edit/Write 전 | STALE.md 경고 | wiki 갱신 |
-| Edit/Write 후 | 미문서화 모듈 알림 | wiki 추가 |
-
-커밋 후 인덱싱은 `git diff`로 변경 파일만 수집 → 해당 파일만 재임베딩.
-전체 스캔 없이 파일 1개 수정 시 ~2초.
-
----
-
-## hybrid_search 파라미터
-
-| 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `query` | (필수) | 검색어 (한국어/영어) |
-| `project` | cwd 자동감지 | 프로젝트 이름 |
-| `limit` | 10 | 결과 수 (1-50) |
-| `bm25_weight` | 자동분류 | 0=벡터, 1=키워드 |
-| `file_pattern` | 전체 | 글로브 필터 (`*.ts`, `migrations/*.sql`) |
-| `cwd` | 자동 | 해당 프로젝트만 검색 (자동 스코핑) |
-
-쿼리 자동 분류:
-- `handleLogin` → BM25 우선 (정확한 심볼)
-- `로그인 처리` → 벡터 우선 (한국어 자연어)
-- `auth middleware` → 하이브리드 (영어 자연어)
-
----
-
-## 기술 스택
-
-| 컴포넌트 | 스택 |
-|----------|------|
-| 임베딩 | OpenAI `text-embedding-3-small` |
-| BM25 | tantivy-py (Rust) |
-| Vector DB | USearch HNSW (C++) |
-| AST 파싱 | tree-sitter (C), 14개 언어 |
-| 스토리지 | SQLite WAL |
-
-지원 언어: TypeScript, JavaScript, Python, Rust, Go, Ruby, Java, C, C++, Swift, Kotlin, CSS, HTML, SQL
-
----
-
-## CLI 레퍼런스
-
-보통은 스킬로 충분. 디버깅용:
+### Install
 
 ```bash
-source .venv/bin/activate
-python -m hybrid_search.cli <command>
+pip install hybrid-search-mcp
 ```
 
-| 명령어 | 설명 |
-|--------|------|
-| `reindex --git-delta --cwd .` | 변경 파일만 재인덱싱 |
-| `reindex --force --cwd .` | 전체 재인덱싱 |
-| `reindex --wiki-scope affected --cwd .` | 영향 wiki만 재생성 |
-| `status` | 등록된 프로젝트 목록 |
-| `stale --cwd .` | stale wiki 확인 |
-| `remove-project <name>` | 프로젝트 제거 |
+Or from source:
+```bash
+git clone https://github.com/curiohunter/hybrid-search-mcp.git
+cd hybrid-search-mcp
+pip install -e .
+```
+
+### Set API key
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+Or create `~/.env.local`:
+```
+OPENAI_API_KEY=sk-...
+```
+
+### First search in 30 seconds
+
+```bash
+cd your-project/
+hybrid-search-mcp index .
+hybrid-search-mcp search "authentication flow"
+```
+
+That's it. Your project is indexed and searchable.
 
 ---
 
-## 트러블슈팅
+## CLI Usage
 
-| 문제 | 해결 |
-|------|------|
-| tiktoken 에러 | `.venv/bin/pip install tiktoken` |
-| 검색 결과가 다른 프로젝트 | cwd 파라미터 확인, 또는 project 명시 |
-| 검색 결과가 적음 | `reindex --force --cwd .` |
-| rate limit | 자동 retry + 배치 간 0.2초 간격 |
-| hook 안 먹힘 | `python -m hybrid_search.cli setup` 재실행 |
+```bash
+# Index a project
+hybrid-search-mcp index .                    # current directory
+hybrid-search-mcp index /path/to/project     # specific path
+hybrid-search-mcp index . --force            # full re-index
+
+# Search
+hybrid-search-mcp search "login handler"
+hybrid-search-mcp search "인증 로직"                     # Korean works
+hybrid-search-mcp search "handleSubmit" --node-types function
+hybrid-search-mcp search "migration" --file-pattern "*.sql"
+hybrid-search-mcp search "auth" --json                   # JSON output
+hybrid-search-mcp search "query" --limit 20
+
+# Status & maintenance
+hybrid-search-mcp status                     # show indexed projects
+hybrid-search-mcp reindex --git-delta --cwd . # delta reindex (changed files only)
+hybrid-search-mcp stale --cwd .              # check stale wiki pages
+```
+
+### Query auto-classification
+
+The search engine automatically adjusts BM25/vector weights based on query type:
+
+| Query | Type | BM25 weight |
+|-------|------|-------------|
+| `handleLogin` | Exact symbol | 0.8 (keyword-heavy) |
+| `로그인 처리` | Korean NL | 0.15 (semantic-heavy) |
+| `auth middleware` | English NL | 0.4 (balanced) |
 
 ---
 
-## 데이터 위치
+## Claude Code Integration (Optional)
+
+If you use Claude Code, hybrid-search-mcp becomes an MCP tool with auto-indexing.
+
+### Setup
+
+```bash
+hybrid-search-mcp setup
+```
+
+This registers:
+- MCP server in `~/.claude.json`
+- Auto-index hook (indexes new projects on first file read)
+- Stale wiki warning hook
+- Wiki gap notification hook
+
+Restart Claude Code after setup.
+
+### Skills
+
+Copy skills from `skills/` directory to `~/.claude/skills/`:
+
+| Skill | When | Frequency |
+|-------|------|-----------|
+| `/setup-hybrid-search` | First install | Once |
+| `/bootstrap-wiki` | Project onboarding | Per project |
+| `/search` | Code/doc search | Every time |
+| `/save-wiki` | Save analysis to wiki | Optional |
+| `/maintain` | Index/wiki maintenance | Occasionally |
+
+### Automation
+
+| Trigger | Action | User action |
+|---------|--------|-------------|
+| Commit | Git delta reindex + affected wiki refresh | None |
+| Before Edit/Write | STALE.md warning | Update wiki |
+| After Edit/Write | Undocumented module alert | Add wiki |
+
+---
+
+## How It Works
+
+### Search strategy — intent-based routing
+
+| Query type | Primary | Fallback | Example |
+|-----------|---------|----------|---------|
+| Structure/relations | Wiki | hybrid_search | "Who calls this function?" |
+| Feature exploration | hybrid_search | Wiki | "Explain the billing feature" |
+| Exact lookup | Grep | Read | "Where is handleSubmit?" |
+| Design/context | hybrid_search | Wiki | "Why is it designed this way?" |
+| Schema/DB | hybrid_search | Grep | "problems table history" |
+
+### Benchmark (1,776 files)
+
+| Metric | hybrid+Wiki | Grep+Read |
+|--------|-------------|-----------|
+| Tool calls | 2-3 | 10-15 |
+| Time | ~3s | 20-30s |
+| Accuracy | 90%+ | Noisy |
+| Token usage | Low | High |
+
+---
+
+## Tech Stack
+
+| Component | Stack |
+|-----------|-------|
+| Embedding | OpenAI `text-embedding-3-small` |
+| BM25 | tantivy-py (Rust) |
+| Vector DB | USearch HNSW (C++) |
+| AST parsing | tree-sitter (C), 14 languages |
+| Storage | SQLite WAL |
+
+Supported languages: TypeScript, JavaScript, Python, Rust, Go, Ruby, Java, C, C++, Swift, Kotlin, CSS, HTML, SQL
+
+---
+
+## Performance
+
+| Operation | Time | Cost |
+|-----------|------|------|
+| First index (1,776 files) | ~165s | ~$0.04 |
+| Git delta (post-commit) | ~2s | Minimal |
+| Search | <2s | Free |
+
+---
+
+## Data locations
 
 ```
-~/.hybrid-search/                        # 글로벌
+~/.hybrid-search/                        # Global
 ├── config.toml
 └── projects/{hash}/store.db
 
-<project>/.hybrid-search/                # 프로젝트별
+<project>/.hybrid-search/                # Per project
 ├── wiki/
 │   ├── index.md
 │   ├── STALE.md
@@ -164,16 +186,35 @@ python -m hybrid_search.cli <command>
 
 ---
 
-## 성능
+## CLI Reference
 
-| 작업 | 시간 | 비용 |
-|------|------|------|
-| 첫 인덱싱 (1,776 파일) | ~165초 | ~$0.04 |
-| 커밋 후 git delta | ~2초 | 미미 |
-| 검색 | <2초 | 무료 |
+| Command | Description |
+|---------|-------------|
+| `index <path>` | Index a project |
+| `search <query>` | Hybrid search |
+| `serve` | Start MCP server (for Claude Code) |
+| `setup` | Register MCP server + hooks in Claude Code |
+| `status` | Show indexed projects |
+| `reindex --cwd .` | Delta reindex |
+| `reindex --force --cwd .` | Full reindex |
+| `stale --cwd .` | Check stale wiki pages |
+| `install-hook --cwd .` | Install post-commit hook |
+| `remove-project <name>` | Unregister a project |
 
 ---
 
-## 라이선스
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `OPENAI_API_KEY not found` | Set env var or create `~/.env.local` |
+| Results from wrong project | Use `--cwd` or `--project` to scope |
+| Too few results | `hybrid-search-mcp index . --force` |
+| Rate limit errors | Auto-retry with 0.2s batch interval |
+| Hooks not working | `hybrid-search-mcp setup` (re-run) |
+
+---
+
+## License
 
 MIT

@@ -1,7 +1,7 @@
 {
   "description": "Benchmark query set for hybrid search evaluation",
   "project": "valuein_homepage",
-  "project_path": "/Users/ian/project/claude_project/valuein_homepage",
+  "project_path": "./valuein_homepage",
   "queries": [
     {
       "id": "KR01",

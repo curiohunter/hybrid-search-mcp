@@ -416,25 +416,22 @@ Phase 10 완료. 전 Phase 완료 — Claude Code가 wiki + 검색 결과로 직
 ## 실행 환경
 
 ```bash
-# 가상환경 활성화
-cd /Users/ian/project/claude_project/hybrid-search-mcp
-source .venv/bin/activate
-
-# 서버 실행 (Claude Code MCP로 자동 실행됨)
-python -m hybrid_search.server
-
-# CLI 명령
-python -m hybrid_search.cli reindex --cwd .     # delta 재인덱싱
-python -m hybrid_search.cli status               # 인덱스 상태
-python -m hybrid_search.cli stale --cwd .        # wiki staleness
-python -m hybrid_search.cli install-hook --cwd . # post-commit hook 설치
-python -m hybrid_search.cli sync-wiki --cwd .    # 디스크 wiki → DB 동기화
-python -m hybrid_search.cli reindex --synthesize --cwd .       # reindex + stale → auto prepare
-python -m hybrid_search.cli synthesize-wiki --cwd .            # prepare: 컨텍스트 수집
-python -m hybrid_search.cli synthesize-wiki --dry-run --cwd .  # dry-run: 토큰 추정
-python -m hybrid_search.cli synthesize-wiki --finalize --cwd . # finalize: 검증+병합+DB저장
-python -m hybrid_search.cli verify-synthesis --cwd .           # 합성 검증 (refs + symbols)
-python -m hybrid_search.cli verify-synthesis --fix --cwd .     # 검증 + bad refs 자동 제거
+# CLI 명령 (pip install 후 바로 사용)
+hybrid-search-mcp index .                              # 프로젝트 인덱싱
+hybrid-search-mcp search "query"                       # 하이브리드 검색
+hybrid-search-mcp serve                                # MCP 서버 시작
+hybrid-search-mcp setup                                # Claude Code 설정
+hybrid-search-mcp reindex --cwd .                      # delta 재인덱싱
+hybrid-search-mcp status                               # 인덱스 상태
+hybrid-search-mcp stale --cwd .                        # wiki staleness
+hybrid-search-mcp install-hook --cwd .                 # post-commit hook 설치
+hybrid-search-mcp sync-wiki --cwd .                    # 디스크 wiki → DB 동기화
+hybrid-search-mcp reindex --synthesize --cwd .         # reindex + stale → auto prepare
+hybrid-search-mcp synthesize-wiki --cwd .              # prepare: 컨텍스트 수집
+hybrid-search-mcp synthesize-wiki --dry-run --cwd .    # dry-run: 토큰 추정
+hybrid-search-mcp synthesize-wiki --finalize --cwd .   # finalize: 검증+병합+DB저장
+hybrid-search-mcp verify-synthesis --cwd .             # 합성 검증 (refs + symbols)
+hybrid-search-mcp verify-synthesis --fix --cwd .       # 검증 + bad refs 자동 제거
 
 # 테스트
 python -m pytest tests/ -v
@@ -453,12 +450,14 @@ python -m pytest tests/ -v
 {
   "mcpServers": {
     "hybrid-search": {
-      "command": "/Users/ian/project/claude_project/hybrid-search-mcp/.venv/bin/python",
+      "command": "<path-to-venv>/bin/python",
       "args": ["-m", "hybrid_search.server"]
     }
   }
 }
 ```
+
+`hybrid-search-mcp setup` 실행 시 실제 venv 경로로 자동 등록됩니다.
 
 ### 스킬 위치
 
