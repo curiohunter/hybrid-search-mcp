@@ -1,7 +1,7 @@
 # Hybrid Search MCP — Handoff Document
 
 > **Date**: 2026-04-14 | **Branch**: main
-> **설계 문서**: `docs/design.md` (v6, Phase 1-9b 완료 + LLM 합성 로드맵)
+> **설계 문서**: `docs/design.md` (v6, Phase 1-9d 완료 + LLM 합성 완료)
 
 ## 프로젝트 한줄 요약
 
@@ -286,6 +286,52 @@ reindex --wiki (명시적)
 3. `--` 포함 타이틀 (예: "Embedder -- OpenAI API Backend")은 `replace("-", " ")`로 4개 공백 생성 → LIKE 불일치
    - 수정: 원본 이름 먼저 시도하는 fallback 체인
 
+### Phase 9c: 지식 복리 (Incremental Re-synthesis) ✅
+
+| 항목 | 구현 파일 | 변경 |
+|------|-----------|:----:|
+| `should_skip_synthesis()` — staleness 기반 skip | `index/synthesizer.py` | +35줄 |
+| `get_synthesis_hash()` — DB 저장 hash 조회 | `storage/wiki.py` | +7줄 |
+| `find_indirectly_affected()` — wikilink BFS 간접 영향 | `storage/wiki.py` | +25줄 |
+| `_auto_prepare_synthesis()` — reindex → prepare 체이닝 | `cli.py` | +70줄 |
+| `reindex --synthesize` 플래그 | `cli.py` | +5줄 |
+| CLI prepare에서 hash skip 로직 | `cli.py` | +10줄 |
+| 테스트 8개 | `tests/test_synthesizer.py` | +100줄 |
+
+**핵심 설계**: `should_skip_synthesis()`는 file_hash_at_compile vs 현재 file_hash 비교 (staleness 기반). synthesis_hash는 finalize 시 변경되므로 단순 hash 비교는 false positive 발생 — staleness 기반이 정확함. `reindex --synthesize`로 stale 감지 후 자동 prepare, `find_indirectly_affected()`로 wikilink 1-hop 이웃 모듈도 선택적 re-prepare.
+
+**전체 파이프라인**:
+```
+reindex --synthesize
+  └→ delta reindex
+     └→ call graph re-resolve
+        └→ _mark_stale_wikis → STALE.md
+           └→ _auto_prepare_synthesis
+              ├→ stale 모듈 prepare (skip if unchanged)
+              └→ indirect 모듈 prepare (wikilink 1-hop)
+```
+
+### Phase 9d: 환각 검증 자동화 ✅
+
+| 항목 | 구현 파일 | 변경 |
+|------|-----------|:----:|
+| `verify_symbols()` — backtick 심볼 DB 존재 검증 | `index/synthesizer.py` | +55줄 |
+| `SymbolVerificationResult` 데이터 클래스 | `index/synthesizer.py` | +5줄 |
+| `has_chunk_matching_name()` — qualified_name LIKE 검색 | `storage/db.py` | +7줄 |
+| `verify-synthesis` CLI (--json, --fix) | `cli.py` | +110줄 |
+| 테스트 6개 | `tests/test_synthesizer.py` | +60줄 |
+
+**핵심 설계**: 2종 검증 — (1) file:line 참조 (기존 `verify_references()`) + (2) backtick 심볼명 (`verify_symbols()`). 심볼 검증은 PascalCase/snake_case 식별자를 추출하여 chunks.name 또는 chunks.qualified_name에서 확인. `_SYMBOL_SKIP` 집합으로 common words (true, false, self 등) 필터링. `--fix` 플래그로 bad refs 자동 제거.
+
+**CLI 명령**:
+```bash
+python -m hybrid_search.cli verify-synthesis --cwd .         # 전체 합성 검증 리포트
+python -m hybrid_search.cli verify-synthesis --json --cwd .  # JSON 출력
+python -m hybrid_search.cli verify-synthesis --fix --cwd .   # bad refs 자동 제거
+```
+
+**총 코드**: ~9,700줄 (34개 파일) | **MCP 도구**: 3개 | **테스트**: 255개 (14개 파일) | **CLI 명령**: 15개 | **스킬**: 3개
+
 ### MCP 도구 슬림화: 13→3 ✅
 
 **이유**: MCP 도구 스키마가 매 대화 시스템 프롬프트에 로드되어 토큰 소모. 관리/wiki 도구 10개를 CLI로 이관.
@@ -337,22 +383,11 @@ reindex --wiki (명시적)
 
 ## 즉시 해야 할 것
 
-Phase 9b (전체 합성) 완료. 다음 후보:
-
-### Phase 9c: 지식 복리 (incremental)
-- reindex → stale 감지 → 자동 prepare → 합성 트리거
-- `_expand_graph()`로 간접 영향 모듈의 "연관 모듈" 섹션만 선택적 재합성
-
-### Phase 9d: 환각 검증 자동화
-- 합성 결과의 파일:라인 출처 검증 자동화 + 사실 대조
+Phase 9c-d 완료. 다음: Phase 10 (LLM 재랭킹).
 
 ---
 
 ## 아직 안 한 것
-
-### Phase 9c-d: 지식 복리 + 환각 검증 자동화
-- 9c: stale → 자동 재합성 파이프라인 (wikilink 그래프로 간접 영향 전파)
-- 9d: 합성 결과의 파일:라인 출처 검증 자동화 + 사실 대조
 
 ### Phase 10: LLM 재랭킹
 - RRF top-20 → LLM re-ranker → top-10 (쿼리 의도 반영)
@@ -378,9 +413,12 @@ python -m hybrid_search.cli status               # 인덱스 상태
 python -m hybrid_search.cli stale --cwd .        # wiki staleness
 python -m hybrid_search.cli install-hook --cwd . # post-commit hook 설치
 python -m hybrid_search.cli sync-wiki --cwd .    # 디스크 wiki → DB 동기화
-python -m hybrid_search.cli synthesize-wiki --cwd .           # prepare: 컨텍스트 수집
-python -m hybrid_search.cli synthesize-wiki --dry-run --cwd . # dry-run: 토큰 추정
+python -m hybrid_search.cli reindex --synthesize --cwd .       # reindex + stale → auto prepare
+python -m hybrid_search.cli synthesize-wiki --cwd .            # prepare: 컨텍스트 수집
+python -m hybrid_search.cli synthesize-wiki --dry-run --cwd .  # dry-run: 토큰 추정
 python -m hybrid_search.cli synthesize-wiki --finalize --cwd . # finalize: 검증+병합+DB저장
+python -m hybrid_search.cli verify-synthesis --cwd .           # 합성 검증 (refs + symbols)
+python -m hybrid_search.cli verify-synthesis --fix --cwd .     # 검증 + bad refs 자동 제거
 
 # 테스트
 python -m pytest tests/ -v
@@ -442,6 +480,10 @@ python -m pytest tests/ -v
 
 12. **합성 에이전트의 파일 쓰기 불안정**: Claude Code의 sub-agent(Agent 도구)에게 파일 쓰기를 위임하면 실제로 파일이 작성되지 않는 경우가 빈번. 핵심 파일 쓰기는 메인 세션에서 직접 수행하거나 Bash heredoc 사용이 안정적.
 
+13. **synthesis_hash로 skip 판단 불가** (Phase 9c): `finalize_module()`이 merged content를 DB에 저장하므로, 이후 `collect_module_context()`가 읽는 deterministic_wiki가 달라져 hash가 불일치. 해결: staleness 기반(file_hash_at_compile vs 현재 file_hash) 비교가 정확.
+
+14. **심볼 검증은 noise 관리가 핵심** (Phase 9d): backtick 안의 모든 텍스트가 심볼은 아님. `_SYMBOL_SKIP` (common words) + 파일 경로 필터 + 길이 제한으로 false positive 최소화.
+
 ---
 
 ## 핵심 설계 결정 (빠른 참조)
@@ -462,3 +504,6 @@ python -m pytest tests/ -v
 | Wikilink | `[[링크]]` BFS 그래프 (max_hops=2) | Phase 8e: 페이지 간 관계 자동 추적 + 지식 복리 기반 |
 | Synthesis | Claude Code가 직접 합성, API 키 불필요 | Phase 9a: CLI prepare/finalize로 토큰 최소화 |
 | 전체 합성 | 28개 모듈 bottom-up 일괄, slug 2단계 fallback | Phase 9b: 참조 검증 73%, `_raw/` 백업 보존 |
+| Skip 판단 | staleness 기반 (file_hash 비교), synthesis_hash 아님 | Phase 9c: finalize 후 content 변경으로 hash 비교 불가 |
+| 간접 전파 | wikilink BFS 1-hop 이웃 모듈 auto-prepare | Phase 9c: stale 모듈의 이웃도 Related Modules 갱신 |
+| 환각 검증 | file:line refs + symbol DB 존재 확인, `--fix` 자동 정리 | Phase 9d: 2종 검증으로 합성 품질 보장 |

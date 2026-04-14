@@ -392,6 +392,42 @@ class WikiStore:
         ).fetchone()
         return bool(row and row["synthesis_model"])
 
+    def get_synthesis_hash(self, page_id: str) -> str | None:
+        """Get the stored synthesis_hash for a page (None if never synthesized)."""
+        row = self._conn.execute(
+            "SELECT synthesis_hash FROM wiki_pages WHERE id = ?", (page_id,)
+        ).fetchone()
+        return row["synthesis_hash"] if row else None
+
+    def find_indirectly_affected(
+        self,
+        project_id: str,
+        stale_page_ids: list[str],
+        max_hops: int = 1,
+    ) -> list[dict]:
+        """Find pages indirectly affected by stale pages via wikilink graph.
+
+        Returns pages that are linked to stale pages (1-hop neighbors)
+        but are NOT themselves stale. These pages may need their
+        "Related Modules" section refreshed.
+        """
+        stale_set = set(stale_page_ids)
+        affected: dict[str, dict] = {}  # page_id → info
+
+        for stale_id in stale_page_ids:
+            linked = self._expand_graph(stale_id, project_id, max_hops=max_hops, max_pages=20)
+            for linked_page in linked:
+                pid = linked_page.page_id
+                if pid not in stale_set and pid not in affected:
+                    affected[pid] = {
+                        "page_id": pid,
+                        "title": linked_page.title,
+                        "triggered_by": stale_id,
+                        "hop": linked_page.hop,
+                    }
+
+        return list(affected.values())
+
     def _check_page_staleness(self, page_id: str) -> dict:
         """Compare stored hashes against current file hashes."""
         deps = self._conn.execute(
