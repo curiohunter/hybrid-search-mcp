@@ -1,75 +1,5 @@
 # Indexing Pipeline
-> 마지막 업데이트: 2026-04-14 | 상태: fresh | synthesized: 2026-04-14
-
-## Overview
-
-The indexing pipeline exists to transform a project's source files into searchable data across three synchronized stores (SQLite, Tantivy BM25, and USearch vector). It uses a 2-pass architecture -- first chunking all files via AST parsing without any API calls, then batch-embedding the accumulated chunks through OpenAI's API -- to minimize embedding API round-trips while maintaining bounded memory usage through periodic flushing at a configurable threshold.
-
-## Key Design Decisions
-
-- **2-pass architecture separating chunking from embedding**: Pass 1 accumulates `CodeChunk` results in a pending buffer without any API calls; Pass 2 flushes the buffer when `pending_chunk_count >= EMBED_FLUSH_THRESHOLD(128)`, batching embedding inputs across file boundaries to minimize OpenAI API calls (`src/hybrid_search/index/embedder.py:L117`)
-- **Crash recovery via deferred `file_hash` write**: `_store_file()` writes `file_hash=""` initially and sets the real hash only after all three stores are updated, so files with `file_hash=""` are automatically re-indexed on the next run (`src/hybrid_search/index/embedder.py:L27`)
-- **Direct `urllib.request` instead of OpenAI SDK**: The embedder calls the OpenAI API using `urllib.request.Request` directly, avoiding any external SDK dependency (`src/hybrid_search/index/embedder.py:L68`)
-- **L2 re-normalization of embeddings**: Despite OpenAI already returning normalized vectors, the pipeline re-normalizes with `np.clip(norms, a_min=1e-9)` as a safety measure to guarantee unit vectors for cosine similarity (`src/hybrid_search/index/embedder.py:L117`)
-- **Token truncation at 8000 (not 8192)**: Uses `tiktoken` to truncate at 8000 tokens, leaving a 192-token safety margin below OpenAI's 8192 limit (`src/hybrid_search/index/embedder.py:L107`)
-- **(size, mtime) prefilter for delta indexing**: Skips SHA-256 hash computation entirely when both file size and mtime match the DB record, making re-indexing near-instant for unchanged projects
-
-## Data Flow
-
-```
-project_path
-  |
-  v
-scanner.scan_project()  -->  ScanResult(added, changed, deleted)
-  |
-  v
-_process_deletions()  -->  remove from SQLite + BM25 + Vector
-  |
-  v
-Pass 1: _chunk_file() per file  -->  _FileChunkResult (CodeChunks + embedding_input)
-  |                                     |
-  |                          pending buffer accumulates
-  |
-  +-- pending_chunk_count >= 128 ?
-  |       |
-  |       v
-  |   Pass 2: _flush_pending()
-  |       |
-  |       +-- Embedder.embed_texts()  -->  (N, 1536) float32
-  |       |
-  |       +-- _store_file() per file
-  |       |     +-- SQLite: upsert file + delete old chunks + insert new chunks
-  |       |     +-- BM25: delete old + add new
-  |       |     +-- Vector: delete old + add new
-  |       |
-  |       +-- bm25.commit() + vector.save()  (checkpoint)
-  |
-  v
-call graph resolution  -->  resolve callee_chunk_id references
-  |
-  v
-consistency check  -->  compare counts across 3 stores
-  |                      (mismatch --> force=True rebuild)
-  v
-IndexingResult
-```
-
-## Caveats
-
-- **Consistency check can trigger recursive re-index**: If SQLite, Tantivy, and USearch counts disagree after indexing, `index_project()` recursively calls itself with `force=True`. If counts still disagree after a forced rebuild, it only logs a warning (no infinite loop), but the root cause of the mismatch may remain undiagnosed.
-- **API key lookup walks up 10 directory levels**: `_load_dotenv_key()` searches up to 10 parent directories for `.env.local`, which could pick up an unintended key file in a higher directory (`src/hybrid_search/index/embedder.py:L132`)
-- **BM25/Vector writes happen outside the SQLite transaction**: `_store_file()` writes chunks to SQLite within a transaction but updates BM25 and Vector stores outside it, so a crash between the SQLite commit and the BM25/Vector writes could leave the stores inconsistent (mitigated by the consistency check)
-- **tiktoken import is lazy and class-level cached**: `Embedder._enc` is a class variable initialized on first use, meaning the first truncation call incurs a one-time import delay (`src/hybrid_search/index/embedder.py:L107`)
-
-## Related Modules
-
-- [[ast-chunker]] -- provides `chunk_code_file()` and `chunk_doc_file()` that produce `CodeChunk` objects consumed by Pass 1
-- [[configuration-&-project-management]] -- supplies `Config` (embedding settings, indexing patterns) and `ProjectRegistry` (project registration/stats)
-- [[storage-(isolated)]] -- `StoreDB` and `IndexPaths` used for SQLite persistence and directory layout
-- [[search-engine]] -- `BM25Engine` and `VectorEngine` are written to during indexing and read from during search
-
-<details>
-<summary>Structure (auto-generated)</summary>
+> 마지막 업데이트: 2026-04-14 | 상태: fresh
 
 ## 개요
 
@@ -182,5 +112,3 @@ API 키는 환경변수 `OPENAI_API_KEY` 또는 프로젝트 루트의 `.env.loc
 | 크래시 복구 (file_hash="") | 다음 인덱싱 시 해당 파일 자동 재처리 |
 
 일관성 검증은 `index_project()` 끝에서 3개 스토어의 카운트를 비교하며, 불일치 시 재귀적으로 `force=True` 재인덱싱을 실행한다. 이미 `force=True`인 경우에는 재귀하지 않는다.
-
-</details>

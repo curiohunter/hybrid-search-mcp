@@ -65,6 +65,13 @@ E2E 검증 (AST Chunker 모듈):
 - 합성 결과: Overview + Key Design Decisions + Data Flow + Caveats + Related Modules
 - 결정론적 wiki는 `<details>` 접기로 보존, `_raw/`에 원본 백업
 
+### Phase 9b: 전체 모듈 Bottom-Up 합성 ✅
+
+28개 모듈 일괄 합성 완료. 슬러그-타이틀 매칭 버그 발견 및 수정:
+- `finalize_module`/`collect_module_context`에서 원본 이름 → 대시-공백 변환 2단계 fallback
+- 참조 검증: 108 verified, 29 removed (73% 검증률)
+- 28/28 pages synthesized, 중복 RAW 페이지 18개 정리
+
 ### 현재 상태 요약
 
 ```
@@ -72,14 +79,14 @@ E2E 검증 (AST Chunker 모듈):
 검색:      한→영 크로스 언어 동작, RRF fusion 정상
 Wiki:      구조적 페이지 자동 생성 (call graph 기반 모듈 분해)
 Wikilink:  페이지 간 [[링크]] 그래프 + BFS 탐색 동작
-Synthesis: Phase 9a 완료 — Claude Code가 직접 합성, API 키 불필요
+Synthesis: Phase 9b 완료 — 28/28 모듈 합성, API 키 불필요
 ```
 
-**여기까지의 한계 (Phase 9a 이후)**:
+**여기까지의 한계 (Phase 9b 이후)**:
 
 1. **수동 트리거**: `synthesize-wiki --prepare` → Claude Code 합성 → `--finalize`를 사람이 실행해야 함. reindex 후 stale 감지 시 자동 합성 파이프라인은 아직 없음.
 
-2. **단일 모듈 검증**: AST Chunker 1개 모듈만 E2E 검증됨. 전체 28개 모듈 일괄 합성은 미수행.
+2. **참조 검증률 73%**: 29/137 참조가 검증 실패로 제거됨. 주로 정확한 라인 번호 불일치 — 환각은 아니나 정밀도 개선 여지.
 
 ---
 
@@ -475,7 +482,7 @@ max_candidates = 20                  # RRF에서 가져올 후보 수
 | Phase | 이름 | 의존성 | 핵심 가치 |
 |:-----:|------|--------|----------|
 | **9a** | 단일 모듈 합성 ✅ | 없음 | prepare/finalize 아키텍처, AST Chunker E2E 검증 |
-| **9b** | Bottom-up 전체 합성 | 9a | 프로젝트 전체 wiki 합성 |
+| **9b** | Bottom-up 전체 합성 ✅ | 9a | 28/28 모듈 합성, 슬러그 매칭 버그 수정 |
 | **9c** | 지식 복리 (incremental) | 9b | 코드 변경 → 연쇄 wiki 업데이트 |
 | **9d** | 환각 검증 자동화 | 9b | 출처 검증 + 사실 대조 |
 | **10** | LLM 재랭킹 | 없음 (9와 독립) | 검색 정확도 향상 |

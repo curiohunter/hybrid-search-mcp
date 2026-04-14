@@ -1,52 +1,5 @@
 # Tests
-> synthesized: 2026-04-14 | synthesized: 2026-04-14
-
-## Overview
-
-The test suite validates the core modules of the hybrid search system across 11 test files with 47 symbols, covering configuration loading, AST chunking, call graph resolution, document chunking, embedding backends, RRF fusion, query classification, file scanning delta detection, SQLite store operations, and wiki page lifecycle. These tests ensure correctness of cross-language search, crash recovery, and the reactive wiki layer without requiring live API calls or real embedding models.
-
-## Key Design Decisions
-
-- **In-memory SQLite via `tmp_path` fixtures**: All database-dependent tests (callgraph, wiki, store_db) create ephemeral `StoreDB` instances scoped to pytest `tmp_path`, avoiding shared state between tests (`tests/test_callgraph.py:L17`, `tests/test_wiki.py:L13`)
-- **Mock-based embedding tests**: OpenAI API calls are patched with `unittest.mock.patch` on `urllib.request.urlopen`, verifying URL construction and L2 normalization without network access (`tests/test_embedder.py:L46`, `tests/test_embedder.py:L63`)
-- **Query classifier uses pattern-based heuristics, not ML**: Tests assert deterministic classification of camelCase/snake_case as `EXACT_SYMBOL`, Korean text as `KOREAN_NL`, and plain English as `ENGLISH_NL` (`tests/test_query_classifier.py:L11`)
-- **Crash recovery via empty hash detection**: `_is_changed()` treats `file_hash=""` as a partial-write crash marker that always triggers reindex (`tests/test_scanner.py:L9`)
-- **Word-order-invariant wiki lookup**: `normalize_query` sorts words alphabetically so "auth flow" and "flow auth" map to the same key (`tests/test_wiki.py:L45`)
-
-## Data Flow
-
-```
-Test Fixtures (tmp_path, seeded_db)
-  |
-  v
-Unit Under Test (config, chunker, callgraph, wiki, etc.)
-  |
-  v
-Assertions (pytest assert)
-  |
-  +-- Config: load_config() from TOML string -> verify defaults/overrides
-  +-- AST Chunker: chunk_code_file() on inline source -> verify chunk names/types
-  +-- Call Graph: _resolve_single() / resolve_call_edges() -> verify confidence tiers
-  +-- Wiki: compile_page() -> check_staleness() -> refresh_page() -> verify lifecycle
-  +-- Fusion: reciprocal_rank_fusion() -> verify score ordering
-  +-- Scanner: _is_changed() with FileRecord -> verify delta detection
-```
-
-## Caveats
-
-- Wiki test `seeded_db` fixture accesses `db._conn` directly (private attribute) to set up test data, coupling tests to internal DB implementation (`tests/test_wiki.py:L18`)
-- Call graph tests use hardcoded `PROJECT_ID` constant and manually constructed `FileRecord`/`ChunkRecord` objects rather than going through the indexing pipeline, so integration-level regressions in the pipeline could be missed (`tests/test_callgraph.py:L21`)
-- `test_reload_when_mtime_changes` uses `time.sleep(0.05)` and manual `os.utime` to force mtime changes, which can be flaky on filesystems with coarse timestamps (`tests/test_embedder.py:L94`)
-- No integration tests for the full search pipeline (BM25 + Vector + RRF combined) -- each component is tested in isolation
-
-## Related Modules
-
-- [[architecture]] -- tests validate the core components described in the architecture (config, chunker, callgraph, search, wiki)
-- [[index-(isolated)]] -- AST chunker and scanner source code tested by `test_ast_chunker.py` and `test_scanner.py`
-- [[tests-(isolated)]] -- additional isolated test symbols for callgraph common names and embedder hot-reload
-
-<details>
-<summary>Structure (auto-generated)</summary>
+> synthesized: 2026-04-14
 
 ## Overview
 
@@ -263,5 +216,4 @@ Assertions (pytest assert)
 - `src/hybrid_search/config.py::load_config`
 - `src/hybrid_search/index/ast_chunker.py::_fallback_chunking`
 
-</details>
 </details>
