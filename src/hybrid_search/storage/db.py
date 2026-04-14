@@ -189,21 +189,25 @@ class StoreDB:
 
     def _migrate_schema(self, current_version: str) -> None:
         """Run schema migrations from current_version to SCHEMA_VERSION."""
-        if current_version >= SCHEMA_VERSION:
+        cur_ver = int(current_version)
+        target_ver = int(SCHEMA_VERSION)
+        if cur_ver >= target_ver:
             return
 
-        if current_version < "3":
+        if cur_ver < 3:
             # v2 → v3: add synthesis columns to wiki_pages
+            # Safety: col/typedef are hardcoded literals below, never from user input.
+            _SYNTH_COLUMNS = {
+                "synthesis_model": "TEXT",
+                "synthesis_version": "INTEGER DEFAULT 0",
+                "synthesis_hash": "TEXT",
+                "last_synthesized_at": "TEXT",
+            }
             existing_cols = {
                 row[1]
                 for row in self._conn.execute("PRAGMA table_info(wiki_pages)").fetchall()
             }
-            for col, typedef in [
-                ("synthesis_model", "TEXT"),
-                ("synthesis_version", "INTEGER DEFAULT 0"),
-                ("synthesis_hash", "TEXT"),
-                ("last_synthesized_at", "TEXT"),
-            ]:
+            for col, typedef in _SYNTH_COLUMNS.items():
                 if col not in existing_cols:
                     self._conn.execute(
                         f"ALTER TABLE wiki_pages ADD COLUMN {col} {typedef}"
@@ -391,6 +395,13 @@ class StoreDB:
     def delete_all_call_edges(self, conn: sqlite3.Connection, project_id: str) -> None:
         """Delete all call edges for a project."""
         conn.execute("DELETE FROM call_edges WHERE project_id = ?", (project_id,))
+
+    def get_chunks_by_file(self, file_id: str) -> list[ChunkRecord]:
+        """Get all chunks for a file, ordered by start_line."""
+        cur = self._conn.execute(
+            "SELECT * FROM chunks WHERE file_id = ? ORDER BY start_line", (file_id,)
+        )
+        return [self._row_to_chunk(row) for row in cur.fetchall()]
 
     def get_chunk_ids_by_file(self, file_id: str) -> list[str]:
         """Get all chunk IDs for a file (read-only, no transaction needed)."""

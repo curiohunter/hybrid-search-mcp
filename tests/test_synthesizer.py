@@ -136,12 +136,13 @@ class TestVerifyReferences:
         result = verify_references(content, str(tmp_project))
         assert len(result.failed) == 1
 
-    def test_failed_ref_removed_from_content(self, tmp_project: Path):
-        content = "Good line.\nBad ref `src/missing.py:L1` here.\nAnother good line."
+    def test_failed_ref_removed_inline(self, tmp_project: Path):
+        content = "Bad ref `src/missing.py:L1` here."
         result = verify_references(content, str(tmp_project))
-        assert "Bad ref" not in result.cleaned_content
-        assert "Good line." in result.cleaned_content
-        assert "Another good line." in result.cleaned_content
+        # Line is preserved, only the reference span is removed
+        assert "Bad ref" in result.cleaned_content
+        assert "here." in result.cleaned_content
+        assert "missing.py" not in result.cleaned_content
 
     def test_no_references(self, tmp_project: Path):
         content = "No references at all."
@@ -202,7 +203,7 @@ class TestFormatSourceChunks:
             SourceChunk(file_path=f"file{i}.py", name=f"func{i}", content="x" * 1000, start_line=1)
             for i in range(100)
         ]
-        result = _format_source_chunks(chunks, max_chars=100)
+        result = _format_source_chunks(chunks, max_budget=100)
         assert "truncated" in result
 
 
@@ -322,7 +323,9 @@ class TestFinalizeModule:
 
         assert result["failed_refs"] == 1
         wiki_content = (wiki_dir / "auth-system.md").read_text()
-        assert "missing.py" not in wiki_content
+        # The reference span is removed but surrounding text preserved
+        assert "Bad ref" in wiki_content
+        assert "missing.py:L99" not in wiki_content
 
     def test_finalize_updates_db_synthesis_meta(self, seeded_db: StoreDB, tmp_project: Path):
         wiki_dir = tmp_project / ".hybrid-search" / "wiki"
