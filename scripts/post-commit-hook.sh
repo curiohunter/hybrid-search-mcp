@@ -6,6 +6,6 @@
 HYBRID_SEARCH_VENV="/Users/ian/project/claude_project/hybrid-search-mcp/.venv/bin/python"
 PROJECT_DIR="$(git rev-parse --show-toplevel)"
 
-# Run reindex in background (non-blocking, no terminal output)
-nohup "$HYBRID_SEARCH_VENV" -m hybrid_search.cli reindex --cwd "$PROJECT_DIR" \
+# Run git-delta reindex in background (non-blocking, no terminal output)
+nohup "$HYBRID_SEARCH_VENV" -m hybrid_search.cli reindex --git-delta --wiki-scope affected --cwd "$PROJECT_DIR" \
     > /dev/null 2>&1 &
