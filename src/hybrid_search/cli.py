@@ -15,8 +15,10 @@ import time
 from pathlib import Path
 
 from hybrid_search.config import load_config
+from hybrid_search.index.dag import generate_all_wiki_pages
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.pipeline import IndexingPipeline
+from hybrid_search.index.scanner import get_changed_files_from_git
 from hybrid_search.project import ProjectRegistry
 from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
@@ -133,6 +135,25 @@ def cmd_reindex(args: argparse.Namespace) -> None:
 
     embedder = Embedder(config.embedding, config.models_dir)
     pipeline = IndexingPipeline(config, registry, embedder)
+    changed_paths: list[str] | None = None
+    deleted_paths: list[str] | None = None
+
+    if getattr(args, "git_delta", False) and not args.force:
+        diff = get_changed_files_from_git(Path(project_path))
+        if diff is not None:
+            changed_paths = list(dict.fromkeys(diff.added + diff.modified))
+            deleted_paths = list(dict.fromkeys(diff.deleted))
+            if not changed_paths and not deleted_paths:
+                print("Git delta: no changed files detected, skipping reindex.")
+                return
+            print(
+                "Git delta:"
+                f" {len(diff.added)} added,"
+                f" {len(diff.modified)} modified,"
+                f" {len(diff.deleted)} deleted"
+            )
+        else:
+            print("Git delta unavailable, falling back to full scan.")
 
     start = time.monotonic()
     print(f"Reindexing: {project_name} ({project_path})")
@@ -142,7 +163,12 @@ def cmd_reindex(args: argparse.Namespace) -> None:
             print(f"  [{current}/{total}] {path}")
 
     result = pipeline.index_project(
-        project_path, project_name, force=args.force, on_progress=progress,
+        project_path,
+        project_name,
+        force=args.force,
+        changed_paths=changed_paths,
+        deleted_paths=deleted_paths,
+        on_progress=progress,
     )
 
     elapsed = time.monotonic() - start
@@ -179,7 +205,22 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
     wiki_exists = wiki_dir.exists() and any(wiki_dir.glob("*.md"))
 
-    if do_wiki or not wiki_exists:
+    if getattr(args, "wiki_scope", "full") == "affected" and wiki_exists:
+        if changed_paths or deleted_paths:
+            regen_count = _regenerate_affected_wiki_pages(
+                config,
+                registry,
+                project_name,
+                project_path,
+                changed_paths or [],
+                deleted_paths or [],
+            )
+            if regen_count == 0:
+                print("Wiki: no affected pages found, syncing existing wiki to DB...")
+                import argparse as _ap
+                _sync_args = _ap.Namespace(cwd=project_path)
+                cmd_sync_wiki(_sync_args)
+    elif do_wiki or not wiki_exists:
         # Generate/regenerate wiki from module tree
         print("Generating wiki from module tree...")
         import argparse as _ap
@@ -272,6 +313,105 @@ def _mark_stale_wikis(config, registry: ProjectRegistry, project_name: str) -> N
             stale_count = len(stale_items)
             if stale_count > 0:
                 print(f"Wiki: {stale_count} stale page(s) detected")
+    finally:
+        db.close()
+
+
+def _regenerate_affected_wiki_pages(
+    config,
+    registry: ProjectRegistry,
+    project_name: str,
+    project_path: str,
+    changed_paths: list[str],
+    deleted_paths: list[str],
+) -> int:
+    """Regenerate only wiki pages affected by changed/deleted files."""
+    pinfo = registry.get_by_name(project_name)
+    if not pinfo:
+        return 0
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        return 0
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        plan, pages = generate_all_wiki_pages(db, pinfo.id)
+        if not pages:
+            return 0
+
+        changed_set = set(changed_paths) | set(deleted_paths)
+        selected_pages = []
+        selected_names: set[str] = {"index"}
+
+        for page in pages:
+            page_paths = {
+                db.get_file(fid).relative_path
+                for fid in page.file_ids
+                if db.get_file(fid) is not None
+            }
+            if page_paths & changed_set:
+                selected_pages.append(page)
+                selected_names.add(page.name)
+
+        if not selected_pages:
+            return 0
+
+        # Also refresh pages linked from directly affected pages to keep module map coherent.
+        extra_pages = [
+            page for page in pages
+            if page.name not in selected_names and any(f"[[{page.name}]]" in p.content for p in selected_pages)
+        ]
+        selected_pages.extend(extra_pages)
+
+        wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
+        wiki_dir.mkdir(parents=True, exist_ok=True)
+
+        page_map = {page.name: page for page in pages}
+        written = 0
+
+        index_page = page_map.get("index")
+        if index_page is not None:
+            (wiki_dir / index_page.filename).write_text(index_page.content, encoding="utf-8")
+            written += 1
+
+        wiki_store = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
+        for page in selected_pages:
+            page_path = wiki_dir / page.filename
+            page_path.write_text(page.content, encoding="utf-8")
+
+            file_deps = []
+            seen_file_ids: set[str] = set()
+            for fid in page.file_ids:
+                if fid in seen_file_ids:
+                    continue
+                seen_file_ids.add(fid)
+                file_rec = db.get_file(fid)
+                if file_rec:
+                    file_deps.append({
+                        "file_id": fid,
+                        "file_hash": file_rec.file_hash,
+                        "chunk_ids": [cid for cid in page.chunk_ids],
+                    })
+
+            with db.transaction():
+                wiki_store.compile_page(
+                    project_id=pinfo.id,
+                    query=page.name.replace("-", " "),
+                    title=page.title,
+                    content=page.content,
+                    tags=page.tags,
+                    file_dependencies=file_deps,
+                )
+            written += 1
+
+        print(
+            f"Wiki: regenerated {written} page(s) "
+            f"for {len(changed_set)} changed/deleted file(s), "
+            f"coverage {plan.covered_chunks}/{plan.total_chunks}"
+        )
+        return written
     finally:
         db.close()
 
@@ -1362,7 +1502,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
                     f'VENV={venv_str}; '
                     f'[ -n "$ROOT" ] && [ -f "$VENV" ] && [ ! -d "$ROOT/.hybrid-search/wiki" ] && '
                     f'mkdir -p "$ROOT/.hybrid-search" && '
-                    f'nohup sh -c \'"$1" -m hybrid_search.cli reindex --synthesize --cwd "$2" && '
+                    f'nohup sh -c \'"$1" -m hybrid_search.cli reindex --git-delta --wiki-scope affected --synthesize --cwd "$2" && '
                     f'"$1" -m hybrid_search.cli install-hook --cwd "$2"\' _ "$VENV" "$ROOT" '
                     f'> /dev/null 2>&1 & '
                     f'echo "hybrid-search: first-time indexing started in background for $ROOT"'
@@ -1449,7 +1589,7 @@ def cmd_install_hook(args: argparse.Namespace) -> None:
     hook_content = f"""#!/bin/bash
 # Hybrid Search — auto delta-reindex on commit (background, non-blocking)
 PROJECT_DIR="$(git rev-parse --show-toplevel)"
-nohup "{venv_python}" -m hybrid_search.cli reindex --synthesize --cwd "$PROJECT_DIR" > /dev/null 2>&1 &
+nohup "{venv_python}" -m hybrid_search.cli reindex --git-delta --wiki-scope affected --synthesize --cwd "$PROJECT_DIR" > /dev/null 2>&1 &
 """
 
     if hook_path.exists():
@@ -1487,7 +1627,14 @@ def main() -> None:
     p_reindex = sub.add_parser("reindex", help="Delta reindex a project")
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
     p_reindex.add_argument("--force", action="store_true", help="Force full reindex")
+    p_reindex.add_argument("--git-delta", action="store_true", help="Use git diff for changed-file detection with full-scan fallback")
     p_reindex.add_argument("--wiki", action="store_true", help="Auto-generate wiki after reindex")
+    p_reindex.add_argument(
+        "--wiki-scope",
+        choices=("full", "affected"),
+        default="full",
+        help="Wiki regeneration scope after reindex",
+    )
     p_reindex.add_argument("--synthesize", action="store_true", help="Auto-prepare synthesis for stale modules after reindex")
 
     p_status = sub.add_parser("status", help="Show index status")
