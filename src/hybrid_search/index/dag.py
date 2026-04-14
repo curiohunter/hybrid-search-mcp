@@ -222,13 +222,22 @@ def _derive_module_name(
     return paths[0].stem
 
 
+_DOC_EXTENSIONS = frozenset({".md", ".txt", ".rst", ".adoc"})
+
+
 def _group_isolated_by_directory(
     isolated_ids: set[str],
     chunk_map: dict[str, ChunkRecord],
     file_map: dict[str, FileRecord],
 ) -> list[set[str]]:
-    """Group isolated chunks (no call edges) by their parent directory."""
+    """Group isolated chunks by their parent directory.
+
+    Document files (.md, .txt, .rst) are split per-file so each document
+    becomes its own wiki page with independent wikilinks and staleness tracking.
+    Code files are grouped by directory as before.
+    """
     dir_groups: dict[str, set[str]] = defaultdict(set)
+    doc_file_groups: dict[str, set[str]] = defaultdict(set)
 
     for chunk_id in isolated_ids:
         chunk = chunk_map.get(chunk_id)
@@ -237,10 +246,16 @@ def _group_isolated_by_directory(
         file_rec = file_map.get(chunk.file_id)
         if not file_rec:
             continue
-        parent = str(PurePosixPath(file_rec.relative_path).parent)
-        dir_groups[parent].add(chunk_id)
+        ext = PurePosixPath(file_rec.relative_path).suffix.lower()
+        if ext in _DOC_EXTENSIONS:
+            doc_file_groups[file_rec.relative_path].add(chunk_id)
+        else:
+            parent = str(PurePosixPath(file_rec.relative_path).parent)
+            dir_groups[parent].add(chunk_id)
 
-    return [group for group in dir_groups.values() if len(group) >= MIN_MODULE_CHUNKS]
+    groups = [g for g in dir_groups.values() if len(g) >= MIN_MODULE_CHUNKS]
+    groups.extend(g for g in doc_file_groups.values() if g)
+    return groups
 
 
 def _representative_paths(files: list[str], max_paths: int = 3) -> list[str]:
@@ -463,6 +478,8 @@ def generate_module_wiki(
     file_map: dict[str, FileRecord],
     forward: dict[str, set[str]],
     reverse: dict[str, set[str]],
+    chunk_to_module: dict[str, str] | None = None,
+    filepath_to_module: dict[str, str] | None = None,
 ) -> WikiPageContent:
     """Generate structured wiki markdown for a single module.
 
@@ -569,6 +586,48 @@ def generate_module_wiki(
                 if caller:
                     all_callers_outside.append(caller.qualified_name or caller.name or caller_id)
 
+    # --- Related Modules (wikilinks) ---
+    related_modules: set[str] = set()
+
+    # 1) Call-edge based: functions calling/called by other modules
+    if chunk_to_module:
+        module_chunk_set = set(module.chunks)
+        for cid in module.chunks:
+            for callee_id in forward.get(cid, set()):
+                if callee_id not in module_chunk_set and callee_id in chunk_to_module:
+                    related_modules.add(chunk_to_module[callee_id])
+            for caller_id in reverse.get(cid, set()):
+                if caller_id not in module_chunk_set and caller_id in chunk_to_module:
+                    related_modules.add(chunk_to_module[caller_id])
+
+    # 2) Content-reference based: backtick file paths in chunk content
+    #    e.g. `storage/wiki.py` in a .md doc → matches src/hybrid_search/storage/wiki.py
+    if filepath_to_module:
+        for cid in module.chunks:
+            chunk = chunk_map.get(cid)
+            if not chunk or not chunk.content:
+                continue
+            for ref_path, ref_module in filepath_to_module.items():
+                if ref_module == module.name:
+                    continue
+                # Exact match or suffix match (e.g. "cli.py" matches "src/.../cli.py")
+                if ref_path in chunk.content:
+                    related_modules.add(ref_module)
+                else:
+                    # Suffix match: "storage/wiki.py" should match "src/.../storage/wiki.py"
+                    basename = ref_path.rsplit("/", 1)[-1] if "/" in ref_path else ref_path
+                    if basename.endswith((".py", ".ts", ".tsx", ".js", ".rs", ".go", ".rb",
+                                         ".java", ".c", ".cpp", ".swift", ".kt", ".md")):
+                        if basename in chunk.content:
+                            related_modules.add(ref_module)
+
+    if related_modules:
+        lines.append("## Related Modules")
+        lines.append("")
+        for mod_name in sorted(related_modules):
+            lines.append(f"- [[{mod_name}]]")
+        lines.append("")
+
     if all_callees_outside or all_callers_outside:
         lines.append("## External Dependencies")
         lines.append("")
@@ -602,6 +661,77 @@ def generate_module_wiki(
     )
 
 
+import re as _re
+
+_WIKILINK_PATTERN = _re.compile(r"\[\[([^\]]+)\]\]")
+
+
+def _inject_coreference_wikilinks(pages: list[WikiPageContent]) -> None:
+    """Add wikilinks between modules that share references to the same third module.
+
+    If module A links to [[X]] and module B also links to [[X]], then A and B
+    are related via co-reference. This is especially useful for connecting
+    documents that discuss the same code modules without referencing each other.
+
+    Only adds links where at least 2 shared references exist (noise threshold).
+    """
+    # Extract existing wikilinks per page
+    page_links: dict[str, set[str]] = {}
+    for page in pages:
+        links = set(_WIKILINK_PATTERN.findall(page.content))
+        if links:
+            page_links[page.name] = links
+
+    if len(page_links) < 2:
+        return
+
+    # Find co-reference pairs: modules sharing 2+ common link targets
+    names = list(page_links.keys())
+    coreference_links: dict[str, set[str]] = defaultdict(set)
+
+    for i, name_a in enumerate(names):
+        for name_b in names[i + 1:]:
+            shared = page_links[name_a] & page_links[name_b]
+            if len(shared) >= 2:
+                # Only add if not already linked
+                if name_b not in page_links.get(name_a, set()):
+                    coreference_links[name_a].add(name_b)
+                if name_a not in page_links.get(name_b, set()):
+                    coreference_links[name_b].add(name_a)
+
+    if not coreference_links:
+        return
+
+    # Inject wikilinks into page content
+    for page in pages:
+        new_links = coreference_links.get(page.name)
+        if not new_links:
+            continue
+
+        # Merge with existing Related Modules or create new section
+        if "## Related Modules" in page.content:
+            # Add to existing section
+            existing = set(_WIKILINK_PATTERN.findall(page.content))
+            additions = sorted(new_links - existing)
+            if additions:
+                insert_lines = "\n".join(f"- [[{name}]]" for name in additions)
+                page.content = page.content.replace(
+                    "## Related Modules\n",
+                    f"## Related Modules\n{insert_lines}\n",
+                )
+        else:
+            # Create new section before External Dependencies or at end
+            section = "\n## Related Modules\n\n" + "\n".join(
+                f"- [[{name}]]" for name in sorted(new_links)
+            ) + "\n"
+            if "## External Dependencies" in page.content:
+                page.content = page.content.replace(
+                    "## External Dependencies", section + "\n## External Dependencies"
+                )
+            else:
+                page.content = page.content.rstrip() + "\n" + section
+
+
 def generate_all_wiki_pages(
     db: StoreDB, project_id: str,
 ) -> tuple[WikiPlan, list[WikiPageContent]]:
@@ -622,9 +752,29 @@ def generate_all_wiki_pages(
     pages: list[WikiPageContent] = []
     all_modules = plan.modules + plan.isolated_modules
 
+    # Build chunk → module name mapping for wikilinks (call-edge based)
+    chunk_to_module: dict[str, str] = {}
     for module in all_modules:
-        page = generate_module_wiki(module, chunk_map, file_map, forward, reverse)
+        for cid in module.chunks:
+            chunk_to_module[cid] = module.name
+
+    # Build filepath → module name mapping for wikilinks (content-reference based)
+    filepath_to_module: dict[str, str] = {}
+    for module in all_modules:
+        for fpath in module.files:
+            filepath_to_module[fpath] = module.name
+
+    for module in all_modules:
+        page = generate_module_wiki(
+            module, chunk_map, file_map, forward, reverse,
+            chunk_to_module, filepath_to_module,
+        )
         pages.append(page)
+
+    # Post-process: co-reference wikilinks between modules
+    # If two modules both reference the same third module, they're related.
+    # This connects documents that discuss the same code without referencing each other directly.
+    _inject_coreference_wikilinks(pages)
 
     # Generate index page
     index_lines = ["# Wiki Index", ""]

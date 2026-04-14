@@ -1,11 +1,10 @@
 # Handoff (Isolated)
 
-**Files**: 2 | **Symbols**: 35
+**Files**: 1 | **Symbols**: 39
 
 ## Files
 
 - `HANDOFF.md`
-- `pyproject.toml`
 
 ## Symbols
 
@@ -24,28 +23,50 @@
 - **Phase 5: Reactive Wiki Layer ✅** (section, L94)
 - **Phase 6a: CLI + Hook + 스킬 ✅** (section, L107)
 - **Phase 7: Call Graph Resolution 90%+ ✅** (section, L137)
-- **실전 검증 결과** (section, L157)
-- **breeze 프로젝트 (소규모)** (section, L159)
-- **valuein-homepage 프로젝트 (대규모) — 2026-04-13 추가** (section, L164)
-- **공통** (section, L172)
-- **즉시 해야 할 것 — Phase 8: CodeWiki 자동 Wiki 생성** (section, L179)
-- **검증 필요** (section, L186)
-- **Phase 7 구현 효과 실측 — force reindex 후 stats 확인** (section, L188)
-- **아직 안 한 것** (section, L197)
-- **Phase 6b 후보: CodeWiki 자동 wiki 생성** (section, L199)
-- **ONNX INT8 quantization** (section, L208)
-- **MindVault BM25 대체** (section, L212)
-- **실행 환경** (section, L218)
-- **가상환경 활성화** (section, L221)
-- **서버 실행 (Claude Code MCP로 자동 실행됨)** (section, L225)
-- **CLI 명령** (section, L228)
-- **테스트** (section, L235)
-- **인덱스 데이터 위치** (section, L238)
-- **MCP 설정 위치** (section, L244)
-- **스킬 위치** (section, L259)
-- **알려진 이슈 & 교훈** (section, L269)
-- **핵심 설계 결정 (빠른 참조)** (section, L289)
+- **Phase 8a: CodeWiki 모듈 트리 자동 생성 ✅** (section, L164)
+- **Phase 8b: Wiki 페이지 자동 생성 ✅** (section, L187)
+- **Phase 8c: verify-wiki 강화 ✅** (section, L205)
+- **Phase 8d: 전체 파이프라인 자동화 ✅** (section, L214)
+- **Phase 8e: Wikilink 그래프 (GraphRAG) ✅** (section, L235)
+- **Phase 9a: LLM Wiki Synthesis (prepare/finalize) ✅** (section, L246)
+- **Phase 9b: 전체 모듈 Bottom-Up 합성 ✅** (section, L268)
+- **Phase 9c: 지식 복리 (Incremental Re-synthesis) ✅** (section, L289)
+- **Phase 9d: 환각 검증 자동화 ✅** (section, L314)
+- **Phase 10: LLM 재랭킹 (Claude Code Native) ✅** (section, L335)
+- **MCP 도구 슬림화: 13→3 ✅** (section, L361)
+- **실전 검증 결과** (section, L388)
+- **breeze 프로젝트 (소규모)** (section, L390)
+- **valuein-homepage 프로젝트 (대규모) — 2026-04-13 추가** (section, L395)
+- **공통** (section, L403)
+- **즉시 해야 할 것** (section, L410)
+- **실행 환경** (section, L416)
+- **가상환경 활성화** (section, L419)
+- **서버 실행 (Claude Code MCP로 자동 실행됨)** (section, L423)
+- **CLI 명령** (section, L426)
+- **테스트** (section, L439)
+- **인덱스 데이터 위치** (section, L442)
+- **MCP 설정 위치** (section, L448)
+- **스킬 위치** (section, L463)
+- **알려진 이슈 & 교훈** (section, L473)
+- **핵심 설계 결정 (빠른 참조)** (section, L505)
 
-### `pyproject.toml`
+## Related Modules
+- [[README (isolated)]]
+- [[search]]
+- [[storage]]
 
-- **pyproject** (document, L1)
+- [[CLAUDE (isolated)]]
+- [[design (isolated)]]
+- [[hybrid_search]]
+- [[hybrid_search (isolated)]]
+- [[index]]
+- [[index (isolated)]]
+- [[search (isolated)]]
+- [[storage (isolated)]]
+- [[symbols]]
+- [[test_wiki-11]]
+- [[tests]]
+- [[tools]]
+- [[tools (isolated)]]
+- [[trace]]
+- [[wiki-3]]
