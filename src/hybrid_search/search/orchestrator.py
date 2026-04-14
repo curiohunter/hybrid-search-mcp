@@ -119,6 +119,7 @@ class HybridSearchResponse:
     query_time_ms: float
     total_chunks_searched: int
     skipped_projects: list[str] = field(default_factory=list)
+    reranked: bool = False
 
 
 class SearchOrchestrator:
@@ -190,8 +191,12 @@ class SearchOrchestrator:
             bm25_weight=effective_weight,
         )
 
+        # When reranking is enabled, return more candidates for Claude Code to rerank
+        reranking_cfg = self._config.search.reranking
+        effective_limit = reranking_cfg.max_candidates if reranking_cfg.enabled else limit
+
         # Enrich results with chunk metadata
-        results = self._enrich_results(fused[:limit], project_infos)
+        results = self._enrich_results(fused[:effective_limit], project_infos)
 
         elapsed_ms = (time.monotonic() - start) * 1000
         return HybridSearchResponse(
@@ -201,6 +206,7 @@ class SearchOrchestrator:
             query_time_ms=round(elapsed_ms, 1),
             total_chunks_searched=total,
             skipped_projects=skipped,
+            reranked=reranking_cfg.enabled,
         )
 
     def _search_single(
