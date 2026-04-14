@@ -1,78 +1,5 @@
 # Architecture
-> 마지막 업데이트: 2026-04-14 | 상태: fresh | synthesized: 2026-04-14 | synthesized: 2026-04-14
-
-## Overview
-
-The architecture module describes the overall system structure of a 100% local BM25+Vector hybrid search MCP server designed for cross-language code search (Korean natural language queries finding English code). It serves as the structural index for the codebase, mapping out 4 main layers (MCP server, search engine, indexing pipeline, storage) across ~30 source files, with 3 exposed MCP tools, 12 CLI commands, and a reactive wiki system that auto-tracks code changes.
-
-## Key Design Decisions
-
-- **Three MCP tools only**: The server exposes only `hybrid_search`, `trace_callers`, and `trace_callees` via MCP stdio, minimizing system prompt token overhead. All other operations (indexing, wiki, project management) are CLI commands (`src/hybrid_search/server.py`)
-- **Query classifier drives BM25/Vector weight balance**: Korean NL queries get `bm25_weight=0.15` (vector-heavy since Korean tokens don't match English code), exact symbols get `0.8` (BM25-heavy for exact matching), English NL gets `0.4` (`src/hybrid_search/search/orchestrator.py`)
-- **RRF fusion with k=60**: Reciprocal Rank Fusion combines BM25 and vector results with k=60, a standard parameter that balances early-rank dominance (`src/hybrid_search/search/fusion.py`)
-- **Per-project isolated storage**: Each project gets its own directory under `~/.hybrid-search/projects/<id>/` containing `store.db` (SQLite), `tantivy/` (BM25 index), and `vectors.usearch` (HNSW vectors), preventing cross-contamination (`src/hybrid_search/storage/indexes.py`)
-- **Multi-backend embedding**: Supports OpenAI API, ONNX runtime, and Ollama as embedding backends, configured via `config.toml` (`src/hybrid_search/index/embedder.py`)
-- **DAG-based wiki plan generation**: `index/dag.py` builds a module dependency DAG from high+medium confidence call edges, uses BFS for connected components and Kahn's algorithm for topological sort to determine bottom-up wiki generation order (`src/hybrid_search/index/dag.py`)
-
-## Data Flow
-
-```
-Source Files
-  |
-  v
-Scanner (delta: size/mtime prefilter, SHA256 hash compare)
-  | changed files only
-  v
-AST Chunker (14 languages)  ---  Doc Chunker (MD/JSON/YAML)
-  |                                |
-  v                                v
-Embedder (batch, OpenAI/ONNX/Ollama)
-  |
-  v
-Multi-store atomic update:
-  SQLite (files, chunks, call_edges, wiki_pages)
-  Tantivy (BM25 tokens)
-  USearch (HNSW vectors)
-  |
-  v
-Call Graph Resolution (import-call binding + receiver tracking)
-  |
-  v
-Wiki Staleness Detection + Auto-sync
-
----
-
-Query ("login logic")
-  |
-  v
-Query Classifier --> KOREAN_NL / EXACT_SYMBOL / ENGLISH_NL
-  |
-  v
-BM25 Engine (tantivy)  ||  Vector Engine (USearch)
-  |                         |
-  v                         v
-RRF Fusion (k=60, weighted by query type)
-  |
-  v
-Ranked Results (JSON via MCP stdio)
-```
-
-## Caveats
-
-- Config hot-reload uses mtime-based detection (`_HotReloadableConfig`), which may miss changes on filesystems with 1-second mtime granularity if multiple edits happen within the same second (`src/hybrid_search/server.py`)
-- Multi-store update atomicity is best-effort: SQLite updates are transactional, but tantivy and USearch writes are not wrapped in the same transaction. A crash between stores can cause consistency mismatches, which are detected and trigger force rebuild on next run (`src/hybrid_search/index/pipeline.py`)
-- The global project registry (`~/.hybrid-search/global/project_registry.db`) is a separate SQLite database from per-project stores, creating a potential for orphaned entries if a project directory is manually deleted (`src/hybrid_search/project.py`)
-- Cross-project search queries all registered projects sequentially; performance may degrade with many large projects registered
-
-## Related Modules
-
-- [[design-(isolated)]] -- detailed design specification that this architecture implements
-- [[handoff-(isolated)]] -- implementation history and current status of each architectural component
-- [[index-(isolated)]] -- AST chunker and scanner internals within the indexing pipeline
-- [[tests]] -- test coverage for each layer of the architecture
-
-<details>
-<summary>Structure (auto-generated)</summary>
+> 마지막 업데이트: 2026-04-14 | 상태: fresh | synthesized: 2026-04-14
 
 ## Overview
 
@@ -293,5 +220,4 @@ path = "/path/to/project"
 
 데이터 저장 구조: `~/.hybrid-search/projects/<id>/` 하위에 `store.db`(SQLite), `tantivy/`(BM25), `vectors.usearch`(HNSW) 생성.
 
-</details>
 </details>

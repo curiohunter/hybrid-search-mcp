@@ -1,12 +1,73 @@
 # Wiki System
-> 마지막 업데이트: 2026-04-14 | 상태: fresh
+> 마지막 업데이트: 2026-04-14 | 상태: fresh | synthesized: 2026-04-14
+
+## Overview
+
+The Wiki System provides a reactive documentation layer that stores codebase analysis results as structured wiki pages with automatic staleness detection. When source files change, the system detects which wiki pages are affected by comparing file hashes against compile-time snapshots. It operates across two synchronized storage backends (disk `.md` files and a SQLite `wiki_pages` table) and is accessible through MCP tools, CLI commands, and the `bootstrap-wiki` skill, enabling both interactive page management and batch wiki generation from the call graph module tree.
+
+## Key Design Decisions
+
+- **Deterministic page IDs via SHA-256 of project_id + normalized query**: Pages are keyed by `SHA-256(project_id:query_key)[:16]`, where `query_key` is the query lowercased, whitespace-collapsed, and words sorted. This ensures the same conceptual query always maps to the same page regardless of word order (`src/hybrid_search/storage/wiki.py:L161-L171`).
+- **File-hash-based staleness rather than timestamps**: Staleness is determined by comparing `file_hash_at_compile` against the current `file_hash` in the `files` table via LEFT JOIN. This catches both modifications (hash mismatch) and deletions (NULL hash), and is immune to clock skew (`src/hybrid_search/storage/wiki.py:L311-L463`).
+- **LRU eviction with configurable max_pages**: When wiki pages exceed `max_pages` per project, the least-recently-accessed pages are evicted, keeping the wiki bounded without manual cleanup (`src/hybrid_search/storage/wiki.py:L463-L616`).
+- **Wikilink graph with bidirectional BFS expansion**: `[[link_text]]` patterns in page content are parsed and stored in a `wiki_links` table. On lookup, `_expand_graph()` performs BFS up to 2 hops in both directions (outgoing and incoming links), returning linked page summaries with snippets (`src/hybrid_search/storage/wiki.py:L337-L591`).
+- **Dual storage with one-way disk-to-DB sync**: Disk `.md` files are the human-readable source of truth; `sync-wiki` copies them into the DB for search/staleness. `generate-wiki` writes to both simultaneously. This avoids bidirectional sync complexity (`src/hybrid_search/cli.py:L254-L710`).
+- **STALE.md as a machine-readable signal for Claude auto-refresh**: When stale pages are detected during reindex, a `STALE.md` file is written to `.hybrid-search/wiki/` with page titles and changed file paths, enabling CLAUDE.md instructions to trigger automatic page updates (`src/hybrid_search/cli.py:L140-L786`).
+- **`refresh_page` re-snapshots hashes even without new deps**: When `file_dependencies` is not provided to `refresh_page`, it queries the current hash for each existing dependency and updates `file_hash_at_compile`, clearing the stale flag without requiring the caller to re-resolve dependencies (`src/hybrid_search/storage/wiki.py:L383-L399`).
+
+## Data Flow
+
+```
+Source Code Changes
+   |
+   v
+reindex (CLI)
+   |
+   +---> IndexingPipeline updates files table (new file_hash values)
+   +---> _mark_stale_wikis()
+   |         |
+   |         v  wiki_dependencies.file_hash_at_compile != files.file_hash?
+   |         |
+   |         +---> YES: write STALE.md with affected page list
+   |         +---> NO:  delete STALE.md if it exists
+   |
+   +---> --wiki flag?
+   |         |
+   |         YES --> generate-wiki (DAG -> disk + DB)
+   |         NO  --> sync-wiki if wiki dir exists (disk -> DB)
+   |
+   v
+Wiki Pages (disk .md + DB wiki_pages)
+   |
+   +---> MCP tools: lookup_wiki / compile_to_wiki / check_staleness / refresh_wiki_page
+   +---> CLI: stale / lookup-wiki / verify-wiki
+   +---> Claude reads STALE.md -> reads source -> edits wiki page -> deletes STALE.md
+```
+
+## Caveats
+
+- **`sync-wiki` dependency extraction is regex-based**: `_resolve_wiki_deps` finds file references via backtick-path regex (`path/to/file.ext`), which may miss references in non-backtick formats or match false positives like version strings (`src/hybrid_search/cli.py:L342-L754`).
+- **`normalize_query` sorts words, losing phrase semantics**: The query normalization sorts words alphabetically and truncates to 200 chars, so "search hybrid" and "hybrid search" map to the same page. This is intentional for deduplication but means phrase-order-dependent queries cannot be distinguished (`src/hybrid_search/storage/wiki.py:L161-L166`).
+- **Wikilink resolution requires target page to already exist**: `_sync_wikilinks` resolves `[[link_text]]` by matching against existing page titles or query keys. If the target page has not been created yet, the link is silently dropped (`src/hybrid_search/storage/wiki.py:L485-L494`).
+- **LRU eviction deletes without checking active references**: `_evict_lru` removes the oldest-accessed pages without considering whether other pages link to them via `wiki_links`, potentially creating broken wikilinks (`src/hybrid_search/storage/wiki.py:L463-L616`).
+- **`_mark_stale_wikis` is called twice during reindex**: Once after indexing (for changed/deleted files) and again after sync, which is redundant but harmless -- the second call cleans up STALE.md if sync resolved staleness (`src/hybrid_search/cli.py:L487`, `src/hybrid_search/cli.py:L521`).
+- **`_expand_graph` has no cycle protection beyond visited set**: The BFS uses a visited set that prevents revisiting nodes, but the `max_pages` limit is the only bound on result size. A densely linked wiki could return up to `max_pages=10` linked pages per lookup (`src/hybrid_search/storage/wiki.py:L379-L591`).
+
+## Related Modules
+
+- [[call-graph-&-module-tree]] -- `generate_all_wiki_pages()` produces wiki content that feeds into `compile_page()`
+- [[tools]] -- 4 MCP tool handlers (`compile_to_wiki`, `lookup_wiki`, `check_wiki_staleness`, `refresh_wiki_page`) delegate to WikiStore
+- [[search-(isolated)]] -- `cli.py` orchestrates reindex -> wiki sync -> staleness flow; `config.py` provides `wiki.max_pages_per_project`
+
+<details>
+<summary>Structure (auto-generated)</summary>
 
 ## 개요
 
-Wiki 시스템은 코드베이스 분석 결과를 구조화된 페이지로 저장하고, 소스 파일 변경 시 자동으로 staleness를 감지하며, `[[wikilink]]` 그래프로 페이지 간 관계를 추적하는 반응형(reactive) 문서 계층이다. 두 가지 저장소(디스크 `.md` + SQLite DB)를 동기화하며, MCP 도구와 CLI 양쪽에서 접근 가능하다.
+Wiki 시스템은 코드베이스 분석 결과를 구조화된 페이지로 저장하고, 소스 파일 변경 시 자동으로 staleness를 감지하는 반응형(reactive) 문서 계층이다. 두 가지 저장소(디스크 `.md` + SQLite DB)를 동기화하며, MCP 도구와 CLI 양쪽에서 접근 가능하다.
 
 핵심 파일:
-- `src/hybrid_search/storage/wiki.py` — WikiStore 클래스 (CRUD + staleness + wikilink 그래프)
+- `src/hybrid_search/storage/wiki.py` — WikiStore 클래스 (CRUD + staleness)
 - `src/hybrid_search/tools/wiki.py` — MCP 도구 핸들러 4개
 - `src/hybrid_search/cli.py` — CLI 명령 6개
 
@@ -85,67 +146,6 @@ DB 스키마 (`storage/db.py`):
 - 파일 변경/삭제 시: `_mark_stale_wikis()` 호출
 - 새 파일 추가 시: `.hybrid-search/wiki-gaps.txt`에 gap 플래그 기록
 
-## Wikilink 그래프 (GraphRAG)
-
-Wiki 페이지 내 `[[링크 텍스트]]` 패턴을 자동 파싱하여 페이지 간 방향성 그래프를 구축한다. 페이지 조회 시 연결된 페이지를 BFS로 자동 확장하여 반환한다.
-
-### DB 스키마 (`wiki_links` 테이블)
-
-```sql
-CREATE TABLE wiki_links (
-    source_page_id TEXT NOT NULL,
-    target_page_id TEXT NOT NULL,
-    link_text TEXT NOT NULL,
-    PRIMARY KEY (source_page_id, target_page_id, link_text)
-);
-CREATE INDEX idx_wiki_links_source ON wiki_links(source_page_id);
-CREATE INDEX idx_wiki_links_target ON wiki_links(target_page_id);
-```
-
-### `_sync_wikilinks()` — 링크 파싱 + DB 동기화
-
-`compile_page()` 및 `refresh_page()` 호출 시 자동 실행된다:
-
-1. 해당 페이지의 기존 wiki_links 행 전체 삭제
-2. `_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")`로 content에서 링크 텍스트 추출
-3. 각 링크 텍스트에 대해:
-   - 먼저 title 기반 매칭 (case-insensitive): `LOWER(title) = LOWER(link_text)`
-   - 실패 시 query_key 기반 매칭: `normalize_query(link_text)` → `_page_id()` 계산 후 조회
-   - self-link는 건너뜀
-4. `INSERT OR IGNORE`로 wiki_links에 upsert
-
-### `_expand_graph()` — BFS 그래프 탐색
-
-`lookup_page()` 호출 시 자동 실행되어 `WikiPage.linked_pages`에 결과를 채운다.
-
-| 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `max_hops` | 2 | BFS 최대 깊이 |
-| `max_pages` | 10 | 반환할 최대 연결 페이지 수 |
-
-탐색 방식:
-1. **양방향 시드**: outgoing(`source→target`) + incoming(`target→source`) 링크 모두 수집
-2. **BFS**: deque 기반, visited set으로 순환 방지
-3. **각 페이지마다**: title, snippet(첫 의미 있는 줄, 200자), hop 거리, link_text 반환
-4. **hop 내 확장**: `max_hops` 이내면 해당 페이지의 이웃도 큐에 추가
-
-반환 타입: `list[LinkedPage]` — `LinkedPage(page_id, title, link_text, snippet, hop)`
-
-### 활용 시나리오
-
-- **CLAUDE.md 규칙**: "wiki에 `[[링크]]`가 있으면 연결된 페이지도 반드시 읽을 것"
-- **검색 확장**: `hybrid_search` → wiki 조회 → linked_pages로 연관 맥락 자동 확보
-- **Phase 9 (계획)**: LLM 합성 시 "연관 모듈" 섹션의 데이터 소스로 사용
-- **지식 복리**: 코드 변경 → stale 감지 → wikilink로 간접 영향 페이지 식별
-
-### 현재 한계
-
-| 한계 | 설명 |
-|------|------|
-| 단방향 생성 | wiki 페이지 내 `[[텍스트]]`에서만 링크 생성. 코드의 call graph edge → wikilink 자동 생성은 미구현 |
-| stale 전파 없음 | A→B 링크에서 B가 stale이 되어도 A는 stale로 마킹되지 않음 |
-| 새 기능 감지 불가 | 파일에 새 함수/클래스 추가 시 기존 wiki에 자동 반영 안 됨 (file_hash 변경은 감지하지만 wiki 내용 갱신은 수동) |
-
 ## bootstrap-wiki 스킬과의 관계
 
 `bootstrap-wiki`는 Claude Code 스킬(대화형)로, 위 시스템을 orchestration한다:
@@ -156,3 +156,5 @@ CREATE INDEX idx_wiki_links_target ON wiki_links(target_page_id);
 4. **CLAUDE.md 갱신** — 생성된 wiki 페이지를 CLAUDE.md에서 참조할 수 있게 경로 추가
 
 스킬은 MCP 도구(`compile_to_wiki`, `lookup_wiki` 등)를 직접 호출하지 않고, CLI 명령을 통해 일괄 처리한다. MCP 도구는 대화 중 개별 페이지 조회/갱신에 사용된다.
+
+</details>
