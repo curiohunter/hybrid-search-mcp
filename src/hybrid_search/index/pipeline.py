@@ -20,7 +20,13 @@ from hybrid_search.index.ast_chunker import CodeChunk, chunk_code_file
 from hybrid_search.index.callgraph import resolve_call_edges
 from hybrid_search.index.doc_chunker import chunk_doc_file
 from hybrid_search.index.embedder import Embedder
-from hybrid_search.index.scanner import ScanResult, compute_file_hash, detect_language, scan_project
+from hybrid_search.index.scanner import (
+    ScanResult,
+    compute_file_hash,
+    detect_language,
+    scan_project,
+    scan_project_subset,
+)
 from hybrid_search.project import ProjectRegistry, project_hash
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.vector import VectorEngine
@@ -83,6 +89,8 @@ class IndexingPipeline:
         project_path: str,
         project_name: str | None = None,
         force: bool = False,
+        changed_paths: list[str] | None = None,
+        deleted_paths: list[str] | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> IndexingResult:
         """Index or re-index a project."""
@@ -115,7 +123,17 @@ class IndexingPipeline:
                 self._clear_project(db, vector_engine, bm25_engine, pid)
 
             # Scan for changes
-            scan = scan_project(abs_path, pid, db, self._config.indexing)
+            if changed_paths is not None and not force:
+                scan = scan_project_subset(
+                    abs_path,
+                    pid,
+                    db,
+                    self._config.indexing,
+                    changed_paths=changed_paths,
+                    deleted_paths=deleted_paths,
+                )
+            else:
+                scan = scan_project(abs_path, pid, db, self._config.indexing)
             result.files_added = len(scan.added)
             result.files_changed = len(scan.changed)
             result.files_deleted = len(scan.deleted)
