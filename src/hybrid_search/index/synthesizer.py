@@ -90,10 +90,60 @@ class VerificationResult:
     cleaned_content: str
 
 
+@dataclass
+class SymbolVerificationResult:
+    found: list[str]
+    missing: list[str]
+
+
 def compute_synthesis_hash(deterministic_wiki: str, source_hashes: list[str]) -> str:
     """Hash of (deterministic wiki + sorted source file hashes) for change detection."""
     combined = deterministic_wiki + "\n" + "\n".join(sorted(source_hashes))
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
+
+
+def should_skip_synthesis(
+    db: StoreDB,
+    project_id: str,
+    module_name: str,
+    project_path: str,
+) -> tuple[bool, str]:
+    """Check if a module can skip re-synthesis (file hashes unchanged).
+
+    Compares current file hashes against the snapshot taken at last synthesis.
+    Uses the staleness check (file_hash vs file_hash_at_compile) rather than
+    recomputing the full synthesis hash, because the DB content changes after
+    finalize (merged wiki replaces deterministic wiki).
+
+    Returns (should_skip, reason).
+    """
+    from hybrid_search.storage.wiki import normalize_query, _page_id
+
+    wiki_store = db.wiki_store()
+
+    query_key = normalize_query(module_name.replace("-", " "))
+    page_id = _page_id(project_id, query_key)
+
+    row = wiki_store.get_page_row(page_id)
+    if row is None:
+        row = wiki_store.find_page_by_title(project_id, module_name)
+    if row is None:
+        title_query = module_name.replace("-", " ")
+        row = wiki_store.find_page_by_title(project_id, title_query)
+    if row is None:
+        return False, "no wiki page found"
+
+    actual_page_id = row["id"]
+
+    if not wiki_store.is_synthesized(actual_page_id):
+        return False, "never synthesized"
+
+    staleness = wiki_store._check_page_staleness(actual_page_id)
+    if staleness["stale"]:
+        changed = ", ".join(staleness["changed_files"][:3])
+        return False, f"files changed ({changed})"
+
+    return True, "all deps unchanged"
 
 
 def collect_module_context(
@@ -300,6 +350,67 @@ def verify_references(content: str, project_path: str) -> VerificationResult:
         failed=failed,
         cleaned_content=cleaned,
     )
+
+
+# Pattern for symbol names in backticks: `ClassName`, `function_name`, `Module.method`
+# Exclude file paths (contain / or .), simple values, and markdown syntax
+_SYMBOL_RE = re.compile(
+    r"`([A-Z]\w+(?:\.\w+)*)`"   # PascalCase: ClassName, Module.method
+    r"|`(\w{2,50})`"             # snake_case or camelCase identifiers
+)
+
+# Skip common non-symbol patterns
+_SYMBOL_SKIP = frozenset({
+    "true", "false", "null", "none", "self", "this",
+    "int", "str", "bool", "float", "list", "dict", "set", "tuple",
+    "any", "void", "string", "number", "object", "array",
+    "ok", "err", "error", "result", "default",
+    "get", "set", "put", "post", "delete", "patch",
+    "id", "db", "fn", "cb", "io", "os", "fs", "re",
+})
+
+
+def verify_symbols(
+    content: str, db: StoreDB, project_id: str,
+) -> SymbolVerificationResult:
+    """Verify that symbol names referenced in backticks exist in the chunks DB.
+
+    Only checks symbols that look like function/class/method names
+    (PascalCase or snake_case identifiers, not file paths).
+    """
+    found: list[str] = []
+    missing: list[str] = []
+    seen: set[str] = set()
+
+    for match in _SYMBOL_RE.finditer(content):
+        symbol = match.group(1) or match.group(2)
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+
+        # Skip non-symbol patterns
+        if symbol.lower() in _SYMBOL_SKIP:
+            continue
+        # Skip file paths
+        if "/" in symbol or symbol.endswith((".py", ".js", ".ts", ".md")):
+            continue
+        # Skip pure numbers or very short
+        if symbol.isdigit() or len(symbol) < 3:
+            continue
+
+        # Check: exact name match or qualified name component
+        parts = symbol.split(".")
+        base_name = parts[-1]
+
+        chunks = db.find_chunks_by_name(base_name, project_id)
+        if chunks:
+            found.append(symbol)
+        elif db.has_chunk_matching_name(base_name, project_id):
+            found.append(symbol)
+        else:
+            missing.append(symbol)
+
+    return SymbolVerificationResult(found=found, missing=missing)
 
 
 def merge_synthesis_with_structure(
