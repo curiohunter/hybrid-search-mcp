@@ -128,6 +128,10 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # Re-check staleness after sync (cleans up STALE.md when all pages are fresh)
     _mark_stale_wikis(config, registry, project_name)
 
+    # Auto-prepare synthesis for stale modules
+    if getattr(args, "synthesize", False):
+        _auto_prepare_synthesis(config, registry, project_name, project_path)
+
     # Gap detection for new files
     _write_gap_flag(cwd, result.files_added)
 
@@ -191,6 +195,105 @@ def _mark_stale_wikis(config, registry: ProjectRegistry, project_name: str) -> N
             stale_count = len(stale_items)
             if stale_count > 0:
                 print(f"Wiki: {stale_count} stale page(s) detected")
+    finally:
+        db.close()
+
+
+def _auto_prepare_synthesis(
+    config, registry: ProjectRegistry, project_name: str, project_path: str
+) -> None:
+    """Auto-prepare synthesis context for stale modules after reindex.
+
+    Only prepares modules whose synthesis_hash has actually changed
+    (skips modules where file changes didn't affect the deterministic wiki).
+    """
+    from hybrid_search.index.synthesizer import (
+        collect_module_context,
+        prepare_context_file,
+        should_skip_synthesis,
+    )
+
+    pinfo = registry.get_by_name(project_name)
+    if not pinfo:
+        return
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        wiki_store = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
+        staleness = wiki_store.check_staleness(pinfo.id)
+        stale_pages = [p for p in staleness if p["stale"]]
+
+        if not stale_pages:
+            return
+
+        wiki_dir = Path(project_path) / ".hybrid-search" / "wiki"
+        input_dir = wiki_dir / "_synthesis_input"
+        output_dir = wiki_dir / "_synthesis_output"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        prepared = 0
+        skipped = 0
+        for page in stale_pages:
+            mod_name = page["title"]
+            skip, reason = should_skip_synthesis(
+                db, pinfo.id, mod_name, project_path,
+            )
+            if skip:
+                skipped += 1
+                continue
+
+            ctx = collect_module_context(db, pinfo.id, mod_name, project_path)
+            if not ctx:
+                continue
+
+            slug = mod_name.lower().replace(" ", "-")
+            out_path = input_dir / f"{slug}.md"
+            prepare_context_file(ctx, out_path)
+            prepared += 1
+
+        # Indirect impact propagation: find linked modules that need
+        # "Related Modules" section refresh due to stale neighbors
+        stale_ids = [p["page_id"] for p in stale_pages]
+        indirect = wiki_store.find_indirectly_affected(pinfo.id, stale_ids)
+        indirect_prepared = 0
+        for page_info in indirect:
+            mod_name = page_info["title"]
+            skip, reason = should_skip_synthesis(
+                db, pinfo.id, mod_name, project_path,
+            )
+            if skip:
+                continue
+
+            ctx = collect_module_context(db, pinfo.id, mod_name, project_path)
+            if not ctx:
+                continue
+
+            slug = mod_name.lower().replace(" ", "-")
+            out_path = input_dir / f"{slug}.md"
+            if not out_path.exists():  # don't overwrite direct stale prepare
+                prepare_context_file(ctx, out_path)
+                indirect_prepared += 1
+
+        if prepared > 0 or indirect_prepared > 0:
+            total = prepared + indirect_prepared
+            print(
+                f"Synthesis: {total} module(s) prepared in {input_dir}"
+                f" ({prepared} stale + {indirect_prepared} indirect)"
+            )
+            if skipped > 0:
+                print(f"  ({skipped} skipped — inputs unchanged)")
+            print(
+                f"  Next: Read context files → write synthesis to {output_dir}/ "
+                f"→ run synthesize-wiki --finalize --cwd {project_path}"
+            )
+        elif skipped > 0:
+            print(f"Synthesis: all {skipped} stale module(s) have unchanged inputs — nothing to re-synthesize")
     finally:
         db.close()
 
@@ -809,6 +912,139 @@ def cmd_lookup_wiki(args: argparse.Namespace) -> None:
         db.close()
 
 
+def cmd_verify_synthesis(args: argparse.Namespace) -> None:
+    """Re-verify all synthesized wiki pages: file:line refs + symbol existence.
+
+    Reports verified/failed/removed counts per page and overall health.
+    """
+    import json as json_mod
+    from hybrid_search.index.synthesizer import verify_references, verify_symbols
+
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if not match:
+        print(f"No registered project found for: {cwd}")
+        return
+
+    name, project_path = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        return
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print("No index found. Run reindex first.")
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        wiki_store = db.wiki_store(max_pages=config.wiki.max_pages_per_project)
+        all_pages = wiki_store.list_pages(pinfo.id, limit=200)
+        synthesized = [p for p in all_pages if wiki_store.is_synthesized(p["page_id"])]
+
+        if not synthesized:
+            print("No synthesized pages to verify.")
+            return
+
+        results: list[dict] = []
+        total_verified = 0
+        total_failed = 0
+        total_sym_ok = 0
+        total_sym_missing = 0
+        pages_with_issues = 0
+
+        for page in synthesized:
+            row = wiki_store.get_page_row(page["page_id"])
+            content = row["content"] if row else ""
+            if not content:
+                continue
+
+            ref_result = verify_references(content, project_path)
+            sym_result = verify_symbols(content, db, pinfo.id)
+
+            failed_count = len(ref_result.failed) + len(sym_result.missing)
+            if failed_count > 0:
+                pages_with_issues += 1
+
+            total_verified += len(ref_result.verified)
+            total_failed += len(ref_result.failed)
+            total_sym_ok += len(sym_result.found)
+            total_sym_missing += len(sym_result.missing)
+
+            entry = {
+                "title": page.get("title", page["page_id"]),
+                "refs_ok": len(ref_result.verified),
+                "refs_failed": len(ref_result.failed),
+                "symbols_ok": len(sym_result.found),
+                "symbols_missing": len(sym_result.missing),
+                "failed_refs": ref_result.failed,
+                "missing_symbols": sym_result.missing,
+            }
+            results.append(entry)
+
+        # Auto-fix mode: update pages with cleaned content
+        fixed = 0
+        if args.fix:
+            for page, entry in zip(synthesized, results):
+                if entry["refs_failed"] > 0:
+                    row = wiki_store.get_page_row(page["page_id"])
+                    content = row["content"] if row else ""
+                    ref_result = verify_references(content, project_path)
+                    if ref_result.cleaned_content != content:
+                        wiki_store.refresh_page(
+                            page["page_id"], ref_result.cleaned_content,
+                        )
+                        fixed += 1
+
+        # Output
+        if args.json:
+            report = {
+                "project": name,
+                "synthesized_pages": len(synthesized),
+                "pages_with_issues": pages_with_issues,
+                "totals": {
+                    "refs_verified": total_verified,
+                    "refs_failed": total_failed,
+                    "symbols_found": total_sym_ok,
+                    "symbols_missing": total_sym_missing,
+                },
+                "fixed": fixed,
+                "pages": results,
+            }
+            print(json_mod.dumps(report, indent=2, ensure_ascii=False))
+            return
+
+        print(f"Project: {name}")
+        print(f"  Synthesized pages: {len(synthesized)}")
+        print(f"  File:line refs:    {total_verified} OK, {total_failed} failed")
+        print(f"  Symbol refs:       {total_sym_ok} OK, {total_sym_missing} missing")
+
+        if pages_with_issues:
+            print(f"\n  Pages with issues ({pages_with_issues}):")
+            for r in results:
+                issues = r["refs_failed"] + r["symbols_missing"]
+                if issues == 0:
+                    continue
+                print(f"    - {r['title']}: {r['refs_failed']} bad refs, {r['symbols_missing']} missing symbols")
+                for ref in r["failed_refs"][:3]:
+                    print(f"        ref: {ref}")
+                for sym in r["missing_symbols"][:3]:
+                    print(f"        sym: {sym}")
+
+        if fixed > 0:
+            print(f"\n  Fixed: {fixed} page(s) — bad refs removed from DB content")
+
+        health = "HEALTHY" if pages_with_issues == 0 else f"ISSUES ({pages_with_issues} pages)"
+        print(f"\n  Health: {health}")
+
+    finally:
+        db.close()
+
+
 def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
     """Two-phase wiki synthesis: --prepare collects context, --finalize saves results.
 
@@ -823,6 +1059,7 @@ def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
         estimate_tokens,
         finalize_module,
         prepare_context_file,
+        should_skip_synthesis,
     )
 
     config = load_config()
@@ -914,14 +1151,23 @@ def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
             print("No modules to synthesize (all up-to-date).")
             return
 
-        # Collect contexts
+        # Collect contexts (skip unchanged modules via synthesis_hash)
         contexts: list[tuple[str, ModuleContext]] = []
+        skipped_hash = 0
         for mod_name in target_modules:
+            skip, reason = should_skip_synthesis(db, pinfo.id, mod_name, project_path)
+            if skip:
+                print(f"  Skip: {mod_name} ({reason})")
+                skipped_hash += 1
+                continue
             ctx = collect_module_context(db, pinfo.id, mod_name, project_path)
             if ctx:
                 contexts.append((mod_name, ctx))
             else:
                 print(f"  Skip: {mod_name} (no wiki page found)")
+
+        if skipped_hash > 0:
+            print(f"  ({skipped_hash} module(s) skipped — inputs unchanged)")
 
         if not contexts:
             print("No valid modules to synthesize.")
@@ -1032,6 +1278,7 @@ def main() -> None:
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
     p_reindex.add_argument("--force", action="store_true", help="Force full reindex")
     p_reindex.add_argument("--wiki", action="store_true", help="Auto-generate wiki after reindex")
+    p_reindex.add_argument("--synthesize", action="store_true", help="Auto-prepare synthesis for stale modules after reindex")
 
     p_status = sub.add_parser("status", help="Show index status")
 
@@ -1080,6 +1327,11 @@ def main() -> None:
     p_synth.add_argument("--dry-run", action="store_true", help="Show targets and token estimate only")
     p_synth.add_argument("--finalize", action="store_true", help="Finalize: verify refs, merge, save to DB")
 
+    p_vsyn = sub.add_parser("verify-synthesis", help="Re-verify synthesized wiki pages (refs + symbols)")
+    p_vsyn.add_argument("--cwd", default=".", help="Project directory")
+    p_vsyn.add_argument("--json", action="store_true", help="Output as JSON")
+    p_vsyn.add_argument("--fix", action="store_true", help="Auto-remove bad refs from DB content")
+
     args = parser.parse_args()
 
     if args.command == "reindex":
@@ -1108,6 +1360,8 @@ def main() -> None:
         cmd_lookup_wiki(args)
     elif args.command == "synthesize-wiki":
         cmd_synthesize_wiki(args)
+    elif args.command == "verify-synthesis":
+        cmd_verify_synthesis(args)
     else:
         parser.print_help()
         sys.exit(1)

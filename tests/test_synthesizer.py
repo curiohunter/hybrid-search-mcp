@@ -1,4 +1,4 @@
-"""Tests for LLM Wiki Synthesis (Phase 9a) — prepare/finalize architecture."""
+"""Tests for LLM Wiki Synthesis (Phase 9a-9d) — prepare/finalize/verify architecture."""
 
 import json
 from pathlib import Path
@@ -8,9 +8,12 @@ import pytest
 from hybrid_search.index.synthesizer import (
     ModuleContext,
     SourceChunk,
+    SymbolVerificationResult,
     compute_synthesis_hash,
     merge_synthesis_with_structure,
     verify_references,
+    verify_symbols,
+    should_skip_synthesis,
     prepare_context_file,
     finalize_module,
     _format_source_chunks,
@@ -405,3 +408,174 @@ class TestSchemaMigration:
     def test_schema_version_is_3(self, db: StoreDB):
         version = db.get_meta("schema_version")
         assert version == "3"
+
+
+# -- Phase 9c: should_skip_synthesis --
+
+class TestShouldSkipSynthesis:
+    def test_skip_when_deps_unchanged(self, seeded_db: StoreDB, tmp_project: Path):
+        """After finalize, same file hashes should skip."""
+        wiki_dir = tmp_project / ".hybrid-search" / "wiki"
+        wiki_dir.mkdir(parents=True)
+
+        finalize_module(
+            seeded_db, "proj1", "auth-system", "## Overview\nAuth.",
+            str(tmp_project), wiki_dir,
+        )
+
+        skip, reason = should_skip_synthesis(seeded_db, "proj1", "auth-system", str(tmp_project))
+        assert skip is True
+        assert "unchanged" in reason
+
+    def test_no_skip_when_never_synthesized(self, seeded_db: StoreDB, tmp_project: Path):
+        """Unsynthesized pages should not skip."""
+        skip, reason = should_skip_synthesis(seeded_db, "proj1", "auth-system", str(tmp_project))
+        assert skip is False
+        assert "never synthesized" in reason
+
+    def test_no_skip_when_files_changed(self, seeded_db: StoreDB, tmp_project: Path):
+        """After file change, should not skip."""
+        wiki_dir = tmp_project / ".hybrid-search" / "wiki"
+        wiki_dir.mkdir(parents=True)
+
+        finalize_module(
+            seeded_db, "proj1", "auth-system", "## Overview\nAuth.",
+            str(tmp_project), wiki_dir,
+        )
+
+        # Simulate file hash change
+        conn = seeded_db._conn
+        conn.execute("UPDATE files SET file_hash = 'hash_changed' WHERE id = 'file1'")
+        conn.commit()
+
+        skip, reason = should_skip_synthesis(seeded_db, "proj1", "auth-system", str(tmp_project))
+        assert skip is False
+        assert "changed" in reason
+
+    def test_no_skip_for_missing_module(self, seeded_db: StoreDB, tmp_project: Path):
+        skip, reason = should_skip_synthesis(seeded_db, "proj1", "nonexistent", str(tmp_project))
+        assert skip is False
+
+
+# -- Phase 9c: WikiStore.get_synthesis_hash --
+
+class TestGetSynthesisHash:
+    def test_returns_none_when_not_synthesized(self, seeded_db: StoreDB):
+        wiki = WikiStore(seeded_db._conn, max_pages=100)
+        page = wiki.lookup_page("proj1", query="auth system")
+        assert page is not None
+        stored = wiki.get_synthesis_hash(page.id)
+        assert stored is None
+
+    def test_returns_hash_after_synthesis(self, seeded_db: StoreDB, tmp_project: Path):
+        wiki_dir = tmp_project / ".hybrid-search" / "wiki"
+        wiki_dir.mkdir(parents=True)
+
+        finalize_module(
+            seeded_db, "proj1", "auth-system", "## Overview\nAuth.",
+            str(tmp_project), wiki_dir,
+        )
+
+        wiki = WikiStore(seeded_db._conn, max_pages=100)
+        page = wiki.lookup_page("proj1", query="auth system")
+        stored = wiki.get_synthesis_hash(page.id)
+        assert stored is not None
+        assert len(stored) == 16
+
+
+# -- Phase 9c: find_indirectly_affected --
+
+class TestFindIndirectlyAffected:
+    def test_finds_linked_pages(self, seeded_db: StoreDB):
+        wiki = WikiStore(seeded_db._conn, max_pages=100)
+        # Create a second page
+        wiki.compile_page(
+            project_id="proj1",
+            query="login module",
+            title="login-module",
+            content="# Login Module\n\nSee [[auth-system]] for auth.",
+            tags=["login"],
+            file_dependencies=[
+                {"file_id": "file2", "file_hash": "hash_b", "chunk_ids": ["chunk3"]},
+            ],
+        )
+        # Create a third page (unlinked)
+        wiki.compile_page(
+            project_id="proj1",
+            query="config module",
+            title="config-module",
+            content="# Config Module\n\nConfig stuff.",
+            tags=["config"],
+            file_dependencies=[],
+        )
+
+        auth_page = wiki.lookup_page("proj1", query="auth system")
+        affected = wiki.find_indirectly_affected(
+            "proj1", [auth_page.id], max_hops=1,
+        )
+
+        # login-module links to auth-system, so it should be affected
+        titles = {a["title"] for a in affected}
+        assert "login-module" in titles
+        # config-module is unlinked, should NOT be affected
+        assert "config-module" not in titles
+
+    def test_empty_when_no_links(self, seeded_db: StoreDB):
+        wiki = WikiStore(seeded_db._conn, max_pages=100)
+        auth_page = wiki.lookup_page("proj1", query="auth system")
+        affected = wiki.find_indirectly_affected(
+            "proj1", [auth_page.id], max_hops=1,
+        )
+        assert affected == []
+
+
+# -- Phase 9d: verify_symbols --
+
+class TestVerifySymbols:
+    def test_finds_existing_symbols(self, seeded_db: StoreDB):
+        content = "Uses `sign_in` and `LoginPage` for auth."
+        result = verify_symbols(content, seeded_db, "proj1")
+        assert "sign_in" in result.found
+        assert "LoginPage" in result.found
+        assert len(result.missing) == 0
+
+    def test_detects_missing_symbols(self, seeded_db: StoreDB):
+        content = "Uses `NonExistentClass` and `missing_function` for something."
+        result = verify_symbols(content, seeded_db, "proj1")
+        assert "NonExistentClass" in result.missing
+        assert "missing_function" in result.missing
+
+    def test_skips_common_words(self, seeded_db: StoreDB):
+        content = "Returns `true` or `false`, uses `self` and `None`."
+        result = verify_symbols(content, seeded_db, "proj1")
+        # Common words should be skipped entirely
+        assert "true" not in result.found
+        assert "true" not in result.missing
+
+    def test_skips_file_paths(self, seeded_db: StoreDB):
+        content = "See `src/auth.py` for details."
+        result = verify_symbols(content, seeded_db, "proj1")
+        assert len(result.found) == 0
+        assert len(result.missing) == 0
+
+    def test_deduplicates_symbols(self, seeded_db: StoreDB):
+        content = "Call `sign_in` then `sign_in` again."
+        result = verify_symbols(content, seeded_db, "proj1")
+        assert result.found.count("sign_in") == 1
+
+
+# -- Phase 9d: has_chunk_matching_name --
+
+class TestHasChunkMatchingName:
+    def test_matches_partial_qualified_name(self, seeded_db: StoreDB):
+        # Insert a chunk with qualified_name
+        conn = seeded_db._conn
+        conn.execute(
+            """INSERT INTO chunks (id, file_id, project_id, name, qualified_name, content, start_line, end_line)
+               VALUES ('qchunk', 'file1', 'proj1', 'method', 'MyClass.method', 'code', 1, 2)""",
+        )
+        conn.commit()
+
+        assert seeded_db.has_chunk_matching_name("method", "proj1") is True
+        assert seeded_db.has_chunk_matching_name("MyClass", "proj1") is True
+        assert seeded_db.has_chunk_matching_name("ZZZ_nope", "proj1") is False

@@ -82,11 +82,11 @@ Wikilink:  페이지 간 [[링크]] 그래프 + BFS 탐색 동작
 Synthesis: Phase 9b 완료 — 28/28 모듈 합성, API 키 불필요
 ```
 
-**여기까지의 한계 (Phase 9b 이후)**:
+**Phase 9c-d로 해결된 한계**:
 
-1. **수동 트리거**: `synthesize-wiki --prepare` → Claude Code 합성 → `--finalize`를 사람이 실행해야 함. reindex 후 stale 감지 시 자동 합성 파이프라인은 아직 없음.
+1. ~~수동 트리거~~ → **자동화 완료**: `reindex --synthesize`로 stale 감지 → 자동 prepare. `find_indirectly_affected()`로 wikilink 이웃 모듈까지 전파.
 
-2. **참조 검증률 73%**: 29/137 참조가 검증 실패로 제거됨. 주로 정확한 라인 번호 불일치 — 환각은 아니나 정밀도 개선 여지.
+2. ~~참조 검증률 73%~~ → **2종 검증 완료**: `verify-synthesis` CLI로 file:line refs + symbol DB 존재 일괄 검증. `--fix`로 bad refs 자동 제거.
 
 ---
 
@@ -483,8 +483,8 @@ max_candidates = 20                  # RRF에서 가져올 후보 수
 |:-----:|------|--------|----------|
 | **9a** | 단일 모듈 합성 ✅ | 없음 | prepare/finalize 아키텍처, AST Chunker E2E 검증 |
 | **9b** | Bottom-up 전체 합성 ✅ | 9a | 28/28 모듈 합성, 슬러그 매칭 버그 수정 |
-| **9c** | 지식 복리 (incremental) | 9b | 코드 변경 → 연쇄 wiki 업데이트 |
-| **9d** | 환각 검증 자동화 | 9b | 출처 검증 + 사실 대조 |
+| **9c** | 지식 복리 (incremental) ✅ | 9b | staleness skip + `reindex --synthesize` + wikilink 간접 전파 |
+| **9d** | 환각 검증 자동화 ✅ | 9b | `verify-synthesis` CLI (refs + symbols), `--fix` 자동 정리 |
 | **10** | LLM 재랭킹 | 없음 (9와 독립) | 검색 정확도 향상 |
 | **11** | RAG 답변 생성 | 9b + 10 | 코드베이스 Q&A |
 

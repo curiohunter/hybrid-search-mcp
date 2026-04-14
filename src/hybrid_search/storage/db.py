@@ -621,6 +621,14 @@ class StoreDB:
         )
         return [self._row_to_chunk(row) for row in cur.fetchall()]
 
+    def has_chunk_matching_name(self, name_pattern: str, project_id: str) -> bool:
+        """Check if any chunk has a qualified_name matching the pattern (LIKE)."""
+        cur = self._conn.execute(
+            "SELECT 1 FROM chunks WHERE qualified_name LIKE ? AND project_id = ? LIMIT 1",
+            (f"%{name_pattern}%", project_id),
+        )
+        return cur.fetchone() is not None
+
     def _row_to_chunk(self, row: sqlite3.Row) -> ChunkRecord:
         return ChunkRecord(
             id=row["id"],
