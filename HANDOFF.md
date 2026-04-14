@@ -1,7 +1,7 @@
 # Hybrid Search MCP — Handoff Document
 
-> **Date**: 2026-04-13 | **Branch**: main
-> **설계 문서**: `docs/design.md` (v5, 전체 아키텍처 + 18개 섹션)
+> **Date**: 2026-04-14 | **Branch**: main
+> **설계 문서**: `docs/design.md` (v6, Phase 1-9a 완료 + LLM 합성 로드맵)
 
 ## 프로젝트 한줄 요약
 
@@ -232,6 +232,39 @@ reindex --wiki (명시적)
         └→ generate-wiki (모듈 트리 → wiki 생성 + DB sync)
 ```
 
+### Phase 8e: Wikilink 그래프 (GraphRAG) ✅
+
+| 항목 | 구현 파일 | 줄수 |
+|------|-----------|:----:|
+| `[[링크]]` 파싱 + DB 동기화 (`_sync_wikilinks`) | `storage/wiki.py` | +40 |
+| BFS 양방향 그래프 탐색 (`_expand_graph`) | `storage/wiki.py` | +80 |
+| `wiki_links` 테이블 (source, target, link_text) | `storage/db.py` | +10 |
+| lookup_page → linked_pages 자동 확장 | `storage/wiki.py` | (통합) |
+
+**핵심 설계**: compile_page/refresh_page 시 `[[텍스트]]` 패턴을 자동 파싱하여 wiki_links 테이블에 저장. lookup_page 호출 시 BFS(max_hops=2, max_pages=10)로 양방향 탐색하여 linked_pages 반환. CLAUDE.md 규칙: "wiki에 [[링크]]가 있으면 연결된 페이지도 반드시 읽을 것."
+
+### Phase 9a: LLM Wiki Synthesis (prepare/finalize) ✅
+
+| 항목 | 구현 파일 | 줄수 |
+|------|-----------|:----:|
+| Synthesizer (prepare/finalize/verify/merge/hash) | `index/synthesizer.py` | ~430 |
+| DB 스키마 v3 마이그레이션 (synthesis_* 4컬럼) | `storage/db.py` | +30 |
+| WikiStore synthesis 필드 + 헬퍼 메서드 7개 | `storage/wiki.py` | +60 |
+| SynthesisConfig | `config.py` | +5 |
+| `synthesize-wiki` CLI (--dry-run, --module, --finalize) | `cli.py` | +130 |
+| 테스트 27개 | `tests/test_synthesizer.py` | ~280 |
+
+**핵심 설계**: Claude Code 자체가 LLM이므로 외부 API 키 불필요. 3단계 구조:
+1. CLI `synthesize-wiki` → `_synthesis_input/*.md`에 컨텍스트 수집 (DB IO만, 토큰 0)
+2. Claude Code가 컨텍스트 파일 Read → 합성 작성 → `_synthesis_output/*.md`에 Write
+3. CLI `synthesize-wiki --finalize` → 참조 검증 + 결정론적 wiki 병합 + `_raw/` 백업 + DB 저장 (토큰 0)
+
+합성 결과는 상단(Overview, Key Design Decisions, Data Flow, Caveats, Related Modules) + 하단 `<details>` 접기(결정론적 구조 데이터) 형태. synthesis_hash로 변경 감지하여 불필요한 재합성 방지.
+
+**E2E 검증** (AST Chunker): 9개 참조 100% 검증 통과, 0개 제거.
+
+**총 코드**: ~10,000줄 (36개 파일) | **MCP 도구**: 3개 | **테스트**: 241개 (14개 파일) | **CLI 명령**: 13개 | **스킬**: 3개
+
 ### MCP 도구 슬림화: 13→3 ✅
 
 **이유**: MCP 도구 스키마가 매 대화 시스템 프롬프트에 로드되어 토큰 소모. 관리/wiki 도구 10개를 CLI로 이관.
@@ -283,32 +316,30 @@ reindex --wiki (명시적)
 
 ## 즉시 해야 할 것
 
-Phase 8 (CodeWiki) 전체 완료. 다음 후보:
+Phase 9a (단일 모듈 합성) 완료. 다음 후보:
 
-### ONNX INT8 quantization
-- ARM64 전용 INT8 양자화로 CPU 임베딩 2.7-3.3x 가속
-- e5-small 기준 인덱싱 229초 → ~80초 예상
+### Phase 9b: 전체 모듈 합성
+- 28개 모듈 일괄 prepare → Claude Code 합성 → finalize
+- 현재 AST Chunker 1개만 E2E 검증됨
 
-### Phase 7 추가 개선 후보 (선택)
-- **외부 라이브러리 메서드 필터**: `supabase.from()`, `response.json()` 등 receiver가 import_map에 없는 메서드 호출 제외
-- **같은 파일 내 로컬 함수 자동 태깅**: import 없이 같은 파일에 정의된 함수 호출에 `__local__` 모듈 자동 부여
-
-### MindVault BM25 대체
-- Hybrid Search가 안정화되면 MindVault의 BM25를 대체, MindVault는 Graph/Wiki 전담
+### Phase 9c: 지식 복리 (incremental)
+- reindex → stale 감지 → 자동 prepare → 합성 트리거
+- `_expand_graph()`로 간접 영향 모듈의 "연관 모듈" 섹션만 선택적 재합성
 
 ---
 
 ## 아직 안 한 것
 
-**전제 조건**: Call Graph Resolution 90%+ (현재 7.5%). Step 1-4 완료 후 진행.
+### Phase 9b-d: 전체 합성 + 지식 복리 + 환각 검증 자동화
+- 9b: 28개 모듈 bottom-up 일괄 합성
+- 9c: stale → 자동 재합성 파이프라인 (wikilink 그래프로 간접 영향 전파)
+- 9d: 합성 결과의 파일:라인 출처 검증 자동화 + 사실 대조
 
-### ONNX INT8 quantization
+### Phase 10: LLM 재랭킹
+- RRF top-20 → LLM re-ranker → top-10 (쿼리 의도 반영)
 
-ARM64 전용 INT8 양자화로 CPU 임베딩 2.7-3.3x 가속. e5-small 기준 인덱싱 229초 → ~80초 예상.
-
-### MindVault BM25 대체
-
-Hybrid Search가 안정화되면 MindVault의 BM25를 대체, MindVault는 Graph/Wiki 전담.
+### Phase 11: RAG 답변 생성
+- wiki + 검색 결과 → 자연어 답변 (코드베이스 Q&A)
 
 ---
 
@@ -328,6 +359,9 @@ python -m hybrid_search.cli status               # 인덱스 상태
 python -m hybrid_search.cli stale --cwd .        # wiki staleness
 python -m hybrid_search.cli install-hook --cwd . # post-commit hook 설치
 python -m hybrid_search.cli sync-wiki --cwd .    # 디스크 wiki → DB 동기화
+python -m hybrid_search.cli synthesize-wiki --cwd .           # prepare: 컨텍스트 수집
+python -m hybrid_search.cli synthesize-wiki --dry-run --cwd . # dry-run: 토큰 추정
+python -m hybrid_search.cli synthesize-wiki --finalize --cwd . # finalize: 검증+병합+DB저장
 
 # 테스트
 python -m pytest tests/ -v
@@ -381,6 +415,10 @@ python -m pytest tests/ -v
 
 8. **스킬은 지시서일 뿐**: Claude가 스킬의 모든 단계를 실행한다고 보장할 수 없음. 핵심 동작(DB 동기화 등)은 CLI 명령으로 확정적으로 실행하는 것이 안전. 예: `sync-wiki` CLI가 `compile_to_wiki` MCP 도구 호출을 대체.
 
+9. **DB 스키마 버전은 int 비교**: `_migrate_schema()`에서 int() 변환 후 비교. 문자열 비교 시 "9" < "10"이 False가 되는 문제 해결 (v3에서 수정).
+
+10. **WikiStore 캡슐화**: `db._conn` 직접 접근 금지. synthesizer/CLI 등 외부에서는 WikiStore의 public 헬퍼 메서드(`get_page_row`, `find_page_by_title`, `get_page_file_hashes`, `get_page_deps`, `get_linked_page_ids`, `is_synthesized` 등) 사용.
+
 ---
 
 ## 핵심 설계 결정 (빠른 참조)
@@ -398,3 +436,5 @@ python -m pytest tests/ -v
 | Call Graph | 4단계 resolution + module index + class members | §12 + Phase 7: import-call 바인딩, self/this 추적 |
 | Wiki | DB(staleness) + 디스크(.md) 이중 저장 | Phase 5+6: DB로 추적, 디스크로 CLAUDE.md 참조 |
 | CLI | sync-wiki로 확정적 DB 동기화 | Phase 6a: 스킬 의존 대신 CLI로 확실한 실행 |
+| Wikilink | `[[링크]]` BFS 그래프 (max_hops=2) | Phase 8e: 페이지 간 관계 자동 추적 + 지식 복리 기반 |
+| Synthesis | Claude Code가 직접 합성, API 키 불필요 | Phase 9a: CLI prepare/finalize로 토큰 최소화 |
