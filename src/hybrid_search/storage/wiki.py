@@ -116,26 +116,21 @@ class WikiStore:
         ).fetchone()
 
         if existing:
-            if synthesis_model:
-                self._conn.execute(
-                    """UPDATE wiki_pages
-                       SET title = ?, content = ?, tags = ?, updated_at = ?,
-                           accessed_at = ?, version = version + 1,
-                           synthesis_model = ?, synthesis_hash = ?,
-                           synthesis_version = synthesis_version + 1,
-                           last_synthesized_at = ?
-                       WHERE id = ?""",
-                    (title, content, tags_json, now, now,
-                     synthesis_model, synthesis_hash, now, page_id),
-                )
-            else:
-                self._conn.execute(
-                    """UPDATE wiki_pages
-                       SET title = ?, content = ?, tags = ?, updated_at = ?,
-                           accessed_at = ?, version = version + 1
-                       WHERE id = ?""",
-                    (title, content, tags_json, now, now, page_id),
-                )
+            synth_at = now if synthesis_model else None
+            self._conn.execute(
+                """UPDATE wiki_pages
+                   SET title = ?, content = ?, tags = ?, updated_at = ?,
+                       accessed_at = ?, version = version + 1,
+                       synthesis_model = COALESCE(?, synthesis_model),
+                       synthesis_hash = COALESCE(?, synthesis_hash),
+                       synthesis_version = CASE WHEN ? IS NOT NULL
+                           THEN synthesis_version + 1 ELSE synthesis_version END,
+                       last_synthesized_at = COALESCE(?, last_synthesized_at)
+                   WHERE id = ?""",
+                (title, content, tags_json, now, now,
+                 synthesis_model, synthesis_hash, synthesis_model, synth_at,
+                 page_id),
+            )
             self._conn.execute(
                 "DELETE FROM wiki_dependencies WHERE wiki_page_id = ?", (page_id,)
             )
@@ -334,6 +329,68 @@ class WikiStore:
             }
             for row in rows
         ]
+
+    # -- public helpers for external consumers (synthesizer, CLI) --
+
+    def get_page_row(self, page_id: str) -> sqlite3.Row | None:
+        """Get raw wiki_pages row by id."""
+        return self._conn.execute(
+            "SELECT * FROM wiki_pages WHERE id = ?", (page_id,)
+        ).fetchone()
+
+    def find_page_by_title(self, project_id: str, title: str) -> sqlite3.Row | None:
+        """Find a wiki page by case-insensitive title substring match."""
+        return self._conn.execute(
+            "SELECT * FROM wiki_pages WHERE project_id = ? AND LOWER(title) LIKE ?",
+            (project_id, f"%{title.lower()}%"),
+        ).fetchone()
+
+    def get_page_file_hashes(self, page_id: str) -> list[str]:
+        """Get file hashes for a page's dependencies."""
+        rows = self._conn.execute(
+            """SELECT f.file_hash FROM wiki_dependencies wd
+               JOIN files f ON f.id = wd.file_id
+               WHERE wd.wiki_page_id = ?""",
+            (page_id,),
+        ).fetchall()
+        return [r["file_hash"] for r in rows]
+
+    def get_page_deps(self, page_id: str) -> list[dict]:
+        """Get full dependency info for a page (file_id, chunk_ids, path, hash)."""
+        rows = self._conn.execute(
+            """SELECT wd.file_id, wd.chunk_ids, f.relative_path, f.file_hash
+               FROM wiki_dependencies wd
+               JOIN files f ON f.id = wd.file_id
+               WHERE wd.wiki_page_id = ?""",
+            (page_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_linked_page_ids(self, page_id: str) -> list[str]:
+        """Get page IDs linked to/from this page (both directions)."""
+        rows = self._conn.execute(
+            """SELECT target_page_id AS pid FROM wiki_links WHERE source_page_id = ?
+               UNION
+               SELECT source_page_id AS pid FROM wiki_links WHERE target_page_id = ?""",
+            (page_id, page_id),
+        ).fetchall()
+        return [r["pid"] for r in rows]
+
+    def get_page_title_and_content(self, page_id: str) -> tuple[str, str] | None:
+        """Get title and content for a page by id."""
+        row = self._conn.execute(
+            "SELECT title, content FROM wiki_pages WHERE id = ?", (page_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return row["title"], row["content"]
+
+    def is_synthesized(self, page_id: str) -> bool:
+        """Check if a page has been synthesized."""
+        row = self._conn.execute(
+            "SELECT synthesis_model FROM wiki_pages WHERE id = ?", (page_id,)
+        ).fetchone()
+        return bool(row and row["synthesis_model"])
 
     def _check_page_staleness(self, page_id: str) -> dict:
         """Compare stored hashes against current file hashes."""
