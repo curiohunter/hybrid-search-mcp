@@ -105,17 +105,14 @@ def collect_module_context(
     """Gather all context needed to synthesize a wiki page for a module."""
     from hybrid_search.storage.wiki import normalize_query, _page_id
 
+    wiki_store = db.wiki_store()
+
     query_key = normalize_query(module_name.replace("-", " "))
     page_id = _page_id(project_id, query_key)
 
-    row = db._conn.execute(
-        "SELECT * FROM wiki_pages WHERE id = ?", (page_id,)
-    ).fetchone()
+    row = wiki_store.get_page_row(page_id)
     if row is None:
-        row = db._conn.execute(
-            "SELECT * FROM wiki_pages WHERE project_id = ? AND LOWER(title) LIKE ?",
-            (project_id, f"%{module_name.lower()}%"),
-        ).fetchone()
+        row = wiki_store.find_page_by_title(project_id, module_name)
     if row is None:
         logger.warning("No wiki page found for module: %s", module_name)
         return None
@@ -123,13 +120,7 @@ def collect_module_context(
     actual_page_id = row["id"]
     deterministic_wiki = row["content"]
 
-    deps = db._conn.execute(
-        """SELECT wd.file_id, wd.chunk_ids, f.relative_path, f.file_hash
-           FROM wiki_dependencies wd
-           JOIN files f ON f.id = wd.file_id
-           WHERE wd.wiki_page_id = ?""",
-        (actual_page_id,),
-    ).fetchall()
+    deps = wiki_store.get_page_deps(actual_page_id)
 
     source_chunks: list[SourceChunk] = []
     file_paths: list[str] = []
@@ -151,35 +142,24 @@ def collect_module_context(
                         start_line=chunk.start_line,
                     ))
         else:
-            all_chunks = db._conn.execute(
-                "SELECT * FROM chunks WHERE file_id = ? ORDER BY start_line",
-                (dep["file_id"],),
-            ).fetchall()
-            for c in all_chunks:
-                if c["content"]:
+            # No chunk IDs — get all chunks for this file
+            for chunk in db.get_chunks_by_file(dep["file_id"]):
+                if chunk.content:
                     source_chunks.append(SourceChunk(
                         file_path=dep["relative_path"],
-                        name=c["name"],
-                        content=c["content"],
-                        start_line=c["start_line"],
+                        name=chunk.name,
+                        content=chunk.content,
+                        start_line=chunk.start_line,
                     ))
 
     related_summaries: list[str] = []
-    links = db._conn.execute(
-        """SELECT target_page_id FROM wiki_links WHERE source_page_id = ?
-           UNION
-           SELECT source_page_id FROM wiki_links WHERE target_page_id = ?""",
-        (actual_page_id, actual_page_id),
-    ).fetchall()
+    linked_ids = wiki_store.get_linked_page_ids(actual_page_id)
 
-    for link in links[:5]:
-        linked_row = db._conn.execute(
-            "SELECT title, content FROM wiki_pages WHERE id = ?",
-            (link[0],),
-        ).fetchone()
-        if linked_row:
-            title = linked_row["title"]
-            snippet = _extract_summary(linked_row["content"])
+    for linked_id in linked_ids[:5]:
+        tc = wiki_store.get_page_title_and_content(linked_id)
+        if tc:
+            title, content = tc
+            snippet = _extract_summary(content)
             related_summaries.append(f"[[{title}]]: {snippet}")
 
     return ModuleContext(
@@ -269,9 +249,13 @@ def prepare_context_file(ctx: ModuleContext, output_path: Path) -> Path:
 # -- Phase 2: Finalize --
 
 def verify_references(content: str, project_path: str) -> VerificationResult:
-    """Verify that file:line references in synthesized content actually exist."""
+    """Verify that file:line references in synthesized content actually exist.
+
+    Failed references are removed inline (the surrounding text is preserved).
+    """
     verified: list[str] = []
     failed: list[str] = []
+    failed_spans: list[tuple[int, int]] = []
     project = Path(project_path)
 
     for match in _REF_RE.finditer(content):
@@ -280,33 +264,36 @@ def verify_references(content: str, project_path: str) -> VerificationResult:
         ref_str = f"{file_path}:L{line_num}"
 
         full_path = project / file_path
+        is_valid = False
         if full_path.exists():
             try:
                 line_count = sum(1 for _ in full_path.open())
-                if line_num <= line_count:
-                    verified.append(ref_str)
-                else:
-                    failed.append(ref_str)
+                is_valid = line_num <= line_count
             except (OSError, UnicodeDecodeError):
-                failed.append(ref_str)
+                pass
+
+        if is_valid:
+            verified.append(ref_str)
         else:
             failed.append(ref_str)
+            failed_spans.append((match.start(), match.end()))
 
-    cleaned_lines: list[str] = []
-    for line in content.split("\n"):
-        has_failed = False
-        for ref in failed:
-            file_part = ref.split(":")[0]
-            if file_part in line and f":{ref.split(':')[1]}" in line:
-                has_failed = True
-                break
-        if not has_failed:
-            cleaned_lines.append(line)
+    # Remove only the failed reference spans (preserve surrounding text)
+    if failed_spans:
+        parts: list[str] = []
+        prev_end = 0
+        for start, end in failed_spans:
+            parts.append(content[prev_end:start])
+            prev_end = end
+        parts.append(content[prev_end:])
+        cleaned = "".join(parts)
+    else:
+        cleaned = content
 
     return VerificationResult(
         verified=verified,
         failed=failed,
-        cleaned_content="\n".join(cleaned_lines),
+        cleaned_content=cleaned,
     )
 
 
@@ -380,28 +367,20 @@ def finalize_module(
     page_id = _page_id(project_id, query_key)
 
     # Get current deterministic wiki
-    row = db._conn.execute(
-        "SELECT content FROM wiki_pages WHERE id = ?", (page_id,)
-    ).fetchone()
+    wiki_store = db.wiki_store()
+    row = wiki_store.get_page_row(page_id)
     if row is None:
         # Try title match
-        row = db._conn.execute(
-            "SELECT id, content FROM wiki_pages WHERE project_id = ? AND LOWER(title) LIKE ?",
-            (project_id, f"%{module_name.lower()}%"),
-        ).fetchone()
+        row = wiki_store.find_page_by_title(project_id, module_name)
     if row is None:
         return {"error": f"No wiki page found for {module_name}"}
 
+    # Use the actual page_id from DB (may differ from computed one after title fallback)
+    actual_page_id = row["id"]
     deterministic_wiki = row["content"]
 
     # Get file hashes for synthesis_hash
-    deps = db._conn.execute(
-        """SELECT f.file_hash FROM wiki_dependencies wd
-           JOIN files f ON f.id = wd.file_id
-           WHERE wd.wiki_page_id = ?""",
-        (page_id,),
-    ).fetchall()
-    file_hashes = [d["file_hash"] for d in deps]
+    file_hashes = wiki_store.get_page_file_hashes(actual_page_id)
     input_hash = compute_synthesis_hash(deterministic_wiki, file_hashes)
 
     # Verify references
@@ -471,10 +450,9 @@ def _resolve_file_deps(db: StoreDB, project_id: str, content: str) -> list[dict]
 # -- Utilities --
 
 def _format_source_chunks(
-    chunks: list[SourceChunk], max_chars: int = 30000
+    chunks: list[SourceChunk], max_budget: int = 120000
 ) -> str:
     """Format source chunks into a string, respecting character budget."""
-    max_chars_budget = max_chars * 4
     parts: list[str] = []
     total = 0
 
@@ -487,7 +465,7 @@ def _format_source_chunks(
         header += " ---"
 
         entry = f"{header}\n{chunk.content}\n"
-        if total + len(entry) > max_chars_budget:
+        if total + len(entry) > max_budget:
             parts.append(f"\n... ({len(chunks) - len(parts)} more chunks truncated)")
             break
         parts.append(entry)

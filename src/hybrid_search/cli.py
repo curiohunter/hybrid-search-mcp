@@ -818,6 +818,7 @@ def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
       3. synthesize-wiki --finalize → verifies refs, merges, saves to DB
     """
     from hybrid_search.index.synthesizer import (
+        ModuleContext,
         collect_module_context,
         estimate_tokens,
         finalize_module,
@@ -903,14 +904,10 @@ def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
                 target_modules = [p["title"] for p in stale_pages]
             else:
                 all_pages = wiki_store.list_pages(pinfo.id, limit=200)
-                unsynthesized = []
-                for p in all_pages:
-                    row = db._conn.execute(
-                        "SELECT synthesis_model FROM wiki_pages WHERE id = ?",
-                        (p["page_id"],),
-                    ).fetchone()
-                    if row and not row["synthesis_model"]:
-                        unsynthesized.append(p["title"])
+                unsynthesized = [
+                    p["title"] for p in all_pages
+                    if not wiki_store.is_synthesized(p["page_id"])
+                ]
                 target_modules = unsynthesized
 
         if not target_modules:
@@ -918,7 +915,7 @@ def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
             return
 
         # Collect contexts
-        contexts: list[tuple[str, object]] = []
+        contexts: list[tuple[str, ModuleContext]] = []
         for mod_name in target_modules:
             ctx = collect_module_context(db, pinfo.id, mod_name, project_path)
             if ctx:
