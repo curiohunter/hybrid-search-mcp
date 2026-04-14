@@ -30,7 +30,7 @@ def _detect_project(registry: ProjectRegistry, cwd: str) -> tuple[str, str] | No
     """Find registered project matching cwd. Returns (name, path) or None.
 
     Picks the most specific (longest path) match to avoid matching a parent
-    project like /Users/ian when /Users/ian/project/foo is the real target.
+    project (e.g. home dir) when a deeper subdirectory is the real target.
     Skips home directory registrations.
     """
     cwd_path = Path(cwd).resolve()
@@ -1428,6 +1428,82 @@ def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
         db.close()
 
 
+def cmd_search(args: argparse.Namespace) -> None:
+    """Run hybrid search from CLI — same engine as MCP tool."""
+    import json as _json
+
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+    embedder = Embedder(config.embedding, config.models_dir)
+
+    from hybrid_search.search.orchestrator import SearchOrchestrator
+    from hybrid_search.tools.hybrid_search import handle_hybrid_search
+
+    orchestrator = SearchOrchestrator(config, registry, embedder)
+
+    cwd = str(Path(args.cwd).resolve())
+    node_types = [t.strip() for t in args.node_types.split(",")] if args.node_types else None
+
+    result = handle_hybrid_search(
+        orchestrator=orchestrator,
+        query=args.query,
+        project=args.project,
+        limit=args.limit,
+        file_pattern=args.file_pattern,
+        node_types=node_types,
+        cwd=cwd,
+    )
+
+    if args.json:
+        print(_json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    results = result.get("results", [])
+    if not results:
+        print("No results found.")
+        return
+
+    print(
+        f"Query: {result.get('query_type')} | "
+        f"BM25w: {result.get('effective_bm25_weight')} | "
+        f"{result.get('query_time_ms', 0):.0f}ms | "
+        f"{result.get('total_chunks_searched')} chunks"
+    )
+    print()
+
+    for i, r in enumerate(results, 1):
+        score = f"RRF={r['rrf_score']:.4f}"
+        loc = f"{r['file_path']}:{r['start_line']}-{r['end_line']}"
+        name = r.get("qualified_name") or r.get("name") or r.get("node_type", "")
+        print(f"  {i}. [{score}] {name}")
+        print(f"     {loc}")
+        snippet = r.get("snippet", "")
+        if snippet:
+            for line in snippet.split("\n")[:3]:
+                print(f"     | {line}")
+        print()
+
+
+def cmd_index(args: argparse.Namespace) -> None:
+    """User-friendly index command — wraps reindex with sensible defaults."""
+    # Build a namespace compatible with cmd_reindex
+    args.cwd = args.path
+    args.git_delta = False
+    args.wiki_scope = "full"
+    args.synthesize = False
+    cmd_reindex(args)
+
+
+def cmd_serve(_args: argparse.Namespace) -> None:
+    """Start MCP server over stdio (for Claude Code / MCP clients)."""
+    import asyncio
+    from hybrid_search.server import _run_server
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    config = load_config()
+    asyncio.run(_run_server(config))
+
+
 def cmd_setup(args: argparse.Namespace) -> None:
     """One-time global setup: register MCP server + Claude Code hooks."""
     import json as _json
@@ -1555,8 +1631,36 @@ def cmd_setup(args: argparse.Namespace) -> None:
         settings_path.write_text(_json.dumps(settings, indent=2, ensure_ascii=False))
         print(f"Hooks registered: {settings_path}")
 
+    # --- Step 3: ~/.claude/skills/ — install portable skills ---
+    skills_src = Path(__file__).resolve().parents[2] / "skills"
+    skills_dst = Path.home() / ".claude" / "skills"
+
+    if skills_src.is_dir():
+        installed = 0
+        for skill_file in sorted(skills_src.glob("*.md")):
+            skill_name = skill_file.stem
+            dst_dir = skills_dst / skill_name
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            dst_file = dst_dir / "skill.md"
+            src_content = skill_file.read_text(encoding="utf-8")
+
+            if dst_file.exists():
+                existing = dst_file.read_text(encoding="utf-8")
+                if existing == src_content:
+                    continue  # identical, skip
+
+            dst_file.write_text(src_content, encoding="utf-8")
+            installed += 1
+
+        if installed > 0:
+            print(f"Skills installed: {installed} skill(s) → {skills_dst}")
+        else:
+            print(f"Skills already up-to-date: {skills_dst}")
+    else:
+        print(f"Skills source not found: {skills_src} (skipped)")
+
     print()
-    print("Setup complete. Open any project in Claude Code — indexing starts automatically.")
+    print("Setup complete. Restart Claude Code to apply changes.")
 
 
 def cmd_install_hook(args: argparse.Namespace) -> None:
@@ -1617,12 +1721,30 @@ def main() -> None:
     )
 
     parser = argparse.ArgumentParser(
-        prog="hybrid-search",
-        description="Hybrid Search CLI — background indexing for git hooks",
+        prog="hybrid-search-mcp",
+        description="Hybrid BM25 + Vector search for codebases",
     )
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("setup", help="One-time global setup: register MCP server + hooks in Claude Code")
+    # ── Primary commands (standalone usage) ──
+    p_index = sub.add_parser("index", help="Index a project directory")
+    p_index.add_argument("path", nargs="?", default=".", help="Project directory (default: .)")
+    p_index.add_argument("--force", action="store_true", help="Force full reindex")
+    p_index.add_argument("--wiki", action="store_true", help="Auto-generate wiki after index")
+
+    p_search = sub.add_parser("search", help="Hybrid BM25 + semantic search")
+    p_search.add_argument("query", help="Search query (Korean or English)")
+    p_search.add_argument("--cwd", default=".", help="Project directory (default: .)")
+    p_search.add_argument("--project", help="Project name (auto-detected from cwd)")
+    p_search.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
+    p_search.add_argument("--file-pattern", help="Glob filter (e.g., '*.ts')")
+    p_search.add_argument("--node-types", help="Comma-separated: function,class,method")
+    p_search.add_argument("--json", action="store_true", help="Output as JSON")
+
+    sub.add_parser("serve", help="Start MCP server (for Claude Code / MCP clients)")
+
+    # ── Setup & admin ──
+    sub.add_parser("setup", help="One-time setup: register MCP server + hooks in Claude Code")
 
     p_reindex = sub.add_parser("reindex", help="Delta reindex a project")
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
@@ -1691,7 +1813,13 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "setup":
+    if args.command == "index":
+        cmd_index(args)
+    elif args.command == "search":
+        cmd_search(args)
+    elif args.command == "serve":
+        cmd_serve(args)
+    elif args.command == "setup":
         cmd_setup(args)
     elif args.command == "reindex":
         cmd_reindex(args)
