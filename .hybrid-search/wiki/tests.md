@@ -1,121 +1,28 @@
 # Tests
-> synthesized: 2026-04-14 | synthesized: 2026-04-14
 
-## Overview
-
-The test suite validates the core modules of the hybrid search system across 11 test files with 47 symbols, covering configuration loading, AST chunking, call graph resolution, document chunking, embedding backends, RRF fusion, query classification, file scanning delta detection, SQLite store operations, and wiki page lifecycle. These tests ensure correctness of cross-language search, crash recovery, and the reactive wiki layer without requiring live API calls or real embedding models.
-
-## Key Design Decisions
-
-- **In-memory SQLite via `tmp_path` fixtures**: All database-dependent tests (callgraph, wiki, store_db) create ephemeral `StoreDB` instances scoped to pytest `tmp_path`, avoiding shared state between tests (`tests/test_callgraph.py:L17`, `tests/test_wiki.py:L13`)
-- **Mock-based embedding tests**: OpenAI API calls are patched with `unittest.mock.patch` on `urllib.request.urlopen`, verifying URL construction and L2 normalization without network access (`tests/test_embedder.py:L46`, `tests/test_embedder.py:L63`)
-- **Query classifier uses pattern-based heuristics, not ML**: Tests assert deterministic classification of camelCase/snake_case as `EXACT_SYMBOL`, Korean text as `KOREAN_NL`, and plain English as `ENGLISH_NL` (`tests/test_query_classifier.py:L11`)
-- **Crash recovery via empty hash detection**: `_is_changed()` treats `file_hash=""` as a partial-write crash marker that always triggers reindex (`tests/test_scanner.py:L9`)
-- **Word-order-invariant wiki lookup**: `normalize_query` sorts words alphabetically so "auth flow" and "flow auth" map to the same key (`tests/test_wiki.py:L45`)
-
-## Data Flow
-
-```
-Test Fixtures (tmp_path, seeded_db)
-  |
-  v
-Unit Under Test (config, chunker, callgraph, wiki, etc.)
-  |
-  v
-Assertions (pytest assert)
-  |
-  +-- Config: load_config() from TOML string -> verify defaults/overrides
-  +-- AST Chunker: chunk_code_file() on inline source -> verify chunk names/types
-  +-- Call Graph: _resolve_single() / resolve_call_edges() -> verify confidence tiers
-  +-- Wiki: compile_page() -> check_staleness() -> refresh_page() -> verify lifecycle
-  +-- Fusion: reciprocal_rank_fusion() -> verify score ordering
-  +-- Scanner: _is_changed() with FileRecord -> verify delta detection
-```
-
-## Caveats
-
-- Wiki test `seeded_db` fixture accesses `db._conn` directly (private attribute) to set up test data, coupling tests to internal DB implementation (`tests/test_wiki.py:L18`)
-- Call graph tests use hardcoded `PROJECT_ID` constant and manually constructed `FileRecord`/`ChunkRecord` objects rather than going through the indexing pipeline, so integration-level regressions in the pipeline could be missed (`tests/test_callgraph.py:L21`)
-- `test_reload_when_mtime_changes` uses `time.sleep(0.05)` and manual `os.utime` to force mtime changes, which can be flaky on filesystems with coarse timestamps (`tests/test_embedder.py:L94`)
-- No integration tests for the full search pipeline (BM25 + Vector + RRF combined) -- each component is tested in isolation
-
-## Related Modules
-
-- [[architecture]] -- tests validate the core components described in the architecture (config, chunker, callgraph, search, wiki)
-- [[index-(isolated)]] -- AST chunker and scanner source code tested by `test_ast_chunker.py` and `test_scanner.py`
-- [[tests-(isolated)]] -- additional isolated test symbols for callgraph common names and embedder hot-reload
-
-<details>
-<summary>Structure (auto-generated)</summary>
-
-## Overview
-
-The test suite validates the core modules of the hybrid search system across 11 test files with 47 symbols, covering configuration loading, AST chunking, call graph resolution, document chunking, embedding backends, RRF fusion, query classification, file scanning delta detection, SQLite store operations, and wiki page lifecycle. These tests ensure correctness of cross-language search, crash recovery, and the reactive wiki layer without requiring live API calls or real embedding models.
-
-## Key Design Decisions
-
-- **In-memory SQLite via `tmp_path` fixtures**: All database-dependent tests (callgraph, wiki, store_db) create ephemeral `StoreDB` instances scoped to pytest `tmp_path`, avoiding shared state between tests (`tests/test_callgraph.py:L17`, `tests/test_wiki.py:L13`)
-- **Mock-based embedding tests**: OpenAI API calls are patched with `unittest.mock.patch` on `urllib.request.urlopen`, verifying URL construction and L2 normalization without network access (`tests/test_embedder.py:L46`, `tests/test_embedder.py:L63`)
-- **Query classifier uses pattern-based heuristics, not ML**: Tests assert deterministic classification of camelCase/snake_case as `EXACT_SYMBOL`, Korean text as `KOREAN_NL`, and plain English as `ENGLISH_NL` (`tests/test_query_classifier.py:L11`)
-- **Crash recovery via empty hash detection**: `_is_changed()` treats `file_hash=""` as a partial-write crash marker that always triggers reindex (`tests/test_scanner.py:L9`)
-- **Word-order-invariant wiki lookup**: `normalize_query` sorts words alphabetically so "auth flow" and "flow auth" map to the same key (`tests/test_wiki.py:L45`)
-
-## Data Flow
-
-```
-Test Fixtures (tmp_path, seeded_db)
-  |
-  v
-Unit Under Test (config, chunker, callgraph, wiki, etc.)
-  |
-  v
-Assertions (pytest assert)
-  |
-  +-- Config: load_config() from TOML string -> verify defaults/overrides
-  +-- AST Chunker: chunk_code_file() on inline source -> verify chunk names/types
-  +-- Call Graph: _resolve_single() / resolve_call_edges() -> verify confidence tiers
-  +-- Wiki: compile_page() -> check_staleness() -> refresh_page() -> verify lifecycle
-  +-- Fusion: reciprocal_rank_fusion() -> verify score ordering
-  +-- Scanner: _is_changed() with FileRecord -> verify delta detection
-```
-
-## Caveats
-
-- Wiki test `seeded_db` fixture accesses `db._conn` directly (private attribute) to set up test data, coupling tests to internal DB implementation (`tests/test_wiki.py:L18`)
-- Call graph tests use hardcoded `PROJECT_ID` constant and manually constructed `FileRecord`/`ChunkRecord` objects rather than going through the indexing pipeline, so integration-level regressions in the pipeline could be missed (`tests/test_callgraph.py:L21`)
-- `test_reload_when_mtime_changes` uses `time.sleep(0.05)` and manual `os.utime` to force mtime changes, which can be flaky on filesystems with coarse timestamps (`tests/test_embedder.py:L94`)
-- No integration tests for the full search pipeline (BM25 + Vector + RRF combined) -- each component is tested in isolation
-
-## Related Modules
-
-- [[architecture]] -- tests validate the core components described in the architecture (config, chunker, callgraph, search, wiki)
-- [[index-(isolated)]] -- AST chunker and scanner source code tested by `test_ast_chunker.py` and `test_scanner.py`
-- [[tests-(isolated)]] -- additional isolated test symbols for callgraph common names and embedder hot-reload
-
-<details>
-<summary>Structure (auto-generated)</summary>
+**Files**: 11 | **Symbols**: 60
 
 ## Files
 
 - `tests/test_ast_chunker.py`
 - `tests/test_callgraph.py`
 - `tests/test_config.py`
-- `tests/test_cwd_boost.py`
+- `tests/test_dag.py`
 - `tests/test_doc_chunker.py`
 - `tests/test_embedder.py`
 - `tests/test_fusion.py`
 - `tests/test_query_classifier.py`
+- `tests/test_reranker.py`
 - `tests/test_scanner.py`
-- `tests/test_store_db.py`
-- `tests/test_wiki.py`
+- `tests/test_synthesizer.py`
 
 ## Entry Points
 
 - `TestBuiltinFiltering.test_python_builtins_filtered`
 - `TestBuiltinFiltering.test_react_hooks_filtered`
 - `TestBuiltinFiltering.test_ts_builtins_filtered`
-- `TestCascade.test_file_delete_cascades_to_dependencies`
 - `TestCommonNameRelaxation.test_common_name_multiple_candidates_with_module`
+- `TestCommonNameRelaxation.test_common_name_with_module_upgrades_to_medium`
 
 ## Symbols
 
@@ -129,10 +36,8 @@ Assertions (pytest assert)
 ### `tests/test_callgraph.py`
 
 - **_make_db** (function, L17)
-  - calls: upsert_file
   - called by: TestModuleMatches+test_exact_match+test_prefix_stripped+6more, TestSelfMethodResolution, test_high_confidence_with_module_from_import, test_insert_call_edges_with_module, test_self_method_resolves_high
 - **_seed_db** (function, L21)
-  - calls: upsert_file
   - called by: TestModuleMatches+test_exact_match+test_prefix_stripped+6more
 - **TestResolveSingle+_build_indexes+test_high_confidence_with_module+4more** (merged, L79)
   - calls: _resolve_single
@@ -141,9 +46,9 @@ Assertions (pytest assert)
 - **test_multiple_candidates_no_same_file_returns_low** (function, L160)
   - calls: _resolve_single
 - **TestModuleMatches+test_exact_match+test_prefix_stripped+6more** (merged, L177)
-  - calls: _make_db, _module_matches, _seed_db, chunk_code_file, resolve_call_edges, upsert_file
+  - calls: _make_db, _module_matches, _seed_db, chunk_code_file, resolve_call_edges
 - **test_high_confidence_with_module_from_import** (function, L218)
-  - calls: _make_db, resolve_call_edges, upsert_file
+  - calls: _make_db, resolve_call_edges
 - **test_import_call_binding_ts** (function, L252)
   - calls: chunk_code_file
 - **test_import_call_binding_python** (function, L277)
@@ -151,15 +56,15 @@ Assertions (pytest assert)
 - **test_unmatched_call_has_none_module** (function, L300)
   - calls: chunk_code_file
 - **test_insert_call_edges_with_module** (function, L321)
-  - calls: _make_db, upsert_file
+  - calls: _make_db
 - **TestSelfMethodResolution** (class, L346)
-  - calls: _make_db, chunk_code_file, resolve_call_edges, upsert_file
+  - calls: _make_db, chunk_code_file, resolve_call_edges
 - **test_self_method_binding_python** (function, L349)
   - calls: chunk_code_file
 - **test_this_method_binding_ts** (function, L401)
   - calls: chunk_code_file
 - **test_self_method_resolves_high** (function, L448)
-  - calls: _make_db, resolve_call_edges, upsert_file
+  - calls: _make_db, resolve_call_edges
 - **TestCommonNameRelaxation** (class, L482)
   - calls: _resolve_single
 - **test_common_name_with_module_upgrades_to_medium** (function, L485)
@@ -177,18 +82,29 @@ Assertions (pytest assert)
 
 ### `tests/test_config.py`
 
-- **TestDefaultConfig+test_default_data_dir+test_default_log_level+20more** (merged, L18)
-  - calls: load_config, test_load_custom_config
-- **test_load_custom_config** (function, L118)
-  - calls: load_config
-  - called by: TestDefaultConfig+test_default_data_dir+test_default_log_level+20more
-- **test_partial_config_uses_defaults+test_data_dir_expansion+test_empty_projects_list** (merged, L156)
-  - calls: load_config
+- **TestDefaultConfig+test_default_data_dir+test_default_log_level+16more** (merged, L18)
+  - calls: test_load_custom_config
+- **test_load_custom_config** (function, L102)
+  - called by: TestDefaultConfig+test_default_data_dir+test_default_log_level+16more, TestRerankingConfig+test_defaults+test_custom_values+17more
 
-### `tests/test_cwd_boost.py`
+### `tests/test_dag.py`
 
-- **TestWeightedInterleave+test_basic_2_to_1+test_dedup+15more** (merged, L13)
-  - calls: _interleave_round_robin, _weighted_interleave
+- **_make_db** (function, L24)
+  - called by: TestBuildDependencyGraph+test_builds_forward_and_reverse+test_ignores_low_confidence+21more, TestGenerateModuleWiki, test_no_edges_all_isolated, test_produces_modules_from_seeded_graph+test_isolated_nodes_grouped_by_directory+test_coverage_calculation+2more, test_wiki_page_contains_symbols+test_wiki_page_shows_call_relationships+test_wiki_page_has_external_deps+2more, test_wiki_page_has_title_and_files
+- **_seed_graph_db** (function, L28)
+  - called by: TestBuildDependencyGraph+test_builds_forward_and_reverse+test_ignores_low_confidence+21more, TestGenerateModuleWiki, test_produces_modules_from_seeded_graph+test_isolated_nodes_grouped_by_directory+test_coverage_calculation+2more, test_wiki_page_contains_symbols+test_wiki_page_shows_call_relationships+test_wiki_page_has_external_deps+2more, test_wiki_page_has_title_and_files
+- **TestBuildDependencyGraph+test_builds_forward_and_reverse+test_ignores_low_confidence+21more** (merged, L121)
+  - calls: _derive_module_name, _make_db, _seed_graph_db, build_dependency_graph, find_connected_components, topological_sort
+- **test_produces_modules_from_seeded_graph+test_isolated_nodes_grouped_by_directory+test_coverage_calculation+2more** (merged, L270)
+  - calls: _make_db, _seed_graph_db
+- **test_no_edges_all_isolated** (function, L333)
+  - calls: _make_db
+- **TestGenerateModuleWiki** (class, L352)
+  - calls: _make_db, _seed_graph_db
+- **test_wiki_page_has_title_and_files** (function, L355)
+  - calls: _make_db, _seed_graph_db
+- **test_wiki_page_contains_symbols+test_wiki_page_shows_call_relationships+test_wiki_page_has_external_deps+2more** (merged, L378)
+  - calls: _make_db, _seed_graph_db
 
 ### `tests/test_doc_chunker.py`
 
@@ -197,12 +113,14 @@ Assertions (pytest assert)
 
 ### `tests/test_embedder.py`
 
-- **TestEmbedderBackendSelection+test_default_backend_is_onnx+test_st_backend+4more** (merged, L12)
-  - calls: _ollama_embed_request
-- **test_ollama_embed_request_builds_correct_payload** (function, L51)
-  - calls: _ollama_embed_request
-- **test_ollama_connection_error_gives_clear_message+TestHotReloadableConfig+test_no_reload_when_unchanged** (merged, L69)
-  - calls: _ollama_embed_request
+- **TestEmbedderBasics+test_default_config_uses_openai+test_embedding_dim_is_1536+3more** (merged, L12)
+  - calls: _embed_all, _openai_embed_request
+- **test_embed_request_calls_correct_url** (function, L46)
+  - calls: _openai_embed_request
+- **test_embed_all_normalizes** (function, L63)
+  - calls: _embed_all, _openai_embed_request
+- **test_api_error_gives_clear_message+TestHotReloadableConfig+test_no_reload_when_unchanged+2more** (merged, L79)
+  - calls: _openai_embed_request
 
 ### `tests/test_fusion.py`
 
@@ -214,54 +132,74 @@ Assertions (pytest assert)
 - **TestClassifyQuery+test_camel_case+test_camel_case_multi_word+23more** (merged, L11)
   - calls: classify_query, get_bm25_weight
 
+### `tests/test_reranker.py`
+
+- **TestRerankingConfig+test_defaults+test_custom_values+17more** (merged, L17)
+  - calls: handle_hybrid_search, test_load_custom_config
+- **test_result_count_matches_response+test_result_fields_complete+TestConfigTomlParsing+2more** (merged, L150)
+  - calls: handle_hybrid_search, load_config
+
 ### `tests/test_scanner.py`
 
 - **TestIsChanged+test_empty_hash_triggers_reindex+test_matching_hash_not_changed+2more** (merged, L9)
   - calls: _is_changed
 
-### `tests/test_store_db.py`
+### `tests/test_synthesizer.py`
 
-- **test_upsert_file_does_not_delete_existing_chunks** (function, L6)
-  - calls: upsert_file
+- **anonymous_L29+anonymous_L41** (merged, L29)
+  - calls: _migrate_schema
+- **anonymous_L46** (function, L46)
+  - calls: compile_page, test_compile_with_synthesis_meta, upsert_file
+- **TestSynthesisHash+test_same_input_same_hash+test_different_input_different_hash+14more** (merged, L100)
+  - calls: _format_source_chunks, merge_synthesis_with_structure, verify_references
+- **test_truncation_with_budget+TestEstimateTokens+test_token_estimate+4more** (merged, L204)
+  - calls: _format_source_chunks, collect_module_context, estimate_tokens, prepare_context_file
+- **test_writes_context_file** (function, L252)
+  - calls: prepare_context_file
+- **test_creates_parent_dirs+TestFinalizeModule** (merged, L274)
+  - calls: finalize_module, lookup_page, prepare_context_file, test_compile_with_synthesis_meta
+- **test_finalize_with_valid_refs** (function, L291)
+  - calls: finalize_module
+- **test_finalize_removes_bad_refs** (function, L316)
+  - calls: finalize_module
+- **test_finalize_updates_db_synthesis_meta** (function, L333)
+  - calls: finalize_module, lookup_page, test_compile_with_synthesis_meta
+- **test_finalize_missing_module+TestWikiStoreSynthesis** (merged, L351)
+  - calls: compile_page, finalize_module, lookup_page, test_compile_with_synthesis_meta
+- **test_compile_with_synthesis_meta** (function, L365)
+  - calls: compile_page, lookup_page
+  - called by: anonymous_L46, test_compile_without_synthesis_meta+TestSchemaMigration+test_fresh_db_has_synthesis_columns+4more, test_creates_parent_dirs+TestFinalizeModule, test_empty_when_no_links+TestVerifySymbols+test_finds_existing_symbols+6more, test_finalize_missing_module+TestWikiStoreSynthesis, test_finalize_updates_db_synthesis_meta, test_finds_linked_pages, test_no_skip_for_missing_module+TestGetSynthesisHash+test_returns_none_when_not_synthesized+2more
+- **test_compile_without_synthesis_meta+TestSchemaMigration+test_fresh_db_has_synthesis_columns+4more** (merged, L387)
+  - calls: finalize_module, lookup_page, should_skip_synthesis, test_compile_with_synthesis_meta
+- **test_no_skip_when_files_changed** (function, L436)
+  - calls: finalize_module, should_skip_synthesis
+- **test_no_skip_for_missing_module+TestGetSynthesisHash+test_returns_none_when_not_synthesized+2more** (merged, L455)
+  - calls: compile_page, finalize_module, find_indirectly_affected, lookup_page, should_skip_synthesis, test_compile_with_synthesis_meta
+- **test_finds_linked_pages** (function, L489)
+  - calls: compile_page, find_indirectly_affected, lookup_page, test_compile_with_synthesis_meta
+- **test_empty_when_no_links+TestVerifySymbols+test_finds_existing_symbols+6more** (merged, L523)
+  - calls: find_indirectly_affected, lookup_page, test_compile_with_synthesis_meta, verify_symbols
 
-### `tests/test_wiki.py`
+## Related Modules
+- [[HANDOFF (isolated)]]
+- [[benchmarks]]
 
-- **anonymous_L13** (function, L13)
-  - calls: upsert_file
-- **anonymous_L18** (function, L18)
-  - calls: upsert_file
-- **anonymous_L45+TestNormalizeQuery+test_basic+17more** (merged, L45)
-  - calls: check_staleness, compile_page, lookup_page
-- **test_stale_changed_files_detail** (function, L178)
-  - calls: check_staleness, compile_page
-- **test_check_specific_page+TestRefresh+test_refresh_bumps_version** (merged, L196)
-  - calls: check_staleness, compile_page, refresh_page
-- **test_refresh_re_snapshots_hashes** (function, L217)
-  - calls: check_staleness, compile_page, refresh_page
-- **test_refresh_nonexistent+TestEviction+test_lru_eviction** (merged, L236)
-  - calls: compile_page, list_pages, lookup_page, refresh_page
-- **test_lru_eviction_respects_access** (function, L254)
-  - calls: compile_page, list_pages, lookup_page
-- **TestDelete+test_delete_page+test_delete_nonexistent+1more** (merged, L277)
-  - calls: compile_page, delete_page, lookup_page
-- **test_file_delete_cascades_to_dependencies** (function, L294)
-  - calls: compile_page
-- **TestListPages+test_list_pages+test_access_count_increments** (merged, L313)
-  - calls: compile_page, list_pages, lookup_page
+- [[hybrid_search]]
+- [[index]]
+- [[search]]
+- [[storage]]
+- [[tools]]
 
 ## External Dependencies
 
 **Calls out to:**
-- `Embedder._ollama_embed_request`
+- `Embedder._embed_all`
+- `Embedder._openai_embed_request`
+- `StoreDB._migrate_schema`
 - `StoreDB.upsert_file`
-- `WikiStore.check_staleness`
 - `WikiStore.compile_page`
-- `WikiStore.delete_page`
-- `WikiStore.list_pages`
+- `WikiStore.find_indirectly_affected`
 - `WikiStore.lookup_page`
-- `WikiStore.refresh_page`
 - `src/hybrid_search/config.py::load_config`
 - `src/hybrid_search/index/ast_chunker.py::_fallback_chunking`
-
-</details>
-</details>
+- `src/hybrid_search/index/ast_chunker.py::chunk_code_file`

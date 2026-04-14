@@ -23,7 +23,7 @@
 ### `src/hybrid_search/search/orchestrator.py`
 
 - **QueryType** (class, L30)
-- **anonymous_L245** (function, L245)
+- **anonymous_L251** (function, L251)
 
 ### `src/hybrid_search/search/vector.py`
 
