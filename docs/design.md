@@ -458,27 +458,10 @@ max_candidates = 20                  # RRF에서 가져올 후보 수
 
 ---
 
-### Phase 11: 검색 기반 자동 답변 (RAG)
+### ~~Phase 11~~ — 삭제됨
 
-> Phase 9+10 완료 후. wiki + 검색 결과를 조합하여 자연어 답변 생성.
-
-```
-사용자 질문 ("로그인이 어떻게 동작해?")
-  │
-  ▼
-1. Wiki 조회: auth-system.md (합성 wiki)
-  │
-  ▼
-2. 부족하면: hybrid_search("로그인")
-  │
-  ▼
-3. LLM 답변 생성 (wiki + 검색 결과 + 코드)
-  │
-  ▼
-4. 답변에 출처 첨부 (파일:라인)
-```
-
-이 단계에서 hybrid-search-mcp는 **코드베이스 Q&A 시스템**이 된다.
+> Claude Code 자체가 LLM이므로 wiki + 검색 결과를 컨텍스트로 주입하면 직접 답변한다.
+> 별도 RAG 파이프라인은 중복 구현이므로 삭제. (Phase 10 rerank_hint와 동일 철학)
 
 ---
 
@@ -493,7 +476,6 @@ max_candidates = 20                  # RRF에서 가져올 후보 수
 | **9c** | 지식 복리 (incremental) ✅ | 9b | staleness skip + `reindex --synthesize` + wikilink 간접 전파 |
 | **9d** | 환각 검증 자동화 ✅ | 9b | `verify-synthesis` CLI (refs + symbols), `--fix` 자동 정리 |
 | **10** | LLM 재랭킹 ✅ | 없음 (9와 독립) | 검색 정확도 향상 |
-| **11** | RAG 답변 생성 | 9b + 10 | 코드베이스 Q&A |
 
 ### 9a 세부 태스크 (첫 번째 구현)
 

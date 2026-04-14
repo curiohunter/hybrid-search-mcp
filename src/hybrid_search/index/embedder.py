@@ -85,18 +85,40 @@ class Embedder:
                 "Authorization": f"Bearer {api_key}",
             },
         )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace")
-            raise ConnectionError(
-                f"OpenAI API error {e.code}: {body}"
-            ) from e
-        except urllib.error.URLError as e:
-            raise ConnectionError(
-                f"OpenAI API not reachable: {e}"
-            ) from e
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", errors="replace")
+                if e.code == 429 and attempt < max_retries - 1:
+                    import re as _re
+                    wait = 5.0
+                    m = _re.search(r"try again in ([\d.]+)s", body)
+                    if m:
+                        wait = float(m.group(1)) + 0.5
+                    import time as _time
+                    logger.info("Rate limited, waiting %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries)
+                    _time.sleep(wait)
+                    # Rebuild request (consumed by previous attempt)
+                    req = urllib.request.Request(
+                        OPENAI_EMBED_URL,
+                        data=payload,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {api_key}",
+                        },
+                    )
+                    continue
+                raise ConnectionError(
+                    f"OpenAI API error {e.code}: {body}"
+                ) from e
+            except urllib.error.URLError as e:
+                raise ConnectionError(
+                    f"OpenAI API not reachable: {e}"
+                ) from e
 
         # Response: {"data": [{"embedding": [...], "index": 0}, ...]}
         embeddings = [item["embedding"] for item in data["data"]]
@@ -115,13 +137,16 @@ class Embedder:
         return Embedder._enc.decode(tokens[:max_tokens])
 
     def _embed_all(self, texts: list[str]) -> np.ndarray:
-        """Embed texts via OpenAI API in batches."""
+        """Embed texts via OpenAI API in batches with rate-limit pacing."""
+        import time as _time
         all_embeddings: list[np.ndarray] = []
         batch_size = self._config.batch_size
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
             raw = self._openai_embed_request(batch)
             all_embeddings.append(np.array(raw, dtype=np.float32))
+            if i + batch_size < len(texts):
+                _time.sleep(0.2)
         embeddings = np.vstack(all_embeddings)
         # OpenAI returns normalized vectors, but verify
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)

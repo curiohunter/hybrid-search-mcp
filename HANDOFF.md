@@ -409,14 +409,7 @@ max_candidates = 20                  # RRF에서 가져올 후보 수
 
 ## 즉시 해야 할 것
 
-Phase 10 완료. 다음: Phase 11 (RAG 답변 생성).
-
----
-
-## 아직 안 한 것
-
-### Phase 11: RAG 답변 생성
-- wiki + 검색 결과 → 자연어 답변 (코드베이스 Q&A)
+Phase 10 완료. 전 Phase 완료 — Claude Code가 wiki + 검색 결과로 직접 답변하므로 별도 RAG 불필요.
 
 ---
 
