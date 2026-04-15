@@ -16,8 +16,8 @@
 ## Entry Points
 
 - `src/hybrid_search/index/dag.py::generate_all_wiki_pages`
-- `src/hybrid_search/index/embedder.py::Embedder+__init__+anonymous_L35+3more`
-- `src/hybrid_search/index/pipeline.py::anonymous_L39+anonymous_L55+IndexingPipeline+1more`
+- `src/hybrid_search/index/embedder.py::Embedder` (OpenAI API, token-aware batching, halve-and-retry)
+- `src/hybrid_search/index/pipeline.py::IndexingPipeline` (atomic rebuild, _ConsistencyMismatchError, staged swap)
 - `src/hybrid_search/index/synthesizer.py::collect_module_context`
 - `src/hybrid_search/index/synthesizer.py::estimate_tokens`
 
@@ -122,38 +122,89 @@
 
 ### `src/hybrid_search/index/embedder.py`
 
-- **Embedder+__init__+anonymous_L35+3more** (merged, L27)
-  - calls: _embed_all, _load_dotenv_key, _openai_embed_request, _truncate
-- **_openai_embed_request** (function, L68)
-  - calls: _truncate
-  - called by: Embedder+__init__+anonymous_L35+3more, TestEmbedderBasics+test_default_config_uses_openai+test_embedding_dim_is_1536+3more, _embed_all, cmd_reindex, create_server, test_api_error_gives_clear_message+TestHotReloadableConfig+test_no_reload_when_unchanged+2more, test_embed_all_normalizes, test_embed_request_calls_correct_url
-- **_truncate** (function, L107)
-  - called by: Embedder+__init__+anonymous_L35+3more, _openai_embed_request
-- **_embed_all** (function, L117)
-  - calls: _openai_embed_request
-  - called by: Embedder+__init__+anonymous_L35+3more, TestEmbedderBasics+test_default_config_uses_openai+test_embedding_dim_is_1536+3more, test_embed_all_normalizes
-- **_load_dotenv_key** (function, L132)
-  - called by: Embedder+__init__+anonymous_L35+3more
+- **_BatchTooLargeError** (class, L28)
+  - Raised when OpenAI returns 400, likely due to batch size
+  - called by: _openai_embed_single_batch, _openai_embed_request
+- **Embedder+__init__** (merged, L33)
+  - calls: _embed_all, _get_api_key, _openai_embed_request, _split_into_token_batches, _truncate
+- **_get_api_key** (function, L56)
+  - calls: _load_dotenv_key
+  - called by: Embedder, _openai_embed_request
+- **_openai_embed_request** (function, L74)
+  - calls: _truncate, _openai_embed_single_batch
+  - Halve-and-retry: on _BatchTooLargeError, splits batch in half and retries recursively
+  - called by: Embedder, _embed_all, cmd_reindex, create_server
+- **_openai_embed_single_batch** (function, L99)
+  - Sends a single batch to OpenAI. Raises _BatchTooLargeError on 400 errors
+  - Retries up to 5 times on 429 rate limits with parsed wait time
+  - called by: _openai_embed_request
+- **_truncate** (function, L147)
+  - Uses tiktoken for token-accurate truncation (default 8000, fallback 4000)
+  - called by: Embedder, _openai_embed_request
+- **_split_into_token_batches** (function, L157)
+  - Token-aware batch splitting: respects both count (batch_size) and token limits (MAX_BATCH_TOKENS=250k)
+  - called by: _embed_all
+- **_embed_all** (function, L185)
+  - Embeds texts via OpenAI API in token-aware batches with L2 normalization
+  - calls: _openai_embed_request, _split_into_token_batches
+  - called by: Embedder, embed_texts
+- **_load_dotenv_key** (function, L203)
+  - called by: _get_api_key
 
 ### `src/hybrid_search/index/pipeline.py`
 
-- **anonymous_L39+anonymous_L55+IndexingPipeline+1more** (merged, L39)
-  - calls: __init__, _chunk_file, _clear_project, _flush_pending, _process_deletions, _store_file, chunk_code_file, chunk_doc_file
-- **index_project** (function, L81)
-  - calls: __init__, _chunk_file, _clear_project, _flush_pending, _process_deletions, resolve_call_edges, scan_project, search
-  - called by: _load, anonymous_L19+VectorEngine+__init__+4more, anonymous_L39+anonymous_L55+IndexingPipeline+1more, cmd_reindex, create_server, handle_index_project
-- **_chunk_file** (function, L219)
-  - calls: chunk_code_file, chunk_doc_file
-  - called by: anonymous_L39+anonymous_L55+IndexingPipeline+1more, index_project
-- **_flush_pending** (function, L260)
-  - calls: _store_file
-  - called by: anonymous_L39+anonymous_L55+IndexingPipeline+1more, index_project
-- **_store_file** (function, L296)
-  - called by: _flush_pending, anonymous_L39+anonymous_L55+IndexingPipeline+1more
-- **_process_deletions** (function, L385)
-  - called by: anonymous_L39+anonymous_L55+IndexingPipeline+1more, index_project
-- **_clear_project** (function, L409)
-  - called by: anonymous_L39+anonymous_L55+IndexingPipeline+1more, index_project
+- **IndexingResult** (dataclass, L48)
+  - Fields: project_id, project_name, files_added, files_changed, files_deleted, chunks_total, elapsed_seconds, errors
+- **_FileChunkResult** (dataclass, L64)
+  - Intermediate result from Pass 1 (chunking only, no embedding yet)
+- **_ConsistencyMismatchError** (dataclass/RuntimeError, L78)
+  - Raised when SQLite/BM25/Vector counts diverge; triggers atomic rebuild
+  - Fields: sqlite_count, bm25_count, vector_count
+- **IndexingPipeline** (class, L88)
+  - calls: __init__, _chunk_file, _clear_project, _flush_pending, _index_project_once, _process_deletions, _rebuild_project_atomically, _recover_atomic_rebuild, _store_file, chunk_code_file, chunk_doc_file
+- **index_project** (function, L96)
+  - calls: _index_project_once, _rebuild_project_atomically, _recover_atomic_rebuild
+  - On force=True: delegates to _rebuild_project_atomically
+  - On _ConsistencyMismatchError: auto-triggers atomic rebuild with error reporting
+  - called by: cmd_reindex, create_server, handle_index_project
+- **_index_project_once** (function, L172)
+  - 2-pass architecture: chunk files (Pass 1), then batch embed + store (Pass 2)
+  - EMBED_FLUSH_THRESHOLD=128 for memory-bounded batching
+  - Post-index consistency check: raises _ConsistencyMismatchError if counts diverge
+  - Supports scan_project_subset for delta indexing (changed_paths/deleted_paths)
+  - calls: _chunk_file, _flush_pending, _process_deletions, resolve_call_edges, scan_project, scan_project_subset
+  - called by: index_project, _rebuild_project_atomically
+- **_rebuild_project_atomically** (function, L274)
+  - Staged rebuild: builds into .rebuilding dir, then atomic swap via rename
+  - Recovery: on failure, cleans up .rebuilding; on crash, _recover_atomic_rebuild restores from .backup
+  - calls: _index_project_once, _recover_atomic_rebuild, _swap_project_dirs, _read_project_file_count
+  - called by: index_project (on force or consistency mismatch)
+- **_recover_atomic_rebuild** (function, L309)
+  - Crash recovery: cleans up .rebuilding, restores .backup if project_dir missing
+  - called by: index_project, _rebuild_project_atomically
+- **_swap_project_dirs** (function, L321)
+  - Atomic directory swap: project_dir → .backup, .rebuilding → project_dir
+  - Rollback on failure: restores .backup if rename fails
+  - called by: _rebuild_project_atomically
+- **_read_project_file_count** (function, L343)
+  - called by: _rebuild_project_atomically
+- **_chunk_file** (function, L353)
+  - Pass 1: chunk a single file without embedding
+  - calls: chunk_code_file, chunk_doc_file, compute_file_hash, detect_language
+  - called by: _index_project_once
+- **_flush_pending** (function, L394)
+  - Pass 2: batch-embed all pending chunks across files, write to stores, checkpoint
+  - calls: _store_file, embed_texts
+  - called by: _index_project_once
+- **_store_file** (function, L430)
+  - Multi-store update: SQLite transaction → BM25 → Vector
+  - called by: _flush_pending
+- **_process_deletions** (function, L519)
+  - Remove deleted files from all stores (SQLite + BM25 + Vector)
+  - called by: _index_project_once
+- **_clear_project** (function, L543)
+  - Clear all data for a project (for force re-index)
+  - called by: IndexingPipeline
 
 ### `src/hybrid_search/index/scanner.py`
 

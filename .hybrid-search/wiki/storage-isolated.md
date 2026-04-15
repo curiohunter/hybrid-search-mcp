@@ -26,4 +26,9 @@
 ### `src/hybrid_search/storage/wiki.py`
 
 - **delete_page** (function, L305)
-- **get_page_row+find_page_by_title+get_page_file_hashes+5more** (merged, L335)
+  - Delete a wiki page (dependencies cascade)
+- **get_page_row+find_page_by_title+get_page_file_hashes+get_page_deps+get_linked_page_ids+get_page_title_and_content+is_synthesized+get_synthesis_hash** (merged, L335)
+  - Public helper methods for external consumers (synthesizer, CLI)
+- **_check_page_staleness** (function, L431)
+  - Three staleness types: file modified, file deleted (LEFT JOIN NULL), new files in covered dirs (last_modified comparison)
+  - Zero-dependency pages marked stale with "(all dependencies lost)"
