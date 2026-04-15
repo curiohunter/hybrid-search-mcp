@@ -11,4 +11,8 @@ build/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
-.hybrid-search/
+.hybrid-search/wiki/_synthesis_input/
+.hybrid-search/wiki/_synthesis_output/
+.hybrid-search/wiki/STALE.md
+.hybrid-search/.gaps-shown
+.hybrid-search/.reindex.lock

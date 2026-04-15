@@ -19,8 +19,17 @@
 
 ### `src/hybrid_search/search/bm25.py`
 
+- **BM25Engine** (class, L23)
+  - Tantivy BM25 full-text search index
+  - Supports read_only mode for cross-project search (skip writer, skip schema recovery)
+  - Schema: chunk_id (stored, raw tokenizer), name, qualified_name, content, docstring
 - **__init__** (function, L32)
-  - called by: _search_cross_project, _search_single, anonymous_L39+anonymous_L55+IndexingPipeline+1more, anonymous_L97+anonymous_L114+SearchOrchestrator+1more, index_project
+  - Schema mismatch recovery: recreates index if schema doesn't match (write mode only)
+  - called by: _search_cross_project, _search_single, IndexingPipeline, SearchOrchestrator
+- **add** (function, L71)
+  - Deduplication: calls `writer.delete_documents("chunk_id", chunk_id)` before adding
+  - Prevents duplicate entries when re-indexing the same chunk
+  - called by: _store_file
 
 ### `src/hybrid_search/search/fusion.py`
 
