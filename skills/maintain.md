@@ -4,17 +4,20 @@ description: "hybrid-search 인덱스와 wiki를 유지보수합니다. delta re
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent
 ---
 
-# Maintain — 인덱스/위키 유지보수
+# Maintain — 일상 유지보수
 
-검색과 분리된 유지보수 스킬. 비싼 작업(wiki 합성, gap 채우기)을 한 번에 처리한다.
+검색과 분리된 유지보수 스킬. delta reindex + wiki 갱신 + gaps 채우기를 한 번에 처리한다.
+인덱스 자체가 깨졌거나 불일치가 의심되면 `/rebuild-index`를 대신 사용할 것.
 
 ## Step 1: 상태 확인
 
 ```bash
-hybrid-search-mcp status
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+VENV=/Users/ian/project/claude_project/hybrid-search-mcp/.venv/bin/python
+"$VENV" -m hybrid_search.cli status --cwd "$PROJECT_ROOT"
 ```
 
-현재 프로젝트의 인덱스 상태, 마지막 인덱싱 시간, chunk 수를 확인한다.
+현재 프로젝트만의 인덱스 상태, 마지막 인덱싱 시간, chunk 수를 확인한다.
 
 ## Step 2: Delta Reindex
 
