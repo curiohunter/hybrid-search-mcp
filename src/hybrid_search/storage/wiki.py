@@ -441,10 +441,15 @@ class WikiStore:
         changed_files = []
         for dep in deps:
             if dep["file_hash"] is None:
-                # File was deleted
+                # File was deleted or moved
                 changed_files.append(dep["file_id"])
             elif dep["file_hash"] != dep["file_hash_at_compile"]:
                 changed_files.append(dep["relative_path"] or dep["file_id"])
+
+        # Pages with zero dependencies are stale — all referenced files were
+        # moved or deleted, so the wiki content is certainly outdated.
+        if not deps:
+            changed_files.append("(all dependencies lost)")
 
         return {
             "stale": len(changed_files) > 0,
