@@ -180,9 +180,8 @@ def cmd_reindex(args: argparse.Namespace) -> None:
         f"{elapsed:.1f}s"
     )
 
-    # Stale wiki marking
-    if result.files_changed > 0 or result.files_deleted > 0:
-        _mark_stale_wikis(config, registry, project_name)
+    # Stale wiki marking — always check after reindex
+    _mark_stale_wikis(config, registry, project_name)
 
     # Call graph re-resolution after reindex
     pinfo = registry.get_by_name(project_name)
