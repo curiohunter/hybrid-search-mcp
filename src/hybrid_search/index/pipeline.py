@@ -6,8 +6,10 @@ Uses 2-pass architecture for efficient cross-file embedding batching.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import logging
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,6 +74,13 @@ class _FileChunkResult:
     old_chunk_ids: list[str] = field(default_factory=list)
 
 
+@dataclass
+class _ConsistencyMismatchError(RuntimeError):
+    sqlite_count: int
+    bm25_count: int
+    vector_count: int
+
+
 # Type for progress callbacks: (current_file_index, total_files, file_path)
 ProgressCallback = Callable[[int, int, str], None]
 
@@ -107,45 +116,98 @@ class IndexingPipeline:
 
         # Setup paths
         project_dir = get_project_dir(self._config.projects_dir, pid)
-        idx_paths = IndexPaths(project_dir)
-        idx_paths.ensure_dirs()
-
-        # Open stores
-        db = StoreDB(idx_paths.store_db)
-        vector_engine = VectorEngine(idx_paths.vectors_dir, self._embedder.embedding_dim)
-        bm25_engine = BM25Engine(idx_paths.tantivy_dir)
-
-        result = IndexingResult(project_id=pid, project_name=name)
+        self._recover_atomic_rebuild(project_dir)
 
         try:
             if force:
-                # Force re-index: clear everything
-                self._clear_project(db, vector_engine, bm25_engine, pid)
+                result = self._rebuild_project_atomically(
+                    abs_path=abs_path,
+                    project_name=name,
+                    project_id=pid,
+                    project_dir=project_dir,
+                    on_progress=on_progress,
+                )
+            else:
+                result = self._index_project_once(
+                    abs_path=abs_path,
+                    project_name=name,
+                    project_id=pid,
+                    project_dir=project_dir,
+                    changed_paths=changed_paths,
+                    deleted_paths=deleted_paths,
+                    on_progress=on_progress,
+                    update_registry_stats=True,
+                )
+        except _ConsistencyMismatchError as mismatch:
+            logger.warning(
+                "Consistency mismatch: SQLite=%d, Tantivy=%d, USearch=%d. "
+                "Triggering atomic rebuild.",
+                mismatch.sqlite_count,
+                mismatch.bm25_count,
+                mismatch.vector_count,
+            )
+            result = self._rebuild_project_atomically(
+                abs_path=abs_path,
+                project_name=name,
+                project_id=pid,
+                project_dir=project_dir,
+                on_progress=on_progress,
+            )
+            result.errors.insert(
+                0,
+                "Auto-rebuild triggered: "
+                f"SQLite={mismatch.sqlite_count}, "
+                f"Tantivy={mismatch.bm25_count}, "
+                f"USearch={mismatch.vector_count}",
+            )
 
-            # Scan for changes
-            if changed_paths is not None and not force:
+        result.elapsed_seconds = time.monotonic() - start
+        logger.info(
+            "Indexing complete for %s: +%d ~%d -%d files, %d chunks in %.1fs",
+            name, result.files_added, result.files_changed,
+            result.files_deleted, result.chunks_total, result.elapsed_seconds,
+        )
+        return result
+
+    def _index_project_once(
+        self,
+        abs_path: Path,
+        project_name: str,
+        project_id: str,
+        project_dir: Path,
+        changed_paths: list[str] | None,
+        deleted_paths: list[str] | None,
+        on_progress: ProgressCallback | None,
+        update_registry_stats: bool,
+    ) -> IndexingResult:
+        idx_paths = IndexPaths(project_dir)
+        idx_paths.ensure_dirs()
+
+        db = StoreDB(idx_paths.store_db)
+        vector_engine = VectorEngine(idx_paths.vectors_dir, self._embedder.embedding_dim)
+        bm25_engine = BM25Engine(idx_paths.tantivy_dir)
+        result = IndexingResult(project_id=project_id, project_name=project_name)
+
+        try:
+            if changed_paths is not None:
                 scan = scan_project_subset(
                     abs_path,
-                    pid,
+                    project_id,
                     db,
                     self._config.indexing,
                     changed_paths=changed_paths,
                     deleted_paths=deleted_paths,
                 )
             else:
-                scan = scan_project(abs_path, pid, db, self._config.indexing)
+                scan = scan_project(abs_path, project_id, db, self._config.indexing)
             result.files_added = len(scan.added)
             result.files_changed = len(scan.changed)
             result.files_deleted = len(scan.deleted)
 
-            # Process deletions
-            self._process_deletions(db, vector_engine, bm25_engine, pid, scan.deleted)
+            self._process_deletions(db, vector_engine, bm25_engine, project_id, scan.deleted)
 
-            # ── 2-pass indexing ──
             all_files = scan.added + scan.changed
             total_files = len(all_files)
-
-            # Accumulation buffer for cross-file embedding batching
             pending: list[_FileChunkResult] = []
             pending_chunk_count = 0
 
@@ -154,11 +216,10 @@ class IndexingPipeline:
                     try:
                         on_progress(i + 1, total_files, str(file_path.relative_to(abs_path)))
                     except Exception:
-                        pass  # Progress callback failure is non-fatal
+                        pass
 
-                # Pass 1: chunk only (no embedding)
                 try:
-                    fcr = self._chunk_file(db, file_path, abs_path, pid)
+                    fcr = self._chunk_file(db, file_path, abs_path, project_id)
                 except Exception as e:
                     logger.error("Error chunking %s: %s", file_path, e)
                     result.errors.append(f"{file_path}: {e}")
@@ -169,68 +230,123 @@ class IndexingPipeline:
 
                 pending.append(fcr)
                 pending_chunk_count += len(fcr.chunks)
-
-                # Flush when buffer is full
                 if pending_chunk_count >= EMBED_FLUSH_THRESHOLD:
                     self._flush_pending(
-                        pending, db, vector_engine, bm25_engine, pid, result,
+                        pending, db, vector_engine, bm25_engine, project_id, result,
                     )
                     pending.clear()
                     pending_chunk_count = 0
 
-            # Flush remaining
             if pending:
                 self._flush_pending(
-                    pending, db, vector_engine, bm25_engine, pid, result,
+                    pending, db, vector_engine, bm25_engine, project_id, result,
                 )
 
-            # Final commit
             bm25_engine.commit()
             vector_engine.save()
 
-            # Resolve call edges (§12: link callee_name → callee_chunk_id)
             if all_files:
                 try:
-                    edge_stats = resolve_call_edges(db, pid)
+                    edge_stats = resolve_call_edges(db, project_id)
                     logger.info("Call graph resolution: %s", edge_stats)
                 except Exception as e:
                     logger.warning("Call graph resolution failed (non-fatal): %s", e)
                     result.errors.append(f"call_graph_resolution: {e}")
 
-            # Update stats
-            file_count = db.get_file_count(pid)
-            chunk_count = db.get_chunk_count(pid)
-            result.chunks_total = chunk_count
-            self._registry.update_stats(pid, file_count, chunk_count)
-
-            # Consistency check (SQLite vs Tantivy vs USearch)
+            file_count = db.get_file_count(project_id)
+            chunk_count = db.get_chunk_count(project_id)
             vector_count = vector_engine.count
             bm25_count = bm25_engine.count
             if chunk_count != vector_count or chunk_count != bm25_count:
-                logger.warning(
-                    "Consistency mismatch: SQLite=%d, Tantivy=%d, USearch=%d. "
-                    "Triggering automatic rebuild.",
-                    chunk_count, bm25_count, vector_count,
+                raise _ConsistencyMismatchError(
+                    sqlite_count=chunk_count,
+                    bm25_count=bm25_count,
+                    vector_count=vector_count,
                 )
-                if not force:
-                    # Auto-rebuild: close current stores and re-index with force
-                    db.close()
-                    result.errors.append(
-                        f"Auto-rebuild triggered: SQLite={chunk_count}, "
-                        f"Tantivy={bm25_count}, USearch={vector_count}"
-                    )
-                    return self.index_project(project_path=str(abs_path), project_name=name, force=True)
 
+            result.chunks_total = chunk_count
+            if update_registry_stats:
+                self._registry.update_stats(project_id, file_count, chunk_count)
+            return result
         finally:
             db.close()
 
-        result.elapsed_seconds = time.monotonic() - start
-        logger.info(
-            "Indexing complete for %s: +%d ~%d -%d files, %d chunks in %.1fs",
-            name, result.files_added, result.files_changed,
-            result.files_deleted, result.chunks_total, result.elapsed_seconds,
-        )
-        return result
+    def _rebuild_project_atomically(
+        self,
+        abs_path: Path,
+        project_name: str,
+        project_id: str,
+        project_dir: Path,
+        on_progress: ProgressCallback | None,
+    ) -> IndexingResult:
+        rebuilding_dir = project_dir.parent / f"{project_dir.name}.rebuilding"
+        backup_dir = project_dir.parent / f"{project_dir.name}.backup"
+
+        self._recover_atomic_rebuild(project_dir)
+        shutil.rmtree(rebuilding_dir, ignore_errors=True)
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+        try:
+            result = self._index_project_once(
+                abs_path=abs_path,
+                project_name=project_name,
+                project_id=project_id,
+                project_dir=rebuilding_dir,
+                changed_paths=None,
+                deleted_paths=None,
+                on_progress=on_progress,
+                update_registry_stats=False,
+            )
+            gc.collect()
+            self._swap_project_dirs(project_dir, rebuilding_dir, backup_dir)
+            file_count = self._read_project_file_count(project_dir, project_id)
+            self._registry.update_stats(project_id, file_count, result.chunks_total)
+            return result
+        except Exception:
+            shutil.rmtree(rebuilding_dir, ignore_errors=True)
+            raise
+
+    def _recover_atomic_rebuild(self, project_dir: Path) -> None:
+        rebuilding_dir = project_dir.parent / f"{project_dir.name}.rebuilding"
+        backup_dir = project_dir.parent / f"{project_dir.name}.backup"
+
+        if rebuilding_dir.exists():
+            shutil.rmtree(rebuilding_dir, ignore_errors=True)
+
+        if backup_dir.exists() and not project_dir.exists():
+            backup_dir.rename(project_dir)
+        elif backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+    def _swap_project_dirs(self, project_dir: Path, rebuilding_dir: Path, backup_dir: Path) -> None:
+        if not rebuilding_dir.exists():
+            raise RuntimeError(f"Atomic rebuild directory missing: {rebuilding_dir}")
+
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+        moved_current = False
+        if project_dir.exists():
+            project_dir.rename(backup_dir)
+            moved_current = True
+
+        try:
+            rebuilding_dir.rename(project_dir)
+        except Exception:
+            if moved_current and backup_dir.exists() and not project_dir.exists():
+                backup_dir.rename(project_dir)
+            raise
+
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+    def _read_project_file_count(self, project_dir: Path, project_id: str) -> int:
+        idx_paths = IndexPaths(project_dir)
+        db = StoreDB(idx_paths.store_db)
+        try:
+            return db.get_file_count(project_id)
+        finally:
+            db.close()
 
     # ── Pass 1: chunk only ──
 
