@@ -406,6 +406,8 @@ def _regenerate_affected_wiki_pages(
                 )
             written += 1
 
+        _write_wiki_coverage(db, pages, wiki_dir)
+
         print(
             f"Wiki: regenerated {written} page(s) "
             f"for {len(changed_set)} changed/deleted file(s), "
@@ -516,11 +518,21 @@ def _auto_prepare_synthesis(
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    """Show index status for all projects."""
+    """Show index status for all projects (or a specific project via --cwd)."""
     config = load_config()
     registry = ProjectRegistry(config.global_dir)
 
-    projects = registry.list_all()
+    if hasattr(args, "cwd") and args.cwd != ".":
+        cwd = str(Path(args.cwd).resolve())
+        match = _detect_project(registry, cwd)
+        if not match:
+            print(f"No registered project found for: {cwd}")
+            return
+        name, _ = match
+        projects = [p for p in registry.list_all() if p.name == name]
+    else:
+        projects = registry.list_all()
+
     if not projects:
         print("No indexed projects.")
         return
@@ -594,7 +606,7 @@ def cmd_sync_wiki(args: argparse.Namespace) -> None:
         return
 
     wiki_files = sorted(wiki_dir.glob("*.md"))
-    wiki_files = [f for f in wiki_files if f.name != "index.md"]
+    wiki_files = [f for f in wiki_files if f.name not in ("index.md", "STALE.md")]
 
     if not wiki_files:
         print("No wiki pages found (only index.md).")
@@ -633,9 +645,45 @@ def cmd_sync_wiki(args: argparse.Namespace) -> None:
             dep_count = len(file_deps)
             print(f"  Synced: {wiki_file.name} ({title}, {dep_count} deps)")
 
+        # Build coverage from the wiki files we just synced (disk-authoritative)
+        _write_wiki_coverage_from_files(db, pinfo.id, wiki_files, wiki_dir)
         print(f"Done: {synced} wiki pages synced to DB.")
     finally:
         db.close()
+
+
+def _write_wiki_coverage_from_files(
+    db: StoreDB, project_id: str, wiki_files: list[Path], wiki_dir: Path,
+) -> None:
+    """Write coverage.json based on the wiki files present on disk (not DB).
+
+    Only considers dependencies of pages that actually exist as files,
+    avoiding stale DB entries from deleted pages inflating coverage.
+    """
+    import json as _json_cov
+
+    covered_files: set[str] = set()
+    for wiki_file in wiki_files:
+        content = wiki_file.read_text()
+        deps = _resolve_wiki_deps(db, project_id, content)
+        for dep in deps:
+            file_rec = db.get_file(dep["file_id"])
+            if file_rec:
+                covered_files.add(file_rec.relative_path)
+
+    sorted_files = sorted(covered_files)
+    covered_dirs = sorted({
+        str(Path(f).parent) for f in sorted_files if str(Path(f).parent) != "."
+    })
+    coverage_data = {
+        "covered_files": sorted_files,
+        "covered_dirs": covered_dirs,
+        "total_pages": len(wiki_files),
+        "total_covered_files": len(sorted_files),
+    }
+    (wiki_dir.parent / "coverage.json").write_text(
+        _json_cov.dumps(coverage_data, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def _extract_title(content: str) -> str:
@@ -657,6 +705,30 @@ def _extract_tags(stem: str, content: str) -> list[str]:
             if len(tag) < 30:
                 tags.append(tag)
     return tags[:10]
+
+
+def _write_wiki_coverage(db: StoreDB, pages, wiki_dir: Path) -> None:
+    """Write coverage.json — authoritative list of files covered by wiki."""
+    import json as _json_cov
+
+    covered_files = sorted({
+        db.get_file(fid).relative_path
+        for page in pages
+        for fid in page.file_ids
+        if db.get_file(fid) is not None
+    })
+    covered_dirs = sorted({
+        str(Path(f).parent) for f in covered_files if str(Path(f).parent) != "."
+    })
+    coverage_data = {
+        "covered_files": covered_files,
+        "covered_dirs": covered_dirs,
+        "total_pages": len(pages),
+        "total_covered_files": len(covered_files),
+    }
+    (wiki_dir.parent / "coverage.json").write_text(
+        _json_cov.dumps(coverage_data, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def _resolve_wiki_deps(db: StoreDB, project_id: str, content: str) -> list[dict]:
@@ -814,6 +886,7 @@ def cmd_generate_wiki(args: argparse.Namespace) -> None:
                 )
             synced += 1
 
+        _write_wiki_coverage(db, pages, wiki_dir)
         print(f"  Synced {synced} pages to DB")
         print(f"  Coverage: {plan.covered_chunks}/{plan.total_chunks} chunks ({plan.coverage*100:.1f}%)")
         print(f"  Modules: {len(plan.modules)} graph-based + {len(plan.isolated_modules)} isolated")
@@ -1009,6 +1082,153 @@ def cmd_verify_wiki(args: argparse.Namespace) -> None:
 
     finally:
         db.close()
+
+
+def cmd_detect_wiki_gaps(args: argparse.Namespace) -> None:
+    """Detect modules without wiki coverage — pure filesystem + git, no DB/embedding needed."""
+    import json as json_mod
+    import subprocess
+
+    cwd = Path(args.cwd).resolve()
+    gaps_dir = cwd / ".hybrid-search"
+    wiki_dir = gaps_dir / "wiki"
+    coverage_json = gaps_dir / "coverage.json"
+
+    if not wiki_dir.exists():
+        # No wiki at all — write a bootstrap-needed gap
+        import json as _json_gap
+        gaps_dir.mkdir(parents=True, exist_ok=True)
+        msg = "Wiki not initialized. Run /maintain or /bootstrap-wiki to generate wiki pages.\n"
+        (gaps_dir / "wiki-gaps.txt").write_text(msg)
+        (gaps_dir / "wiki-gaps.json").write_text(
+            _json_gap.dumps({"status": "bootstrap-needed", "gaps": []}, ensure_ascii=False)
+        )
+        if not args.quiet:
+            print(msg.strip())
+        return
+
+    # 1. Collect existing wiki coverage
+    covered_dirs: set[str] = set()
+    if coverage_json.exists():
+        # Prefer authoritative coverage.json
+        try:
+            cov_data = json_mod.loads(coverage_json.read_text())
+            covered_dirs = set(cov_data.get("covered_dirs", []))
+        except Exception:
+            pass
+
+    if not covered_dirs:
+        # Fallback: scan wiki files for file paths
+        for wiki_file in wiki_dir.glob("*.md"):
+            if wiki_file.name in ("index.md", "STALE.md"):
+                continue
+            try:
+                content = wiki_file.read_text(errors="replace")
+                for line in content.splitlines():
+                    if line.strip().startswith("- `") and "`" in line[3:]:
+                        fpath = line.strip()[3:].split("`")[0]
+                        d = str(Path(fpath).parent)
+                        if d and d != ".":
+                            covered_dirs.add(d)
+            except Exception:
+                continue
+
+    # 2. Find new/changed files from git (last commit, or all tracked files)
+    try:
+        if args.git_delta:
+            result = subprocess.run(
+                ["git", "diff", "--name-status", "--diff-filter=A", "HEAD~1..HEAD"],
+                cwd=str(cwd), capture_output=True, text=True, timeout=5,
+            )
+            new_files = [
+                line.split("\t", 1)[1] for line in result.stdout.strip().splitlines()
+                if "\t" in line
+            ]
+        else:
+            # Full scan: all tracked source files
+            result = subprocess.run(
+                ["git", "ls-files"],
+                cwd=str(cwd), capture_output=True, text=True, timeout=10,
+            )
+            source_exts = {".ts", ".tsx", ".js", ".jsx", ".py", ".rb", ".go", ".rs", ".java", ".swift", ".kt", ".sql"}
+            new_files = [
+                f for f in result.stdout.strip().splitlines()
+                if Path(f).suffix in source_exts
+            ]
+    except Exception:
+        return  # git not available, skip
+
+    if not new_files:
+        return
+
+    # 3. Group files by directory
+    dir_files: dict[str, list[str]] = {}
+    for f in new_files:
+        d = str(Path(f).parent)
+        if d and d != ".":
+            dir_files.setdefault(d, []).append(f)
+
+    # 4. Find directories not covered by any wiki page
+    uncovered: dict[str, list[str]] = {}
+    for d, files in dir_files.items():
+        # Check if this dir or any parent is covered
+        parts = Path(d).parts
+        is_covered = False
+        for i in range(len(parts), 0, -1):
+            ancestor = str(Path(*parts[:i]))
+            if ancestor in covered_dirs:
+                is_covered = True
+                break
+        if not is_covered:
+            uncovered[d] = files
+
+    # 5. Collapse child directories into parent groups
+    groups: dict[str, list[str]] = {}
+    sorted_dirs = sorted(uncovered.keys())
+    for d in sorted_dirs:
+        # Find if a parent dir is already a group
+        merged = False
+        for parent in list(groups.keys()):
+            if d.startswith(parent + "/"):
+                groups[parent].extend(uncovered[d])
+                merged = True
+                break
+        if not merged:
+            groups[d] = list(uncovered[d])
+
+    # 6. Filter: only report groups with 3+ files
+    significant = {d: files for d, files in groups.items() if len(files) >= 3}
+
+    gaps_txt = gaps_dir / "wiki-gaps.txt"
+    gaps_json = gaps_dir / "wiki-gaps.json"
+    gaps_dir.mkdir(parents=True, exist_ok=True)
+
+    if not significant:
+        if gaps_txt.exists():
+            gaps_txt.write_text("")
+        if gaps_json.exists():
+            gaps_json.write_text("{}")
+        return
+
+    # 7. Write results
+    missing = [
+        {"module_root": d, "file_count": len(files), "sample_files": files[:2]}
+        for d, files in sorted(significant.items(), key=lambda x: -len(x[1]))
+    ]
+
+    gaps_data = {"gaps": missing, "total_missing": len(missing)}
+    gaps_json.write_text(json_mod.dumps(gaps_data, indent=2, ensure_ascii=False))
+
+    lines = [f"New modules without wiki coverage ({len(missing)}):"]
+    for m in missing[:10]:
+        lines.append(f"  - {m['module_root']} ({m['file_count']} files)")
+    if len(missing) > 10:
+        lines.append(f"  ... and {len(missing) - 10} more")
+    lines.append("Run /maintain to generate wiki pages.")
+    gaps_txt.write_text("\n".join(lines) + "\n")
+
+    if not args.quiet:
+        print("\n".join(lines))
 
 
 def cmd_search_symbols(args: argparse.Namespace) -> None:
@@ -1564,8 +1784,13 @@ def cmd_setup(args: argparse.Namespace) -> None:
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Edit|Write"
     )
+    has_gaps_check = any(
+        "wiki-gaps" in str(h.get("hooks", [{}])[0].get("command", ""))
+        for h in pre_hooks
+        if isinstance(h, dict) and h.get("matcher") == "Read|Edit|Write"
+    )
 
-    if has_auto_index and has_stale_check:
+    if has_auto_index and has_stale_check and has_gaps_check:
         print(f"Hooks already registered: {settings_path}")
     else:
         # Build fresh hook entries
@@ -1578,7 +1803,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
                     f'VENV={venv_str}; '
                     f'[ -n "$ROOT" ] && [ -f "$VENV" ] && [ ! -d "$ROOT/.hybrid-search/wiki" ] && '
                     f'mkdir -p "$ROOT/.hybrid-search" && '
-                    f'nohup sh -c \'"$1" -m hybrid_search.cli reindex --git-delta --wiki-scope affected --synthesize --cwd "$2" && '
+                    f'nohup sh -c \'"$1" -m hybrid_search.cli reindex --synthesize --cwd "$2" && '
                     f'"$1" -m hybrid_search.cli install-hook --cwd "$2"\' _ "$VENV" "$ROOT" '
                     f'> /dev/null 2>&1 & '
                     f'echo "hybrid-search: first-time indexing started in background for $ROOT"'
@@ -1597,15 +1822,17 @@ def cmd_setup(args: argparse.Namespace) -> None:
                 ),
             }],
         }
-        gap_hook = {
-            "matcher": "Edit|Write",
+        gaps_hook = {
+            "matcher": "Read|Edit|Write",
             "hooks": [{
                 "type": "command",
                 "command": (
                     'ROOT=$(git rev-parse --show-toplevel 2>/dev/null) && '
-                    '[ -n "$ROOT" ] && [ -f "$ROOT/.hybrid-search/wiki-gaps.txt" ] && '
-                    "echo 'Wiki gaps — new modules need wiki pages:' && "
-                    'cat "$ROOT/.hybrid-search/wiki-gaps.txt"'
+                    '[ -n "$ROOT" ] && [ -s "$ROOT/.hybrid-search/wiki-gaps.txt" ] && '
+                    '{ [ ! -f "$ROOT/.hybrid-search/.gaps-shown" ] || '
+                    '[ "$ROOT/.hybrid-search/wiki-gaps.txt" -nt "$ROOT/.hybrid-search/.gaps-shown" ]; } && '
+                    'cat "$ROOT/.hybrid-search/wiki-gaps.txt" && '
+                    'touch "$ROOT/.hybrid-search/.gaps-shown"'
                 ),
             }],
         }
@@ -1615,17 +1842,18 @@ def cmd_setup(args: argparse.Namespace) -> None:
             isinstance(h, dict) and (
                 "hybrid-search/wiki" in str(h.get("hooks", [{}])[0].get("command", ""))
                 or "STALE.md" in str(h.get("hooks", [{}])[0].get("command", ""))
+                or "wiki-gaps" in str(h.get("hooks", [{}])[0].get("command", ""))
             )
         )]
-        new_pre.extend([auto_index_hook, stale_hook])
+        new_pre.extend([auto_index_hook, stale_hook, gaps_hook])
         hooks["PreToolUse"] = new_pre
 
+        # Remove old PostToolUse wiki-gaps hook (moved to PreToolUse)
         post_hooks = hooks.get("PostToolUse", [])
         new_post = [h for h in post_hooks if not (
             isinstance(h, dict)
             and "wiki-gaps.txt" in str(h.get("hooks", [{}])[0].get("command", ""))
         )]
-        new_post.append(gap_hook)
         hooks["PostToolUse"] = new_post
 
         settings_path.write_text(_json.dumps(settings, indent=2, ensure_ascii=False))
@@ -1693,7 +1921,25 @@ def cmd_install_hook(args: argparse.Namespace) -> None:
     hook_content = f"""#!/bin/bash
 # Hybrid Search — auto delta-reindex on commit (background, non-blocking)
 PROJECT_DIR="$(git rev-parse --show-toplevel)"
-nohup "{venv_python}" -m hybrid_search.cli reindex --git-delta --wiki-scope affected --synthesize --cwd "$PROJECT_DIR" > /dev/null 2>&1 &
+mkdir -p "$PROJECT_DIR/.hybrid-search"
+
+# 1. Gap detection — always runs, no lock, cheap
+"{venv_python}" -m hybrid_search.cli detect-wiki-gaps --git-delta --quiet --cwd "$PROJECT_DIR" || true
+
+# 2. Reindex — locked to prevent concurrent runs
+LOCK_FILE="$PROJECT_DIR/.hybrid-search/.reindex.lock"
+if [ -f "$LOCK_FILE" ]; then
+  LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+  if kill -0 "$LOCK_PID" 2>/dev/null; then
+    exit 0  # another reindex is running, skip
+  fi
+  rm -f "$LOCK_FILE"  # stale lock
+fi
+nohup bash -c '
+  echo $$ > "'"$LOCK_FILE"'"
+  "{venv_python}" -m hybrid_search.cli reindex --git-delta --wiki-scope affected --synthesize --cwd "'"$PROJECT_DIR"'" || true
+  rm -f "'"$LOCK_FILE"'"
+' > /dev/null 2>&1 &
 """
 
     if hook_path.exists():
@@ -1760,6 +2006,7 @@ def main() -> None:
     p_reindex.add_argument("--synthesize", action="store_true", help="Auto-prepare synthesis for stale modules after reindex")
 
     p_status = sub.add_parser("status", help="Show index status")
+    p_status.add_argument("--cwd", default=".", help="Filter to project at this directory")
 
     p_stale = sub.add_parser("stale", help="Check wiki staleness")
     p_stale.add_argument("--cwd", default=".", help="Project directory")
@@ -1806,6 +2053,11 @@ def main() -> None:
     p_synth.add_argument("--dry-run", action="store_true", help="Show targets and token estimate only")
     p_synth.add_argument("--finalize", action="store_true", help="Finalize: verify refs, merge, save to DB")
 
+    p_gaps = sub.add_parser("detect-wiki-gaps", help="Detect modules without wiki coverage (filesystem + git only)")
+    p_gaps.add_argument("--cwd", default=".", help="Project directory")
+    p_gaps.add_argument("--git-delta", action="store_true", help="Only check files added in last commit")
+    p_gaps.add_argument("--quiet", action="store_true", help="No stdout output, only write files")
+
     p_vsyn = sub.add_parser("verify-synthesis", help="Re-verify synthesized wiki pages (refs + symbols)")
     p_vsyn.add_argument("--cwd", default=".", help="Project directory")
     p_vsyn.add_argument("--json", action="store_true", help="Output as JSON")
@@ -1849,6 +2101,8 @@ def main() -> None:
         cmd_synthesize_wiki(args)
     elif args.command == "verify-synthesis":
         cmd_verify_synthesis(args)
+    elif args.command == "detect-wiki-gaps":
+        cmd_detect_wiki_gaps(args)
     else:
         parser.print_help()
         sys.exit(1)
