@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings"
 DEFAULT_MODEL = "text-embedding-3-small"
 DEFAULT_DIM = 1536
+MAX_BATCH_TOKENS = 250_000  # OpenAI limit is ~300k; leave headroom
+
+
+class _BatchTooLargeError(Exception):
+    """Raised when OpenAI returns 400, likely due to batch size."""
+    pass
 
 
 class Embedder:
@@ -66,51 +72,66 @@ class Embedder:
         return key
 
     def _openai_embed_request(self, texts: list[str]) -> list[list[float]]:
-        """Call OpenAI embeddings API."""
+        """Call OpenAI embeddings API with halve-and-retry on 400 errors."""
+        if not texts:
+            return []
+
         api_key = self._get_api_key()
         model = self._config.openai_model or DEFAULT_MODEL
-
         truncated = [self._truncate(t) for t in texts]
 
+        # Try the full batch first; on 400 error, halve and retry recursively
+        try:
+            return self._openai_embed_single_batch(truncated, model, api_key)
+        except _BatchTooLargeError:
+            if len(truncated) == 1:
+                # Single text still too large — truncate more aggressively
+                logger.warning("Single text too large, truncating to 4000 tokens")
+                truncated = [self._truncate(texts[0], max_tokens=4000)]
+                return self._openai_embed_single_batch(truncated, model, api_key)
+
+            mid = len(truncated) // 2
+            logger.info("Batch too large (%d texts), splitting into %d + %d", len(truncated), mid, len(truncated) - mid)
+            left = self._openai_embed_request(texts[:mid])
+            right = self._openai_embed_request(texts[mid:])
+            return left + right
+
+    def _openai_embed_single_batch(
+        self, texts: list[str], model: str, api_key: str,
+    ) -> list[list[float]]:
+        """Send a single batch to OpenAI. Raises _BatchTooLargeError on 400."""
         payload = json.dumps({
             "model": model,
-            "input": truncated,
+            "input": texts,
         }).encode("utf-8")
 
-        req = urllib.request.Request(
-            OPENAI_EMBED_URL,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-        )
         max_retries = 5
         for attempt in range(max_retries):
+            req = urllib.request.Request(
+                OPENAI_EMBED_URL,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+            )
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                break
+                return [item["embedding"] for item in data["data"]]
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", errors="replace")
+                if e.code == 400:
+                    raise _BatchTooLargeError(body) from e
                 if e.code == 429 and attempt < max_retries - 1:
                     import re as _re
+                    import time as _time
                     wait = 5.0
                     m = _re.search(r"try again in ([\d.]+)s", body)
                     if m:
                         wait = float(m.group(1)) + 0.5
-                    import time as _time
                     logger.info("Rate limited, waiting %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries)
                     _time.sleep(wait)
-                    # Rebuild request (consumed by previous attempt)
-                    req = urllib.request.Request(
-                        OPENAI_EMBED_URL,
-                        data=payload,
-                        headers={
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {api_key}",
-                        },
-                    )
                     continue
                 raise ConnectionError(
                     f"OpenAI API error {e.code}: {body}"
@@ -119,10 +140,7 @@ class Embedder:
                 raise ConnectionError(
                     f"OpenAI API not reachable: {e}"
                 ) from e
-
-        # Response: {"data": [{"embedding": [...], "index": 0}, ...]}
-        embeddings = [item["embedding"] for item in data["data"]]
-        return embeddings
+        raise ConnectionError("OpenAI API: max retries exhausted")
 
     _enc = None  # lazy-loaded tiktoken encoder
 
@@ -136,19 +154,47 @@ class Embedder:
             return text
         return Embedder._enc.decode(tokens[:max_tokens])
 
+    def _split_into_token_batches(self, texts: list[str]) -> list[list[str]]:
+        """Split texts into batches respecting both count and token limits."""
+        if Embedder._enc is None:
+            import tiktoken
+            Embedder._enc = tiktoken.encoding_for_model("text-embedding-3-small")
+
+        max_count = self._config.batch_size
+        batches: list[list[str]] = []
+        current_batch: list[str] = []
+        current_tokens = 0
+
+        for text in texts:
+            token_count = len(Embedder._enc.encode(text))
+            # Start new batch if adding this text would exceed limits
+            if current_batch and (
+                len(current_batch) >= max_count
+                or current_tokens + token_count > MAX_BATCH_TOKENS
+            ):
+                batches.append(current_batch)
+                current_batch = []
+                current_tokens = 0
+            current_batch.append(text)
+            current_tokens += token_count
+
+        if current_batch:
+            batches.append(current_batch)
+        return batches
+
     def _embed_all(self, texts: list[str]) -> np.ndarray:
-        """Embed texts via OpenAI API in batches with rate-limit pacing."""
+        """Embed texts via OpenAI API in token-aware batches."""
         import time as _time
         all_embeddings: list[np.ndarray] = []
-        batch_size = self._config.batch_size
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
+        batches = self._split_into_token_batches(texts)
+
+        for i, batch in enumerate(batches):
             raw = self._openai_embed_request(batch)
             all_embeddings.append(np.array(raw, dtype=np.float32))
-            if i + batch_size < len(texts):
+            if i < len(batches) - 1:
                 _time.sleep(0.2)
+
         embeddings = np.vstack(all_embeddings)
-        # OpenAI returns normalized vectors, but verify
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms = np.clip(norms, a_min=1e-9, a_max=None)
         return (embeddings / norms).astype(np.float32)
