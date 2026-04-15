@@ -193,7 +193,7 @@ class WikiStore:
             (now, row["id"]),
         )
 
-        staleness = self._check_page_staleness(row["id"])
+        staleness = self._check_page_staleness(row["id"], row["project_id"])
         linked = self._expand_graph(row["id"], row["project_id"], max_hops=2)
 
         return WikiPage(
@@ -233,7 +233,7 @@ class WikiStore:
 
         results = []
         for row in rows:
-            staleness = self._check_page_staleness(row["id"])
+            staleness = self._check_page_staleness(row["id"], project_id)
             results.append({
                 "page_id": row["id"],
                 "title": row["title"],
@@ -428,8 +428,14 @@ class WikiStore:
 
         return list(affected.values())
 
-    def _check_page_staleness(self, page_id: str) -> dict:
-        """Compare stored hashes against current file hashes."""
+    def _check_page_staleness(self, page_id: str, project_id: str) -> dict:
+        """Compare stored hashes against current file hashes.
+
+        Detects three types of staleness:
+        1. File modified (hash changed)
+        2. File deleted/moved (hash is NULL)
+        3. New files added to the same directories the wiki covers
+        """
         deps = self._conn.execute(
             """SELECT wd.file_id, wd.file_hash_at_compile, f.file_hash, f.relative_path
                FROM wiki_dependencies wd
@@ -439,17 +445,46 @@ class WikiStore:
         ).fetchall()
 
         changed_files = []
+        dep_file_ids: set[str] = set()
+        covered_dirs: set[str] = set()
+
         for dep in deps:
+            dep_file_ids.add(dep["file_id"])
             if dep["file_hash"] is None:
-                # File was deleted or moved
                 changed_files.append(dep["file_id"])
-            elif dep["file_hash"] != dep["file_hash_at_compile"]:
-                changed_files.append(dep["relative_path"] or dep["file_id"])
+            else:
+                if dep["relative_path"]:
+                    parent = str(__import__("pathlib").PurePosixPath(dep["relative_path"]).parent)
+                    if parent != ".":
+                        covered_dirs.add(parent)
+                if dep["file_hash"] != dep["file_hash_at_compile"]:
+                    changed_files.append(dep["relative_path"] or dep["file_id"])
 
         # Pages with zero dependencies are stale — all referenced files were
         # moved or deleted, so the wiki content is certainly outdated.
         if not deps:
             changed_files.append("(all dependencies lost)")
+
+        # Check for new files added to covered directories after the wiki was written
+        if covered_dirs and not changed_files:
+            page_updated = self._conn.execute(
+                "SELECT updated_at FROM wiki_pages WHERE id = ?", (page_id,)
+            ).fetchone()
+            if page_updated and page_updated["updated_at"]:
+                wiki_time = page_updated["updated_at"]
+                for cdir in covered_dirs:
+                    new_files = self._conn.execute(
+                        """SELECT id, relative_path FROM files
+                           WHERE project_id = ? AND relative_path LIKE ? || '/%'
+                           AND last_modified > ?
+                           AND id NOT IN (
+                               SELECT file_id FROM wiki_dependencies
+                               WHERE wiki_page_id = ?
+                           )""",
+                        (project_id, cdir, wiki_time, page_id),
+                    ).fetchall()
+                    for nf in new_files:
+                        changed_files.append(f"(new) {nf['relative_path']}")
 
         return {
             "stale": len(changed_files) > 0,

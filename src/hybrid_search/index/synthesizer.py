@@ -138,7 +138,7 @@ def should_skip_synthesis(
     if not wiki_store.is_synthesized(actual_page_id):
         return False, "never synthesized"
 
-    staleness = wiki_store._check_page_staleness(actual_page_id)
+    staleness = wiki_store._check_page_staleness(actual_page_id, project_id)
     if staleness["stale"]:
         changed = ", ".join(staleness["changed_files"][:3])
         return False, f"files changed ({changed})"
