@@ -13,8 +13,17 @@
 
 ### `src/hybrid_search/search/bm25.py`
 
-- **_build_schema+_get_writer+add+3more** (merged, L57)
-- **anonymous_L140+_escape_tantivy_query** (merged, L140)
+- **_build_schema** (function, L57)
+  - Fields: chunk_id (stored, raw), name (stored), qualified_name (stored), content, docstring
+- **_get_writer** (function, L66)
+  - Lazy writer init, heap_size=50MB
+- **add** (function, L71)
+  - Deduplication: deletes existing doc with same chunk_id before adding new one
+- **delete+delete_batch+commit** (merged, L92)
+- **count** (property, L142)
+  - Approximate document count via searcher.num_docs
+- **_escape_tantivy_query** (function, L156)
+  - Escapes Tantivy query syntax special characters
 
 ### `src/hybrid_search/search/fusion.py`
 
