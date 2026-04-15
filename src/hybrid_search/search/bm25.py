@@ -76,8 +76,10 @@ class BM25Engine:
         content: str,
         docstring: str | None = None,
     ) -> None:
-        """Add a document to the index."""
+        """Add a document to the index. Deletes existing entry with same chunk_id first."""
         writer = self._get_writer()
+        # Deduplicate: remove any existing document with the same chunk_id
+        writer.delete_documents("chunk_id", chunk_id)
         doc = tantivy.Document(
             chunk_id=chunk_id,
             name=name or "",
