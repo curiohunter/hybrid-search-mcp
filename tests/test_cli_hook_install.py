@@ -441,6 +441,14 @@ class TestScriptContentSanity:
         assert "--git-delta" in s
         assert "--synthesize" in s
 
+    def test_post_commit_script_exports_hook_diff_env(self) -> None:
+        """M3: post-commit must capture diff and export HYBRID_SEARCH_CHANGED_STATUS."""
+        s = _build_post_commit_script(Path("/usr/bin/python3"))
+        assert "git diff --name-status HEAD~1 HEAD" in s
+        assert "export HYBRID_SEARCH_CHANGED_STATUS=" in s
+        # Initial-commit guard: don't set env when HEAD~1 doesn't exist
+        assert "git rev-parse HEAD~1" in s
+
     def test_post_checkout_script_gates(self) -> None:
         s = _build_post_checkout_script(Path("/usr/bin/python3"))
         assert "#!/bin/bash" in s
@@ -455,3 +463,115 @@ class TestScriptContentSanity:
         assert "--synthesize" not in s
         # Shared lock with post-commit
         assert ".reindex.lock" in s
+
+
+# ---------------------------------------------------------------------------
+# M3 — post-commit hook synchronously exports diff; bash-level integration
+# ---------------------------------------------------------------------------
+
+
+class TestPostCommitDiffCapture:
+    """Execute the post-commit script against real git repos — verify env export.
+
+    We stub the venv python with ``/bin/echo`` so the "reindex" call is just a
+    no-op print (exits 0 immediately, doesn't fork a background process that
+    outlives the test). The shared lock + nohup run after the synchronous diff
+    capture, which is the part we actually want to assert.
+    """
+
+    @staticmethod
+    def _run_hook(tmp_path: Path) -> subprocess.CompletedProcess:
+        # Stub python with /bin/true so the `reindex` invocation is instant.
+        # What matters for this test is the shell's diff-capture + env export.
+        script = _build_post_commit_script(Path("/bin/true"))
+        # Instrument: after the synchronous diff capture, echo the env so we
+        # can assert whether it was set. We append a `printf` that reads the
+        # variable and writes to a file; insert BEFORE the gap-detection /
+        # nohup block so we observe the synchronous state only.
+        #
+        # Hook into the script by appending a sentinel that dumps env to a
+        # known path. Because shell variables exported above the insertion
+        # point are visible, this is a reliable snapshot.
+        sentinel = tmp_path / "env-snapshot.txt"
+        instrumented = script.replace(
+            '# 1. Gap detection',
+            f'printf "%s" "${{HYBRID_SEARCH_CHANGED_STATUS-__UNSET__}}" > "{sentinel}"\n'
+            '# 1. Gap detection',
+            1,
+        )
+        hook_path = tmp_path / "post-commit-test.sh"
+        hook_path.write_text(instrumented)
+        hook_path.chmod(0o755)
+        return subprocess.run(
+            [str(hook_path)],
+            cwd=tmp_path,
+            capture_output=True, text=True, timeout=10,
+            env={**subprocess_env_minimal(tmp_path)},
+        )
+
+    def test_second_commit_exports_env_with_diff(self, tmp_path: Path) -> None:
+        """After HEAD~1 exists and has a real diff, env must be exported."""
+        _init_git_repo(tmp_path)
+        # Configure committer (required by `git commit`)
+        for k, v in (("user.email", "t@t"), ("user.name", "t")):
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "config", k, v], check=True,
+            )
+        # Commit 1
+        (tmp_path / "a.py").write_text("x = 1\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-q", "-m", "c1"], check=True,
+        )
+        # Commit 2 — gives us a HEAD~1..HEAD diff to capture
+        (tmp_path / "a.py").write_text("x = 2\n")
+        (tmp_path / "b.py").write_text("y = 3\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "a.py", "b.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-q", "-m", "c2"], check=True,
+        )
+
+        result = self._run_hook(tmp_path)
+        assert result.returncode == 0, f"hook exited non-zero: stderr={result.stderr!r}"
+
+        snapshot = (tmp_path / "env-snapshot.txt").read_text()
+        assert snapshot != "__UNSET__", "env var was NOT exported after diff capture"
+        assert "a.py" in snapshot
+        assert "b.py" in snapshot
+        # Must be name-status format — first token is the status code
+        first_line = snapshot.splitlines()[0]
+        assert first_line.startswith(("A", "M", "D", "R")), \
+            f"Unexpected status token: {first_line!r}"
+
+    def test_initial_commit_does_not_export_env(self, tmp_path: Path) -> None:
+        """HEAD~1 doesn't exist on initial commit → fall back, no env set."""
+        _init_git_repo(tmp_path)
+        for k, v in (("user.email", "t@t"), ("user.name", "t")):
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "config", k, v], check=True,
+            )
+        (tmp_path / "a.py").write_text("x = 1\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-q", "-m", "initial"], check=True,
+        )
+
+        result = self._run_hook(tmp_path)
+        assert result.returncode == 0
+        snapshot = (tmp_path / "env-snapshot.txt").read_text()
+        assert snapshot == "__UNSET__", (
+            "On initial commit the hook must leave env unset so cmd_reindex "
+            f"falls back internally; got: {snapshot!r}"
+        )
+
+
+def subprocess_env_minimal(tmp_path: Path) -> dict[str, str]:
+    """Minimal env for running bash hook tests — inherit PATH, scope HOME."""
+    import os
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(tmp_path),
+        # Git requires either user.name/email or env overrides; we configure
+        # per-repo in the test, but also scrub GIT_DIR so the hook's
+        # rev-parse uses our tmp repo.
+    }
