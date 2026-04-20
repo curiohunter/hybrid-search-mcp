@@ -2,11 +2,11 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-20, 4회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-20, 5회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
 
-MCP 입력 보호 축 완결 — **Q4 (Security 모듈: 입력/출력 sanitize + path-traversal 방지)** 완료. 362/362 tests passed. Quick Wins **8/10 (80%)**, 전체 **8/28 (29%)**. 다음 세션은 **Q6 (Cache frontmatter strip)** 또는 **Q10 (`.hybrid-search-ignore` upward walk)** 택일.
+캐시 안정성 축 진입 — **Q6 (Markdown YAML frontmatter strip before hash)** 완료. 370/370 tests passed. Quick Wins **9/10 (90%)**, 전체 **9/28 (32%)**. 다음 세션은 **Q10 (`.hybrid-search-ignore` upward walk)** 단독 — Quick Wins 마지막 1개.
 
 ### 전략적 맥락 (중요)
 
@@ -18,15 +18,20 @@ MCP 입력 보호 축 완결 — **Q4 (Security 모듈: 입력/출력 sanitize +
 
 **포지셔닝 전환:** "코드 검색 도구" → "Claude Code의 영구 기억 레이어". Graphify와 경쟁하지 않고 보완재로 공존.
 
-### ✅ 이 세션 완료된 것 (4회차)
+### ✅ 이 세션 완료된 것 (5회차)
 
-**구현 (커밋 예정):**
-- **Q4: Security 모듈** — 신규 `src/hybrid_search/security.py` (110줄). 입력 정화 `sanitize_query` / `sanitize_snippet` / `sanitize_file_pattern` / `sanitize_node_types` / `sanitize_cwd` (control char strip `[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`, `\t\n\r` 보존, 길이 캡). 경계 검증 `validate_project_name` (charset `[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}`, leading-dot/path-sep 거부), `validate_project_path` (base 기준 resolve → `Path.relative_to` 체크, `..` 탈출 거부). 숫자 `clamp_int` / `clamp_float` (NaN·bool 거부). 
-- **`handle_hybrid_search` 통합** — 모든 MCP 파라미터를 호출 전 sanitize, `HybridResult.content/snippet`을 호출 후 sanitize. limit은 [1,50], bm25_weight은 [0.0,1.0] 서버 사이드 클램프 (schema와 중복 방어). rerank_hint의 `"{query}"`도 sanitize된 값으로 생성.
+**구현:**
+- **Q6: Markdown frontmatter strip** — `src/hybrid_search/index/scanner.py`에 `_FRONTMATTER_RE = re.compile(rb"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)` + `_strip_frontmatter(raw)` helper 추가. `compute_file_hash(path)`가 `.md` 파일일 때만 `read_bytes()` → fm strip → sha256 (body only). 비-`.md`는 기존 streaming hash 유지.
+- **파급 경로 (자동 전파):** `_is_changed` → `files.file_hash` (scanner.py/pipeline.py) → wiki `file_hash_at_compile` (storage/wiki.py:460 staleness 비교) → synthesis `source_hashes` (synthesizer.py:102). frontmatter-only edit이 모든 레이어에서 재처리 skip.
 
-**테스트:** `tests/test_security.py` 신규 — 54개. 각 sanitize/validate/clamp 함수별 단위 테스트 + `TestHandleHybridSearchIntegration` 7개 (MagicMock으로 orchestrator 대체, call_args 검사로 sanitize 적용 검증). **362/362 passed** (이전 308 → +54 신규).
+**테스트:** `tests/test_scanner.py::TestComputeFileHashFrontmatter` 8개 추가. fm 있/없 해시 동일, fm 수정 시 해시 불변, body 수정 시 해시 변경, body-level `---` horizontal rule 보존, CRLF fm 지원, 비-`.md` 비영향, 미닫힘 fm은 body로 취급. **370/370 passed** (이전 362 + 신규 8).
+
+**마이그레이션 주의:** 배포 후 첫 reindex에서 모든 `.md` 파일 해시가 한 번 바뀌어 1회 재임베딩 발생 (이후 안정). Wiki DB의 `file_hash_at_compile`과 실제 `file_hash`가 대량 불일치 → wiki 전체가 stale로 마킹됨. 권장 순서: (1) 배포, (2) `hybrid-search-mcp reindex --cwd .` 1회, (3) wiki 갱신 필요시 `reindex --synthesize`.
 
 ### 이전 세션 완료
+
+**4회차 (2026-04-20):**
+- `85716bc` — Q4 Security 모듈 (MCP 입력/출력 trust boundary)
 
 **3회차 (2026-04-20):**
 - `e4f9731` — Q3 MCP stdin blank-line filter + Q5 민감 파일 패턴 필터
@@ -39,19 +44,13 @@ MCP 입력 보호 축 완결 — **Q4 (Security 모듈: 입력/출력 sanitize +
 - `a3bdabf` — wiki-gaps.txt git 추적 제거
 - `4ccefd8` — HANDOFF 업데이트 (Q1/Q2/Q9)
 
-### ⬜ 다음 세션 제안 — Q6 또는 Q10 택일
+### ⬜ 다음 세션 제안 — Q10 단독 (Quick Wins 마지막)
 
-**옵션 A — Q6: Content-addressed cache + frontmatter strip (반나절)**
-- wiki/markdown의 YAML frontmatter(`reviewed:`, `status:` 등)만 바뀌어도 재임베딩 도는 문제 해결
-- 본문 해시 기반 cache + frontmatter strip → 실제 변경만 처리
-- 참조: `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` Q6
-- `_study/graphify/graphify/cache.py:10-17 / 20-41 / 71-92`
-
-**옵션 B — Q10: `.hybrid-search-ignore` + upward walk (반나절)**
+**Q10: `.hybrid-search-ignore` + upward walk (반나절)**
 - `.gitignore` 외에 `.hybrid-search-ignore` 전용 ignore 파일 지원
 - 부모 디렉토리 walk-up → monorepo/서브모듈 대응
-- 참조: 동 문서 Q10
-- 스캐너는 3회차(Q5)에서 이미 건드렸고 테스트 표면 넓음 — 단독 세션 권장
+- 참조: `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` Q10 (line 316~)
+- 스캐너 테스트 표면 넓음 — 독립 세션 유지 권장. Q5(민감 파일 필터)와 ignore 경로를 조합하여 통합 필터 테스트 필요.
 
 ### 📂 필수 참조 문서 (다음 세션에서 반드시 읽을 것)
 
@@ -73,24 +72,24 @@ MCP 입력 보호 축 완결 — **Q4 (Security 모듈: 입력/출력 sanitize +
 | ~~Q3~~ | ~~MCP stdin blank-line filter~~ | ~~30분~~ | **✅ 완료 (3회차)** |
 | ~~Q5~~ | ~~민감 파일 필터~~ | ~~1시간~~ | **✅ 완료 (3회차)** |
 | ~~Q4~~ | ~~Security 모듈~~ | ~~반나절~~ | **✅ 완료 (4회차)** |
-| **Q6** | **Cache frontmatter strip** | **반나절** | **다음 세션 1순위 후보** |
-| **Q10** | **`.hybrid-search-ignore` upward walk** | **반나절** | **다음 세션 1순위 후보** |
+| ~~Q6~~ | ~~Cache frontmatter strip~~ | ~~반나절~~ | **✅ 완료 (5회차)** |
+| **Q10** | **`.hybrid-search-ignore` upward walk** | **반나절** | **다음 세션 1순위 (마지막 Quick Win)** |
 
-전체 진행률: **8/28 (29%)**. Quick Wins 완성 = 10/28 (36%) — **2개 남음**.
+전체 진행률: **9/28 (32%)**. Quick Wins 완성 = 10/28 (36%) — **1개 남음**.
 
 ### 🎬 다음 세션 시작 방법
 
 ```
 HANDOFF.md 최상단 섹션 + _study/graphify-analysis/99-actionable-patches-for-hybrid-search.md의
-Q6 섹션 (또는 Q10) 읽고, 해당 Quick Win 완료하자. 마지막 Quick Win 2개 남음.
+Q10 섹션 읽고, Q10 완료로 Quick Wins 10/10 클로즈하자.
 ```
 
 ### 🔧 현재 상태 스냅샷
 
-- **브랜치:** `main` (origin 기준 5 커밋 앞, 6번째는 이 세션 커밋 후)
-- **워킹 트리:** Q4 미커밋 (이 세션 결과물)
-- **테스트:** 362/362 passed (이전 308 + Q4 신규 54)
-- **주 작업 파일:** 신규 `src/hybrid_search/security.py`, `src/hybrid_search/tools/hybrid_search.py`, 신규 `tests/test_security.py`
+- **브랜치:** `main` (origin 기준 6 커밋 앞, 7번째는 이 세션 커밋 후)
+- **워킹 트리:** Q6 미커밋 (이 세션 결과물)
+- **테스트:** 370/370 passed (이전 362 + Q6 신규 8)
+- **주 작업 파일:** `src/hybrid_search/index/scanner.py` (frontmatter strip), `tests/test_scanner.py` (+8)
 - **status 출력 정상:** PreToolUse hooks 4/4, CLAUDE.md routing ✓, post-commit hook ✓
 
 ### ⚠️ 주의사항
@@ -101,6 +100,8 @@ Q6 섹션 (또는 Q10) 읽고, 해당 Quick Win 완료하자. 마지막 Quick Wi
 - **Q5 sensitive 패턴** — basename 우선, path 패턴은 `.ssh/id_*` 등 위치 의존에만. 정상 소스(`PasswordReset.tsx` 등) 통과 필수. 신규 패턴 추가 시 `TestIsSensitiveFile::test_source_files_not_blocked`도 업데이트.
 - **Q7 marker regex:** `<!-- hybrid-search -->\n## [^\n]+\n.*?(?=\n## |\Z)` — 마커 + 첫 `##` 헤딩 + 본문. 치환은 `lambda`로 back-reference 파싱 회피.
 - **Q8 core.hooksPath 폴백:** `git config --get` → `git rev-parse --git-path hooks` → `.git/hooks`.
+- **Q6 frontmatter regex:** `\A---\r?\n.*?\r?\n---\r?\n` (DOTALL, count=1). `\A`로 파일 시작 고정 → body 내부 `---`(horizontal rule)을 false-positive로 잡지 않음. 이 regex를 수정하면 `TestComputeFileHashFrontmatter::test_body_level_horizontal_rule_preserved` 같이 깨질 수 있으니 주의.
+- **Q6 side effect — file_size/mtime drift:** fm-only edit이면 `_is_changed`가 False 반환해서 `files.file_size`/`file_mtime`이 갱신 안 됨. 다음 스캔에서 mtime 불일치로 매번 `compute_file_hash` 재계산(정확하지만 중복 CPU). 필요시 `_is_changed`에서 hash 일치해도 size/mtime만 UPDATE하는 최적화 가능 (Q6.1 후보).
 - **skill 파일 수정** 시 `~/.claude/skills/`로 동기화 잊지 말 것 (setup이 처리).
 
 ---
