@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,48 @@ logger = logging.getLogger(__name__)
 
 # Max file size for .gitignore to prevent reading huge files
 _GITIGNORE_MAX_SIZE = 64 * 1024
+
+
+# Basename patterns — file likely contains secrets regardless of location.
+# Tight on purpose: avoid matching source files like ``PasswordReset.tsx``.
+_SENSITIVE_BASENAME_PATTERNS: list[re.Pattern[str]] = [
+    # .env variants: .env, .env.local, .env.production, .envrc, ...
+    re.compile(r"^\.env(\..+)?$", re.IGNORECASE),
+    re.compile(r"^\.envrc$", re.IGNORECASE),
+    # cert/key by extension (defensive — most already fail the extension filter)
+    re.compile(r".+\.(pem|key|p12|pfx|crt|cer|der|p8|jks)$", re.IGNORECASE),
+    # credential containers with indexable extensions
+    re.compile(r"^(.*[-_.])?credentials?\.(json|ya?ml|toml|env|ini|conf)$", re.IGNORECASE),
+    re.compile(r"^(.*[-_.])?secrets?\.(json|ya?ml|toml|env|ini|conf)$", re.IGNORECASE),
+    re.compile(r"^service[-_.]?account.*\.json$", re.IGNORECASE),
+    # SSH private keys
+    re.compile(r"^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$"),
+    # Shell credential stores
+    re.compile(r"^\.netrc$", re.IGNORECASE),
+    re.compile(r"^\.pgpass$", re.IGNORECASE),
+    re.compile(r"^\.htpasswd$", re.IGNORECASE),
+]
+
+# Full-path patterns — sensitive only when at a particular location.
+_SENSITIVE_PATH_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"(^|/)\.ssh/id_(rsa|dsa|ecdsa|ed25519)", re.IGNORECASE),
+    re.compile(r"(^|/)\.aws/credentials$", re.IGNORECASE),
+    re.compile(r"(^|/)\.gcloud/.*credentials", re.IGNORECASE),
+]
+
+
+def _is_sensitive_file(file_path: Path) -> bool:
+    """Return True if ``file_path`` looks like a secrets/credentials file.
+
+    Matches on basename first (most signals live there) then on full path
+    (for ``.ssh/id_*``-style location-dependent names). Conservative by
+    design — source files like ``PasswordReset.tsx`` or ``TokenManager.ts``
+    must pass through.
+    """
+    if any(p.search(file_path.name) for p in _SENSITIVE_BASENAME_PATTERNS):
+        return True
+    full = str(file_path).replace(os.sep, "/")
+    return any(p.search(full) for p in _SENSITIVE_PATH_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -278,6 +321,11 @@ def _walk_files(
             if file_path.suffix.lower() not in extensions:
                 continue
 
+            # Skip files that look like secrets (silent — avoids BM25 leakage)
+            if _is_sensitive_file(file_path):
+                logger.debug("Skipping sensitive file: %s", rel_path)
+                continue
+
             # Check symlink — resolve and verify it's within project root
             if file_path.is_symlink():
                 try:
@@ -311,6 +359,9 @@ def _is_indexable_path(
         return False
 
     if file_path.suffix.lower() not in set(config.supported_extensions):
+        return False
+
+    if _is_sensitive_file(file_path):
         return False
 
     try:

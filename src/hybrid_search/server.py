@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 
 from mcp.server import Server
@@ -153,6 +154,48 @@ def create_server(config: Config, config_path: Path | None = None) -> Server:
     return server
 
 
+def _filter_blank_stdin() -> None:
+    """Drop blank lines from stdin before MCP's JSON-RPC parser sees them.
+
+    Some MCP clients (Claude Desktop, etc.) send bare ``\\n`` between messages.
+    The stdio transport tries to parse every line as a ``JSONRPCMessage``,
+    so a blank line triggers a Pydantic ``ValidationError``. This installs an
+    OS-level pipe that relays stdin while dropping blanks.
+
+    Safe to call repeatedly from tests — the original fd is duped and the
+    relay thread is a daemon. Bails out silently if stdin isn't a real fd
+    (pytest captured stdin, closed stdin, etc.).
+    """
+    import os
+    import threading
+
+    try:
+        stdin_fd = sys.stdin.fileno()
+    except (OSError, ValueError):
+        return  # pytest capture / no real stdin → nothing to relay
+
+    try:
+        r_fd, w_fd = os.pipe()
+        saved_fd = os.dup(stdin_fd)
+    except OSError:
+        return
+
+    def _relay() -> None:
+        try:
+            with os.fdopen(saved_fd, "rb") as src, os.fdopen(w_fd, "wb") as dst:
+                for line in src:
+                    if line.strip():
+                        dst.write(line)
+                        dst.flush()
+        except Exception:
+            pass
+
+    threading.Thread(target=_relay, daemon=True).start()
+    os.dup2(r_fd, stdin_fd)
+    os.close(r_fd)
+    sys.stdin = open(stdin_fd, "r", closefd=False)
+
+
 async def _run_server(config: Config) -> None:
     """Run the MCP server over stdio."""
     server = create_server(config)
@@ -165,6 +208,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     config = load_config()
     import asyncio
+    _filter_blank_stdin()
     asyncio.run(_run_server(config))
 
 

@@ -6,8 +6,10 @@ from pathlib import Path
 from hybrid_search.config import IndexingConfig
 from hybrid_search.index.scanner import (
     _is_changed,
+    _is_sensitive_file,
     compute_file_hash,
     get_changed_files_from_git,
+    scan_project,
     scan_project_subset,
 )
 from hybrid_search.storage.db import FileRecord, StoreDB
@@ -131,3 +133,82 @@ class TestSubsetScan:
         assert [p.name for p in result.added] == ["added.py"]
         assert [p.name for p in result.changed] == ["existing.py"]
         assert result.deleted == ["deleted.py"]
+
+
+# ---------------------------------------------------------------------------
+# Q5 — sensitive file filter
+# ---------------------------------------------------------------------------
+
+
+class TestIsSensitiveFile:
+    """Basename + full-path pattern matching for credential-like files."""
+
+    def test_env_variants_blocked(self) -> None:
+        for name in (".env", ".env.local", ".env.production", ".envrc"):
+            assert _is_sensitive_file(Path(name)), name
+
+    def test_credential_yaml_json_blocked(self) -> None:
+        for name in (
+            "credentials.json",
+            "app-credentials.yaml",
+            "secrets.yml",
+            "api-secrets.toml",
+            "service-account.json",
+            "service-account-prod.json",
+        ):
+            assert _is_sensitive_file(Path(name)), name
+
+    def test_keys_and_certs_blocked(self) -> None:
+        for name in ("my.pem", "prod.key", "cert.p12", "server.crt", "id_rsa", "id_ed25519.pub"):
+            assert _is_sensitive_file(Path(name)), name
+
+    def test_shell_cred_stores_blocked(self) -> None:
+        for name in (".netrc", ".pgpass", ".htpasswd"):
+            assert _is_sensitive_file(Path(name)), name
+
+    def test_ssh_id_under_dotssh_blocked(self) -> None:
+        """Located under .ssh/ — must catch even with full path."""
+        for p in ("home/user/.ssh/id_rsa", "root/.ssh/id_ed25519"):
+            assert _is_sensitive_file(Path(p)), p
+
+    def test_aws_gcloud_credentials_by_path(self) -> None:
+        assert _is_sensitive_file(Path("home/me/.aws/credentials"))
+        assert _is_sensitive_file(Path("root/.gcloud/legacy_credentials/me/foo"))
+
+    def test_source_files_not_blocked(self) -> None:
+        """Legit source code must not be mistaken for secrets."""
+        for name in (
+            "src/auth/PasswordReset.tsx",
+            "app/components/TokenManager.ts",
+            "tests/test_password.py",
+            "docs/secrets.md",           # .md extension → docs, not creds
+            "components/secret-ingredient.ts",
+            "auth/credential_helpers.ts",  # .ts not in cred extensions
+        ):
+            assert not _is_sensitive_file(Path(name)), name
+
+
+class TestScanProjectSkipsSensitive:
+    """scan_project must silently drop sensitive files from the walk."""
+
+    def test_full_scan_omits_credentials_and_env(self, tmp_path: Path) -> None:
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        # Legitimate indexable files
+        (project_root / "main.py").write_text("print('x')\n")
+        (project_root / "config.json").write_text("{}")
+        # Sensitive files that match supported extensions — must be skipped
+        (project_root / "credentials.json").write_text('{"api_key": "super-secret"}')
+        (project_root / "secrets.yaml").write_text("token: super-secret\n")
+        (project_root / "service-account.json").write_text('{"client_email": "x"}')
+        # .env has suffix .env (not a supported ext) — extension filter already blocks
+        (project_root / ".env").write_text("API_KEY=xxx")
+
+        result = scan_project(project_root, "p1", db, IndexingConfig())
+        names = {p.name for p in result.added}
+        assert "main.py" in names
+        assert "config.json" in names
+        assert "credentials.json" not in names
+        assert "secrets.yaml" not in names
+        assert "service-account.json" not in names
