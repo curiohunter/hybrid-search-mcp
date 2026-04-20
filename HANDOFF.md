@@ -2,11 +2,11 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-20, 3회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-20, 4회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
 
-MCP 입력 보호 축 **Q3 (stdin blank-line filter) + Q5 (민감 파일 필터)** 완료. 308/308 tests passed. Quick Wins 7/10 (70%), 전체 7/28 (25%). 다음은 **Q4 (Security 모듈)** + **Q6 (Cache frontmatter strip)** 또는 **Q10 (`.hybrid-search-ignore` upward walk)**.
+MCP 입력 보호 축 완결 — **Q4 (Security 모듈: 입력/출력 sanitize + path-traversal 방지)** 완료. 362/362 tests passed. Quick Wins **8/10 (80%)**, 전체 **8/28 (29%)**. 다음 세션은 **Q6 (Cache frontmatter strip)** 또는 **Q10 (`.hybrid-search-ignore` upward walk)** 택일.
 
 ### 전략적 맥락 (중요)
 
@@ -18,49 +18,40 @@ MCP 입력 보호 축 **Q3 (stdin blank-line filter) + Q5 (민감 파일 필터)
 
 **포지셔닝 전환:** "코드 검색 도구" → "Claude Code의 영구 기억 레이어". Graphify와 경쟁하지 않고 보완재로 공존.
 
-### ✅ 이 세션 완료된 것 (3회차)
+### ✅ 이 세션 완료된 것 (4회차)
 
 **구현 (커밋 예정):**
-- **Q3: MCP stdin blank-line filter** — `src/hybrid_search/server.py`에 `_filter_blank_stdin()` 추가. OS pipe + daemon 스레드로 stdin 중계, `line.strip()` falsy면 드롭. `main()`에서 `asyncio.run` 직전 호출. pytest 환경처럼 stdin이 진짜 fd가 아니면 조용히 bail out.
-- **Q5: 민감 파일 패턴 필터** — `src/hybrid_search/index/scanner.py`에 `_SENSITIVE_BASENAME_PATTERNS` (basename 레벨: `.env*`, `credentials.json/yaml/toml/ini`, `secrets.*`, `service-account*.json`, `*.pem/key/p12/crt`, `id_rsa` 등) + `_SENSITIVE_PATH_PATTERNS` (path 레벨: `.ssh/id_*`, `.aws/credentials`, `.gcloud/*credentials*`) + `_is_sensitive_file(path)` 추가. `_walk_files` + `_is_indexable_path` 양쪽에 게이트. **타이트한 매칭** — `PasswordReset.tsx`, `TokenManager.ts`, `test_password.py`, `docs/secrets.md` 같은 정상 파일은 통과.
+- **Q4: Security 모듈** — 신규 `src/hybrid_search/security.py` (110줄). 입력 정화 `sanitize_query` / `sanitize_snippet` / `sanitize_file_pattern` / `sanitize_node_types` / `sanitize_cwd` (control char strip `[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`, `\t\n\r` 보존, 길이 캡). 경계 검증 `validate_project_name` (charset `[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}`, leading-dot/path-sep 거부), `validate_project_path` (base 기준 resolve → `Path.relative_to` 체크, `..` 탈출 거부). 숫자 `clamp_int` / `clamp_float` (NaN·bool 거부). 
+- **`handle_hybrid_search` 통합** — 모든 MCP 파라미터를 호출 전 sanitize, `HybridResult.content/snippet`을 호출 후 sanitize. limit은 [1,50], bm25_weight은 [0.0,1.0] 서버 사이드 클램프 (schema와 중복 방어). rerank_hint의 `"{query}"`도 sanitize된 값으로 생성.
 
-**테스트:** 
-- `tests/test_scanner.py`에 `TestIsSensitiveFile` 7개 + `TestScanProjectSkipsSensitive` 1개
-- `tests/test_server_stdin_filter.py` 신규 (subprocess로 격리) 4개 — blank 드롭, 선행/후행 blank, whitespace-only 라인, passthrough
-- **308/308 passed** (이전 296 → +12 신규)
+**테스트:** `tests/test_security.py` 신규 — 54개. 각 sanitize/validate/clamp 함수별 단위 테스트 + `TestHandleHybridSearchIntegration` 7개 (MagicMock으로 orchestrator 대체, call_args 검사로 sanitize 적용 검증). **362/362 passed** (이전 308 → +54 신규).
 
-### 이전 세션 완료 (2회차, 2026-04-20 오후)
+### 이전 세션 완료
 
-**커밋:**
+**3회차 (2026-04-20):**
+- `e4f9731` — Q3 MCP stdin blank-line filter + Q5 민감 파일 패턴 필터
+
+**2회차 (2026-04-20):**
 - `2231b1f` — Q7 CLAUDE.md idempotent + Q8 core.hooksPath (Husky 호환)
 
-**구현:** Q7 (marker-bounded regex로 CLAUDE.md in-place 교체, `_remove_claude_md` 추가), Q8 (`_git_hooks_dir` 폴백 체인).
-
-### 이전 세션 완료 (1회차, 2026-04-20 오전)
-
-**커밋:**
+**1회차 (2026-04-20):**
 - `6f0ff93` — Q1 route_hook + status + wiki 머신별 독립화
 - `a3bdabf` — wiki-gaps.txt git 추적 제거
-- `4ccefd8` — HANDOFF 업데이트
+- `4ccefd8` — HANDOFF 업데이트 (Q1/Q2/Q9)
 
-**구현:** Q1 (route_hook), Q2 (status 확장), Q9 (hook identity 필터), + `.gitignore` 자동 관리 + `.hybrid-search/` 추적 해제.
+### ⬜ 다음 세션 제안 — Q6 또는 Q10 택일
 
-### ⬜ 다음 세션 제안 — Q4 (Security 모듈) 또는 Q10 (`.hybrid-search-ignore`)
-
-**옵션 A — Q4: Security 모듈 (반나절)**
-- 신규 `src/hybrid_search/security.py` with `sanitize_query`, `validate_project_path`, `sanitize_snippet` (control char strip + 길이 제한 + path traversal 방지)
-- `tools/hybrid_search.py` 파라미터 입구에서 호출
-- Q3/Q5가 **파일 시스템 쪽 방어**였다면 Q4는 **입력 쪽 방어**
-- 참조: `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` Q4
+**옵션 A — Q6: Content-addressed cache + frontmatter strip (반나절)**
+- wiki/markdown의 YAML frontmatter(`reviewed:`, `status:` 등)만 바뀌어도 재임베딩 도는 문제 해결
+- 본문 해시 기반 cache + frontmatter strip → 실제 변경만 처리
+- 참조: `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` Q6
+- `_study/graphify/graphify/cache.py:10-17 / 20-41 / 71-92`
 
 **옵션 B — Q10: `.hybrid-search-ignore` + upward walk (반나절)**
-- 현재 `.gitignore` 기반 필터에 추가로 `.hybrid-search-ignore` 지원
-- 부모 디렉토리로 walk-up하며 병합 (monorepo/서브모듈 대응)
+- `.gitignore` 외에 `.hybrid-search-ignore` 전용 ignore 파일 지원
+- 부모 디렉토리 walk-up → monorepo/서브모듈 대응
 - 참조: 동 문서 Q10
-
-**옵션 C — Q6: Content-addressed cache + frontmatter strip (반나절)**
-- wiki/markdown frontmatter (YAML header) 재임베딩 스킵
-- 참조: 동 문서 Q6
+- 스캐너는 3회차(Q5)에서 이미 건드렸고 테스트 표면 넓음 — 단독 세션 권장
 
 ### 📂 필수 참조 문서 (다음 세션에서 반드시 읽을 것)
 
@@ -81,35 +72,36 @@ MCP 입력 보호 축 **Q3 (stdin blank-line filter) + Q5 (민감 파일 필터)
 | ~~Q8~~ | ~~core.hooksPath 존중~~ | ~~20분~~ | **✅ 완료 (2회차)** |
 | ~~Q3~~ | ~~MCP stdin blank-line filter~~ | ~~30분~~ | **✅ 완료 (3회차)** |
 | ~~Q5~~ | ~~민감 파일 필터~~ | ~~1시간~~ | **✅ 완료 (3회차)** |
-| **Q4** | **Security 모듈** | **반나절** | **다음 세션 1순위 후보** |
-| Q6 | Cache frontmatter strip | 반나절 | |
-| Q10 | `.hybrid-search-ignore` upward walk | 반나절 | |
+| ~~Q4~~ | ~~Security 모듈~~ | ~~반나절~~ | **✅ 완료 (4회차)** |
+| **Q6** | **Cache frontmatter strip** | **반나절** | **다음 세션 1순위 후보** |
+| **Q10** | **`.hybrid-search-ignore` upward walk** | **반나절** | **다음 세션 1순위 후보** |
 
-전체 진행률: **7/28 (25%)**. Quick Wins 완성 = 10/28 (36%).
+전체 진행률: **8/28 (29%)**. Quick Wins 완성 = 10/28 (36%) — **2개 남음**.
 
 ### 🎬 다음 세션 시작 방법
 
 ```
 HANDOFF.md 최상단 섹션 + _study/graphify-analysis/99-actionable-patches-for-hybrid-search.md의
-Q4 섹션 읽고, Q4 (Security 모듈 — sanitize_query + validate_project_path + sanitize_snippet) 구현하자.
+Q6 섹션 (또는 Q10) 읽고, 해당 Quick Win 완료하자. 마지막 Quick Win 2개 남음.
 ```
 
 ### 🔧 현재 상태 스냅샷
 
-- **브랜치:** `main` (origin 기준 4 커밋 앞, 5번째는 이 세션 커밋 후)
-- **워킹 트리:** Q3/Q5 미커밋 (이 세션 결과물)
-- **테스트:** 308/308 passed (이전 296 + Q3/Q5 신규 12)
-- **주 작업 파일:** `src/hybrid_search/server.py`, `src/hybrid_search/index/scanner.py`, `tests/test_scanner.py`, 신규 `tests/test_server_stdin_filter.py`
+- **브랜치:** `main` (origin 기준 5 커밋 앞, 6번째는 이 세션 커밋 후)
+- **워킹 트리:** Q4 미커밋 (이 세션 결과물)
+- **테스트:** 362/362 passed (이전 308 + Q4 신규 54)
+- **주 작업 파일:** 신규 `src/hybrid_search/security.py`, `src/hybrid_search/tools/hybrid_search.py`, 신규 `tests/test_security.py`
 - **status 출력 정상:** PreToolUse hooks 4/4, CLAUDE.md routing ✓, post-commit hook ✓
 
 ### ⚠️ 주의사항
 
 - **graphify 분석 문서**는 `_study/` 폴더에 있고 이 프로젝트 git과 **별개** (추적 안 됨).
-- **Q3 stdin filter** — `_filter_blank_stdin()`은 전역 fd 0를 `dup2`로 교체함. pytest 메인 프로세스에서 직접 호출 금지. 테스트는 subprocess 격리 필수 (`tests/test_server_stdin_filter.py` 참조). fd 확보 실패 시 (captured stdin) 조용히 리턴하도록 방어함.
-- **Q5 sensitive 패턴** — 매칭은 **basename 우선**, path 패턴은 `.ssh/id_*` 같은 위치 의존에만. `PasswordReset.tsx`, `TokenManager.ts`, `test_password.py`, `docs/secrets.md` 같은 정상 파일은 반드시 통과해야 함. 신규 패턴 추가 시 `TestIsSensitiveFile::test_source_files_not_blocked`도 업데이트.
-- **Q7 marker regex:** `<!-- hybrid-search -->\n## [^\n]+\n.*?(?=\n## |\Z)` — 마커 + 첫 `##` 헤딩 + 본문 (다음 `##` 또는 EOF까지 lazy). 치환은 `lambda`로 back-reference 파싱 회피.
-- **Q8 core.hooksPath 폴백 순서:** `git config --get` → `git rev-parse --git-path hooks` → `.git/hooks`. 상대경로는 `repo_root` 기준 해석.
-- **skill 파일 수정** 시 `~/.claude/skills/`로 동기화 잊지 말 것 (setup 명령이 처리하긴 함).
+- **Q4 sanitize 범위** — MCP 노출은 `hybrid_search` 1개뿐 (`server.py:89-125`). 향후 새 도구 노출 시 **반드시** `handle_*`에서 `sanitize_*` / `clamp_*` 호출. control char regex는 `\t\n\r` 보존이 의도된 동작.
+- **Q3 stdin filter** — `_filter_blank_stdin()`은 전역 fd 0를 `dup2`로 교체함. pytest 메인 프로세스에서 직접 호출 금지. 테스트는 subprocess 격리 (`tests/test_server_stdin_filter.py`).
+- **Q5 sensitive 패턴** — basename 우선, path 패턴은 `.ssh/id_*` 등 위치 의존에만. 정상 소스(`PasswordReset.tsx` 등) 통과 필수. 신규 패턴 추가 시 `TestIsSensitiveFile::test_source_files_not_blocked`도 업데이트.
+- **Q7 marker regex:** `<!-- hybrid-search -->\n## [^\n]+\n.*?(?=\n## |\Z)` — 마커 + 첫 `##` 헤딩 + 본문. 치환은 `lambda`로 back-reference 파싱 회피.
+- **Q8 core.hooksPath 폴백:** `git config --get` → `git rev-parse --git-path hooks` → `.git/hooks`.
+- **skill 파일 수정** 시 `~/.claude/skills/`로 동기화 잊지 말 것 (setup이 처리).
 
 ---
 
