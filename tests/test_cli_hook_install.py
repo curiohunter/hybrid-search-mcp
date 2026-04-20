@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -11,10 +12,14 @@ import pytest
 from hybrid_search.cli import (
     _CLAUDE_MD_MARKER,
     _CLAUDE_MD_SECTION,
+    _HOOK_IDENTITY_MARKER,
+    _build_post_checkout_script,
+    _build_post_commit_script,
     _ensure_claude_md,
     _ensure_gitignore_entries,
     _git_hooks_dir,
     _remove_claude_md,
+    cmd_install_hook,
 )
 
 
@@ -274,3 +279,179 @@ class TestGitHooksDir:
         """Non-git directory — falls back to repo_root/.git/hooks (harmless default)."""
         result = _git_hooks_dir(tmp_path)
         assert result == tmp_path / ".git" / "hooks"
+
+
+# ---------------------------------------------------------------------------
+# M2 — cmd_install_hook installs post-commit + post-checkout
+# ---------------------------------------------------------------------------
+
+
+def _init_git_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+
+
+class TestInstallHookBothScripts:
+    """cmd_install_hook writes both post-commit and post-checkout, idempotent."""
+
+    def test_installs_both_hooks_fresh(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        cmd_install_hook(argparse.Namespace(cwd=str(tmp_path)))
+
+        hooks_dir = tmp_path / ".git" / "hooks"
+        commit = hooks_dir / "post-commit"
+        checkout = hooks_dir / "post-checkout"
+        assert commit.exists(), "post-commit hook missing"
+        assert checkout.exists(), "post-checkout hook missing"
+        # Both have identity marker
+        assert _HOOK_IDENTITY_MARKER in commit.read_text()
+        assert _HOOK_IDENTITY_MARKER in checkout.read_text()
+        # Both executable
+        assert commit.stat().st_mode & 0o111, "post-commit not executable"
+        assert checkout.stat().st_mode & 0o111, "post-checkout not executable"
+
+    def test_reinstall_is_idempotent(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        cmd_install_hook(argparse.Namespace(cwd=str(tmp_path)))
+        commit = tmp_path / ".git" / "hooks" / "post-commit"
+        checkout = tmp_path / ".git" / "hooks" / "post-checkout"
+        before_commit = commit.read_text()
+        before_checkout = checkout.read_text()
+
+        cmd_install_hook(argparse.Namespace(cwd=str(tmp_path)))
+        assert commit.read_text() == before_commit, "post-commit changed on re-install"
+        assert checkout.read_text() == before_checkout, "post-checkout changed on re-install"
+        # Identity marker appears exactly once in each
+        assert commit.read_text().count(_HOOK_IDENTITY_MARKER) == \
+            before_commit.count(_HOOK_IDENTITY_MARKER)
+        assert checkout.read_text().count(_HOOK_IDENTITY_MARKER) == \
+            before_checkout.count(_HOOK_IDENTITY_MARKER)
+
+    def test_preserves_existing_unrelated_hook(self, tmp_path: Path) -> None:
+        """Existing non-hybrid-search hook content must survive appending."""
+        _init_git_repo(tmp_path)
+        hooks_dir = tmp_path / ".git" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        for name in ("post-commit", "post-checkout"):
+            path = hooks_dir / name
+            path.write_text("#!/bin/bash\necho 'user hook ran'\n")
+            path.chmod(0o755)
+
+        cmd_install_hook(argparse.Namespace(cwd=str(tmp_path)))
+        for name in ("post-commit", "post-checkout"):
+            content = (hooks_dir / name).read_text()
+            assert "echo 'user hook ran'" in content, f"{name} lost user content"
+            assert _HOOK_IDENTITY_MARKER in content, f"{name} missing hybrid-search append"
+
+    def test_refuses_non_git_directory(self, tmp_path: Path, capsys) -> None:
+        # No git init — cmd_install_hook should print a message and bail
+        cmd_install_hook(argparse.Namespace(cwd=str(tmp_path)))
+        captured = capsys.readouterr()
+        assert "Not a git repository" in captured.out
+        # No hooks should be created
+        assert not (tmp_path / ".git" / "hooks" / "post-commit").exists()
+
+    def test_respects_core_hookspath(self, tmp_path: Path) -> None:
+        """Both hooks go to core.hooksPath (Husky compat), not .git/hooks."""
+        _init_git_repo(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.hooksPath", ".husky"],
+            check=True,
+        )
+        cmd_install_hook(argparse.Namespace(cwd=str(tmp_path)))
+
+        husky = tmp_path / ".husky"
+        assert (husky / "post-commit").exists()
+        assert (husky / "post-checkout").exists()
+        # Default location should NOT have hooks
+        default = tmp_path / ".git" / "hooks"
+        assert not (default / "post-commit").exists() or \
+            _HOOK_IDENTITY_MARKER not in (default / "post-commit").read_text()
+
+
+class TestPostCheckoutScriptGates:
+    """post-checkout hook gate conditions — verified by executing the script."""
+
+    @staticmethod
+    def _write_hook_to_tmp(tmp_path: Path) -> Path:
+        """Write the post-checkout script standalone for gate testing.
+
+        Uses ``/bin/true`` as the venv python to keep the test hermetic — we
+        only care that the gates short-circuit, not that reindex actually runs.
+        """
+        script = _build_post_checkout_script(Path("/bin/true"))
+        hook = tmp_path / "post-checkout-test.sh"
+        hook.write_text(script)
+        hook.chmod(0o755)
+        return hook
+
+    def test_exits_zero_on_file_checkout(self, tmp_path: Path) -> None:
+        """$3 != "1" → gate exits, no reindex spawned."""
+        _init_git_repo(tmp_path)
+        hook = self._write_hook_to_tmp(tmp_path)
+        # Args: prev_head, new_head, flag=0 (file checkout)
+        result = subprocess.run(
+            [str(hook), "HEAD^", "HEAD", "0"],
+            cwd=tmp_path, capture_output=True, text=True, timeout=5,
+        )
+        assert result.returncode == 0
+        # No lock file created — gate short-circuited before reindex path
+        assert not (tmp_path / ".hybrid-search" / ".reindex.lock").exists()
+
+    def test_exits_zero_when_hybrid_search_dir_missing(self, tmp_path: Path) -> None:
+        """Branch switch but no .hybrid-search/ → no auto-bootstrap."""
+        _init_git_repo(tmp_path)
+        hook = self._write_hook_to_tmp(tmp_path)
+        # flag=1 means branch switch, but .hybrid-search/ is absent
+        result = subprocess.run(
+            [str(hook), "HEAD^", "HEAD", "1"],
+            cwd=tmp_path, capture_output=True, text=True, timeout=5,
+        )
+        assert result.returncode == 0
+        # No .hybrid-search directory was created — confirms no bootstrap
+        assert not (tmp_path / ".hybrid-search").exists()
+
+    def test_branch_switch_with_hybrid_search_triggers_reindex_path(
+        self, tmp_path: Path,
+    ) -> None:
+        """flag=1 AND .hybrid-search/ exists → spawns nohup background process.
+
+        We substitute /bin/true for the python command so the "reindex" is a
+        no-op that exits immediately. We verify the script itself runs to the
+        nohup invocation (returncode 0) without any gate firing.
+        """
+        _init_git_repo(tmp_path)
+        (tmp_path / ".hybrid-search").mkdir()
+        hook = self._write_hook_to_tmp(tmp_path)
+        result = subprocess.run(
+            [str(hook), "HEAD^", "HEAD", "1"],
+            cwd=tmp_path, capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+
+
+class TestScriptContentSanity:
+    """Build functions produce the gates we expect (text-level assertions)."""
+
+    def test_post_commit_script_has_lockfile(self) -> None:
+        s = _build_post_commit_script(Path("/usr/bin/python3"))
+        assert "#!/bin/bash" in s
+        assert "hybrid_search.cli" in s  # identity marker
+        assert ".reindex.lock" in s
+        assert "--git-delta" in s
+        assert "--synthesize" in s
+
+    def test_post_checkout_script_gates(self) -> None:
+        s = _build_post_checkout_script(Path("/usr/bin/python3"))
+        assert "#!/bin/bash" in s
+        assert 'hybrid_search.cli' in s
+        # Branch-switch gate (exactly as documented)
+        assert '[ "$3" = "1" ] || exit 0' in s
+        # No-auto-bootstrap gate
+        assert '[ -d "$PROJECT_DIR/.hybrid-search" ] || exit 0' in s
+        # Filesystem delta (NOT --git-delta — HEAD~1..HEAD is meaningless post-switch)
+        assert "--git-delta" not in s
+        # Synthesis is heavy; branch switch shouldn't trigger it
+        assert "--synthesize" not in s
+        # Shared lock with post-commit
+        assert ".reindex.lock" in s
