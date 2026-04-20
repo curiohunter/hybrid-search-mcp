@@ -63,6 +63,90 @@ class TestIsChanged:
         assert _is_changed(missing, rec) is True
 
 
+class TestComputeFileHashFrontmatter:
+    """Q6: Markdown YAML frontmatter stripped before hashing."""
+
+    def test_md_frontmatter_does_not_affect_hash(self, tmp_path: Path) -> None:
+        body = "# Heading\n\nBody text.\n"
+        with_fm = tmp_path / "a.md"
+        with_fm.write_text(
+            "---\nreviewed: 2026-04-20\nstatus: fresh\n---\n" + body,
+            encoding="utf-8",
+        )
+        plain = tmp_path / "b.md"
+        plain.write_text(body, encoding="utf-8")
+
+        assert compute_file_hash(with_fm) == compute_file_hash(plain)
+
+    def test_frontmatter_edit_keeps_hash_stable(self, tmp_path: Path) -> None:
+        body = "# Module\n\nContent.\n"
+        f = tmp_path / "page.md"
+        f.write_text("---\nreviewed: 2026-04-01\n---\n" + body, encoding="utf-8")
+        before = compute_file_hash(f)
+        f.write_text("---\nreviewed: 2026-04-20\nstatus: fresh\n---\n" + body, encoding="utf-8")
+        after = compute_file_hash(f)
+
+        assert before == after
+
+    def test_body_edit_changes_hash(self, tmp_path: Path) -> None:
+        f = tmp_path / "page.md"
+        f.write_text("---\nr: 1\n---\n# v1\n", encoding="utf-8")
+        before = compute_file_hash(f)
+        f.write_text("---\nr: 1\n---\n# v2\n", encoding="utf-8")
+        after = compute_file_hash(f)
+
+        assert before != after
+
+    def test_md_without_frontmatter_hashes_body(self, tmp_path: Path) -> None:
+        """No frontmatter means nothing is stripped."""
+        import hashlib
+
+        body = b"# Plain\n\nNo frontmatter here.\n"
+        f = tmp_path / "plain.md"
+        f.write_bytes(body)
+
+        assert compute_file_hash(f) == hashlib.sha256(body).hexdigest()
+
+    def test_body_level_horizontal_rule_preserved(self, tmp_path: Path) -> None:
+        """A `---` horizontal rule in the body must not be treated as frontmatter."""
+        body = "# Heading\n\n---\n\nSection.\n"
+        f = tmp_path / "page.md"
+        f.write_text(body, encoding="utf-8")
+        fm_wrapped = tmp_path / "page_fm.md"
+        fm_wrapped.write_text("---\nr: 1\n---\n" + body, encoding="utf-8")
+
+        assert compute_file_hash(f) == compute_file_hash(fm_wrapped)
+
+    def test_non_md_file_unaffected(self, tmp_path: Path) -> None:
+        """Non-.md files must hash the full bytes, even if they start with `---`."""
+        import hashlib
+
+        content = b"---\nkey: value\n---\nprint('hi')\n"
+        f = tmp_path / "weird.py"
+        f.write_bytes(content)
+
+        assert compute_file_hash(f) == hashlib.sha256(content).hexdigest()
+
+    def test_crlf_frontmatter_stripped(self, tmp_path: Path) -> None:
+        body = b"# Heading\r\n\r\nBody.\r\n"
+        f = tmp_path / "win.md"
+        f.write_bytes(b"---\r\nkey: value\r\n---\r\n" + body)
+        plain = tmp_path / "plain.md"
+        plain.write_bytes(body)
+
+        assert compute_file_hash(f) == compute_file_hash(plain)
+
+    def test_unclosed_frontmatter_not_stripped(self, tmp_path: Path) -> None:
+        """Opening `---` without a closing `---` is not a frontmatter block."""
+        import hashlib
+
+        content = b"---\nno closing delimiter\n# Heading\n"
+        f = tmp_path / "broken.md"
+        f.write_bytes(content)
+
+        assert compute_file_hash(f) == hashlib.sha256(content).hexdigest()
+
+
 class TestGitDiff:
     def test_parses_name_status_output(self, tmp_path: Path) -> None:
         completed = type(

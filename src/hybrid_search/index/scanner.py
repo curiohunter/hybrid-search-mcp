@@ -230,8 +230,30 @@ def get_changed_files_from_git(
     return GitDiffResult(added=added, modified=modified, deleted=deleted, renamed=renamed)
 
 
+# Matches a YAML frontmatter block at the very start of a Markdown file:
+#   ---\n
+#   key: value ...
+#   ---\n
+# Supports both LF and CRLF line endings. Non-greedy so only the first block
+# is stripped (a body-level `---` horizontal rule is preserved).
+_FRONTMATTER_RE = re.compile(rb"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
+
+
+def _strip_frontmatter(raw: bytes) -> bytes:
+    return _FRONTMATTER_RE.sub(b"", raw, count=1)
+
+
 def compute_file_hash(file_path: Path) -> str:
-    """Compute SHA256 hash of file content."""
+    """Compute SHA256 hash of file content.
+
+    For Markdown files, the YAML frontmatter is stripped before hashing so
+    metadata-only edits (reviewed/status/tags) do not invalidate caches or
+    trigger re-embedding. Non-Markdown files are hashed in streaming mode.
+    """
+    if file_path.suffix.lower() == ".md":
+        raw = file_path.read_bytes()
+        return hashlib.sha256(_strip_frontmatter(raw)).hexdigest()
+
     h = hashlib.sha256()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
