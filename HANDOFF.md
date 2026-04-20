@@ -2,11 +2,11 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-20, 2회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-20, 3회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
 
-자율 루프 축 **Q7 (CLAUDE.md 자동 주입 + 업데이트) + Q8 (core.hooksPath 존중)** 완료. 296/296 tests passed. Quick Wins 5/10 (50%), 전체 5/28 (18%). 다음은 Q3/Q5 (MCP 입력 보호) 묶음.
+MCP 입력 보호 축 **Q3 (stdin blank-line filter) + Q5 (민감 파일 필터)** 완료. 308/308 tests passed. Quick Wins 7/10 (70%), 전체 7/28 (25%). 다음은 **Q4 (Security 모듈)** + **Q6 (Cache frontmatter strip)** 또는 **Q10 (`.hybrid-search-ignore` upward walk)**.
 
 ### 전략적 맥락 (중요)
 
@@ -18,13 +18,23 @@
 
 **포지셔닝 전환:** "코드 검색 도구" → "Claude Code의 영구 기억 레이어". Graphify와 경쟁하지 않고 보완재로 공존.
 
-### ✅ 이 세션 완료된 것 (2회차)
+### ✅ 이 세션 완료된 것 (3회차)
 
 **구현 (커밋 예정):**
-- **Q7: CLAUDE.md 자동 주입 + 업데이트** — `_ensure_claude_md`가 이제 idempotent. 기존 `<!-- hybrid-search -->` 섹션을 marker-bounded regex(`MARKER\n## [^\n]+\n.*?(?=\n## |\Z)`)로 **in-place 교체**. `_remove_claude_md` 추가. `cmd_install_hook` 끝에서 자동 호출. status 체크도 marker 기반으로 타이트하게 수정.
-- **Q8: core.hooksPath 존중 (Husky 호환)** — `_git_hooks_dir(repo_root)` 헬퍼 추가. `git config --get core.hooksPath` → `git rev-parse --git-path hooks` → `.git/hooks` 순서로 폴백. `cmd_install_hook`, `cmd_setup`, `_check_project_status`의 하드코딩된 `.git/hooks` 경로 교체.
+- **Q3: MCP stdin blank-line filter** — `src/hybrid_search/server.py`에 `_filter_blank_stdin()` 추가. OS pipe + daemon 스레드로 stdin 중계, `line.strip()` falsy면 드롭. `main()`에서 `asyncio.run` 직전 호출. pytest 환경처럼 stdin이 진짜 fd가 아니면 조용히 bail out.
+- **Q5: 민감 파일 패턴 필터** — `src/hybrid_search/index/scanner.py`에 `_SENSITIVE_BASENAME_PATTERNS` (basename 레벨: `.env*`, `credentials.json/yaml/toml/ini`, `secrets.*`, `service-account*.json`, `*.pem/key/p12/crt`, `id_rsa` 등) + `_SENSITIVE_PATH_PATTERNS` (path 레벨: `.ssh/id_*`, `.aws/credentials`, `.gcloud/*credentials*`) + `_is_sensitive_file(path)` 추가. `_walk_files` + `_is_indexable_path` 양쪽에 게이트. **타이트한 매칭** — `PasswordReset.tsx`, `TokenManager.ts`, `test_password.py`, `docs/secrets.md` 같은 정상 파일은 통과.
 
-**테스트:** `tests/test_cli_hook_install.py`에 12개 신규 테스트 (`TestEnsureClaudeMd` 5, `TestRemoveClaudeMd` 3, `TestGitHooksDir` 4). **296/296 passed.**
+**테스트:** 
+- `tests/test_scanner.py`에 `TestIsSensitiveFile` 7개 + `TestScanProjectSkipsSensitive` 1개
+- `tests/test_server_stdin_filter.py` 신규 (subprocess로 격리) 4개 — blank 드롭, 선행/후행 blank, whitespace-only 라인, passthrough
+- **308/308 passed** (이전 296 → +12 신규)
+
+### 이전 세션 완료 (2회차, 2026-04-20 오후)
+
+**커밋:**
+- `2231b1f` — Q7 CLAUDE.md idempotent + Q8 core.hooksPath (Husky 호환)
+
+**구현:** Q7 (marker-bounded regex로 CLAUDE.md in-place 교체, `_remove_claude_md` 추가), Q8 (`_git_hooks_dir` 폴백 체인).
 
 ### 이전 세션 완료 (1회차, 2026-04-20 오전)
 
@@ -35,18 +45,22 @@
 
 **구현:** Q1 (route_hook), Q2 (status 확장), Q9 (hook identity 필터), + `.gitignore` 자동 관리 + `.hybrid-search/` 추적 해제.
 
-### ⬜ 다음 세션 제안 — Q3 + Q5 (MCP 입력 보호 묶음)
+### ⬜ 다음 세션 제안 — Q4 (Security 모듈) 또는 Q10 (`.hybrid-search-ignore`)
 
-동일 영역 (MCP 서버 entrypoint), 함께 처리하면 1.5시간.
+**옵션 A — Q4: Security 모듈 (반나절)**
+- 신규 `src/hybrid_search/security.py` with `sanitize_query`, `validate_project_path`, `sanitize_snippet` (control char strip + 길이 제한 + path traversal 방지)
+- `tools/hybrid_search.py` 파라미터 입구에서 호출
+- Q3/Q5가 **파일 시스템 쪽 방어**였다면 Q4는 **입력 쪽 방어**
+- 참조: `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` Q4
 
-**Q3: MCP stdin blank-line filter** (30분)
-- MCP 클라이언트가 가끔 빈 줄 보내 JSON parse 에러 → stdin 읽기 전 blank line skip
-- 참조: `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` Q3 섹션
+**옵션 B — Q10: `.hybrid-search-ignore` + upward walk (반나절)**
+- 현재 `.gitignore` 기반 필터에 추가로 `.hybrid-search-ignore` 지원
+- 부모 디렉토리로 walk-up하며 병합 (monorepo/서브모듈 대응)
+- 참조: 동 문서 Q10
 
-**Q5: 민감 파일 패턴 필터** (1시간)
-- `.env`, `*.pem`, `credentials.*` 등 인덱싱 제외
-- `index/scanner.py`의 skip list에 추가 + 테스트
-- 참조: 동 문서 Q5 섹션
+**옵션 C — Q6: Content-addressed cache + frontmatter strip (반나절)**
+- wiki/markdown frontmatter (YAML header) 재임베딩 스킵
+- 참조: 동 문서 Q6
 
 ### 📂 필수 참조 문서 (다음 세션에서 반드시 읽을 것)
 
@@ -65,35 +79,36 @@
 |---|------|------|------|
 | ~~Q7~~ | ~~CLAUDE.md 자동 주입~~ | ~~반나절~~ | **✅ 완료 (2회차)** |
 | ~~Q8~~ | ~~core.hooksPath 존중~~ | ~~20분~~ | **✅ 완료 (2회차)** |
-| **Q3** | **MCP stdin blank-line filter** | **30분** | **다음 세션 1순위** |
-| **Q5** | **민감 파일 필터** | **1시간** | **Q3과 묶음** |
-| Q4 | Security 모듈 | 반나절 | Q3/Q5 후속 |
+| ~~Q3~~ | ~~MCP stdin blank-line filter~~ | ~~30분~~ | **✅ 완료 (3회차)** |
+| ~~Q5~~ | ~~민감 파일 필터~~ | ~~1시간~~ | **✅ 완료 (3회차)** |
+| **Q4** | **Security 모듈** | **반나절** | **다음 세션 1순위 후보** |
 | Q6 | Cache frontmatter strip | 반나절 | |
 | Q10 | `.hybrid-search-ignore` upward walk | 반나절 | |
 
-전체 진행률: **5/28 (18%)**. Quick Wins 완성 = 10/28 (36%).
+전체 진행률: **7/28 (25%)**. Quick Wins 완성 = 10/28 (36%).
 
 ### 🎬 다음 세션 시작 방법
 
 ```
 HANDOFF.md 최상단 섹션 + _study/graphify-analysis/99-actionable-patches-for-hybrid-search.md의
-Q3/Q5 섹션 읽고, Q3 (MCP stdin blank-line filter) + Q5 (민감 파일 필터) 한 세션에 완료하자.
+Q4 섹션 읽고, Q4 (Security 모듈 — sanitize_query + validate_project_path + sanitize_snippet) 구현하자.
 ```
 
 ### 🔧 현재 상태 스냅샷
 
-- **브랜치:** `main` (origin 기준 3 커밋 앞, 4번째는 아래 커밋 후)
-- **워킹 트리:** Q7/Q8 미커밋 (이 세션 결과물)
-- **테스트:** 296/296 passed (이전 284 + Q7/Q8 신규 12)
-- **주 작업 파일:** `src/hybrid_search/cli.py`, `tests/test_cli_hook_install.py`
+- **브랜치:** `main` (origin 기준 4 커밋 앞, 5번째는 이 세션 커밋 후)
+- **워킹 트리:** Q3/Q5 미커밋 (이 세션 결과물)
+- **테스트:** 308/308 passed (이전 296 + Q3/Q5 신규 12)
+- **주 작업 파일:** `src/hybrid_search/server.py`, `src/hybrid_search/index/scanner.py`, `tests/test_scanner.py`, 신규 `tests/test_server_stdin_filter.py`
 - **status 출력 정상:** PreToolUse hooks 4/4, CLAUDE.md routing ✓, post-commit hook ✓
 
 ### ⚠️ 주의사항
 
 - **graphify 분석 문서**는 `_study/` 폴더에 있고 이 프로젝트 git과 **별개** (추적 안 됨).
-- **Q7 marker regex:** `<!-- hybrid-search -->\n## [^\n]+\n.*?(?=\n## |\Z)` — 마커 + 첫 `##` 헤딩 + 본문 (다음 `##` 또는 EOF까지 lazy). 치환은 `lambda` 로 back-reference 파싱 회피.
+- **Q3 stdin filter** — `_filter_blank_stdin()`은 전역 fd 0를 `dup2`로 교체함. pytest 메인 프로세스에서 직접 호출 금지. 테스트는 subprocess 격리 필수 (`tests/test_server_stdin_filter.py` 참조). fd 확보 실패 시 (captured stdin) 조용히 리턴하도록 방어함.
+- **Q5 sensitive 패턴** — 매칭은 **basename 우선**, path 패턴은 `.ssh/id_*` 같은 위치 의존에만. `PasswordReset.tsx`, `TokenManager.ts`, `test_password.py`, `docs/secrets.md` 같은 정상 파일은 반드시 통과해야 함. 신규 패턴 추가 시 `TestIsSensitiveFile::test_source_files_not_blocked`도 업데이트.
+- **Q7 marker regex:** `<!-- hybrid-search -->\n## [^\n]+\n.*?(?=\n## |\Z)` — 마커 + 첫 `##` 헤딩 + 본문 (다음 `##` 또는 EOF까지 lazy). 치환은 `lambda`로 back-reference 파싱 회피.
 - **Q8 core.hooksPath 폴백 순서:** `git config --get` → `git rev-parse --git-path hooks` → `.git/hooks`. 상대경로는 `repo_root` 기준 해석.
-- **Q3 MCP 입력 보호**는 `server.py` entrypoint 직접 건드릴 것 (stdin loop 주변).
 - **skill 파일 수정** 시 `~/.claude/skills/`로 동기화 잊지 말 것 (setup 명령이 처리하긴 함).
 
 ---
