@@ -9,6 +9,7 @@ from hybrid_search.index.scanner import (
     _is_sensitive_file,
     compute_file_hash,
     get_changed_files_from_git,
+    parse_git_diff_name_status,
     scan_project,
     scan_project_subset,
 )
@@ -166,6 +167,51 @@ class TestGitDiff:
         assert result.modified == ["src/app.py"]
         assert result.deleted == ["old.py", "before.py"]
         assert result.renamed == [("before.py", "after.py")]
+
+
+class TestParseGitDiffNameStatus:
+    """M3: public parser used by both subprocess and env-var fast paths."""
+
+    def test_empty_string_yields_empty_result(self) -> None:
+        result = parse_git_diff_name_status("")
+        assert result.added == []
+        assert result.modified == []
+        assert result.deleted == []
+        assert result.renamed == []
+
+    def test_parses_all_status_kinds(self) -> None:
+        raw = "A\tnew.py\nM\tsrc/app.py\nD\told.py\nR100\tbefore.py\tafter.py\n"
+        result = parse_git_diff_name_status(raw)
+        assert result.added == ["new.py", "after.py"]
+        assert result.modified == ["src/app.py"]
+        assert result.deleted == ["old.py", "before.py"]
+        assert result.renamed == [("before.py", "after.py")]
+
+    def test_blank_lines_skipped(self) -> None:
+        raw = "\nA\ta.py\n\n\nM\tb.py\n\n"
+        result = parse_git_diff_name_status(raw)
+        assert result.added == ["a.py"]
+        assert result.modified == ["b.py"]
+
+    def test_unknown_status_codes_ignored(self) -> None:
+        """T (type change), U (unmerged), etc. are ignored without error."""
+        raw = "T\ttype-changed.py\nU\tconflict.py\nA\tfine.py\n"
+        result = parse_git_diff_name_status(raw)
+        assert result.added == ["fine.py"]
+        assert result.modified == []
+        assert result.deleted == []
+
+    def test_rename_similarity_scores_accepted(self) -> None:
+        """``R050`` (50% similarity), ``R100`` (exact rename) — both valid."""
+        raw = "R050\told/path.py\tnew/path.py\nR100\tverbatim.py\tmoved.py\n"
+        result = parse_git_diff_name_status(raw)
+        assert result.renamed == [
+            ("old/path.py", "new/path.py"),
+            ("verbatim.py", "moved.py"),
+        ]
+        # Each rename counts as (delete old, add new)
+        assert set(result.deleted) == {"old/path.py", "verbatim.py"}
+        assert set(result.added) == {"new/path.py", "moved.py"}
 
 
 class TestSubsetScan:
