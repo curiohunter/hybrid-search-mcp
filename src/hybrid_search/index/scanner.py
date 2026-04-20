@@ -191,6 +191,45 @@ def scan_project_subset(
     return ScanResult(added=added, changed=changed, deleted=deleted)
 
 
+def parse_git_diff_name_status(raw: str) -> GitDiffResult:
+    """Parse ``git diff --name-status`` output into a ``GitDiffResult``.
+
+    The parser tolerates blank lines and ignores status codes other than
+    A/M/D/R. Rename entries contribute to both ``deleted`` (old path) and
+    ``added`` (new path), mirroring how the indexer treats a rename.
+
+    Used both by :func:`get_changed_files_from_git` (subprocess path) and by
+    the M3 hook fast-path that injects a pre-computed diff through
+    ``HYBRID_SEARCH_CHANGED_STATUS``.
+    """
+    added: list[str] = []
+    modified: list[str] = []
+    deleted: list[str] = []
+    renamed: list[tuple[str, str]] = []
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = line.split("\t")
+        status = parts[0]
+        kind = status[0]
+
+        if kind == "A" and len(parts) >= 2:
+            added.append(parts[1])
+        elif kind == "M" and len(parts) >= 2:
+            modified.append(parts[1])
+        elif kind == "D" and len(parts) >= 2:
+            deleted.append(parts[1])
+        elif kind == "R" and len(parts) >= 3:
+            renamed.append((parts[1], parts[2]))
+            deleted.append(parts[1])
+            added.append(parts[2])
+
+    return GitDiffResult(added=added, modified=modified, deleted=deleted, renamed=renamed)
+
+
 def get_changed_files_from_git(
     project_root: Path,
     revspec: str = "HEAD~1..HEAD",
@@ -212,32 +251,7 @@ def get_changed_files_from_git(
         logger.info("git diff failed for %s (%s): %s", project_root, revspec, proc.stderr.strip())
         return None
 
-    added: list[str] = []
-    modified: list[str] = []
-    deleted: list[str] = []
-    renamed: list[tuple[str, str]] = []
-
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-
-        parts = line.split("\t")
-        status = parts[0]
-        kind = status[0]
-
-        if kind == "A" and len(parts) >= 2:
-            added.append(parts[1])
-        elif kind == "M" and len(parts) >= 2:
-            modified.append(parts[1])
-        elif kind == "D" and len(parts) >= 2:
-            deleted.append(parts[1])
-        elif kind == "R" and len(parts) >= 3:
-            renamed.append((parts[1], parts[2]))
-            deleted.append(parts[1])
-            added.append(parts[2])
-
-    return GitDiffResult(added=added, modified=modified, deleted=deleted, renamed=renamed)
+    return parse_git_diff_name_status(proc.stdout)
 
 
 # Matches a YAML frontmatter block at the very start of a Markdown file:

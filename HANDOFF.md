@@ -6,11 +6,26 @@
 
 ### 한줄 요약
 
-**Q10 + M2 연속 완료 🎉** — Quick Wins 10/10 + M 시리즈 착수. 388/388 tests passed. 전체 **11/28 (39%)**. 다음 세션은 **M3 (post-commit에 `git diff --name-only` env 전달 → delta reindex 가속)** 또는 **M1 (Confidence 라벨 + numeric score)**.
+**Q10 + M2 + M3 연속 완료 🎉** — Quick Wins 10/10 + M 시리즈 착수(2개). 396/396 tests passed. 전체 **12/28 (43%)**. 다음 세션은 **M1 (Confidence 3단계 라벨 + numeric score)** 또는 **M4 (`needs_synthesis` flag)**.
 
 ### ✅ 이 세션 완료된 것 (6회차)
 
-**M2: post-checkout 훅 추가** (`c71ddb1` 다음 커밋)
+**M3: post-commit이 diff를 커밋 시점에 캡처 → env 전달** (M2 다음 커밋)
+- 문제: post-commit 훅이 `nohup reindex --git-delta &`를 띄우면, 배경 프로세스가 시작될 때 `get_changed_files_from_git(HEAD~1..HEAD)`를 재계산. 사용자가 빠르게 2차 커밋하면 HEAD~1이 이동해서 1차 커밋의 변경을 놓침 (race).
+- 해결: 훅이 `git diff --name-status HEAD~1 HEAD`를 **동기적으로** 캡처해 `HYBRID_SEARCH_CHANGED_STATUS` env로 export. `nohup bash -c` 자식 프로세스가 env 상속 → `cmd_reindex`가 내부 subprocess 호출 대신 env를 파싱.
+- `src/hybrid_search/index/scanner.py`에 `parse_git_diff_name_status(raw: str)` public 파서 추출. `get_changed_files_from_git`도 재사용.
+- `src/hybrid_search/cli.py` `cmd_reindex`: `--git-delta` 게이트 안에서 env 우선 체크 → 없으면 기존 subprocess 경로 fallback.
+- `_HOOK_DIFF_ENV = "HYBRID_SEARCH_CHANGED_STATUS"` 상수로 관리.
+- **초기 커밋 처리**: `git rev-parse HEAD~1` 실패 시 env 미설정 → `cmd_reindex`가 내부 fallback에서 `None` 받고 full scan 경로로 떨어짐 (기존 동작 유지).
+- `scripts/post-commit-hook.sh` 레퍼런스도 동일 패턴 적용.
+- **부수 효과**: subprocess 호출 1회 절약(~50ms) + race 방지.
+
+**테스트 (M3 신규 8개):**
+- `tests/test_scanner.py::TestParseGitDiffNameStatus` 5개 (empty/all-kinds/blank-lines/unknown-codes/rename-similarities)
+- `tests/test_cli_hook_install.py::TestScriptContentSanity::test_post_commit_script_exports_hook_diff_env` 1개
+- `tests/test_cli_hook_install.py::TestPostCommitDiffCapture` 2개 (실제 bash+git 통합: 2차 커밋 env export 검증, 초기 커밋 env 미설정 검증)
+
+**M2: post-checkout 훅 추가** (`b4319bc`)
 - `src/hybrid_search/cli.py`에 `_build_post_commit_script()`, `_build_post_checkout_script()`, `_install_hook_file()` 헬퍼로 리팩터. `cmd_install_hook`이 두 훅 동시 설치.
 - **post-checkout 게이트**: `[ "$3" = "1" ] || exit 0` (브랜치 스위치만 트리거, 파일 체크아웃 skip) + `[ -d "$PROJECT_DIR/.hybrid-search" ] || exit 0` (인덱스 미존재 시 자동 부트스트랩 금지).
 - **post-checkout 동작**: `reindex --wiki-scope affected` (NO `--git-delta`, NO `--synthesize`). 이유: `HEAD~1..HEAD`는 브랜치 스위치 후 무의미. 파일시스템 delta(size/mtime/hash) 사용. synthesis는 브랜치 스위치가 빈번하므로 비용 대비 효용 낮음.
@@ -93,20 +108,20 @@
 - `a3bdabf` — wiki-gaps.txt git 추적 제거
 - `4ccefd8` — HANDOFF 업데이트 (Q1/Q2/Q9)
 
-### ⬜ 다음 세션 제안 — M3 (changed-files env 전달, 반나절) 또는 M1 (Confidence 라벨, 1일)
+### ⬜ 다음 세션 제안 — M1 (Confidence 라벨, 1일) 또는 M4 (needs_synthesis flag, 반나절)
 
-**M3 (권장, 반나절): Git hook에서 `git diff --name-only HEAD~1 HEAD` 전달**
-- 현재 post-commit hook은 `reindex --git-delta`를 호출 → 내부적으로 git diff 재계산. 중복 작업.
-- hook에서 미리 계산해서 `HYBRID_SEARCH_CHANGED` env나 `--changed-files` 플래그로 전달 → 스캔 단계 자체 생략 가능.
-- `scripts/post-commit-hook.sh`와 `_build_post_commit_script()` 둘 다 수정 필요.
-- `cmd_reindex`에 `--changed-files` 플래그 추가, `scan_project_subset` 경로 타도록 분기.
-- 참조: graphify `hooks.py:_HOOK_SCRIPT:47-72`, 패치 문서 `99-actionable-patches-for-hybrid-search.md` M3 섹션.
+**M1 (권장, 1일): Confidence 3단계 라벨 + numeric score**
+- 모든 call edge에 `confidence ∈ {EXTRACTED, INFERRED, AMBIGUOUS}` + `score ∈ [0,1]` 부여.
+- BM25+vector fusion에서 score를 가중치로 활용. 현재는 callgraph에만 `confidence` 문자열(high/medium/low)이 존재 — 숫자 점수 도입 시 fusion/랭킹과 자연스럽게 연결.
+- **중요 원칙**: Leiden/degree 같은 구조 분석은 confidence-blind 유지 (DAG 구성 정확성), 리포트/ranking만 confidence-aware. 섞지 말 것.
+- 적용: `src/hybrid_search/index/callgraph.py`(엣지 emit), `src/hybrid_search/search/fusion.py`(score 활용).
+- 참조: graphify `extract.py:1060-1068` (EXTRACTED 1.0), `extract.py:3206-3211` (INFERRED 0.8), `test_confidence.py:65-77` (AMBIGUOUS ≤0.4). 패치 문서 M1 섹션.
 
-**M1 (대안, 1일): Confidence 3단계 라벨 + numeric score**
-- 모든 call edge에 `confidence ∈ {EXTRACTED, INFERRED, AMBIGUOUS}` + `score ∈ [0,1]`.
-- BM25+vector fusion에서 score를 가중치로 활용.
-- 원칙: Leiden/degree 같은 구조 분석은 confidence-blind, 리포트/ranking만 confidence-aware (섞지 말 것).
-- 참조: 패치 문서 M1 섹션.
+**M4 (대안, 반나절): `needs_synthesis` flag 파일 패턴**
+- 훅은 LLM 호출 못 함 → 대신 flag 파일로 "synthesis 필요" 신호.
+- `src/hybrid_search/tools/index.py` stale 감지 시 `.hybrid-search/needs_synthesis` flag write.
+- `/search` 스킬이 읽고 사용자에게 리마인드. `/maintain` 실행 시 flag clear.
+- 참조: graphify `watch.py:110-118`, 패치 문서 M4 섹션.
 
 ### 📂 필수 참조 문서 (다음 세션에서 반드시 읽을 것)
 
@@ -133,18 +148,18 @@
 | ~~Q4~~ | ~~Security 모듈~~ | 4회차 |
 | ~~Q6~~ | ~~Cache frontmatter strip~~ | 5회차 |
 | ~~Q10~~ | ~~`.hybrid-search-ignore` upward walk~~ | 6회차 |
-| ~~M2~~ | ~~post-checkout hook 추가~~ | **6회차** |
+| ~~M2~~ | ~~post-checkout hook 추가~~ | 6회차 |
+| ~~M3~~ | ~~post-commit diff env 전달 (race 방지 + subprocess 절약)~~ | **6회차** |
 
-**다음: M 시리즈 계속 — 자율 루프 + 품질 축**
+**다음: M 시리즈 계속 — 품질 축 전환**
 
 | # | 작업 | 공수 | 축 | 우선순위 |
 |---|------|------|----|----|
-| **M3** | **`git diff --name-only`를 env로 전달 (delta reindex 가속)** | **반나절** | **자율 루프** | **다음 1순위 (M2 자연 연속)** |
-| M4 | `needs_synthesis` flag 파일 패턴 | 반나절 | 자율 루프 | 낮음 |
-| M1 | Confidence 3단계 라벨 + numeric score | 1일 | 품질 | 중 |
+| **M1** | **Confidence 3단계 라벨 + numeric score** | **1일** | **품질** | **다음 1순위** |
+| M4 | `needs_synthesis` flag 파일 패턴 | 반나절 | 자율 루프 | 중 |
 | M5 | MCP 확장: `god_nodes`, `shortest_path`, `subgraph` | 2일 | 품질 | 낮음 |
 
-전체 진행률: **11/28 (39%)**.
+전체 진행률: **12/28 (43%)**.
 
 ### 🎬 다음 세션 시작 방법
 
@@ -156,15 +171,16 @@ M3도 가까운 주제라 같은 세션 묶음 고려.
 
 ### 🔧 현재 상태 스냅샷
 
-- **브랜치:** `main` (Q10 = `c71ddb1`, M2 = 이 세션 2번째 커밋)
-- **워킹 트리:** Q10 + M2 커밋됨
-- **테스트:** 388/388 passed (370 → +8 Q10 → +10 M2)
+- **브랜치:** `main` (Q10 = `c71ddb1`, M2 = `b4319bc`, M3 = 이 세션 3번째 커밋)
+- **워킹 트리:** Q10 + M2 + M3 커밋됨
+- **테스트:** 396/396 passed (370 → +8 Q10 → +10 M2 → +8 M3)
 - **주 작업 파일:**
-  - `src/hybrid_search/index/scanner.py` (Q10 upward walk ignore)
-  - `src/hybrid_search/cli.py` (M2 post-commit + post-checkout 설치)
+  - `src/hybrid_search/index/scanner.py` (Q10 ignore walker, M3 `parse_git_diff_name_status` 추출)
+  - `src/hybrid_search/cli.py` (M2 훅 2종 설치, M3 `_HOOK_DIFF_ENV` 경로)
+  - `scripts/post-commit-hook.sh` (M3 synchronous diff capture)
   - `scripts/post-checkout-hook.sh` (M2 레퍼런스, 수동 설치용)
-  - `tests/test_scanner.py` (+8), `tests/test_cli_hook_install.py` (+10)
-- **status 출력 업데이트:** post-commit + post-checkout 둘 다 표시 (PreToolUse hooks 4/4, CLAUDE.md routing ✓).
+  - `tests/test_scanner.py` (+8 Q10, +5 M3), `tests/test_cli_hook_install.py` (+10 M2, +3 M3)
+- **status 출력:** post-commit + post-checkout 둘 다 표시 (PreToolUse hooks 4/4, CLAUDE.md routing ✓).
 
 ### ⚠️ 주의사항
 
@@ -180,6 +196,8 @@ M3도 가까운 주제라 같은 세션 묶음 고려.
 - **Q10 reindex 영향:** 새 `.hybrid-search-ignore` 추가 시 다음 reindex에서 이전 포함 파일이 제거되어 해당 chunks가 DB에서 삭제됨. 의도된 동작. Full rebuild 불필요.
 - **M2 post-checkout 튜닝 여지:** 현재는 단순 filesystem-delta reindex. 빠른 브랜치 왕복(`git checkout -`)이 잦은 워크플로우에서 반복 reindex 비용이 보일 수 있음. 개선 아이디어: (1) 마지막 reindex HEAD hash를 `.hybrid-search/last_indexed_head` 파일에 저장 → 동일 head면 skip, (2) M3 기반으로 `git diff <prev>..<new> --name-only` 전달. M3와 함께 묶기 권장.
 - **M2 식별 마커 주의:** `_HOOK_IDENTITY_MARKER = "hybrid_search.cli"` — 두 훅 모두 이 문자열 포함. 개별 훅 파일 단위로 체크하므로 충돌 없음. 레거시(이전 단일 hook) 설치도 동일 문자열이라 자동 인식됨.
+- **M3 env 보안 주의:** `HYBRID_SEARCH_CHANGED_STATUS`는 훅이 export하지만 **외부에서도 설정 가능**. `cmd_reindex`는 `--git-delta` 게이트 안에서만 env를 읽으므로 일반 사용자가 실수로 env를 상속해도 `--git-delta` 없이는 무시됨. 악성 env로 인한 "가짜 파일 리인덱싱" 공격은 이론상 가능하지만 대상 파일은 프로젝트 내 실제 경로로 제한(scan_project_subset → `_is_indexable_path` 검증) → 영향 제한적. 추후 env 서명 고려 가능.
+- **M3 race 방지 원리:** 훅은 post-commit 시점에 동기적으로 `git diff --name-status HEAD~1 HEAD`를 캡처 → env export → `nohup &`로 배경 프로세스에 전달. 그 사이에 다른 커밋이 들어와도 env는 커밋 시점 snapshot이라 올바른 diff를 유지. env가 없는 경로(기존)는 `nohup` 내부에서 subprocess를 늦게 실행하므로 HEAD 이동에 취약.
 - **skill 파일 수정** 시 `~/.claude/skills/`로 동기화 잊지 말 것 (setup이 처리).
 
 ---

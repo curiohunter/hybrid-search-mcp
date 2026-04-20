@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -18,7 +19,16 @@ from hybrid_search.config import load_config
 from hybrid_search.index.dag import generate_all_wiki_pages
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.pipeline import IndexingPipeline
-from hybrid_search.index.scanner import get_changed_files_from_git
+from hybrid_search.index.scanner import (
+    get_changed_files_from_git,
+    parse_git_diff_name_status,
+)
+
+# M3: Post-commit hook captures ``git diff --name-status HEAD~1 HEAD`` at the
+# exact commit moment and exports it via this env var. ``cmd_reindex`` then
+# parses the pre-computed diff instead of re-invoking git — which would race
+# if a second commit lands before the deferred reindex runs.
+_HOOK_DIFF_ENV = "HYBRID_SEARCH_CHANGED_STATUS"
 from hybrid_search.project import ProjectRegistry
 from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
@@ -178,21 +188,40 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     deleted_paths: list[str] | None = None
 
     if getattr(args, "git_delta", False) and not args.force:
-        diff = get_changed_files_from_git(Path(project_path))
-        if diff is not None:
+        env_status = os.environ.get(_HOOK_DIFF_ENV)
+        if env_status is not None:
+            # M3: hook-provided diff (synchronously captured at commit moment).
+            # Avoids subprocess re-invocation and a race where a second commit
+            # between hook fire and deferred reindex would move HEAD~1.
+            diff = parse_git_diff_name_status(env_status)
             changed_paths = list(dict.fromkeys(diff.added + diff.modified))
             deleted_paths = list(dict.fromkeys(diff.deleted))
             if not changed_paths and not deleted_paths:
-                print("Git delta: no changed files detected, skipping reindex.")
+                print("Hook diff: no changed files, skipping reindex.")
                 return
             print(
-                "Git delta:"
+                "Hook diff:"
                 f" {len(diff.added)} added,"
                 f" {len(diff.modified)} modified,"
-                f" {len(diff.deleted)} deleted"
+                f" {len(diff.deleted)} deleted,"
+                f" {len(diff.renamed)} renamed"
             )
         else:
-            print("Git delta unavailable, falling back to full scan.")
+            diff = get_changed_files_from_git(Path(project_path))
+            if diff is not None:
+                changed_paths = list(dict.fromkeys(diff.added + diff.modified))
+                deleted_paths = list(dict.fromkeys(diff.deleted))
+                if not changed_paths and not deleted_paths:
+                    print("Git delta: no changed files detected, skipping reindex.")
+                    return
+                print(
+                    "Git delta:"
+                    f" {len(diff.added)} added,"
+                    f" {len(diff.modified)} modified,"
+                    f" {len(diff.deleted)} deleted"
+                )
+            else:
+                print("Git delta unavailable, falling back to full scan.")
 
     start = time.monotonic()
     print(f"Reindexing: {project_name} ({project_path})")
@@ -2142,11 +2171,32 @@ _HOOK_IDENTITY_MARKER = "hybrid_search.cli"
 
 
 def _build_post_commit_script(venv_python: Path) -> str:
-    """Build the post-commit hook body (delta reindex + gap detection)."""
+    """Build the post-commit hook body (delta reindex + gap detection).
+
+    M3: captures ``git diff --name-status HEAD~1 HEAD`` synchronously at the
+    commit moment and exports it via ``HYBRID_SEARCH_CHANGED_STATUS`` so the
+    deferred background reindex sees the diff for *this* commit, not
+    whatever HEAD~1 has become by the time nohup runs. Env is inherited by
+    the ``nohup bash -c`` child.
+
+    Initial commit: ``git rev-parse HEAD~1`` fails, env stays unset, and
+    ``cmd_reindex --git-delta`` falls back to its internal full-scan path.
+    """
     return f"""#!/bin/bash
 # hybrid-search-mcp:post-commit — auto delta-reindex on commit (background, non-blocking)
 PROJECT_DIR="$(git rev-parse --show-toplevel)"
 mkdir -p "$PROJECT_DIR/.hybrid-search"
+
+# M3: capture diff synchronously so deferred reindex sees THIS commit's diff,
+# not a stale HEAD~1..HEAD recomputed later after a rapid follow-up commit.
+if git rev-parse HEAD~1 >/dev/null 2>&1; then
+  HOOK_DIFF="$(git diff --name-status HEAD~1 HEAD 2>/dev/null)"
+  if [ -z "$HOOK_DIFF" ]; then
+    exit 0  # no-op commit (e.g., amend with no changes) — nothing to reindex
+  fi
+  export HYBRID_SEARCH_CHANGED_STATUS="$HOOK_DIFF"
+fi
+# Initial commit: env stays unset → cmd_reindex falls back internally.
 
 # 1. Gap detection — always runs, no lock, cheap
 "{venv_python}" -m hybrid_search.cli detect-wiki-gaps --git-delta --quiet --cwd "$PROJECT_DIR" || true
