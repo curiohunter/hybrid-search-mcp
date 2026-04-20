@@ -16,3 +16,10 @@ build/
 .hybrid-search/wiki/STALE.md
 .hybrid-search/.gaps-shown
 .hybrid-search/.reindex.lock
+
+# hybrid-search-mcp (auto-added — wiki is machine-local)
+.hybrid-search/wiki-gaps.*
+.hybrid-search/coverage.json
+
+# hybrid-search-mcp (auto-added — wiki is machine-local)
+.hybrid-search/wiki/

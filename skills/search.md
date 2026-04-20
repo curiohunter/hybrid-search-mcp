@@ -8,6 +8,8 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash, Agent, mcp__hybrid-search__h
 
 코드베이스를 검색하는 통합 스킬. 질문 유형을 판단하고 최적 경로로 검색한다.
 
+**자동 주입:** Claude가 `Grep`/`Glob`을 호출하기 직전, 이 프로젝트에 `.hybrid-search/wiki/index.md`가 있으면 **PreToolUse 훅**이 wiki 우선 탐색을 리마인드한다 (`route_hook`, matcher=`Glob|Grep`). 구조/관계 질문에서 Wiki를 스킵하고 Grep으로 직행하는 경향을 바로잡기 위함.
+
 ## CLI 단독 사용
 
 Claude Code 없이도 터미널에서 바로 검색 가능:
