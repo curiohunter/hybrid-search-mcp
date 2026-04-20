@@ -2,11 +2,34 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-20, 5회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-20, 6회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
 
-캐시 안정성 축 진입 — **Q6 (Markdown YAML frontmatter strip before hash)** 완료. 370/370 tests passed. Quick Wins **9/10 (90%)**, 전체 **9/28 (32%)**. 다음 세션은 **Q10 (`.hybrid-search-ignore` upward walk)** 단독 — Quick Wins 마지막 1개.
+**Q10 (`.hybrid-search-ignore` upward walk) 완료 → Quick Wins 10/10 🎉**. 378/378 tests passed. 전체 **10/28 (36%)**. 다음 세션은 **M2 (post-checkout hook)** — 자율 루프 축의 다음 단계.
+
+### ✅ 이 세션 완료된 것 (6회차)
+
+**구현:**
+- **Q10: `.hybrid-search-ignore` + upward walk** — `src/hybrid_search/index/scanner.py`에 `_collect_hybrid_search_ignore_patterns(project_root)` 추가. `project_root`부터 위로 walk하며 각 레벨의 `.hybrid-search-ignore`를 읽음. `.git` 디렉토리 있는 레벨(포함) 또는 filesystem root에서 중단. `_build_ignore_spec()`이 config excludes + `.gitignore` + 수집된 패턴 3개 소스를 하나의 pathspec으로 병합.
+- **포맷 선택:** graphify의 fnmatch 대신 **pathspec (gitignore 슈퍼셋)** 채택. 기존 `.gitignore` 파싱과 동일 엔진 → comments/blanks/negation(`!`) 네이티브 처리, 코드 중복 제거.
+- **안전장치:** 파일당 64KB 상한 (`_GITIGNORE_MAX_SIZE` 재사용), walk 최대 32레벨(`_IGNORE_WALK_MAX_DEPTH`) — symlink 사이클 방어.
+- **양방향 통합:** `scan_project`(full scan)와 `scan_project_subset`(git diff 경로) 둘 다 `_build_ignore_spec`/`_is_indexable_path`를 거쳐 Q10 패턴 존중.
+
+**테스트:** `tests/test_scanner.py::TestHybridSearchIgnore` 8개 추가 — local ignore, parent upward walk (모노레포), git 경계 차단, `.gitignore` 병합, 주석/빈줄, 미존재 no-op, 64KB 초과 skip, subset scan. **378/378 passed** (이전 370 + 신규 8).
+
+**마이그레이션 주의:** Q10은 opt-in 기능 — `.hybrid-search-ignore` 파일을 만들지 않으면 동작 동일. 기존 인덱스 영향 없음. 단, 새 ignore 파일을 추가/수정하면 이전에 포함되던 파일이 exclude되어 다음 reindex에서 해당 chunks/embeddings가 DB에서 삭제됨 (정상 동작).
+
+### 이전 세션 완료
+
+**5회차 (2026-04-20):**
+- Q6 Markdown frontmatter strip (f6f5938)
+
+## 🔵 이전 세션 인계 — 참고용
+
+### 한줄 요약 (5회차)
+
+캐시 안정성 축 — Q6 (Markdown YAML frontmatter strip before hash) 완료. 370/370 tests passed. Quick Wins 9/10 (90%).
 
 ### 전략적 맥락 (중요)
 
@@ -44,13 +67,17 @@
 - `a3bdabf` — wiki-gaps.txt git 추적 제거
 - `4ccefd8` — HANDOFF 업데이트 (Q1/Q2/Q9)
 
-### ⬜ 다음 세션 제안 — Q10 단독 (Quick Wins 마지막)
+### ⬜ 다음 세션 제안 — M2 (post-checkout hook, 자율 루프 축)
 
-**Q10: `.hybrid-search-ignore` + upward walk (반나절)**
-- `.gitignore` 외에 `.hybrid-search-ignore` 전용 ignore 파일 지원
-- 부모 디렉토리 walk-up → monorepo/서브모듈 대응
-- 참조: `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` Q10 (line 316~)
-- 스캐너 테스트 표면 넓음 — 독립 세션 유지 권장. Q5(민감 파일 필터)와 ignore 경로를 조합하여 통합 필터 테스트 필요.
+**M2: 멀티 훅 설치 (post-commit + post-checkout, 1일)**
+- 브랜치 스위치 후 인덱스/wiki 자동 갱신 — 현재 실무에서 가장 자주 드리프트 발생 지점
+- `scripts/post-checkout-hook.sh` 신규 (`$3 == "1"` 체크 = 브랜치 스위치만 트리거, 파일 체크아웃은 skip)
+- `scripts/post-commit-hook.sh` 기존 유지 + `scripts/post-checkout-hook.sh` 병행 설치
+- `src/hybrid_search/cli.py` `cmd_install_hook` 개편 — 두 hook 모두 설치, `core.hooksPath` 존중(Q8 재활용), idempotent 재설치
+- 참조: `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` M2 (line ~367)
+- graphify `hooks.py:121-140` (_hooks_dir), `hooks.py:178-189` (install 둘 다), `hooks.py:77-109` (_CHECKOUT_SCRIPT)
+- **주의:** `[ -d .hybrid-search ] || exit 0` 조건 필수 — 인덱스 없는 프로젝트에서 자동 부트스트랩 금지
+- 통합 테스트: 신규 브랜치 스위치 시 hook 실행 → delta reindex 확인. M3(changed-files env 전달)와 같은 세션에 묶어도 좋음.
 
 ### 📂 필수 참조 문서 (다음 세션에서 반드시 읽을 것)
 
@@ -63,33 +90,47 @@
 | **전략 방향 (왜 이 작업?)** | `~/.claude/projects/-Users-ian-project-claude-project-hybrid-search-mcp/memory/project_strategic_direction.md` |
 | **graphify 원본 (훅 참고)** | `/Users/ian/project/claude_project/_study/graphify/graphify/hooks.py` |
 
-### 📋 남은 Quick Wins 로드맵
+### 📋 Quick Wins 완성 + 다음 M 시리즈 로드맵
 
-| # | 작업 | 공수 | 비고 |
-|---|------|------|------|
-| ~~Q7~~ | ~~CLAUDE.md 자동 주입~~ | ~~반나절~~ | **✅ 완료 (2회차)** |
-| ~~Q8~~ | ~~core.hooksPath 존중~~ | ~~20분~~ | **✅ 완료 (2회차)** |
-| ~~Q3~~ | ~~MCP stdin blank-line filter~~ | ~~30분~~ | **✅ 완료 (3회차)** |
-| ~~Q5~~ | ~~민감 파일 필터~~ | ~~1시간~~ | **✅ 완료 (3회차)** |
-| ~~Q4~~ | ~~Security 모듈~~ | ~~반나절~~ | **✅ 완료 (4회차)** |
-| ~~Q6~~ | ~~Cache frontmatter strip~~ | ~~반나절~~ | **✅ 완료 (5회차)** |
-| **Q10** | **`.hybrid-search-ignore` upward walk** | **반나절** | **다음 세션 1순위 (마지막 Quick Win)** |
+**Quick Wins (Q1~Q10): 10/10 완료 🎉**
 
-전체 진행률: **9/28 (32%)**. Quick Wins 완성 = 10/28 (36%) — **1개 남음**.
+| # | 작업 | 완료 세션 |
+|---|------|-----------|
+| ~~Q1~~ | ~~route_hook + status + wiki 머신별 독립화~~ | 1회차 |
+| ~~Q7~~ | ~~CLAUDE.md 자동 주입~~ | 2회차 |
+| ~~Q8~~ | ~~core.hooksPath 존중~~ | 2회차 |
+| ~~Q3~~ | ~~MCP stdin blank-line filter~~ | 3회차 |
+| ~~Q5~~ | ~~민감 파일 필터~~ | 3회차 |
+| ~~Q4~~ | ~~Security 모듈~~ | 4회차 |
+| ~~Q6~~ | ~~Cache frontmatter strip~~ | 5회차 |
+| ~~Q10~~ | ~~`.hybrid-search-ignore` upward walk~~ | **6회차** |
+
+**다음: M (Medium) 시리즈 — 자율 루프 + 품질 축**
+
+| # | 작업 | 공수 | 축 | 우선순위 |
+|---|------|------|----|----|
+| **M2** | **post-checkout hook 추가** | **1일** | **자율 루프** | **다음 세션 1순위** |
+| M3 | `git diff --name-only`를 env로 전달 (delta reindex 가속) | 반나절 | 자율 루프 | M2와 함께 |
+| M4 | `needs_synthesis` flag 파일 패턴 | 반나절 | 자율 루프 | 낮음 |
+| M1 | Confidence 3단계 라벨 + numeric score | 1일 | 품질 | 중 |
+| M5 | MCP 확장: `god_nodes`, `shortest_path`, `subgraph` | 2일 | 품질 | 낮음 |
+
+전체 진행률: **10/28 (36%)**.
 
 ### 🎬 다음 세션 시작 방법
 
 ```
 HANDOFF.md 최상단 섹션 + _study/graphify-analysis/99-actionable-patches-for-hybrid-search.md의
-Q10 섹션 읽고, Q10 완료로 Quick Wins 10/10 클로즈하자.
+M2 섹션 (line ~367) + graphify hooks.py 읽고, M2 (post-checkout hook) 구현하자.
+M3도 가까운 주제라 같은 세션 묶음 고려.
 ```
 
 ### 🔧 현재 상태 스냅샷
 
-- **브랜치:** `main` (origin 기준 6 커밋 앞, 7번째는 이 세션 커밋 후)
-- **워킹 트리:** Q6 미커밋 (이 세션 결과물)
-- **테스트:** 370/370 passed (이전 362 + Q6 신규 8)
-- **주 작업 파일:** `src/hybrid_search/index/scanner.py` (frontmatter strip), `tests/test_scanner.py` (+8)
+- **브랜치:** `main` (origin 기준 7+ 커밋 앞, 이 세션 커밋 후 8+)
+- **워킹 트리:** Q10 커밋됨 (이 세션 결과물)
+- **테스트:** 378/378 passed (이전 370 + Q10 신규 8)
+- **주 작업 파일:** `src/hybrid_search/index/scanner.py` (upward walk ignore), `tests/test_scanner.py` (+8)
 - **status 출력 정상:** PreToolUse hooks 4/4, CLAUDE.md routing ✓, post-commit hook ✓
 
 ### ⚠️ 주의사항
@@ -102,6 +143,8 @@ Q10 섹션 읽고, Q10 완료로 Quick Wins 10/10 클로즈하자.
 - **Q8 core.hooksPath 폴백:** `git config --get` → `git rev-parse --git-path hooks` → `.git/hooks`.
 - **Q6 frontmatter regex:** `\A---\r?\n.*?\r?\n---\r?\n` (DOTALL, count=1). `\A`로 파일 시작 고정 → body 내부 `---`(horizontal rule)을 false-positive로 잡지 않음. 이 regex를 수정하면 `TestComputeFileHashFrontmatter::test_body_level_horizontal_rule_preserved` 같이 깨질 수 있으니 주의.
 - **Q6 side effect — file_size/mtime drift:** fm-only edit이면 `_is_changed`가 False 반환해서 `files.file_size`/`file_mtime`이 갱신 안 됨. 다음 스캔에서 mtime 불일치로 매번 `compute_file_hash` 재계산(정확하지만 중복 CPU). 필요시 `_is_changed`에서 hash 일치해도 size/mtime만 UPDATE하는 최적화 가능 (Q6.1 후보).
+- **Q10 anchoring 주의:** 수집된 모든 `.hybrid-search-ignore` 패턴을 하나의 pathspec로 합쳐 `project_root` 기준으로 매칭함. 따라서 **ancestor 파일의 rooted 패턴**(예: `/dist/`)은 그 ancestor가 아니라 `project_root` 기준으로 해석됨 (직관과 다를 수 있음). 대부분의 ignore 패턴은 non-rooted(`dist/`, `*.log`)라 실무 영향 없음. 필요 시 per-anchor PathSpec로 정밀화 가능(Q10.1 후보). 테스트 `test_walk_stops_at_git_boundary`로 `.git` 경계 방어 확인.
+- **Q10 reindex 영향:** 새 `.hybrid-search-ignore` 추가 시 다음 reindex에서 이전 포함 파일이 제거되어 해당 chunks가 DB에서 삭제됨. 의도된 동작. Full rebuild 불필요.
 - **skill 파일 수정** 시 `~/.claude/skills/`로 동기화 잊지 말 것 (setup이 처리).
 
 ---
