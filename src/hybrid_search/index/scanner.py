@@ -17,8 +17,18 @@ from hybrid_search.storage.db import FileRecord, StoreDB
 
 logger = logging.getLogger(__name__)
 
-# Max file size for .gitignore to prevent reading huge files
+# Max file size for .gitignore / .hybrid-search-ignore to prevent reading huge files
 _GITIGNORE_MAX_SIZE = 64 * 1024
+
+# Q10: Project-specific ignore file. Walks upward from project_root to the
+# nearest ``.git`` boundary (or filesystem root), so monorepos and
+# sub-checkouts inherit parent-level exclusions automatically.
+_HYBRID_SEARCH_IGNORE_FILENAME = ".hybrid-search-ignore"
+
+# Safety cap on ancestor walk depth (well past any realistic monorepo nesting)
+# — also defends against pathological symlink cycles that escape the filesystem
+# root check.
+_IGNORE_WALK_MAX_DEPTH = 32
 
 
 # Basename patterns — file likely contains secrets regardless of location.
@@ -409,11 +419,49 @@ def _is_indexable_path(
     return True
 
 
+def _collect_hybrid_search_ignore_patterns(project_root: Path) -> list[str]:
+    """Walk upward from ``project_root`` collecting ``.hybrid-search-ignore`` lines.
+
+    Stops after processing the directory that contains ``.git`` (git repo
+    boundary) or at the filesystem root — whichever comes first. Patterns
+    from ancestor files are included so a monorepo root can declare shared
+    exclusions that apply to every sub-project scanned from within.
+
+    Order: nearest-first (project_root, then parent, grandparent, …). Later
+    patterns can override earlier ones via gitignore ``!`` negation.
+    """
+    collected: list[str] = []
+    current = project_root.resolve()
+    for _ in range(_IGNORE_WALK_MAX_DEPTH):
+        candidate = current / _HYBRID_SEARCH_IGNORE_FILENAME
+        if candidate.exists() and candidate.is_file():
+            try:
+                if candidate.stat().st_size <= _GITIGNORE_MAX_SIZE:
+                    collected.extend(
+                        candidate.read_text(
+                            encoding="utf-8", errors="ignore"
+                        ).splitlines()
+                    )
+            except OSError:
+                pass
+
+        # Stop AFTER processing the level that holds ``.git`` — repo boundary.
+        if (current / ".git").exists():
+            break
+
+        parent = current.parent
+        if parent == current:
+            break  # filesystem root
+        current = parent
+
+    return collected
+
+
 def _build_ignore_spec(
     project_root: Path,
     config: IndexingConfig,
 ) -> pathspec.PathSpec:
-    """Build pathspec from .gitignore + configured exclude patterns."""
+    """Build pathspec from config excludes + .gitignore + .hybrid-search-ignore."""
     patterns = list(config.exclude_patterns)
 
     gitignore = project_root / ".gitignore"
@@ -423,5 +471,7 @@ def _build_ignore_spec(
                 patterns.extend(gitignore.read_text().splitlines())
         except OSError:
             pass
+
+    patterns.extend(_collect_hybrid_search_ignore_patterns(project_root))
 
     return pathspec.PathSpec.from_lines("gitignore", patterns)
