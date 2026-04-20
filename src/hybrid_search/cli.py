@@ -516,31 +516,170 @@ def _auto_prepare_synthesis(
         db.close()
 
 
-def cmd_status(args: argparse.Namespace) -> None:
-    """Show index status for all projects (or a specific project via --cwd)."""
+def _status_mark(ok: bool, warn: bool = False) -> str:
+    return "⚠" if warn else ("✓" if ok else "✗")
+
+
+def _check_global_status() -> None:
+    """Print global installation health (MCP registration, hooks, skills, API key)."""
+    import json as _json
+
+    print("Global (~/.claude/):")
+
+    # MCP server registration
+    claude_json = Path.home() / ".claude.json"
+    mcp_ok = claude_json.exists() and "hybrid-search" in claude_json.read_text()
+    print(f"  {_status_mark(mcp_ok)} MCP server registered       ({claude_json})")
+
+    # PreToolUse hooks in ~/.claude/settings.json
+    settings_path = Path.home() / ".claude" / "settings.json"
+    hook_specs = [
+        ("auto_index", "Read", "hybrid-search/wiki"),
+        ("stale",      "Edit|Write", "STALE.md"),
+        ("gaps",       "Read|Edit|Write", "wiki-gaps"),
+        ("route",      "Glob|Grep", "wiki/index.md"),
+    ]
+    installed_hooks: list[str] = []
+    if settings_path.exists():
+        try:
+            settings = _json.loads(settings_path.read_text())
+            pre = settings.get("hooks", {}).get("PreToolUse", [])
+            for name, matcher, keyword in hook_specs:
+                found = any(
+                    isinstance(h, dict)
+                    and h.get("matcher") == matcher
+                    and keyword in str(h.get("hooks", [{}])[0].get("command", ""))
+                    for h in pre
+                )
+                if found:
+                    installed_hooks.append(name)
+        except (ValueError, OSError):
+            pass
+    total = len(hook_specs)
+    n = len(installed_hooks)
+    mark = _status_mark(n == total, warn=(0 < n < total))
+    detail = ", ".join(installed_hooks) if installed_hooks else "none"
+    print(f"  {mark} PreToolUse hooks: {n}/{total}  ({detail})")
+
+    # Skills
+    skills_dir = Path.home() / ".claude" / "skills"
+    if skills_dir.exists():
+        skills = sorted(d.name for d in skills_dir.iterdir() if d.is_dir() and (d / "skill.md").exists())
+        own = [s for s in skills if s in {
+            "search", "maintain", "setup-hybrid-search", "save-wiki",
+            "rebuild-index", "bootstrap-wiki",
+        }]
+        print(f"  {_status_mark(len(own) > 0)} Skills installed: {len(own)} ({', '.join(own) or 'none'})")
+    else:
+        print(f"  ✗ Skills directory missing        ({skills_dir})")
+
+    # API key
+    import os
+    api_ok = bool(os.environ.get("OPENAI_API_KEY"))
+    if not api_ok:
+        src_root = Path(__file__).resolve().parents[2]
+        env_file = src_root / ".env.local"
+        if env_file.exists() and "OPENAI_API_KEY" in env_file.read_text():
+            api_ok = True
+    print(f"  {_status_mark(api_ok)} OPENAI_API_KEY configured     ({'env or .env.local' if api_ok else 'MISSING'})")
+
+
+def _check_project_status(project_path: Path) -> None:
+    """Print per-project health (index, wiki, git hook, .gitignore, CLAUDE.md)."""
     config = load_config()
     registry = ProjectRegistry(config.global_dir)
+    match = _detect_project(registry, str(project_path))
 
-    if hasattr(args, "cwd") and args.cwd != ".":
-        cwd = str(Path(args.cwd).resolve())
-        match = _detect_project(registry, cwd)
-        if not match:
-            print(f"No registered project found for: {cwd}")
-            return
-        name, _ = match
-        projects = [p for p in registry.list_all() if p.name == name]
-    else:
-        projects = registry.list_all()
+    print(f"\nProject ({project_path}):")
 
-    if not projects:
-        print("No indexed projects.")
+    if not match:
+        print("  ✗ Not registered — run `hybrid-search-mcp index` first")
         return
 
-    for p in projects:
-        print(f"  {p.name}: {p.file_count} files, {p.chunk_count} chunks")
-        if p.last_indexed_at:
-            print(f"    Last indexed: {p.last_indexed_at}")
-        print(f"    Path: {p.path}")
+    name, _ = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        print("  ✗ Registry record missing")
+        return
+
+    # Index
+    print(f"  ✓ Indexed as {name!r}: {pinfo.file_count} files, {pinfo.chunk_count} chunks")
+    if pinfo.last_indexed_at:
+        print(f"    Last indexed: {pinfo.last_indexed_at}")
+
+    # Wiki
+    wiki_dir = project_path / ".hybrid-search" / "wiki"
+    if wiki_dir.exists():
+        pages = [p for p in wiki_dir.glob("*.md") if p.name not in {"STALE.md", "index.md"}]
+        index_md = wiki_dir / "index.md"
+        stale_md = wiki_dir / "STALE.md"
+        has_index = index_md.exists()
+        has_stale = stale_md.exists()
+        mark = _status_mark(has_index, warn=has_stale)
+        detail = f"{len(pages)} pages"
+        if has_stale:
+            detail += " (STALE.md present)"
+        if not has_index:
+            detail += " (index.md MISSING — route_hook won't fire)"
+        print(f"  {mark} Wiki:                         {detail}")
+    else:
+        print(f"  ⚠ Wiki not created yet           (run /bootstrap-wiki)")
+
+    # post-commit hook
+    hook_path = project_path / ".git" / "hooks" / "post-commit"
+    hook_ok = hook_path.exists() and "hybrid_search" in hook_path.read_text()
+    print(f"  {_status_mark(hook_ok)} post-commit hook:             {'installed' if hook_ok else 'MISSING'}")
+
+    # .gitignore
+    gi_path = project_path / ".gitignore"
+    required_gi = [".hybrid-search/wiki/", ".hybrid-search/coverage.json"]
+    if gi_path.exists():
+        content = gi_path.read_text()
+        missing = [e for e in required_gi if e not in content]
+        mark = _status_mark(not missing, warn=bool(missing))
+        detail = "complete" if not missing else f"missing: {', '.join(missing)}"
+        print(f"  {mark} .gitignore:                   {detail}")
+    else:
+        print("  ⚠ .gitignore missing             (consider adding .hybrid-search/wiki/)")
+
+    # CLAUDE.md
+    claude_md = project_path / "CLAUDE.md"
+    if claude_md.exists():
+        has_routing = "hybrid-search" in claude_md.read_text().lower()
+        print(f"  {_status_mark(has_routing, warn=not has_routing)} CLAUDE.md routing:            "
+              f"{'present' if has_routing else 'no hybrid-search section'}")
+    else:
+        print("  ⚠ CLAUDE.md not found            (optional)")
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    """Show hybrid-search-mcp installation + project health."""
+    _check_global_status()
+
+    cwd = Path(args.cwd).resolve() if hasattr(args, "cwd") else Path.cwd()
+    # If --cwd is a git repo (or is ".") show current project health
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0:
+            project_root = Path(result.stdout.strip())
+            _check_project_status(project_root)
+    except Exception:
+        pass
+
+    # Also list all registered projects
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+    projects = registry.list_all()
+    if projects:
+        print(f"\nAll registered projects ({len(projects)}):")
+        for p in projects:
+            print(f"  {p.name}: {p.file_count} files, {p.chunk_count} chunks — {p.path}")
+    else:
+        print("\nNo indexed projects yet.")
 
 
 def cmd_stale(args: argparse.Namespace) -> None:
@@ -1788,8 +1927,13 @@ def cmd_setup(args: argparse.Namespace) -> None:
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Read|Edit|Write"
     )
+    has_route_hook = any(
+        "wiki/index.md" in str(h.get("hooks", [{}])[0].get("command", ""))
+        for h in pre_hooks
+        if isinstance(h, dict) and h.get("matcher") == "Glob|Grep"
+    )
 
-    if has_auto_index and has_stale_check and has_gaps_check:
+    if has_auto_index and has_stale_check and has_gaps_check and has_route_hook:
         print(f"Hooks already registered: {settings_path}")
     else:
         # Build fresh hook entries
@@ -1835,6 +1979,24 @@ def cmd_setup(args: argparse.Namespace) -> None:
                 ),
             }],
         }
+        # Routing hook: before Grep/Glob, remind Claude of wiki when index exists.
+        # Gate: .hybrid-search/wiki/index.md present → emit additionalContext JSON.
+        # Scope: current project only. Cross-project queries use hybrid_search(project=...).
+        route_hook = {
+            "matcher": "Glob|Grep",
+            "hooks": [{
+                "type": "command",
+                "command": (
+                    'ROOT=$(git rev-parse --show-toplevel 2>/dev/null) && '
+                    '[ -n "$ROOT" ] && [ -f "$ROOT/.hybrid-search/wiki/index.md" ] && '
+                    'echo \'{"hookSpecificOutput":{"hookEventName":"PreToolUse",'
+                    '"additionalContext":"hybrid-search: 이 프로젝트에 wiki 인덱스가 있습니다. '
+                    '구조/관계/설계 질문은 .hybrid-search/wiki/index.md 먼저 확인하세요. '
+                    '한국어 자연어 질의는 mcp__hybrid-search__hybrid_search 도구 사용. '
+                    '다른 프로젝트 참조 시 project 파라미터 지원."}}\''
+                ),
+            }],
+        }
 
         # Remove old hybrid-search hooks, keep others
         new_pre = [h for h in pre_hooks if not (
@@ -1842,9 +2004,10 @@ def cmd_setup(args: argparse.Namespace) -> None:
                 "hybrid-search/wiki" in str(h.get("hooks", [{}])[0].get("command", ""))
                 or "STALE.md" in str(h.get("hooks", [{}])[0].get("command", ""))
                 or "wiki-gaps" in str(h.get("hooks", [{}])[0].get("command", ""))
+                or "wiki/index.md" in str(h.get("hooks", [{}])[0].get("command", ""))
             )
         )]
-        new_pre.extend([auto_index_hook, stale_hook, gaps_hook])
+        new_pre.extend([auto_index_hook, stale_hook, gaps_hook, route_hook])
         hooks["PreToolUse"] = new_pre
 
         # Remove old PostToolUse wiki-gaps hook (moved to PreToolUse)
@@ -1957,6 +2120,39 @@ nohup bash -c '
 
     hook_path.chmod(0o755)
     print("Post-commit hook will auto-reindex on every commit (background, non-blocking).")
+
+    # Ensure .hybrid-search/ artifacts are git-ignored (per-machine wiki policy).
+    _ensure_gitignore_entries(cwd)
+
+
+def _ensure_gitignore_entries(project_root: Path) -> None:
+    """Add .hybrid-search/ artifacts to .gitignore if missing.
+
+    Wiki pages and auxiliary files are machine-local (DB ↔ wiki consistency).
+    This makes each machine own its wiki independently.
+    """
+    gi_path = project_root / ".gitignore"
+    required = [
+        ".hybrid-search/wiki/",
+        ".hybrid-search/wiki-gaps.*",
+        ".hybrid-search/coverage.json",
+        ".hybrid-search/.reindex.lock",
+        ".hybrid-search/.gaps-shown",
+    ]
+    existing = gi_path.read_text(encoding="utf-8") if gi_path.exists() else ""
+    existing_lines = {line.strip() for line in existing.splitlines()}
+    # Match exact lines; treat trailing-slash variants as equivalent for directory patterns.
+    def _present(entry: str) -> bool:
+        variants = {entry, entry.rstrip("/"), entry.rstrip("/") + "/"}
+        return bool(variants & existing_lines)
+    missing = [entry for entry in required if not _present(entry)]
+    if not missing:
+        return
+
+    block = "\n# hybrid-search-mcp (auto-added — wiki is machine-local)\n" + "\n".join(missing) + "\n"
+    new_content = (existing.rstrip() + "\n" + block) if existing else block.lstrip()
+    gi_path.write_text(new_content, encoding="utf-8")
+    print(f"Added {len(missing)} entries to .gitignore")
 
 
 def main() -> None:

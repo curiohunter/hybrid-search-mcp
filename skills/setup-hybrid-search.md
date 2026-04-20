@@ -69,12 +69,24 @@ echo "OPENAI_API_KEY=sk-..." > "$HSDIR/.env.local"
 "$HSDIR/.venv/bin/python" -m hybrid_search.cli setup
 ```
 
+이 명령으로 `~/.claude/settings.json`에 **4개의 PreToolUse 훅**이 등록된다:
+
+| matcher | 이름 | 역할 |
+|---------|------|------|
+| `Read` | `auto_index` | 첫 파일 읽을 때 백그라운드 인덱싱 트리거 |
+| `Edit\|Write` | `stale` | 수정 전 STALE.md 경고 |
+| `Read\|Edit\|Write` | `gaps` | wiki-gaps.txt 1회 표시 |
+| `Glob\|Grep` | **`route`** | **grep 전 wiki 우선 탐색 리마인더** |
+
+`route` 훅은 `.hybrid-search/wiki/index.md`가 있을 때만 발동 (다른 프로젝트에서는 no-op).
+
 ### 5. 설치 확인
 
 ```bash
-grep "hybrid-search" ~/.claude.json && echo "MCP: OK"
-grep "hybrid-search" ~/.claude/settings.json && echo "Hooks: OK"
+"$HSDIR/.venv/bin/python" -m hybrid_search.cli status
 ```
+
+전역 + 현재 프로젝트 설치 상태를 한눈에 표시 (훅 4개, 스킬, API 키, 인덱스, wiki, `.gitignore` 등).
 
 ### 6. 완료 메시지
 
@@ -84,8 +96,10 @@ grep "hybrid-search" ~/.claude/settings.json && echo "Hooks: OK"
 이후 아무 프로젝트에서:
 - 파일을 Read하면 자동으로 첫 인덱싱 시작
 - 커밋하면 자동으로 delta reindex
+- Grep/Glob 호출 시 wiki 우선 안내 자동 주입
 - /maintain으로 wiki 유지보수
 - /rebuild-index로 인덱스 복구
+- hybrid-search-mcp status 로 설치 상태 확인
 ```
 
 ## 주의사항
