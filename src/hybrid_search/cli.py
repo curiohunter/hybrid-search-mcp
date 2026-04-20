@@ -76,30 +76,69 @@ _CLAUDE_MD_SECTION = """<!-- hybrid-search -->
 
 
 def _ensure_claude_md(project_path: str) -> None:
-    """Add hybrid-search section to CLAUDE.md. Inserts at TOP for visibility."""
+    """Install or update hybrid-search section in CLAUDE.md. Idempotent.
+
+    On re-install, replaces the existing section in-place (marker-bounded
+    from ``<!-- hybrid-search -->`` up to the next top-level ``## `` heading
+    or EOF). First-install inserts at the top, after the first ``# `` H1 if
+    present. Removal is exposed via ``_remove_claude_md``.
+    """
+    import re as _re
     claude_md = Path(project_path) / "CLAUDE.md"
 
     if claude_md.exists():
         content = claude_md.read_text(encoding="utf-8")
-        if _CLAUDE_MD_MARKER in content:
-            return  # already patched
-        # Insert at TOP (after first heading if exists)
+        pattern = _re.compile(
+            _re.escape(_CLAUDE_MD_MARKER) + r"\n## [^\n]+\n.*?(?=\n## |\Z)",
+            flags=_re.DOTALL,
+        )
+        if pattern.search(content):
+            # Lambda replacement avoids back-reference parsing in the section body.
+            new_content = pattern.sub(lambda _m: _CLAUDE_MD_SECTION.rstrip("\n"), content)
+            # Preserve the original's trailing newline if any — keeps diff minimal.
+            if content.endswith("\n") and not new_content.endswith("\n"):
+                new_content += "\n"
+            if new_content != content:
+                claude_md.write_text(new_content, encoding="utf-8")
+                print("CLAUDE.md: hybrid-search section updated")
+            return
+        # First install — insert at TOP (after first H1 if exists)
         lines = content.split("\n")
         insert_at = 0
         for i, line in enumerate(lines):
             if line.startswith("# "):
                 insert_at = i + 1
-                # Skip blank lines after heading
                 while insert_at < len(lines) and not lines[insert_at].strip():
                     insert_at += 1
                 break
         lines.insert(insert_at, _CLAUDE_MD_SECTION)
         claude_md.write_text("\n".join(lines), encoding="utf-8")
-        print(f"CLAUDE.md: hybrid-search section added (top)")
+        print("CLAUDE.md: hybrid-search section added (top)")
     else:
-        # Create new CLAUDE.md
         claude_md.write_text(_CLAUDE_MD_SECTION.lstrip(), encoding="utf-8")
-        print(f"CLAUDE.md: created with hybrid-search instructions")
+        print("CLAUDE.md: created with hybrid-search instructions")
+
+
+def _remove_claude_md(project_path: str) -> bool:
+    """Remove the hybrid-search section from CLAUDE.md. Returns True if removed.
+
+    Uses the same marker-bounded regex as :func:`_ensure_claude_md`. Safe if
+    the section is missing or the file does not exist.
+    """
+    import re as _re
+    claude_md = Path(project_path) / "CLAUDE.md"
+    if not claude_md.exists():
+        return False
+    content = claude_md.read_text(encoding="utf-8")
+    pattern = _re.compile(
+        r"\n*" + _re.escape(_CLAUDE_MD_MARKER) + r"\n## [^\n]+\n.*?(?=\n## |\Z)",
+        flags=_re.DOTALL,
+    )
+    new_content = pattern.sub("", content)
+    if new_content == content:
+        return False
+    claude_md.write_text(new_content.lstrip("\n"), encoding="utf-8")
+    return True
 
 
 def _write_gap_flag(cwd: str, files_added: int) -> None:
@@ -242,8 +281,8 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # Auto-patch CLAUDE.md with search instructions (once per project)
     _ensure_claude_md(project_path)
 
-    # Auto-install post-commit hook (once per project)
-    hook_path = Path(project_path) / ".git" / "hooks" / "post-commit"
+    # Auto-install post-commit hook (once per project; respects core.hooksPath)
+    hook_path = _git_hooks_dir(Path(project_path)) / "post-commit"
     if not hook_path.exists() or "hybrid_search.cli" not in hook_path.read_text():
         import argparse as _ap
         _hook_args = _ap.Namespace(cwd=project_path)
@@ -625,8 +664,8 @@ def _check_project_status(project_path: Path) -> None:
     else:
         print(f"  ⚠ Wiki not created yet           (run /bootstrap-wiki)")
 
-    # post-commit hook
-    hook_path = project_path / ".git" / "hooks" / "post-commit"
+    # post-commit hook (respects core.hooksPath — Husky compat)
+    hook_path = _git_hooks_dir(project_path) / "post-commit"
     hook_ok = hook_path.exists() and "hybrid_search" in hook_path.read_text()
     print(f"  {_status_mark(hook_ok)} post-commit hook:             {'installed' if hook_ok else 'MISSING'}")
 
@@ -642,14 +681,14 @@ def _check_project_status(project_path: Path) -> None:
     else:
         print("  ⚠ .gitignore missing             (consider adding .hybrid-search/wiki/)")
 
-    # CLAUDE.md
+    # CLAUDE.md (routing section bounded by the hybrid-search marker)
     claude_md = project_path / "CLAUDE.md"
     if claude_md.exists():
-        has_routing = "hybrid-search" in claude_md.read_text().lower()
+        has_routing = _CLAUDE_MD_MARKER in claude_md.read_text(encoding="utf-8")
         print(f"  {_status_mark(has_routing, warn=not has_routing)} CLAUDE.md routing:            "
-              f"{'present' if has_routing else 'no hybrid-search section'}")
+              f"{'present' if has_routing else 'marker missing — run install-hook'}")
     else:
-        print("  ⚠ CLAUDE.md not found            (optional)")
+        print("  ⚠ CLAUDE.md not found            (run install-hook to create)")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -2053,25 +2092,55 @@ def cmd_setup(args: argparse.Namespace) -> None:
     print("Setup complete. Restart Claude Code to apply changes.")
 
 
-def cmd_install_hook(args: argparse.Namespace) -> None:
-    """Install post-commit hook in a project's .git/hooks/."""
+def _git_hooks_dir(repo_root: Path) -> Path:
+    """Resolve the git hooks directory, respecting ``core.hooksPath`` (Husky compat).
+
+    Order of resolution:
+    1. ``git config --get core.hooksPath`` — absolute or repo-relative.
+    2. ``git rev-parse --git-path hooks`` — correct for worktrees / submodules.
+    3. Fallback: ``<repo_root>/.git/hooks``.
+    """
     import subprocess
-    import shutil
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo_root), "config", "--get", "core.hooksPath"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            custom = Path(res.stdout.strip()).expanduser()
+            return custom if custom.is_absolute() else (repo_root / custom).resolve()
+    except Exception:
+        pass
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--git-path", "hooks"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            p = Path(res.stdout.strip())
+            return p if p.is_absolute() else (repo_root / p).resolve()
+    except Exception:
+        pass
+    return repo_root / ".git" / "hooks"
+
+
+def cmd_install_hook(args: argparse.Namespace) -> None:
+    """Install post-commit hook, respecting core.hooksPath (Husky compat)."""
+    import subprocess
 
     cwd = Path(args.cwd).resolve()
 
-    # Find .git dir for this project
+    # Verify this is a git repo first
     try:
-        git_dir = subprocess.check_output(
-            ["git", "rev-parse", "--git-dir"],
-            cwd=str(cwd), text=True,
-        ).strip()
-        git_dir = (cwd / git_dir).resolve()
+        subprocess.check_output(
+            ["git", "-C", str(cwd), "rev-parse", "--git-dir"],
+            text=True,
+        )
     except subprocess.CalledProcessError:
         print(f"Not a git repository: {cwd}")
         return
 
-    hooks_dir = git_dir / "hooks"
+    hooks_dir = _git_hooks_dir(cwd)
     hooks_dir.mkdir(parents=True, exist_ok=True)
     hook_path = hooks_dir / "post-commit"
 
@@ -2123,6 +2192,9 @@ nohup bash -c '
 
     # Ensure .hybrid-search/ artifacts are git-ignored (per-machine wiki policy).
     _ensure_gitignore_entries(cwd)
+
+    # Ensure CLAUDE.md has the routing section (idempotent — updates if present).
+    _ensure_claude_md(str(cwd))
 
 
 def _ensure_gitignore_entries(project_root: Path) -> None:
