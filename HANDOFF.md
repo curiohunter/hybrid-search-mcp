@@ -1,5 +1,116 @@
 # Hybrid Search MCP — Handoff Document
 
+---
+
+## 🔴 현재 세션 인계 (2026-04-20) — 다음 세션 여기부터 읽을 것
+
+### 한줄 요약
+
+Graphify 정밀 분석 후 **"Memory Layer for Claude Code"** 재포지셔닝 확정. 자율 루프 축의 **Q1 (PreToolUse route_hook) + Q2 (status 명령) 완료**. 다음 세션에서 **Q7 + Q8** 즉시 이어서 진행.
+
+### 전략적 맥락 (중요)
+
+이 작업은 graphify 전체 소스를 6-agent로 정밀 분석 (5,035줄 분석 문서 생성) 후 확정한 3축 전략의 실행 단계:
+
+1. **자율 루프** — Claude가 안 쓸 수 없는 도구 (Q1, Q7, Q8, M2 등) ← 현재 여기
+2. **Memory Layer** — 매 사용이 도구를 더 똑똑하게 (L1 Q&A feedback loop)
+3. **벤치마크 주도 품질** — 숫자로 증명 (L6)
+
+**포지셔닝 전환:** "코드 검색 도구" → "Claude Code의 영구 기억 레이어". Graphify와 경쟁하지 않고 보완재로 공존.
+
+### ✅ 이 세션 완료된 것
+
+**커밋 2개:**
+- `6f0ff93` — Q1 route_hook + status + wiki 머신별 독립화
+- `a3bdabf` — wiki-gaps.txt git 추적 제거
+
+**구현:**
+- **Q1: PreToolUse route_hook** — matcher `Glob|Grep`, `.hybrid-search/wiki/index.md` gate, Claude grep 전 wiki 리마인더 자동 주입 (이 세션에서 실제 발동 확인)
+- **Q2: status 서브커맨드 확장** — 전역(MCP/4훅/스킬/API키) + 프로젝트(인덱스/wiki/훅/.gitignore/CLAUDE.md) 헬스체크
+- **Q9: Hook identity 필터링** — Q1에 포함 (재설치 시 idempotent)
+- **덤:** `.gitignore` 자동 관리 + `.hybrid-search/` 전체 git 추적 해제 (로컬 파일 보존)
+
+**검증:** 284 tests passed, 회귀 0, 훅 실제 발동 확인.
+
+### ⬜ 다음 세션 즉시 작업 — Q7 + Q8
+
+같은 파일(`cli.py`) 손봄, 같이 처리하면 반나절.
+
+**Q7: CLAUDE.md 자동 주입** (complexity: trivial)
+- 신규 함수 `install_claude_md(project_root)` 추가
+- `./CLAUDE.md`에 `## hybrid-search` 섹션 자동 추가 (의도 기반 라우팅 표)
+- uninstall regex: `re.sub(r'\n*## hybrid-search\n.*?(?=\n## |\Z)', '', content, flags=re.DOTALL)`
+- `cmd_install_hook` 끝에 `install_claude_md(cwd)` 호출 추가
+
+**Q8: core.hooksPath 존중 (Husky 호환)** (complexity: trivial, 20분)
+- 헬퍼 함수 `git_hooks_dir(repo_root)` 추가
+- `git config core.hooksPath` 읽어서 Husky 사용자 호환
+- `cmd_install_hook`의 `.git/hooks/` 하드코딩 교체
+- 참조: `_study/graphify/graphify/hooks.py:121-140` `_hooks_dir`
+
+### 📂 필수 참조 문서 (다음 세션에서 반드시 읽을 것)
+
+| 문서 | 경로 |
+|------|------|
+| **구현 플랜 (Q1 템플릿)** | `PLAN_q1_routing_hook.md` (프로젝트 루트) |
+| **패치 상세 리스트 (Q1-Q10)** | `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` |
+| **전체 분석 종합** | `_study/graphify-analysis/00-overview.md` |
+| **훅 상세 분석** | `_study/graphify-analysis/01-hooks-and-skill.md` |
+| **전략 방향 (왜 이 작업?)** | `~/.claude/projects/-Users-ian-project-claude-project-hybrid-search-mcp/memory/project_strategic_direction.md` |
+| **graphify 원본 (훅 참고)** | `/Users/ian/project/claude_project/_study/graphify/graphify/hooks.py` |
+
+### 📋 남은 Quick Wins 로드맵
+
+| # | 작업 | 공수 | 비고 |
+|---|------|------|------|
+| **Q7** | **CLAUDE.md 자동 주입** | **반나절** | **다음 세션 1순위** |
+| **Q8** | **core.hooksPath 존중** | **20분** | **Q7과 같이** |
+| Q3 | MCP stdin blank-line filter | 30분 | |
+| Q5 | 민감 파일 필터 | 1시간 | Q3과 묶음 가능 |
+| Q4 | Security 모듈 | 반나절 | |
+| Q6 | Cache frontmatter strip | 반나절 | |
+| Q10 | `.hybrid-search-ignore` upward walk | 반나절 | |
+
+전체 진행률: **3/28 (11%)**. Quick Wins 완성 = 10/28 (36%).
+
+### 🎬 다음 세션 시작 방법
+
+프로젝트 루트에서:
+
+```
+HANDOFF.md 최상단 "현재 세션 인계" 섹션 읽고 Q7+Q8 이어서 진행해줘
+```
+
+또는 더 구체적으로:
+
+```
+HANDOFF.md 최상단 섹션 + PLAN_q1_routing_hook.md + 
+_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md의 Q7/Q8 섹션 읽고,
+Q7 (CLAUDE.md 자동 주입) + Q8 (core.hooksPath) 한 세션에 완료하자.
+```
+
+### 🔧 현재 상태 스냅샷
+
+- **브랜치:** `main`
+- **마지막 커밋:** `a3bdabf [fix] wiki-gaps.txt도 git 추적에서 제거`
+- **푸시 상태:** 아직 안 함 (사용자 판단)
+- **워킹 트리:** clean
+- **테스트:** 284/284 passed
+- **주 작업 파일:** `src/hybrid_search/cli.py` (현재 2179 라인)
+- **status 출력 정상:** PreToolUse hooks 4/4, 모든 글로벌 체크 ✓
+
+### ⚠️ 주의사항
+
+- **graphify 분석 문서**는 `_study/` 폴더에 있고 **이 프로젝트의 git과 별개**. 추적 안 됨.
+- **Q7 구현 시** CLAUDE.md 기존 내용 **절대 보존** (marker regex만 교체)
+- **Q8 구현 시** `git config core.hooksPath`가 상대경로일 수 있음 (repo_root 기준 해석 필요)
+- **skill 파일 수정** 시 `~/.claude/skills/`로 동기화 잊지 말 것 (setup 명령이 처리하긴 함)
+- **테스트 추가 필수** — `tests/test_cli_hook_install.py` 확장
+
+---
+
+## 📚 이전 세션 히스토리 (Phase 1~10 완료)
+
 > **Date**: 2026-04-14 | **Branch**: main
 > **설계 문서**: `docs/design.md` (v7, Phase 1-10 완료 + LLM 재랭킹)
 
