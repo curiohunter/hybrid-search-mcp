@@ -6,7 +6,33 @@
 
 ### 한줄 요약
 
-**Q10 (`.hybrid-search-ignore` upward walk) 완료 → Quick Wins 10/10 🎉**. 378/378 tests passed. 전체 **10/28 (36%)**. 다음 세션은 **M2 (post-checkout hook)** — 자율 루프 축의 다음 단계.
+**Q10 + M2 연속 완료 🎉** — Quick Wins 10/10 + M 시리즈 착수. 388/388 tests passed. 전체 **11/28 (39%)**. 다음 세션은 **M3 (post-commit에 `git diff --name-only` env 전달 → delta reindex 가속)** 또는 **M1 (Confidence 라벨 + numeric score)**.
+
+### ✅ 이 세션 완료된 것 (6회차)
+
+**M2: post-checkout 훅 추가** (`c71ddb1` 다음 커밋)
+- `src/hybrid_search/cli.py`에 `_build_post_commit_script()`, `_build_post_checkout_script()`, `_install_hook_file()` 헬퍼로 리팩터. `cmd_install_hook`이 두 훅 동시 설치.
+- **post-checkout 게이트**: `[ "$3" = "1" ] || exit 0` (브랜치 스위치만 트리거, 파일 체크아웃 skip) + `[ -d "$PROJECT_DIR/.hybrid-search" ] || exit 0` (인덱스 미존재 시 자동 부트스트랩 금지).
+- **post-checkout 동작**: `reindex --wiki-scope affected` (NO `--git-delta`, NO `--synthesize`). 이유: `HEAD~1..HEAD`는 브랜치 스위치 후 무의미. 파일시스템 delta(size/mtime/hash) 사용. synthesis는 브랜치 스위치가 빈번하므로 비용 대비 효용 낮음.
+- **공유 lock**: `.hybrid-search/.reindex.lock` — post-commit과 동일. 동시 2회 리인덱스 방지.
+- **status 체크 확장**: `_check_project_status`가 post-commit + post-checkout 둘 다 표시.
+- `scripts/post-checkout-hook.sh` 레퍼런스 파일 추가 (수동 설치용, 베이크 안 된 버전).
+- **식별 마커**: `_HOOK_IDENTITY_MARKER = "hybrid_search.cli"` 상수로 추출. 레거시 설치도 동일 문자열 포함 → 기존 설치 자동 인식.
+
+**Q10: `.hybrid-search-ignore` + upward walk** (`c71ddb1`)
+- `src/hybrid_search/index/scanner.py`에 `_collect_hybrid_search_ignore_patterns(project_root)` 추가. `project_root`부터 위로 walk하며 각 레벨의 `.hybrid-search-ignore`를 읽음. `.git` 디렉토리 있는 레벨(포함) 또는 filesystem root에서 중단. `_build_ignore_spec()`이 config excludes + `.gitignore` + 수집된 패턴 3개 소스를 하나의 pathspec으로 병합.
+- **포맷 선택:** graphify의 fnmatch 대신 **pathspec (gitignore 슈퍼셋)** 채택. 기존 `.gitignore` 파싱과 동일 엔진 → comments/blanks/negation(`!`) 네이티브 처리, 코드 중복 제거.
+- **안전장치:** 파일당 64KB 상한 (`_GITIGNORE_MAX_SIZE` 재사용), walk 최대 32레벨(`_IGNORE_WALK_MAX_DEPTH`) — symlink 사이클 방어.
+- **양방향 통합:** `scan_project`(full scan)와 `scan_project_subset`(git diff 경로) 둘 다 `_build_ignore_spec`/`_is_indexable_path`를 거쳐 Q10 패턴 존중.
+
+**테스트:**
+- Q10: `tests/test_scanner.py::TestHybridSearchIgnore` 8개
+- M2: `tests/test_cli_hook_install.py`에 `TestInstallHookBothScripts`(5) + `TestPostCheckoutScriptGates`(3, 실제 bash 실행으로 게이트 검증) + `TestScriptContentSanity`(2) = 10개
+- **388/388 passed** (이전 370 + Q10 8 + M2 10).
+
+**마이그레이션 주의:**
+- Q10은 opt-in — `.hybrid-search-ignore` 파일을 만들지 않으면 동작 동일.
+- M2: 기존 프로젝트는 post-commit만 설치되어 있음. `hybrid-search-mcp install-hook --cwd .` 재실행하면 post-checkout만 추가로 설치됨 (post-commit은 idempotent skip). `cmd_setup` 자동 체크도 두 훅 모두 확인하므로 다음 setup 실행 시 자동 보강.
 
 ### ✅ 이 세션 완료된 것 (6회차)
 
@@ -67,17 +93,20 @@
 - `a3bdabf` — wiki-gaps.txt git 추적 제거
 - `4ccefd8` — HANDOFF 업데이트 (Q1/Q2/Q9)
 
-### ⬜ 다음 세션 제안 — M2 (post-checkout hook, 자율 루프 축)
+### ⬜ 다음 세션 제안 — M3 (changed-files env 전달, 반나절) 또는 M1 (Confidence 라벨, 1일)
 
-**M2: 멀티 훅 설치 (post-commit + post-checkout, 1일)**
-- 브랜치 스위치 후 인덱스/wiki 자동 갱신 — 현재 실무에서 가장 자주 드리프트 발생 지점
-- `scripts/post-checkout-hook.sh` 신규 (`$3 == "1"` 체크 = 브랜치 스위치만 트리거, 파일 체크아웃은 skip)
-- `scripts/post-commit-hook.sh` 기존 유지 + `scripts/post-checkout-hook.sh` 병행 설치
-- `src/hybrid_search/cli.py` `cmd_install_hook` 개편 — 두 hook 모두 설치, `core.hooksPath` 존중(Q8 재활용), idempotent 재설치
-- 참조: `_study/graphify-analysis/99-actionable-patches-for-hybrid-search.md` M2 (line ~367)
-- graphify `hooks.py:121-140` (_hooks_dir), `hooks.py:178-189` (install 둘 다), `hooks.py:77-109` (_CHECKOUT_SCRIPT)
-- **주의:** `[ -d .hybrid-search ] || exit 0` 조건 필수 — 인덱스 없는 프로젝트에서 자동 부트스트랩 금지
-- 통합 테스트: 신규 브랜치 스위치 시 hook 실행 → delta reindex 확인. M3(changed-files env 전달)와 같은 세션에 묶어도 좋음.
+**M3 (권장, 반나절): Git hook에서 `git diff --name-only HEAD~1 HEAD` 전달**
+- 현재 post-commit hook은 `reindex --git-delta`를 호출 → 내부적으로 git diff 재계산. 중복 작업.
+- hook에서 미리 계산해서 `HYBRID_SEARCH_CHANGED` env나 `--changed-files` 플래그로 전달 → 스캔 단계 자체 생략 가능.
+- `scripts/post-commit-hook.sh`와 `_build_post_commit_script()` 둘 다 수정 필요.
+- `cmd_reindex`에 `--changed-files` 플래그 추가, `scan_project_subset` 경로 타도록 분기.
+- 참조: graphify `hooks.py:_HOOK_SCRIPT:47-72`, 패치 문서 `99-actionable-patches-for-hybrid-search.md` M3 섹션.
+
+**M1 (대안, 1일): Confidence 3단계 라벨 + numeric score**
+- 모든 call edge에 `confidence ∈ {EXTRACTED, INFERRED, AMBIGUOUS}` + `score ∈ [0,1]`.
+- BM25+vector fusion에서 score를 가중치로 활용.
+- 원칙: Leiden/degree 같은 구조 분석은 confidence-blind, 리포트/ranking만 confidence-aware (섞지 말 것).
+- 참조: 패치 문서 M1 섹션.
 
 ### 📂 필수 참조 문서 (다음 세션에서 반드시 읽을 것)
 
@@ -92,7 +121,7 @@
 
 ### 📋 Quick Wins 완성 + 다음 M 시리즈 로드맵
 
-**Quick Wins (Q1~Q10): 10/10 완료 🎉**
+**Quick Wins (Q1~Q10): 10/10 완료 🎉 + M2 착수**
 
 | # | 작업 | 완료 세션 |
 |---|------|-----------|
@@ -103,19 +132,19 @@
 | ~~Q5~~ | ~~민감 파일 필터~~ | 3회차 |
 | ~~Q4~~ | ~~Security 모듈~~ | 4회차 |
 | ~~Q6~~ | ~~Cache frontmatter strip~~ | 5회차 |
-| ~~Q10~~ | ~~`.hybrid-search-ignore` upward walk~~ | **6회차** |
+| ~~Q10~~ | ~~`.hybrid-search-ignore` upward walk~~ | 6회차 |
+| ~~M2~~ | ~~post-checkout hook 추가~~ | **6회차** |
 
-**다음: M (Medium) 시리즈 — 자율 루프 + 품질 축**
+**다음: M 시리즈 계속 — 자율 루프 + 품질 축**
 
 | # | 작업 | 공수 | 축 | 우선순위 |
 |---|------|------|----|----|
-| **M2** | **post-checkout hook 추가** | **1일** | **자율 루프** | **다음 세션 1순위** |
-| M3 | `git diff --name-only`를 env로 전달 (delta reindex 가속) | 반나절 | 자율 루프 | M2와 함께 |
+| **M3** | **`git diff --name-only`를 env로 전달 (delta reindex 가속)** | **반나절** | **자율 루프** | **다음 1순위 (M2 자연 연속)** |
 | M4 | `needs_synthesis` flag 파일 패턴 | 반나절 | 자율 루프 | 낮음 |
 | M1 | Confidence 3단계 라벨 + numeric score | 1일 | 품질 | 중 |
 | M5 | MCP 확장: `god_nodes`, `shortest_path`, `subgraph` | 2일 | 품질 | 낮음 |
 
-전체 진행률: **10/28 (36%)**.
+전체 진행률: **11/28 (39%)**.
 
 ### 🎬 다음 세션 시작 방법
 
@@ -127,11 +156,15 @@ M3도 가까운 주제라 같은 세션 묶음 고려.
 
 ### 🔧 현재 상태 스냅샷
 
-- **브랜치:** `main` (origin 기준 7+ 커밋 앞, 이 세션 커밋 후 8+)
-- **워킹 트리:** Q10 커밋됨 (이 세션 결과물)
-- **테스트:** 378/378 passed (이전 370 + Q10 신규 8)
-- **주 작업 파일:** `src/hybrid_search/index/scanner.py` (upward walk ignore), `tests/test_scanner.py` (+8)
-- **status 출력 정상:** PreToolUse hooks 4/4, CLAUDE.md routing ✓, post-commit hook ✓
+- **브랜치:** `main` (Q10 = `c71ddb1`, M2 = 이 세션 2번째 커밋)
+- **워킹 트리:** Q10 + M2 커밋됨
+- **테스트:** 388/388 passed (370 → +8 Q10 → +10 M2)
+- **주 작업 파일:**
+  - `src/hybrid_search/index/scanner.py` (Q10 upward walk ignore)
+  - `src/hybrid_search/cli.py` (M2 post-commit + post-checkout 설치)
+  - `scripts/post-checkout-hook.sh` (M2 레퍼런스, 수동 설치용)
+  - `tests/test_scanner.py` (+8), `tests/test_cli_hook_install.py` (+10)
+- **status 출력 업데이트:** post-commit + post-checkout 둘 다 표시 (PreToolUse hooks 4/4, CLAUDE.md routing ✓).
 
 ### ⚠️ 주의사항
 
@@ -145,6 +178,8 @@ M3도 가까운 주제라 같은 세션 묶음 고려.
 - **Q6 side effect — file_size/mtime drift:** fm-only edit이면 `_is_changed`가 False 반환해서 `files.file_size`/`file_mtime`이 갱신 안 됨. 다음 스캔에서 mtime 불일치로 매번 `compute_file_hash` 재계산(정확하지만 중복 CPU). 필요시 `_is_changed`에서 hash 일치해도 size/mtime만 UPDATE하는 최적화 가능 (Q6.1 후보).
 - **Q10 anchoring 주의:** 수집된 모든 `.hybrid-search-ignore` 패턴을 하나의 pathspec로 합쳐 `project_root` 기준으로 매칭함. 따라서 **ancestor 파일의 rooted 패턴**(예: `/dist/`)은 그 ancestor가 아니라 `project_root` 기준으로 해석됨 (직관과 다를 수 있음). 대부분의 ignore 패턴은 non-rooted(`dist/`, `*.log`)라 실무 영향 없음. 필요 시 per-anchor PathSpec로 정밀화 가능(Q10.1 후보). 테스트 `test_walk_stops_at_git_boundary`로 `.git` 경계 방어 확인.
 - **Q10 reindex 영향:** 새 `.hybrid-search-ignore` 추가 시 다음 reindex에서 이전 포함 파일이 제거되어 해당 chunks가 DB에서 삭제됨. 의도된 동작. Full rebuild 불필요.
+- **M2 post-checkout 튜닝 여지:** 현재는 단순 filesystem-delta reindex. 빠른 브랜치 왕복(`git checkout -`)이 잦은 워크플로우에서 반복 reindex 비용이 보일 수 있음. 개선 아이디어: (1) 마지막 reindex HEAD hash를 `.hybrid-search/last_indexed_head` 파일에 저장 → 동일 head면 skip, (2) M3 기반으로 `git diff <prev>..<new> --name-only` 전달. M3와 함께 묶기 권장.
+- **M2 식별 마커 주의:** `_HOOK_IDENTITY_MARKER = "hybrid_search.cli"` — 두 훅 모두 이 문자열 포함. 개별 훅 파일 단위로 체크하므로 충돌 없음. 레거시(이전 단일 hook) 설치도 동일 문자열이라 자동 인식됨.
 - **skill 파일 수정** 시 `~/.claude/skills/`로 동기화 잊지 말 것 (setup이 처리).
 
 ---
