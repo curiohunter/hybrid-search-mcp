@@ -2,11 +2,25 @@
 
 When reranking is enabled, returns expanded candidates (top-20) for
 Claude Code to rerank by query intent — no external API calls needed.
+
+Trust boundary: every parameter that crosses the MCP JSON-RPC surface is
+sanitized by :mod:`hybrid_search.security` before reaching the orchestrator,
+and every code chunk returned to the caller is stripped of control chars.
 """
 
 from __future__ import annotations
 
 from hybrid_search.search.orchestrator import SearchOrchestrator
+from hybrid_search.security import (
+    clamp_float,
+    clamp_int,
+    sanitize_cwd,
+    sanitize_file_pattern,
+    sanitize_node_types,
+    sanitize_query,
+    sanitize_snippet,
+    validate_project_name,
+)
 
 
 _RERANK_HINT = (
@@ -16,6 +30,10 @@ _RERANK_HINT = (
     '"{query}" — prioritize results that best match the user\'s intent, not just '
     "keyword overlap. Present only the top {limit} most relevant results."
 )
+
+# Bounds — mirror the MCP inputSchema but enforced server-side as well.
+_LIMIT_LO, _LIMIT_HI = 1, 50
+_BM25_LO, _BM25_HI = 0.0, 1.0
 
 
 def handle_hybrid_search(
@@ -28,15 +46,26 @@ def handle_hybrid_search(
     bm25_weight: float | None = None,
     cwd: str | None = None,
 ) -> dict:
-    """Handle hybrid_search tool call."""
+    """Handle hybrid_search tool call — sanitizes all inputs and outputs."""
+    safe_query = sanitize_query(query)
+    safe_project = validate_project_name(project)
+    safe_limit = clamp_int(limit, _LIMIT_LO, _LIMIT_HI, name="limit")
+    safe_file_pattern = sanitize_file_pattern(file_pattern)
+    safe_node_types = sanitize_node_types(node_types)
+    safe_weight = (
+        clamp_float(bm25_weight, _BM25_LO, _BM25_HI, name="bm25_weight")
+        if bm25_weight is not None else None
+    )
+    safe_cwd = sanitize_cwd(cwd)
+
     response = orchestrator.hybrid_search(
-        query=query,
-        project=project,
-        limit=limit,
-        file_pattern=file_pattern,
-        node_types=node_types,
-        bm25_weight=bm25_weight,
-        cwd=cwd,
+        query=safe_query,
+        project=safe_project,
+        limit=safe_limit,
+        file_pattern=safe_file_pattern,
+        node_types=safe_node_types,
+        bm25_weight=safe_weight,
+        cwd=safe_cwd,
     )
 
     result: dict = {
@@ -53,8 +82,8 @@ def handle_hybrid_search(
                 "node_type": r.node_type,
                 "start_line": r.start_line,
                 "end_line": r.end_line,
-                "content": r.content,
-                "snippet": r.snippet,
+                "content": sanitize_snippet(r.content),
+                "snippet": sanitize_snippet(r.snippet),
             }
             for r in response.results
         ],
@@ -65,11 +94,11 @@ def handle_hybrid_search(
         "skipped_projects": response.skipped_projects,
     }
 
-    if response.reranked and len(response.results) > limit:
+    if response.reranked and len(response.results) > safe_limit:
         result["rerank_hint"] = _RERANK_HINT.format(
             n=len(response.results),
-            limit=limit,
-            query=query,
+            limit=safe_limit,
+            query=safe_query,
         )
 
     return result
