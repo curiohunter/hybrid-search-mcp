@@ -296,3 +296,180 @@ class TestScanProjectSkipsSensitive:
         assert "credentials.json" not in names
         assert "secrets.yaml" not in names
         assert "service-account.json" not in names
+
+
+# ---------------------------------------------------------------------------
+# Q10 — .hybrid-search-ignore + upward walk to .git boundary
+# ---------------------------------------------------------------------------
+
+
+class TestHybridSearchIgnore:
+    """`.hybrid-search-ignore` patterns collected from project_root upward.
+
+    Walk stops at the directory containing ``.git`` (included) or at the
+    filesystem root, whichever comes first.
+    """
+
+    @staticmethod
+    def _seed_git_root(root: Path) -> None:
+        (root / ".git").mkdir()
+
+    def test_local_ignore_excludes_matching_files(self, tmp_path: Path) -> None:
+        """Basic: ``.hybrid-search-ignore`` at project root drops matching paths."""
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        self._seed_git_root(project_root)
+
+        (project_root / ".hybrid-search-ignore").write_text("build/\n*.generated.ts\n")
+
+        (project_root / "main.py").write_text("print(1)\n")
+        (project_root / "app.generated.ts").write_text("export const x = 1\n")
+        (project_root / "build").mkdir()
+        (project_root / "build" / "out.js").write_text("console.log(1)\n")
+        (project_root / "src").mkdir()
+        (project_root / "src" / "keep.ts").write_text("export {}\n")
+
+        result = scan_project(project_root, "p1", db, IndexingConfig())
+        names = {p.name for p in result.added}
+        assert "main.py" in names
+        assert "keep.ts" in names
+        assert "app.generated.ts" not in names
+        assert "out.js" not in names
+
+    def test_parent_ignore_walked_up_for_subfolder(self, tmp_path: Path) -> None:
+        """Monorepo case: parent ignore file applies when scanning a subfolder."""
+        db = StoreDB(tmp_path / "store.db")
+        monorepo = tmp_path / "monorepo"
+        monorepo.mkdir()
+        self._seed_git_root(monorepo)
+        (monorepo / ".hybrid-search-ignore").write_text("generated/\n")
+
+        subproject = monorepo / "packages" / "foo"
+        subproject.mkdir(parents=True)
+        (subproject / "keep.py").write_text("x = 1\n")
+        (subproject / "generated").mkdir()
+        (subproject / "generated" / "schema.py").write_text("# auto\n")
+
+        result = scan_project(subproject, "p1", db, IndexingConfig())
+        names = {p.name for p in result.added}
+        assert "keep.py" in names
+        assert "schema.py" not in names
+
+    def test_walk_stops_at_git_boundary(self, tmp_path: Path) -> None:
+        """Ancestor ignore above the ``.git`` root must NOT affect the scan."""
+        db = StoreDB(tmp_path / "store.db")
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        # Outer ignore that should NOT apply — above the git boundary.
+        (outer / ".hybrid-search-ignore").write_text("*.py\n")
+
+        repo = outer / "repo"
+        repo.mkdir()
+        self._seed_git_root(repo)
+        (repo / "keep.py").write_text("x = 1\n")
+
+        result = scan_project(repo, "p1", db, IndexingConfig())
+        names = {p.name for p in result.added}
+        assert "keep.py" in names  # outer's *.py pattern must not bleed in
+
+    def test_combines_with_gitignore(self, tmp_path: Path) -> None:
+        """Both `.gitignore` and `.hybrid-search-ignore` contribute patterns."""
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        self._seed_git_root(project_root)
+
+        (project_root / ".gitignore").write_text("dist/\n")
+        (project_root / ".hybrid-search-ignore").write_text("vendor/\n")
+
+        (project_root / "app.py").write_text("x = 1\n")
+        (project_root / "dist").mkdir()
+        (project_root / "dist" / "bundle.js").write_text("x\n")
+        (project_root / "vendor").mkdir()
+        (project_root / "vendor" / "lib.py").write_text("y\n")
+
+        result = scan_project(project_root, "p1", db, IndexingConfig())
+        names = {p.name for p in result.added}
+        assert "app.py" in names
+        assert "bundle.js" not in names
+        assert "lib.py" not in names
+
+    def test_comments_and_blank_lines_ignored(self, tmp_path: Path) -> None:
+        """Blank lines and ``#`` comments are handled by pathspec (no-op)."""
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        self._seed_git_root(project_root)
+
+        (project_root / ".hybrid-search-ignore").write_text(
+            "\n"
+            "# comment — should be ignored as a pattern\n"
+            "*.log\n"
+            "\n"
+        )
+        (project_root / "real.py").write_text("x = 1\n")
+        (project_root / "noise.log").write_text("log\n")  # .log not in supported ext anyway
+
+        # Force .log into supported ext so we verify the pattern, not the ext filter.
+        cfg = IndexingConfig(supported_extensions=[".py", ".log"])
+        result = scan_project(project_root, "p1", db, cfg)
+        names = {p.name for p in result.added}
+        assert "real.py" in names
+        assert "noise.log" not in names
+
+    def test_missing_ignore_file_is_noop(self, tmp_path: Path) -> None:
+        """No ignore file anywhere → scan behaves like before."""
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        self._seed_git_root(project_root)
+
+        (project_root / "a.py").write_text("x = 1\n")
+        (project_root / "b.py").write_text("y = 2\n")
+
+        result = scan_project(project_root, "p1", db, IndexingConfig())
+        names = {p.name for p in result.added}
+        assert names == {"a.py", "b.py"}
+
+    def test_oversized_ignore_file_skipped_gracefully(self, tmp_path: Path) -> None:
+        """Ignore file above 64KB is skipped (safety) — indexing continues."""
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        self._seed_git_root(project_root)
+
+        # >64KB of pattern noise; if we actually read it, `*.py` inside would
+        # wipe out sources. We expect the file to be skipped, so `keep.py`
+        # must survive.
+        big = "# padding\n" * 10_000 + "*.py\n"
+        (project_root / ".hybrid-search-ignore").write_text(big)
+        assert len(big.encode()) > 64 * 1024
+
+        (project_root / "keep.py").write_text("x = 1\n")
+        result = scan_project(project_root, "p1", db, IndexingConfig())
+        names = {p.name for p in result.added}
+        assert "keep.py" in names
+
+    def test_subset_scan_respects_hybrid_search_ignore(self, tmp_path: Path) -> None:
+        """`scan_project_subset` (used by git-diff fast path) honors the patterns too."""
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        self._seed_git_root(project_root)
+
+        (project_root / ".hybrid-search-ignore").write_text("generated/\n")
+        (project_root / "keep.py").write_text("x = 1\n")
+        (project_root / "generated").mkdir()
+        (project_root / "generated" / "schema.py").write_text("# auto\n")
+
+        result = scan_project_subset(
+            project_root,
+            "p1",
+            db,
+            IndexingConfig(),
+            changed_paths=["keep.py", "generated/schema.py"],
+        )
+        added_names = [p.name for p in result.added]
+        assert "keep.py" in added_names
+        assert "schema.py" not in added_names  # filtered by ignore spec
