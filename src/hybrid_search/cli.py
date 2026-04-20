@@ -281,9 +281,13 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # Auto-patch CLAUDE.md with search instructions (once per project)
     _ensure_claude_md(project_path)
 
-    # Auto-install post-commit hook (once per project; respects core.hooksPath)
-    hook_path = _git_hooks_dir(Path(project_path)) / "post-commit"
-    if not hook_path.exists() or "hybrid_search.cli" not in hook_path.read_text():
+    # Auto-install post-commit + post-checkout hooks (once per project; respects core.hooksPath)
+    hooks_dir = _git_hooks_dir(Path(project_path))
+    commit_ok = (hooks_dir / "post-commit").exists() and \
+        "hybrid_search.cli" in (hooks_dir / "post-commit").read_text()
+    checkout_ok = (hooks_dir / "post-checkout").exists() and \
+        "hybrid_search.cli" in (hooks_dir / "post-checkout").read_text()
+    if not (commit_ok and checkout_ok):
         import argparse as _ap
         _hook_args = _ap.Namespace(cwd=project_path)
         cmd_install_hook(_hook_args)
@@ -664,10 +668,16 @@ def _check_project_status(project_path: Path) -> None:
     else:
         print(f"  ⚠ Wiki not created yet           (run /bootstrap-wiki)")
 
-    # post-commit hook (respects core.hooksPath — Husky compat)
-    hook_path = _git_hooks_dir(project_path) / "post-commit"
-    hook_ok = hook_path.exists() and "hybrid_search" in hook_path.read_text()
-    print(f"  {_status_mark(hook_ok)} post-commit hook:             {'installed' if hook_ok else 'MISSING'}")
+    # post-commit + post-checkout hooks (respect core.hooksPath — Husky compat)
+    hooks_dir = _git_hooks_dir(project_path)
+    for hook_name in ("post-commit", "post-checkout"):
+        hook_path = hooks_dir / hook_name
+        hook_ok = hook_path.exists() and _HOOK_IDENTITY_MARKER in hook_path.read_text()
+        label = f"{hook_name} hook:"
+        print(
+            f"  {_status_mark(hook_ok)} {label:<30s}"
+            f"{'installed' if hook_ok else 'MISSING'}"
+        )
 
     # .gitignore
     gi_path = project_path / ".gitignore"
@@ -2124,33 +2134,17 @@ def _git_hooks_dir(repo_root: Path) -> Path:
     return repo_root / ".git" / "hooks"
 
 
-def cmd_install_hook(args: argparse.Namespace) -> None:
-    """Install post-commit hook, respecting core.hooksPath (Husky compat)."""
-    import subprocess
+# Identity marker used to detect a previously-installed hybrid-search hook.
+# Substring is stable across hook types — both post-commit and post-checkout
+# contain this — so legacy installs that lacked a version marker are also
+# recognized. Keep string literal in sync with the script templates below.
+_HOOK_IDENTITY_MARKER = "hybrid_search.cli"
 
-    cwd = Path(args.cwd).resolve()
 
-    # Verify this is a git repo first
-    try:
-        subprocess.check_output(
-            ["git", "-C", str(cwd), "rev-parse", "--git-dir"],
-            text=True,
-        )
-    except subprocess.CalledProcessError:
-        print(f"Not a git repository: {cwd}")
-        return
-
-    hooks_dir = _git_hooks_dir(cwd)
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-    hook_path = hooks_dir / "post-commit"
-
-    # Find our venv python
-    venv_python = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python"
-    if not venv_python.exists():
-        venv_python = Path(sys.executable)
-
-    hook_content = f"""#!/bin/bash
-# Hybrid Search — auto delta-reindex on commit (background, non-blocking)
+def _build_post_commit_script(venv_python: Path) -> str:
+    """Build the post-commit hook body (delta reindex + gap detection)."""
+    return f"""#!/bin/bash
+# hybrid-search-mcp:post-commit — auto delta-reindex on commit (background, non-blocking)
 PROJECT_DIR="$(git rev-parse --show-toplevel)"
 mkdir -p "$PROJECT_DIR/.hybrid-search"
 
@@ -2173,22 +2167,116 @@ nohup bash -c '
 ' > /dev/null 2>&1 &
 """
 
+
+def _build_post_checkout_script(venv_python: Path) -> str:
+    """Build the post-checkout hook body (branch-switch-only reindex).
+
+    Gates:
+    - ``$3 == "1"`` — only branch switches; file checkouts are skipped
+    - ``.hybrid-search/`` must already exist — no auto-bootstrap on untracked
+      projects
+
+    Uses filesystem-delta reindex (not ``--git-delta``) because ``HEAD~1..HEAD``
+    is not a meaningful reference post-switch — we want "HEAD vs last indexed
+    state", which the hash/mtime prefilter already provides.
+    """
+    return f"""#!/bin/bash
+# hybrid-search-mcp:post-checkout — auto delta-reindex on branch switch (background)
+
+# Args: $1=prev_head, $2=new_head, $3=flag (1=branch switch, 0=file checkout)
+[ "$3" = "1" ] || exit 0
+
+PROJECT_DIR="$(git rev-parse --show-toplevel)"
+
+# Skip when hybrid-search isn't initialized here (no auto-bootstrap)
+[ -d "$PROJECT_DIR/.hybrid-search" ] || exit 0
+
+# Shared lock with post-commit — only one reindex at a time
+LOCK_FILE="$PROJECT_DIR/.hybrid-search/.reindex.lock"
+if [ -f "$LOCK_FILE" ]; then
+  LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+  if kill -0 "$LOCK_PID" 2>/dev/null; then
+    exit 0
+  fi
+  rm -f "$LOCK_FILE"
+fi
+nohup bash -c '
+  echo $$ > "'"$LOCK_FILE"'"
+  "{venv_python}" -m hybrid_search.cli reindex --wiki-scope affected --cwd "'"$PROJECT_DIR"'" || true
+  rm -f "'"$LOCK_FILE"'"
+' > /dev/null 2>&1 &
+"""
+
+
+def _install_hook_file(
+    hook_path: Path,
+    hook_content: str,
+    section_header: str,
+) -> str:
+    """Write ``hook_content`` to ``hook_path`` or append idempotently.
+
+    Returns a short status string: ``installed``, ``appended``, or
+    ``already-installed``. Makes the hook file executable.
+    """
+    status: str
     if hook_path.exists():
         existing = hook_path.read_text()
-        if "hybrid_search.cli" in existing:
-            print(f"Hook already installed: {hook_path}")
-            return
-        # Append to existing hook
-        with open(hook_path, "a") as f:
-            f.write("\n# --- Hybrid Search auto-reindex ---\n")
-            f.write(hook_content.split("\n", 1)[1])  # Skip shebang
-        print(f"Appended to existing hook: {hook_path}")
+        if _HOOK_IDENTITY_MARKER in existing:
+            status = "already-installed"
+        else:
+            with open(hook_path, "a") as f:
+                f.write(f"\n# --- {section_header} ---\n")
+                f.write(hook_content.split("\n", 1)[1])  # drop shebang on append
+            status = "appended"
     else:
         hook_path.write_text(hook_content)
-        print(f"Installed hook: {hook_path}")
+        status = "installed"
 
     hook_path.chmod(0o755)
-    print("Post-commit hook will auto-reindex on every commit (background, non-blocking).")
+    return status
+
+
+def cmd_install_hook(args: argparse.Namespace) -> None:
+    """Install post-commit + post-checkout hooks, respecting core.hooksPath."""
+    import subprocess
+
+    cwd = Path(args.cwd).resolve()
+
+    # Verify this is a git repo first
+    try:
+        subprocess.check_output(
+            ["git", "-C", str(cwd), "rev-parse", "--git-dir"],
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        print(f"Not a git repository: {cwd}")
+        return
+
+    hooks_dir = _git_hooks_dir(cwd)
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find our venv python (baked into hook content at install time)
+    venv_python = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        venv_python = Path(sys.executable)
+
+    commit_status = _install_hook_file(
+        hooks_dir / "post-commit",
+        _build_post_commit_script(venv_python),
+        section_header="Hybrid Search auto-reindex (post-commit)",
+    )
+    checkout_status = _install_hook_file(
+        hooks_dir / "post-checkout",
+        _build_post_checkout_script(venv_python),
+        section_header="Hybrid Search auto-reindex (post-checkout)",
+    )
+
+    print(f"post-commit:   {commit_status}  ({hooks_dir / 'post-commit'})")
+    print(f"post-checkout: {checkout_status}  ({hooks_dir / 'post-checkout'})")
+    print(
+        "Hooks will auto-reindex on commit AND branch switch "
+        "(background, non-blocking, shared lock)."
+    )
 
     # Ensure .hybrid-search/ artifacts are git-ignored (per-machine wiki policy).
     _ensure_gitignore_entries(cwd)
@@ -2278,7 +2366,10 @@ def main() -> None:
     p_stale = sub.add_parser("stale", help="Check wiki staleness")
     p_stale.add_argument("--cwd", default=".", help="Project directory")
 
-    p_hook = sub.add_parser("install-hook", help="Install post-commit hook in a project")
+    p_hook = sub.add_parser(
+        "install-hook",
+        help="Install post-commit + post-checkout hooks in a project",
+    )
     p_hook.add_argument("--cwd", default=".", help="Project directory")
 
     p_sync = sub.add_parser("sync-wiki", help="Sync disk wiki files to DB for staleness tracking")
