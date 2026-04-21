@@ -2,9 +2,75 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 10회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 11회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
+
+**M1.1 라벨 리네이밍 완료.** `low/medium/high` → `ambiguous/inferred/extracted` 전면 교체. DB schema v4 → v5 + UPDATE 마이그레이션. 4개 실사용 v4 인덱스(hybrid-search-mcp + valuein + mathontology + breeze) 자동 호환 — `reindex` 불필요. 422/422 tests passed (420 + 2 신규 마이그레이션 테스트). 다음 세션은 **M5 god_nodes/shortest_path/subgraph (2일)** 또는 **L6 외부 확장 (1일)**.
+
+### ✅ 이 세션 완료된 것 (11회차)
+
+**1. M1.1: confidence label semantic rename** (`5c98f8a`)
+- **매핑:** `low → ambiguous` (0.3) / `medium → inferred` (0.8) / `high → extracted` (1.0). graphify 용어 정렬. **numeric score는 불변** — 라벨만 공개 surface 변경.
+- **`storage/db.py`:** `SCHEMA_VERSION = "5"`, `CONFIDENCE_LEVELS = ("ambiguous", "inferred", "extracted")` (weakest → strongest, `_confidence_filter` 의존), `CONFIDENCE_SCORES` 키 교체. `call_edges.confidence` DEFAULT `'low'` → `'ambiguous'`. `insert_call_edges` INSERT literal + 3개 query helper의 `min_confidence` 기본값 모두 새 라벨로.
+- **v4 → v5 마이그레이션:** `_migrate_schema`에 단계 추가. `UPDATE call_edges SET confidence = CASE confidence WHEN 'high' THEN 'extracted' WHEN 'medium' THEN 'inferred' WHEN 'low' THEN 'ambiguous' ELSE confidence END WHERE confidence IN ('low','medium','high')`. v3 → v4 단계는 그대로 (옛 라벨 backfill 후 v5 단계에서 라벨 rename).
+- **소비처:** `index/callgraph.py` (resolver 7개 return 라벨, stats dict 키, 스킵 조건, log format), `index/dag.py` (`build_dependency_graph` 필터 `("extracted","inferred")` + 폴백 기본값), `cli.py` (resolve 출력 + edges 통계 출력 2곳), `tools/trace.py` (MCP `min_confidence` default `"medium"` → `"inferred"`).
+
+**2. 실제 v4 DB 마이그레이션 검증**
+- `~/.hybrid-search/projects/56feceb4ce0865e3/store.db` (스코프 작은 테스트 프로젝트) 한 번 열어서 자동 마이그레이션 실행. 결과: schema_version 4 → 5, 라벨 분포 보존:
+  - `low|2095 → ambiguous|2095`
+  - `medium|72 → inferred|72`
+  - `high|96 → extracted|96`
+- 나머지 3개 (`7c7631...`, `05de0b...` valuein/mathontology/breeze 추정 + `5f349647...`)는 다음 MCP 호출 시 자동 마이그레이션. 코드 경로 동일하므로 안전.
+
+**3. 테스트 (422/422 passed, +2 신규)**
+- `tests/test_store_db.py::TestConfidenceLabelRename`: `test_v4_to_v5_renames_labels` (v4 DB 시드 → 라벨 rewrite + score 보존 동시 검증), `test_v5_db_is_idempotent` (이미 v5인 DB 재오픈 시 no-op 보장).
+- 기존 테스트 라벨 assertion + 메서드명 일괄 교체. v3 → v4 backfill 테스트는 v5까지 체이닝되도록 expectation 갱신 (확장된 라벨 dict 추가 검증).
+- 시드 코드 내부 `'low'/'medium'/'high'` 4건은 의도적 보존 (v3/v4 레거시 시뮬레이션).
+
+### 🎯 다음 세션 진입점
+
+**파일 읽기 순서:**
+1. **이 섹션 전체** — 11회차 컨텍스트 흡수
+2. `git log --oneline -10` — 최근 커밋 (`5c98f8a` M1.1, `3570600` HANDOFF 10회차, `3af9fae` M1.2)
+3. 아래 "다음 세션 권장 순서" — M5 vs L6 결정
+
+### 🎯 다음 세션 권장 순서
+
+**선택 1 — M5 MCP 확장 (2일, 새 기능 축, 추천):**
+- 신규 도구 3개:
+  - `god_nodes`: authority 상위 N개 chunk (M1 score 직접 재사용 — `get_chunk_authority_scores` 이미 존재). "이 코드베이스에서 가장 많이 호출되는 핵심" 질의 대응.
+  - `shortest_path`: 두 chunk 간 call edge 최단 경로 (BFS on `call_edges`). "A 함수가 B에 어떻게 도달하는지" 질의 대응.
+  - `subgraph`: 특정 chunk 주변 N-hop forward+reverse. trace_callers/trace_callees의 양방향 통합 버전.
+- **선결 검증 필요:** Claude Code `/search` 스킬에서 god_nodes를 어떻게 라우팅할지. Wiki `index.md`와 역할 중복 안 되게 — Wiki는 "구조 개요", god_nodes는 "랭킹" 으로 분리.
+- **테스트 전략:** trace.py 패턴 재사용 (mock-free integration test).
+
+**선택 2 — L6 외부 확장 (1일, 벤치마크 축 강화):**
+- 외부 프로젝트 gold set 추가 (mathontology + breeze 각 5q) → external n=5 → n=15. α=0.5 vs 0.3 결정에 데이터 더 모음.
+- **리스크:** proxy labels 신뢰도 한계. 도메인 지식 없는 자동 labeling은 noise → 수작업 gold 필요할 수도.
+
+**선택 3 — Search DX 개선 (메모리 기록 참고):**
+- `feedback_search_dx.md` 메모리: hybrid_search 노이즈/snippet 개선 필요, 70%는 Grep이 빠름. M5와 묶어서 도구 분화 + 라우팅 개선이 자연스러움.
+
+**추천: M5 (god_nodes부터). M1 작업 묶음(M1, M1.v2, M1.2, M1.1) 완전 마감했고, authority score가 god_nodes로 즉시 재사용되어 단일 기능 단위로 출시 가능.**
+
+### 주의사항 / 알려진 이슈
+
+- **마이그레이션 검증 미완 프로젝트 3개:** `7c7631...` `05de0b...` `5f349647...`는 다음 MCP 호출 시 첫 자동 마이그레이션 실행 예정. 코드 경로는 56feceb4에서 검증됐지만 대형 DB(7c7631은 25k+ edges)에서 UPDATE 시간 측정 안 됨. 만약 느리면 `CREATE INDEX idx_callee_confidence ON call_edges(confidence)` 추가 고려 (현재 idx 없음).
+- **벤치마크 산출물 (`benchmarks/authority_poc/*.json`)은 옛 라벨 그대로** — frozen artifact라 의도적. 다음 L6 재실행 시 새 라벨로 자동 교체됨.
+- **callgraph wiki 페이지 (`.hybrid-search/wiki/*.md`)** — 일부에 "low/medium/high" 텍스트가 docstring에서 추출됐을 가능성. wiki는 LLM synthesis가 자동 갱신하므로 별도 손댈 필요 없음.
+
+### 마지막 상태
+
+- **브랜치:** `main` (origin/main 기준 +3 커밋 — 11회차 작성 후 푸시 대기)
+- **마지막 커밋:** `5c98f8a [feat] M1.1 confidence label rename`
+- **테스트:** 422/422 passed (24.84s)
+
+---
+
+## 🔵 이전 세션 인계 (10회차) — 참고용
+
+### 한줄 요약 (10회차)
 
 **M1.2 type-gating 완료 + Full L6 재측정.** keyword Δ NDCG@10 **-0.032 (P=0.25) → +0.010 (P=0.66)** — 가설 정확히 검증. structural은 +0.117 → +0.123(P=0.94→0.97), semantic은 변동 없음, OVERALL P(Δ>0) 0.87 → **0.99**. 420/420 tests passed (413 + 7 신규). 다음 세션은 **M1.1 라벨 리네이밍(반나절)** 또는 **M5 god_nodes/shortest_path(2일)**.
 
