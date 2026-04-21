@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hybrid_search.config import load_config
@@ -2250,6 +2251,150 @@ def cmd_annotate_wiki(args: argparse.Namespace) -> None:
         print(f"Wiki god-nodes section updated ({len(rows[:args.top])} entries): {index_path}")
 
 
+# ── qa (Sprint 2) — read-side of the Memory Layer ──────────────────────
+
+def _resolve_qa_root(args: argparse.Namespace) -> Path | None:
+    """Resolve project root for qa commands. Prefers --project, falls back to
+    a registry match on --cwd, then the raw cwd path.
+
+    Returns None and prints to stderr when --project is given but not registered.
+    """
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+    if getattr(args, "project", None):
+        pinfo = registry.get_by_name(args.project)
+        if pinfo is None:
+            print(f"Project not found: {args.project}", file=sys.stderr)
+            return None
+        return Path(pinfo.path)
+    detected = _detect_project(registry, getattr(args, "cwd", "."))
+    if detected is not None:
+        return Path(detected[1])
+    return Path(getattr(args, "cwd", ".")).resolve()
+
+
+def _truncate_preview(text: str, limit: int = 72) -> str:
+    flat = text.replace("\n", " ").strip()
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
+
+
+def cmd_qa_list(args: argparse.Namespace) -> None:
+    """List recent qa logs for a project, newest first."""
+    from hybrid_search.memory import reader
+
+    root = _resolve_qa_root(args)
+    if root is None:
+        sys.exit(1)
+
+    indexes = list(reader.iter_qa_indexes(root))
+    if args.since:
+        try:
+            cutoff = datetime.fromisoformat(args.since)
+        except ValueError:
+            print(f"Invalid --since date: {args.since}", file=sys.stderr)
+            sys.exit(1)
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+        indexes = [
+            i for i in indexes
+            if i.timestamp is not None and i.timestamp >= cutoff
+        ]
+    indexes = indexes[: args.limit]
+
+    if args.json:
+        import json as _json
+
+        print(_json.dumps(
+            [
+                {
+                    "id": i.id,
+                    "query": i.query,
+                    "query_type": i.query_type,
+                    "bm25_weight": i.effective_bm25_weight,
+                    "timestamp": i.timestamp.isoformat() if i.timestamp else None,
+                    "result_count": i.result_count,
+                    "path": str(i.path),
+                }
+                for i in indexes
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return
+
+    if not indexes:
+        print(f"No qa logs under {root / reader.QA_DIRNAME}")
+        return
+
+    for idx in indexes:
+        ts = idx.timestamp.strftime("%Y-%m-%d %H:%M") if idx.timestamp else "?"
+        preview = _truncate_preview(idx.query)
+        print(f"{idx.id}  [{idx.query_type:<14}] n={idx.result_count}  {ts}  {preview}")
+
+
+def cmd_qa_show(args: argparse.Namespace) -> None:
+    """Print a single qa log by id / stem / hash prefix."""
+    from hybrid_search.memory import reader
+
+    root = _resolve_qa_root(args)
+    if root is None:
+        sys.exit(1)
+
+    idx = reader.find_qa_by_id(root, args.id)
+    if idx is None:
+        print(f"qa log not found: {args.id}", file=sys.stderr)
+        sys.exit(1)
+    print(idx.path.read_text(encoding="utf-8"))
+
+
+def cmd_qa_grep(args: argparse.Namespace) -> None:
+    """Grep across qa log frontmatter + body. Newest files first."""
+    from hybrid_search.memory import reader
+
+    root = _resolve_qa_root(args)
+    if root is None:
+        sys.exit(1)
+
+    hits = list(reader.grep_qa(root, args.term, case_insensitive=not args.case_sensitive))
+    if not hits:
+        sys.exit(1)  # ripgrep-style: non-zero when no matches
+
+    for hit in hits:
+        print(f"{hit.index.id}:{hit.lineno}:{hit.line}")
+
+
+def cmd_qa_stats(args: argparse.Namespace) -> None:
+    """Summary stats over a project's qa logs."""
+    from collections import Counter
+    from hybrid_search.memory import reader
+
+    root = _resolve_qa_root(args)
+    if root is None:
+        sys.exit(1)
+
+    indexes = list(reader.iter_qa_indexes(root))
+    total = len(indexes)
+    if total == 0:
+        print(f"No qa logs under {root / reader.QA_DIRNAME}")
+        return
+
+    by_month: Counter[str] = Counter()
+    by_type: Counter[str] = Counter()
+    for idx in indexes:
+        by_type[idx.query_type] += 1
+        if idx.timestamp is not None:
+            by_month[idx.timestamp.strftime("%Y-%m")] += 1
+
+    print(f"qa logs under {root / reader.QA_DIRNAME}")
+    print(f"  total:        {total}")
+    print("  by query_type:")
+    for k, v in sorted(by_type.items(), key=lambda kv: -kv[1]):
+        print(f"    {k:<16} {v}")
+    print("  by month:")
+    for k, v in sorted(by_month.items()):
+        print(f"    {k}            {v}")
+
+
 def _bfs_shortest_path(
     db: StoreDB, project_id: str, start: str, goal: str, min_confidence: str
 ) -> list[str] | None:
@@ -3037,6 +3182,28 @@ def main() -> None:
     )
     p_path.add_argument("--json", action="store_true", help="Output as JSON")
 
+    p_qa_list = sub.add_parser("qa-list", help="List recent qa logs (Memory Layer)")
+    p_qa_list.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_qa_list.add_argument("--project", help="Project name (overrides --cwd)")
+    p_qa_list.add_argument("--limit", type=int, default=20, help="Max entries (default: 20)")
+    p_qa_list.add_argument("--since", help="ISO date cutoff, e.g. 2026-04-01")
+    p_qa_list.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_qa_show = sub.add_parser("qa-show", help="Print a single qa log by id / hash prefix")
+    p_qa_show.add_argument("id", help="qa log id, file stem, or hash prefix (≥4 chars)")
+    p_qa_show.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_qa_show.add_argument("--project", help="Project name (overrides --cwd)")
+
+    p_qa_grep = sub.add_parser("qa-grep", help="Grep across qa log frontmatter + body")
+    p_qa_grep.add_argument("term", help="Substring to search for")
+    p_qa_grep.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_qa_grep.add_argument("--project", help="Project name (overrides --cwd)")
+    p_qa_grep.add_argument("--case-sensitive", action="store_true", help="Respect case (default: off)")
+
+    p_qa_stats = sub.add_parser("qa-stats", help="Summary of qa logs (total / by type / by month)")
+    p_qa_stats.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_qa_stats.add_argument("--project", help="Project name (overrides --cwd)")
+
     p_sub = sub.add_parser("subgraph", help="N-hop forward+reverse call graph around a chunk/symbol")
     p_sub.add_argument("symbol", help="Chunk_id, qualified_name, or symbol name")
     p_sub.add_argument("--hops", type=int, default=2, help="Traversal depth (default: 2)")
@@ -3098,6 +3265,14 @@ def main() -> None:
         cmd_shortest_path(args)
     elif args.command == "subgraph":
         cmd_subgraph(args)
+    elif args.command == "qa-list":
+        cmd_qa_list(args)
+    elif args.command == "qa-show":
+        cmd_qa_show(args)
+    elif args.command == "qa-grep":
+        cmd_qa_grep(args)
+    elif args.command == "qa-stats":
+        cmd_qa_stats(args)
     else:
         parser.print_help()
         sys.exit(1)
