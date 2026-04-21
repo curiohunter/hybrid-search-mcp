@@ -4,11 +4,20 @@ Implements the 3-tier resolution strategy from design.md §12:
   extracted: import path + symbol name → exact chunk match
   inferred:  qualified_name match within the same project
   ambiguous: name-only match (common names filtered)
+
+Two-pass resolution (M9):
+  Pass 1 runs the strategies above per-edge.
+  Pass 2 uses the *caller file's* already-resolved neighbor files as context to
+  upgrade remaining ambiguous edges — when an ambiguous candidate lives in a
+  file the caller already demonstrably reaches via confident edges, treat it
+  as inferred. This catches method calls like ``obj.method()`` where ``obj``
+  has no import hint but the caller file's import graph makes the target clear.
 """
 
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from pathlib import PurePosixPath
 
 from hybrid_search.storage.db import CONFIDENCE_SCORES, StoreDB
@@ -112,14 +121,20 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
     # Module path → chunks index (Step 2: import path resolution)
     module_index = _build_module_index(all_files, all_chunks)
 
-    stats = {"total": len(edges), "extracted": 0, "inferred": 0, "ambiguous": 0, "unresolved": 0}
-    # (rowid, chunk_id, qname, confidence, score)
-    updates: list[tuple[int, str, str | None, str, float]] = []
+    stats = {
+        "total": len(edges),
+        "extracted": 0, "inferred": 0, "ambiguous": 0, "unresolved": 0,
+        "pass2_upgraded": 0,
+    }
+    # Pass 1 outcomes, keyed by rowid for pass 2 rewriting.
+    # Each entry: (rowid, caller_chunk_id, chunk_id, qname, confidence)
+    pass1: list[tuple[int, str | None, str | None, str | None, str]] = []
 
     for edge in edges:
         callee_name = edge["callee_name"]
         callee_module = edge.get("callee_module")
         rowid = edge["rowid"]
+        caller_chunk_id = edge.get("caller_chunk_id")
 
         # Skip edges already resolved at inferred/extracted confidence.
         # Re-resolve ambiguous edges — they may upgrade after more chunks are indexed.
@@ -127,19 +142,60 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
             continue
 
         resolved_id, resolved_qname, confidence = _resolve_single(
-            callee_name, callee_module, edge.get("caller_chunk_id"),
+            callee_name, callee_module, caller_chunk_id,
             qname_index, name_index, file_index, project_id, module_index,
             class_members,
         )
+        pass1.append((rowid, caller_chunk_id, resolved_id, resolved_qname, confidence))
 
-        if resolved_id:
+    # --- Pass 2: context-aware ambiguous upgrade (M9) ---
+    # WHY: same-file edges are excluded from the context set — Strategy 3
+    # already handles same-file preference in pass 1. Feeding the caller's own
+    # file back in would only re-confirm what pass 1 picked.
+    caller_to_targets: dict[str, set[str]] = defaultdict(set)
+    for edge in edges:
+        if edge.get("confidence") in ("extracted", "inferred") and edge.get("callee_chunk_id"):
+            caller_f = file_index.get(edge.get("caller_chunk_id") or "")
+            target_f = file_index.get(edge["callee_chunk_id"])
+            if caller_f and target_f and caller_f != target_f:
+                caller_to_targets[caller_f].add(target_f)
+    for _rowid, caller_id, chunk_id, _qn, conf in pass1:
+        if chunk_id and conf in ("extracted", "inferred"):
+            caller_f = file_index.get(caller_id or "")
+            target_f = file_index.get(chunk_id)
+            if caller_f and target_f and caller_f != target_f:
+                caller_to_targets[caller_f].add(target_f)
+
+    edge_by_rowid: dict[int, dict] = {e["rowid"]: e for e in edges if "rowid" in e}
+    upgraded_pass1: list[tuple[int, str | None, str | None, str | None, str]] = []
+    for rowid, caller_id, chunk_id, qname, confidence in pass1:
+        if confidence == "ambiguous" and chunk_id and caller_id:
+            edge = edge_by_rowid.get(rowid)
+            if edge is not None:
+                caller_f = file_index.get(caller_id)
+                related = caller_to_targets.get(caller_f or "", set())
+                if related:
+                    candidates = name_index.get(edge["callee_name"], [])
+                    hit = None
+                    for cid, qn in candidates:
+                        if file_index.get(cid) in related:
+                            hit = (cid, qn)
+                            break
+                    if hit is not None:
+                        chunk_id, qname = hit
+                        confidence = "inferred"
+                        stats["pass2_upgraded"] += 1
+        upgraded_pass1.append((rowid, caller_id, chunk_id, qname, confidence))
+
+    updates: list[tuple[int, str, str | None, str, float]] = []
+    for rowid, _caller_id, chunk_id, qname, confidence in upgraded_pass1:
+        if chunk_id:
             score = CONFIDENCE_SCORES.get(confidence, 0.0)
-            updates.append((rowid, resolved_id, resolved_qname, confidence, score))
+            updates.append((rowid, chunk_id, qname, confidence, score))
             stats[confidence] += 1
         else:
             stats["unresolved"] += 1
 
-    # Batch update within a transaction
     if updates:
         with db.transaction() as conn:
             for rowid, chunk_id, qname, confidence, score in updates:
@@ -148,9 +204,9 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
                 )
 
     logger.info(
-        "Call edge resolution for %s: %d total, %d extracted, %d inferred, %d ambiguous, %d unresolved",
+        "Call edge resolution for %s: %d total, %d extracted, %d inferred, %d ambiguous, %d unresolved (pass2 upgraded %d)",
         project_id, stats["total"], stats["extracted"], stats["inferred"],
-        stats["ambiguous"], stats["unresolved"],
+        stats["ambiguous"], stats["unresolved"], stats["pass2_upgraded"],
     )
     return stats
 

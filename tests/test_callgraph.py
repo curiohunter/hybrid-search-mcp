@@ -212,6 +212,173 @@ class TestResolveCallEdgesIntegration:
         assert stats2["unresolved"] <= stats1["unresolved"]
 
 
+class TestPassTwoAmbiguousUpgrade:
+    """M9 pass 2: caller-file's resolved neighbors upgrade ambiguous → inferred."""
+
+    def _seed_three_files(self, db: StoreDB) -> None:
+        """Caller reaches src/service.py via one confident edge and src/other.py via none.
+        Both files define `do_task`. Pass 2 should pick service.py's `do_task`.
+        """
+        with db.transaction() as conn:
+            db.upsert_file(conn, FileRecord(
+                id="f-caller", project_id=PROJECT_ID,
+                relative_path="src/caller.py", file_hash="h1",
+            ))
+            db.upsert_file(conn, FileRecord(
+                id="f-service", project_id=PROJECT_ID,
+                relative_path="src/service.py", file_hash="h2",
+            ))
+            db.upsert_file(conn, FileRecord(
+                id="f-other", project_id=PROJECT_ID,
+                relative_path="src/other.py", file_hash="h3",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(
+                    id="c-run", file_id="f-caller", project_id=PROJECT_ID,
+                    name="run", qualified_name="src/caller.py::run",
+                    node_type="function",
+                ),
+                ChunkRecord(
+                    id="c-svc-specific", file_id="f-service", project_id=PROJECT_ID,
+                    name="specific", qualified_name="src/service.py::specific",
+                    node_type="function",
+                ),
+                ChunkRecord(
+                    id="c-svc-task", file_id="f-service", project_id=PROJECT_ID,
+                    name="do_task", qualified_name="src/service.py::do_task",
+                    node_type="function",
+                ),
+                ChunkRecord(
+                    id="c-other-task", file_id="f-other", project_id=PROJECT_ID,
+                    name="do_task", qualified_name="src/other.py::do_task",
+                    node_type="function",
+                ),
+            ])
+            # Edge 1: caller → specific (unique name, will resolve inferred)
+            # Edge 2: caller → do_task (ambiguous: 2 candidates)
+            db.insert_call_edges(conn, "c-run", [
+                ("specific", None),
+                ("do_task", None),
+            ], PROJECT_ID)
+
+    def test_ambiguous_upgrades_to_inferred_via_caller_context(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        self._seed_three_files(db)
+
+        stats = resolve_call_edges(db, PROJECT_ID)
+
+        # Pass 1: specific → inferred (unique), do_task → ambiguous (2 candidates).
+        # Pass 2: do_task candidate in f-service matches a file the caller already
+        #         reaches confidently via `specific` → upgrade to inferred.
+        assert stats["pass2_upgraded"] >= 1
+        assert stats["ambiguous"] == 0
+
+        edges = db.get_all_call_edges(PROJECT_ID)
+        do_task_edge = next(e for e in edges if e["callee_name"] == "do_task")
+        assert do_task_edge["callee_chunk_id"] == "c-svc-task"
+        assert do_task_edge["confidence"] == "inferred"
+
+        db.close()
+
+    def test_no_upgrade_when_no_candidate_in_related_files(self, tmp_path: Path) -> None:
+        """If none of the ambiguous candidates live in a related file, stay ambiguous."""
+        db = _make_db(tmp_path)
+        with db.transaction() as conn:
+            db.upsert_file(conn, FileRecord(
+                id="f-a", project_id=PROJECT_ID,
+                relative_path="src/a.py", file_hash="h1",
+            ))
+            db.upsert_file(conn, FileRecord(
+                id="f-b", project_id=PROJECT_ID,
+                relative_path="src/b.py", file_hash="h2",
+            ))
+            db.upsert_file(conn, FileRecord(
+                id="f-c", project_id=PROJECT_ID,
+                relative_path="src/c.py", file_hash="h3",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(
+                    id="c-caller", file_id="f-a", project_id=PROJECT_ID,
+                    name="run", qualified_name="src/a.py::run",
+                    node_type="function",
+                ),
+                # 2 `lookup` candidates, neither in f-a
+                ChunkRecord(
+                    id="c-b", file_id="f-b", project_id=PROJECT_ID,
+                    name="lookup", qualified_name="src/b.py::lookup",
+                    node_type="function",
+                ),
+                ChunkRecord(
+                    id="c-c", file_id="f-c", project_id=PROJECT_ID,
+                    name="lookup", qualified_name="src/c.py::lookup",
+                    node_type="function",
+                ),
+            ])
+            db.insert_call_edges(conn, "c-caller", [("lookup", None)], PROJECT_ID)
+
+        stats = resolve_call_edges(db, PROJECT_ID)
+
+        # No confident edges from f-a to either candidate's file → no pass 2 upgrade
+        assert stats["pass2_upgraded"] == 0
+        assert stats["ambiguous"] == 1
+        db.close()
+
+    def test_self_file_targets_excluded_from_context(self, tmp_path: Path) -> None:
+        """A confident same-file edge should not populate caller_to_targets — it
+        would bias every same-file candidate upward, defeating the point.
+        """
+        db = _make_db(tmp_path)
+        with db.transaction() as conn:
+            db.upsert_file(conn, FileRecord(
+                id="f-caller", project_id=PROJECT_ID,
+                relative_path="src/caller.py", file_hash="h1",
+            ))
+            db.upsert_file(conn, FileRecord(
+                id="f-other", project_id=PROJECT_ID,
+                relative_path="src/other.py", file_hash="h2",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(
+                    id="c-caller", file_id="f-caller", project_id=PROJECT_ID,
+                    name="run", qualified_name="src/caller.py::run",
+                    node_type="function",
+                ),
+                # A unique helper in the caller's own file (confident same-file edge)
+                ChunkRecord(
+                    id="c-self-helper", file_id="f-caller", project_id=PROJECT_ID,
+                    name="selfhelper", qualified_name="src/caller.py::selfhelper",
+                    node_type="function",
+                ),
+                # Two `lookup` candidates: one in caller file, one in other file
+                ChunkRecord(
+                    id="c-caller-lookup", file_id="f-caller", project_id=PROJECT_ID,
+                    name="lookup", qualified_name="src/caller.py::lookup",
+                    node_type="function",
+                ),
+                ChunkRecord(
+                    id="c-other-lookup", file_id="f-other", project_id=PROJECT_ID,
+                    name="lookup", qualified_name="src/other.py::lookup",
+                    node_type="function",
+                ),
+            ])
+            db.insert_call_edges(conn, "c-caller", [
+                ("selfhelper", None),  # confident (unique), same-file
+                ("lookup", None),      # ambiguous — 2 candidates
+            ], PROJECT_ID)
+
+        stats = resolve_call_edges(db, PROJECT_ID)
+
+        # Pass 1 already prefers same-file for lookup → resolves to caller-lookup
+        # as inferred via Strategy 3. Pass 2 contributes no new upgrade here
+        # (its own file is not added to caller_to_targets).
+        edges = db.get_all_call_edges(PROJECT_ID)
+        lookup_edge = next(e for e in edges if e["callee_name"] == "lookup")
+        assert lookup_edge["callee_chunk_id"] == "c-caller-lookup"
+        # pass2_upgraded is 0: same-file resolution was never at "ambiguous"
+        assert stats["pass2_upgraded"] == 0
+        db.close()
+
+
 class TestImportCallBinding:
     """Phase 7 Step 1: Import-Call Binding tests."""
 

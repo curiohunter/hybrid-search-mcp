@@ -498,6 +498,9 @@ def _walk_node(
         node_type = _classify_node_type(node, language)
         content = _node_text(source_bytes, node)
         docstring = _extract_docstring(node, source_bytes, language)
+        rationale = _extract_rationale(node, source_bytes, language)
+        if rationale:
+            docstring = f"{docstring}\n\n{rationale}" if docstring else rationale
         calls = _extract_calls(node, source_bytes, language, import_map or {}, parent_name)
 
         # For classes: extract the header, then recurse into methods
@@ -781,6 +784,86 @@ def _extract_docstring(node, source_bytes: bytes, language: str) -> str | None:
                 if doc_lines:
                     return " ".join(doc_lines)
     return None
+
+
+_RATIONALE_TAG_RE = re.compile(
+    r"^(NOTE|WHY|TODO|FIXME|HACK|XXX)\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
+
+_COMMENT_NODE_TYPES = frozenset({
+    "comment",          # python, ts/js, java, ruby
+    "line_comment",     # rust
+    "block_comment",    # rust
+})
+
+
+def _extract_rationale(node, source_bytes: bytes, language: str) -> str | None:
+    """Collect NOTE/WHY/TODO/FIXME/HACK/XXX comments inside the node body.
+
+    Also captures JSDoc/Javadoc ``@remarks`` / ``@note`` tags in the leading
+    documentation block (TS/JS/Java). These are design-intent signals: why
+    code exists, hidden invariants, surprising behavior — the things that
+    don't show up in docstrings but guide reading.
+    """
+    results: list[str] = []
+
+    stack = list(node.children)
+    while stack:
+        n = stack.pop()
+        if n.type in _COMMENT_NODE_TYPES:
+            text = _node_text(source_bytes, n)
+            for line in text.splitlines():
+                stripped = line.strip()
+                # Strip leading comment markers (//, #, *, ///, //!, --)
+                while stripped and stripped[0] in "/#*- ":
+                    stripped = stripped[1:].lstrip()
+                # Strip trailing */ from block comments
+                if stripped.endswith("*/"):
+                    stripped = stripped[:-2].rstrip()
+                m = _RATIONALE_TAG_RE.match(stripped)
+                if m:
+                    body = m.group(2).strip()
+                    if body:
+                        results.append(f"{m.group(1).upper()}: {body}")
+        else:
+            stack.extend(n.children)
+
+    if language in ("typescript", "javascript", "java"):
+        # Walk up past any export_statement wrapper to find the JSDoc block
+        # that sits as a sibling at the outer level.
+        doc_target = node
+        if doc_target.parent and doc_target.parent.type == "export_statement":
+            doc_target = doc_target.parent
+        if doc_target.parent:
+            idx = None
+            for i, sibling in enumerate(doc_target.parent.children):
+                if sibling == doc_target:
+                    idx = i
+                    break
+            if idx and idx > 0:
+                prev = doc_target.parent.children[idx - 1]
+                if prev.type == "comment":
+                    text = _node_text(source_bytes, prev)
+                    if text.startswith("/**"):
+                        for m in re.finditer(
+                            r"@(remarks?|note)\b\s*([^@]+?)(?=@|\*/)",
+                            text, re.IGNORECASE | re.DOTALL,
+                        ):
+                            body = re.sub(r"\s*\*\s*", " ", m.group(2)).strip()
+                            if body:
+                                results.append(f"{m.group(1).upper()}: {body}")
+
+    if not results:
+        return None
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for r in results:
+        if r not in seen:
+            seen.add(r)
+            unique.append(r)
+    return "\n".join(unique)
 
 
 def _clean_jsdoc(text: str) -> str:
