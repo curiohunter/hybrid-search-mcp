@@ -2,7 +2,110 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 15회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 16회차) — 다음 세션 여기부터 읽을 것
+
+### 한줄 요약
+
+**"MVP 완료 = 완성" 오진단 수정 + Phase 1 (Memory Layer) 완성.** 옆 세션(15회차)이 완료를 과장한 상태를 팩트 체크(qa_log.py 실제 259줄, public 동작 경로는 `record()` 단독, `qa list/show/grep` CLI 전무, `.hybrid-search/qa/`가 .gitignore로 인덱싱 제외됨)로 수정 → `_study/graphify-analysis/` 5,035줄 8문서 기반 gap 분석으로 **실제 남은 것**만 뽑아 4-Phase 완성 로드맵(`docs/plan/2026-04-21-memory-layer-10x.md`) 수립 → **Phase 1 (Sprint 2/3/4) 전부 이번 세션에 shipped**. 548/548 passed (+48). Memory Layer 4축(write/read/self-ref/rotation) 모두 라이브. 실데이터 자기참조 검증 성공: "authority_alpha 재튜닝" 쿼리에 과거 qa 로그가 `node_type=qa_log`로 1위 소환. 커밋 5개(15회차 tail `a0dc2b5`, Sprint 2 `ab77361`, Sprint 3 `5f5749c`, Sprint 4 `b31d179`, README 정식 승격 `59a53ec`) 전부 origin/main 푸시 완료. README "Memory Layer" 섹션을 Write/Read/Self-ref/Rotation 4축 구조로 재작성.
+
+### ✅ 이 세션 완료된 것 (16회차)
+
+**1. 방향 전환 — "MVP=완성" 진단 재검증**
+- 옆 세션 주장 6개 팩트체크: qa_log.py 실제 **259줄** (주장은 230), public 함수는 `record()` + `is_enabled()` 두 개이지만 외부 동작 경로는 `record()` 독점 (유일 caller: `tools/hybrid_search.py:119`).
+- `qa list/show/grep` CLI 서브커맨드 `--help`에 0개, `.gitignore`에 `.hybrid-search/qa/` 등재로 scanner 인덱싱 제외됨 확인.
+- HANDOFF 15회차 line 52 "C MVP만으로는 write-only → 완전 가치 실현 X", line 60 "Memory Layer는 write+read 둘 다 돼야" 그대로 인용해 입증.
+- 사용자 지시: "완성하기 위한 플랜을 만들고 구현 시작해" → Phase 로드맵 수립.
+
+**2. 로드맵 문서 (`docs/plan/2026-04-21-memory-layer-10x.md`, +247줄)**
+- graphify 정밀 분석 8문서(5,035줄) gap 분석. 이미 shipped인 Q1/Q2/Q7/Q8/Q9, M1/M1.1/M1.2/M2/M3/M4/M5, L6, 15회차 A/B/C/D 전부 제외.
+- **진짜 남은 것**: L1 Memory read+self-ref, Wiki 파편화, M9 two-pass callgraph, M10 rationale, L2-lite Leiden wiki, L4 watch / L5 two-tier, valuein_homepage 실전 검증.
+- 4-Phase 구조: Phase 1 (Memory 완성) → 2 (Wiki 파편화) → 3 (정확도) → 4 (valuein_homepage).
+- "10배" 조작적 정의: DX × precision × recall × navigation. 주차별 기대 효과 명시.
+
+**3. Sprint 2 — qa 조회 CLI (커밋 `ab77361`)**
+- `src/hybrid_search/memory/reader.py` 신설 (+240줄): `iter_qa_files` / `parse_qa_index` / `find_qa_by_id` / `grep_qa` / `read_qa_body` + `QAIndex` / `GrepHit` dataclass. **YAML 의존성 없음** (placeholder 기반 escape 역변환으로 `\\"` / `\\\\` 구분).
+- `cli.py`: `qa-list` / `qa-show` / `qa-grep` / `qa-stats` 4개 서브커맨드 + `_resolve_qa_root` 헬퍼.
+- `tests/test_qa_reader.py`: 19 케이스 — 파싱, escape 왕복, iter 정렬, id resolve (friendly/stem/hash-prefix), grep, body.
+
+**4. Sprint 3 — qa 로그 self-indexing (커밋 `5f5749c`)**
+- `config.py`: `IndexingConfig.index_qa_logs: bool = False` 필드 + `HYBRID_SEARCH_INDEX_QA` env 토글 (env > TOML 우선).
+- `scanner.py`: `_walk_files` dotdir prune에 예외 추가 — opt-in 시 `.hybrid-search` 한 곳만 진입 (다른 dotdir은 그대로 차단). `_build_ignore_spec`에 `!.hybrid-search/qa/**` negation 추가해서 setup이 기록한 `.gitignore` 엔트리 우회.
+- `doc_chunker.py`: `.hybrid-search/qa/**.md`는 섹션 분할 대신 **whole-file 1청크** + `node_type="qa_log"`. Top results ## 헤딩이 쪼개져 쿼리↔결과 맥락 깨지는 걸 방지. `_whole_file_chunk`에 `node_type` kwarg 추가.
+- **실데이터 자기참조 검증**: repo에 qa 로그 4개 시딩 → `HYBRID_SEARCH_INDEX_QA=1 reindex --force --cwd .` → "authority_alpha 재튜닝" 쿼리 1위가 `node_type=qa_log` (`0e1534ad`), "Sprint 2 qa list show grep 설계" 1위도 qa_log (`6bbdc19b`). JSON 출력에 `node_type` 필드 유지 — 클라이언트 필터/랭킹 분리 가능.
+
+**5. Sprint 4 — retention + cross-project (커밋 `b31d179`)**
+- `reader.py` +152줄: `parse_duration` ("30d/12h/2w/3m", months=30d 근사), `resolve_cutoff` (older_than/before mutex, naive UTC 보정), `select_older_than`, `prune_older_than` + `PruneResult`. `_rmdir_empty_ancestors`로 비게 된 YYYY/MM 자동 정리 (qa/ 루트는 앵커로 보존).
+- `cli.py`: `qa-list --all` (`ProjectRegistry.list_all()` 순회, home 제외, `<project>:` prefix, --project/--cwd와 mutually exclusive), `qa-prune --older-than <dur> | --before <iso> [--dry-run] [--verbose]`.
+- 테스트 +22: parse_duration 8 (parametrize), resolve_cutoff 5, prune 5, 보조 4.
+
+**6. README 정식 섹션 승격 (커밋 `59a53ec`)**
+- "Memory Layer (opt-in, MVP)" → "Memory Layer" 4축 하위 섹션(Write / Read / Self-reference / Rotation) 재작성. MVP 경고 제거, `HYBRID_SEARCH_INDEX_QA` 토글 + `node_type="qa_log"` 노출 정책 명시.
+- CLI Usage에 Memory Layer 8줄 블록 신규, CLI Reference 5행(qa-list/show/grep/stats/prune), Troubleshooting "qa logs not surfacing in search" 행 추가.
+- CLI-async race / 프라이버시 caveat는 보존.
+
+### 🎯 다음 세션 진입점
+
+1. **이 16회차 섹션 전체**
+2. `docs/plan/2026-04-21-memory-layer-10x.md` — Phase 2~4 세부 플랜
+3. `git log --oneline -6`
+4. 아래 "다음 세션 권장 순서"
+
+### 🎯 다음 세션 권장 순서
+
+**Phase 2 — Wiki 파편화 해결 (2~3일).** 플랜 문서의 Phase 2 섹션 그대로.
+
+**Step 1 (반나절) — 원인 파악:**
+- 현상: `tests/test_wiki.py` 1파일이 `test_wiki-1.md` ~ `test_wiki-11.md` 11쪽으로 쪼개짐. `test_cli_hook_install.py`는 12쪽. Wiki 98개 중 절반이 이런 파편.
+- 추적 대상: `src/hybrid_search/storage/wiki.py` `WikiStore.compile_page` + `src/hybrid_search/index/pipeline.py` module 배정 로직. 파일 → module_id 매핑이 어디서 `-N` 접미사 붙이는지 grep.
+- 의심: 파일당 심볼 수 임계 초과 시 module 분할 → slug 충돌 회피로 `-N`.
+
+**Step 2 (1~2일) — 소극적 패치:**
+- 같은 파일 내 심볼은 반드시 같은 module_id로 강제. 임계 초과는 한 페이지 안에서 처리.
+- 테스트: 고의적으로 심볼 수 많은 파일 → 페이지 1개만 생성되는지.
+- Leiden(L2) 풀스케일은 Phase 4 이후로 미룸 (너무 큼).
+
+**Step 3 (1시간) — drift 청소:**
+- `hybrid-search-mcp rebuild-index` 후 `coverage.json` total_pages와 실제 `.hybrid-search/wiki/*.md` 카운트 일치 검증 테스트 추가.
+- 현재 상태: total_pages=75 vs 실파일 98 → orphan 23개.
+
+**Phase 2 완료 조건**:
+- [ ] `test_wiki.py` 1파일 = `test_wiki.md` 1페이지
+- [ ] wiki .md 파일 수 == `coverage.json` total_pages
+- [ ] STALE 0, needs_synthesis 0 (재생성 후)
+- [ ] orphan 검출 테스트 신규
+
+그 다음 Phase 3 (M9 two-pass callgraph + M10 rationale) → Phase 4 (valuein_homepage 실전 검증).
+
+### 주의사항 / 알려진 이슈
+
+- **qa_log async CLI race는 알려진 제약이지 버그가 아님.** MCP 서버(long-running)에서만 daemon thread 완료 보장. CLI 단발 실행은 종료 시 daemon이 죽어 파일 생성 race 가능. README Troubleshooting에 명시. 해결책: sync API (`async_write=False`) 또는 MCP 서버 경로.
+- **qa 자기참조 효과는 `HYBRID_SEARCH_INDEX_QA=1` + `reindex --force` 필수.** scanner가 opt-in 여부를 config에서 읽기 때문에 env만 켜고 reindex 안 하면 기존 DB에는 qa chunks 없음.
+- **qa 인덱싱 후 wiki-gaps.txt 298행으로 증가:** qa 로그가 wiki 커버리지 없는 새 파일로 들어가서. Phase 2 진입 시 qa 경로는 wiki 대상에서 명시적으로 제외하는 로직 추가 필요.
+- **scanner dotdir 예외는 `.hybrid-search`만.** 다른 dotdir(`.github` 등)은 여전히 기본 차단. 필요 시 `_keep_dir` 로직 확장.
+- **Wiki 파편화는 16회차에서 수정 안 함.** `test_wiki-1..11` / `test_cli_hook_install-1..12` 그대로 남음. Phase 2 진입 후 처리.
+- **15회차 이슈 잔존 (승계):** v4 → v5 마이그레이션 미검증 프로젝트 3개.
+
+### 마지막 상태
+
+- **브랜치:** `main` — origin/main과 동기화 완료 (16회차 커밋 4개 전부 push됨)
+- **마지막 커밋:** `59a53ec [docs] README — Memory Layer 정식 섹션 승격 (Phase 1 완료)`
+- **테스트:** **548/548 passed** (25s) — 15회차 500 + 16회차 +48 (Sprint 2 +19, Sprint 3 +7, Sprint 4 +22)
+- **변경 파일:**
+  - 신규: `src/hybrid_search/memory/reader.py`, `tests/test_qa_reader.py`, `docs/plan/2026-04-21-memory-layer-10x.md`
+  - 수정: `src/hybrid_search/cli.py` (qa 5 subcommand + `_resolve_qa_root` + `_iter_all_project_roots` + datetime 임포트), `src/hybrid_search/memory/__init__.py`, `src/hybrid_search/config.py` (IndexingConfig.index_qa_logs + os 임포트), `src/hybrid_search/index/scanner.py` (dotdir 예외 + ignore negation), `src/hybrid_search/index/doc_chunker.py` (node_type kwarg + qa_log 분기), `tests/test_scanner.py`, `tests/test_doc_chunker.py`, `README.md`
+
+### 로드맵 진행률 업데이트
+
+15회차 기준 26/33. 16회차 +3 (Sprint 2/3/4) = **29/33 (88%)**. 남은 핵심:
+- Phase 2 — Wiki 파편화 해결 (소극적 파일 경계 패치)
+- Phase 3 — M9 two-pass callgraph + M10 rationale 추출
+- Phase 4 — valuein_homepage(1306 files) 실전 gold set + 벤치마크
+- L2 Leiden 풀스케일 wiki auto-gen (Phase 4 이후 재평가)
+- L4 watch / L5 two-tier merge (선택)
+
+---
+
+## 🔵 이전 세션 인계 (15회차) — 참고용
 
 ### 한줄 요약
 
