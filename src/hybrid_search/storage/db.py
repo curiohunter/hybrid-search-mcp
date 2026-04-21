@@ -11,9 +11,17 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 CONFIDENCE_LEVELS = ("low", "medium", "high")
+
+# Numeric scores attached to each confidence label (M1).
+# Used by fusion for authority-aware ranking; Leiden/DAG stays confidence-blind.
+CONFIDENCE_SCORES: dict[str, float] = {
+    "high": 1.0,
+    "medium": 0.8,
+    "low": 0.3,
+}
 
 
 def _confidence_filter(min_confidence: str) -> tuple[str, ...]:
@@ -75,6 +83,7 @@ CREATE TABLE IF NOT EXISTS call_edges (
     callee_module TEXT,
     project_id TEXT NOT NULL,
     confidence TEXT DEFAULT 'low',
+    confidence_score REAL DEFAULT 0.0,
     FOREIGN KEY (caller_chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
 );
 
@@ -213,6 +222,28 @@ class StoreDB:
                         f"ALTER TABLE wiki_pages ADD COLUMN {col} {typedef}"
                     )
             logger.info("Migrated schema v2 → v3 (synthesis columns)")
+
+        if cur_ver < 4:
+            # v3 → v4: add call_edges.confidence_score and backfill from label.
+            existing_edge_cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(call_edges)").fetchall()
+            }
+            if "confidence_score" not in existing_edge_cols:
+                self._conn.execute(
+                    "ALTER TABLE call_edges ADD COLUMN confidence_score REAL DEFAULT 0.0"
+                )
+            # Backfill from existing confidence label so fusion gains signal without reindex.
+            self._conn.execute(
+                """UPDATE call_edges SET confidence_score = CASE confidence
+                        WHEN 'high' THEN 1.0
+                        WHEN 'medium' THEN 0.8
+                        WHEN 'low' THEN 0.3
+                        ELSE 0.0
+                   END
+                   WHERE confidence_score = 0.0 OR confidence_score IS NULL"""
+            )
+            logger.info("Migrated schema v3 → v4 (call_edges.confidence_score)")
 
         self._conn.execute(
             "UPDATE index_meta SET value = ? WHERE key = 'schema_version'",
@@ -470,6 +501,7 @@ class StoreDB:
         if project_id:
             cur = self._conn.execute(
                 f"""SELECT ce.caller_chunk_id, ce.callee_name, ce.confidence,
+                           ce.confidence_score,
                            c.name, c.qualified_name, c.node_type,
                            c.start_line, c.end_line,
                            f.relative_path
@@ -484,6 +516,7 @@ class StoreDB:
         else:
             cur = self._conn.execute(
                 f"""SELECT ce.caller_chunk_id, ce.callee_name, ce.confidence,
+                           ce.confidence_score,
                            c.name, c.qualified_name, c.node_type,
                            c.start_line, c.end_line,
                            f.relative_path
@@ -509,6 +542,7 @@ class StoreDB:
             cur = self._conn.execute(
                 f"""SELECT ce.caller_chunk_id, ce.callee_name,
                            ce.callee_chunk_id, ce.confidence,
+                           ce.confidence_score,
                            c.name, c.qualified_name, c.node_type,
                            c.start_line, c.end_line,
                            f.relative_path
@@ -524,6 +558,7 @@ class StoreDB:
             cur = self._conn.execute(
                 f"""SELECT ce.caller_chunk_id, ce.callee_name,
                            ce.callee_chunk_id, ce.confidence,
+                           ce.confidence_score,
                            c.name, c.qualified_name, c.node_type,
                            c.start_line, c.end_line,
                            f.relative_path
@@ -549,7 +584,7 @@ class StoreDB:
             cur = self._conn.execute(
                 f"""SELECT ce.callee_chunk_id, ce.callee_name,
                            ce.callee_qualified_name, ce.confidence,
-                           ce.callee_module,
+                           ce.confidence_score, ce.callee_module,
                            c.name, c.qualified_name, c.node_type,
                            c.start_line, c.end_line,
                            f.relative_path
@@ -565,7 +600,7 @@ class StoreDB:
             cur = self._conn.execute(
                 f"""SELECT ce.callee_chunk_id, ce.callee_name,
                            ce.callee_qualified_name, ce.confidence,
-                           ce.callee_module,
+                           ce.confidence_score, ce.callee_module,
                            c.name, c.qualified_name, c.node_type,
                            c.start_line, c.end_line,
                            f.relative_path
@@ -582,7 +617,7 @@ class StoreDB:
         """Get all call edges for a project (for batch resolution)."""
         cur = self._conn.execute(
             """SELECT rowid, caller_chunk_id, callee_name, callee_qualified_name,
-                      callee_chunk_id, callee_module, confidence
+                      callee_chunk_id, callee_module, confidence, confidence_score
                FROM call_edges WHERE project_id = ?""",
             (project_id,),
         )
@@ -595,14 +630,32 @@ class StoreDB:
         callee_chunk_id: str,
         callee_qualified_name: str | None,
         confidence: str,
+        confidence_score: float = 0.0,
     ) -> None:
-        """Update a call edge with resolved chunk ID and confidence."""
+        """Update a call edge with resolved chunk ID, confidence label, and numeric score."""
         conn.execute(
             """UPDATE call_edges
-               SET callee_chunk_id = ?, callee_qualified_name = ?, confidence = ?
+               SET callee_chunk_id = ?, callee_qualified_name = ?,
+                   confidence = ?, confidence_score = ?
                WHERE rowid = ?""",
-            (callee_chunk_id, callee_qualified_name, confidence, rowid),
+            (callee_chunk_id, callee_qualified_name, confidence, confidence_score, rowid),
         )
+
+    def get_chunk_authority_scores(self, project_id: str) -> dict[str, float]:
+        """Return callee_chunk_id → max incoming confidence_score for a project.
+
+        Used by the search orchestrator to nudge fusion ranks toward chunks that
+        are called via high-confidence edges. Chunks with no incoming edges are
+        absent from the result (fusion treats them as neutral).
+        """
+        cur = self._conn.execute(
+            """SELECT callee_chunk_id, MAX(confidence_score) AS score
+               FROM call_edges
+               WHERE project_id = ? AND callee_chunk_id IS NOT NULL
+               GROUP BY callee_chunk_id""",
+            (project_id,),
+        )
+        return {row["callee_chunk_id"]: row["score"] for row in cur.fetchall()}
 
     def find_chunk_by_qualified_name(
         self, qualified_name: str, project_id: str
