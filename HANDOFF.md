@@ -2,13 +2,75 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 9회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 10회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
 
+**M1.2 type-gating 완료 + Full L6 재측정.** keyword Δ NDCG@10 **-0.032 (P=0.25) → +0.010 (P=0.66)** — 가설 정확히 검증. structural은 +0.117 → +0.123(P=0.94→0.97), semantic은 변동 없음, OVERALL P(Δ>0) 0.87 → **0.99**. 420/420 tests passed (413 + 7 신규). 다음 세션은 **M1.1 라벨 리네이밍(반나절)** 또는 **M5 god_nodes/shortest_path(2일)**.
+
+### ✅ 이 세션 완료된 것 (10회차)
+
+**1. M1.2: EXACT_SYMBOL authority gating** (`3af9fae`)
+- **orchestrator.py::hybrid_search:** `effective_authority = None if qtype == QueryType.EXACT_SYMBOL else (authority_scores or None)` 추가. EXACT_SYMBOL에서만 None 강제, 나머지는 기존 `or None` 폴백 유지.
+- **혼합 쿼리 자연 처리:** `classify_query`가 symbol+Korean을 KOREAN_NL로 반환(orchestrator.py:63-65) → "resolve_call_edges 함수 역할" 같은 쿼리는 gating 안 됨(의도). external X04 "checkIn 함수가 뭐하는지"도 보존되어 α=0.3에서 +0.059 유지.
+- **`_NEEDS_SYNTHESIS_FLAG` edge case:** underscore prefix라 `_SYMBOL_RE` SCREAMING_SNAKE 패턴(`^[A-Z][A-Z0-9]*`)에 미매칭 → ENGLISH_NL로 분류. gating에서 빠지지만 결과적으로 +0.097 positive 획득 (authority가 실제로 도움 된 케이스). 현재 regex를 확장하진 않음 — 데이터상 이득이라 건드릴 이유 없음.
+
+**2. 벤치마크 일관성: `run_v2.py::_fuse` 게이트 반영**
+- production 경로와 동일하게 EXACT_SYMBOL에서 `chunk_authority_scores=None`. ON/OFF 비교에서 EXACT_SYMBOL 쿼리는 ON≡OFF로 수렴 — 9개 keyword 중 9개가 정확히 Δ=0.000으로 확인됨. 게이트가 정확히 작동 중이라는 sanity check.
+
+**3. 테스트 (`tests/test_orchestrator.py` 신규 7개)**
+- `test_exact_symbol_disables_authority` (camelCase `FusedResult`), `test_snake_case_symbol_disables_authority` (`compute_file_hash`), `test_korean_nl_keeps_authority`, `test_english_nl_keeps_authority`, `test_mixed_korean_symbol_keeps_authority` (symbol+한글 → KOREAN_NL → authority 유지), 빈 authority map 경로 2개.
+- **전략:** `unittest.mock.patch`로 `reciprocal_rank_fusion`을 가로채서 호출 kwargs(`chunk_authority_scores`) 검사. `_search_single`, `_enrich_results`를 MagicMock으로 치환해 DB/embedder 의존성 제거. 빠르고 결정론적.
+
+**Full L6 재측정 (α=0.3, n=30 self + 5 external):**
+
+| type | n | Δ NDCG@10 (before) | Δ NDCG@10 (after) | P(Δ>0) before → after |
+|---|---|---|---|---|
+| structural | 10 | +0.117 [-0.019, +0.275] | **+0.123 [-0.002, +0.280]** | 0.94 → **0.97** |
+| keyword | 10 | **-0.032 [-0.131, +0.050] ⚠** | **+0.010 [+0.000, +0.029] ✓** | 0.25 → **0.66** |
+| semantic | 10 | +0.026 [+0.000, +0.079] | +0.028 [+0.000, +0.085] | 0.66 → 0.66 |
+| OVERALL | 30 | +0.037 [-0.024, +0.103] | **+0.054 [+0.006, +0.113]** | 0.87 → **0.99** |
+
+**External (valuein_homepage, proxy labels, α=0.3):**
+- Δ 평균 +0.153 (변화 없음 — 이 세트엔 EXACT_SYMBOL 쿼리가 없기 때문). X04 checkIn은 KOREAN_NL로 분류돼 +0.059 유지.
+
+**outlier 해소 확인:**
+- 이전 -0.369였던 K05 `FusedResult` → 0.000 (OFF와 동일). K07 compute_file_hash, K03 reciprocal_rank_fusion, K04 IndexingPipeline, K10 HybridResult 모두 0.000.
+- 남은 negative outlier: **S09 ProjectRegistry Δ -0.167** (KOREAN_NL 분류 → gating 미적용). "프로젝트 registry가 프로젝트를 등록하고 조회하는 로직" — exact symbol이 아닌 natural-language form이라 classify가 맞음. S04가 structural 평균을 끌어올려 전체는 여전히 +0.12. 혼합 쿼리 리스크는 acceptable.
+
+### 🎯 다음 세션 권장 순서
+
+**선택 1 — M1.1 라벨 리네이밍 (반나절, 품질 축 마감):**
+- `low/medium/high` → `ambiguous/inferred/extracted` 의미론 명시. DB schema v5 + UPDATE 마이그레이션 + `CONFIDENCE_LEVELS` 상수 교체.
+- cosmetic이지만 공개 API 안정화. numeric score는 이미 M1에서 분리됐으므로 라벨만 갈면 되는 작은 변경.
+- callgraph/DAG 소비처 업데이트 필요. `reindex --force` 불필요 (UPDATE만).
+
+**선택 2 — M5 MCP 확장 (2일, 새 기능 축):**
+- `god_nodes` (authority 상위 N개 chunk — 자연스럽게 M1 score 재사용), `shortest_path` (call graph 탐색), `subgraph` (특정 chunk 주변 N-hop) 도구 추가.
+- 사용 사례 먼저 검증 필요: Claude Code에서 god_nodes를 어떻게 소비할지. `/search` 스킬 내 "구조" 질문 라우팅에서 god_nodes가 Wiki index.md와 중복되지 않도록 role 명확화.
+
+**선택 3 — L6 외부 확장 (하루, 벤치마크 축 강화):**
+- 외부 프로젝트 gold set 2개 더 추가 (breeze, mathontonlogy) × 5q씩 → n=45. 현재 external n=5는 directional only. α=0.5가 external에서 더 좋게 나오는 패턴이 유의미한지 판단.
+- 리스크: 도메인 지식 없는 proxy labels은 신뢰도 한계. 수작업 gold 필요할 수도.
+
+**추천: M1.1 먼저 (반나절) → M5 (2일).** M1.1은 API 안정화 부채라 빨리 마감하면 좋고, M5는 사용 사례 검증 시간이 필요한 더 큰 결정.
+
+### 이전 세션 완료
+
+**9회차 (2026-04-21):**
+- `497f7d1` — HANDOFF 9회차 / `379aa64` — Full L6 benchmark / `c6fe7a1` — M1.v2 boost-only / `47b2b10` — authority PoC
+
+### ✅ M1.v2 (9회차) + M4 (8회차) + M1 (7회차) 상세는 🔵 섹션 참고
+
+---
+
+## 🔵 이전 세션 인계 (9회차) — 참고용
+
+### 한줄 요약 (9회차)
+
 **M1.v2 (boost-only nudge α=0.3) + Full L6 benchmark (35q) 완료.** 품질 축 + 벤치마크 축 동시 진전. 413/413 tests passed. 다음 세션은 **M1.2 keyword type-gating (30분 스코프)** — Full L6에서 keyword가 일관되게 음수(P(Δ>0)=0.25)로 확인됐기 때문. 이후 M1.1 라벨 리네이밍 or M5 MCP 확장.
 
-### ✅ 이 세션 완료된 것 (9회차)
+### ✅ 이 세션 완료된 것 (9회차, 참고용)
 
 **1. M1.v2: damping-only → boost-only** (`c6fe7a1`)
 - **공식 변경:** `rrf * (0.5 + 0.5*auth)` → `rrf * (1.0 + 0.3*auth)`. `_AUTHORITY_BOOST_ALPHA = 0.3` 상수.
