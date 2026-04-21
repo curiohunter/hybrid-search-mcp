@@ -519,3 +519,58 @@ class TestHybridSearchIgnore:
         added_names = [p.name for p in result.added]
         assert "keep.py" in added_names
         assert "schema.py" not in added_names  # filtered by ignore spec
+
+
+class TestIndexQALogsOptIn:
+    """Sprint 3 — opt-in self-indexing of the Memory Layer."""
+
+    def _seed(self, tmp_path: Path) -> tuple[Path, StoreDB]:
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        # Matches what `setup` writes post-install — would normally hide qa/.
+        (project_root / ".gitignore").write_text(".hybrid-search/qa/\n")
+
+        qa_dir = project_root / ".hybrid-search" / "qa" / "2026" / "04"
+        qa_dir.mkdir(parents=True)
+        (qa_dir / "21-000000-deadbeef.md").write_text(
+            "---\nquery: \"x\"\n---\n\n# Q: x\n"
+        )
+        (project_root / "main.py").write_text("x = 1\n")
+        return project_root, db
+
+    def test_qa_logs_skipped_by_default(self, tmp_path: Path) -> None:
+        project_root, db = self._seed(tmp_path)
+        result = scan_project(project_root, "p1", db, IndexingConfig())
+        names = [p.name for p in result.added]
+        assert "main.py" in names
+        assert "21-000000-deadbeef.md" not in names
+
+    def test_qa_logs_walked_when_opt_in(self, tmp_path: Path) -> None:
+        project_root, db = self._seed(tmp_path)
+        result = scan_project(
+            project_root, "p1", db, IndexingConfig(index_qa_logs=True)
+        )
+        names = [p.name for p in result.added]
+        assert "main.py" in names
+        assert "21-000000-deadbeef.md" in names
+
+    def test_subset_scan_respects_opt_in(self, tmp_path: Path) -> None:
+        # Post-commit fast-path goes through scan_project_subset — same toggle.
+        project_root, db = self._seed(tmp_path)
+        rel = ".hybrid-search/qa/2026/04/21-000000-deadbeef.md"
+
+        off = scan_project_subset(
+            project_root, "p1", db, IndexingConfig(), changed_paths=[rel]
+        )
+        assert [p.name for p in off.added] == []
+
+        on = scan_project_subset(
+            project_root,
+            "p1",
+            db,
+            IndexingConfig(index_qa_logs=True),
+            changed_paths=[rel],
+        )
+        assert "21-000000-deadbeef.md" in [p.name for p in on.added]

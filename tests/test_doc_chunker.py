@@ -104,3 +104,44 @@ class TestPlainDocChunking:
         source = '{"a": 1}'
         chunks = self._chunk(source, "json", "data.json")
         assert chunks[0].qualified_name == "data.json::data"
+
+
+class TestQALogChunking:
+    """Memory Layer — .hybrid-search/qa/** files get one whole-file chunk
+    tagged node_type=qa_log instead of being split on ## headings."""
+
+    def _chunk(self, source: str, rel: str) -> list[CodeChunk]:
+        return chunk_doc_file(
+            PROJECT_ROOT / rel, PROJECT_ROOT, PROJECT_ID, "markdown", source=source
+        )
+
+    def test_qa_log_path_gets_single_chunk(self) -> None:
+        # Writer emits multiple ## headings per entry ("Top results" etc.) —
+        # they must *not* be split apart so the query and hits stay together.
+        source = (
+            "---\nquery: \"hello\"\n---\n\n# Q: hello\n\n"
+            "## Top results\n\n### 1. `a.py`\n- chunk_id: `c1`\n\n> hi\n"
+        )
+        chunks = self._chunk(source, ".hybrid-search/qa/2026/04/21-000000-deadbeef.md")
+        assert len(chunks) == 1
+
+    def test_qa_log_node_type(self) -> None:
+        chunks = self._chunk(
+            "---\nquery: \"x\"\n---\n\n# Q: x\n",
+            ".hybrid-search/qa/2026/04/21-111111-aaaabbbb.md",
+        )
+        assert chunks[0].node_type == "qa_log"
+
+    def test_qa_log_embedding_input_mentions_tag(self) -> None:
+        chunks = self._chunk(
+            "---\nquery: \"y\"\n---\n\n# Q: y\n",
+            ".hybrid-search/qa/2026/04/21-222222-ccccdddd.md",
+        )
+        assert "[qa_log]" in chunks[0].embedding_input
+
+    def test_non_qa_markdown_still_splits(self) -> None:
+        # Regression: only .hybrid-search/qa/ triggers the bypass.
+        source = "# Title\n\nIntro.\n\n## Section\n\nBody.\n"
+        chunks = self._chunk(source, "docs/normal.md")
+        assert any(c.node_type == "section" for c in chunks)
+        assert all(c.node_type != "qa_log" for c in chunks)

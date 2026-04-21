@@ -13,6 +13,9 @@ from hybrid_search.index.ast_chunker import CodeChunk, _make_chunk_id, _non_ws_c
 LARGE_DOC_CHUNK_THRESHOLD = 4000
 
 
+QA_LOG_PATH_PREFIX = ".hybrid-search/qa/"
+
+
 def chunk_doc_file(
     file_path: Path,
     project_root: Path,
@@ -20,11 +23,22 @@ def chunk_doc_file(
     language: str,
     source: str | None = None,
 ) -> list[CodeChunk]:
-    """Chunk a document file by headings (## level)."""
+    """Chunk a document file by headings (## level).
+
+    Memory-Layer Q&A logs (``.hybrid-search/qa/**.md``) bypass heading-based
+    splitting: the whole entry is emitted as a single chunk tagged
+    ``node_type="qa_log"`` so the query text and results stay together when
+    surfaced from hybrid_search.
+    """
     if source is None:
         source = file_path.read_text(errors="replace")
 
     rel_path = str(file_path.relative_to(project_root))
+    # Normalize separators so the check works on Windows-style paths too.
+    rel_norm = rel_path.replace("\\", "/")
+
+    if rel_norm.startswith(QA_LOG_PATH_PREFIX):
+        return [_whole_file_chunk(source, rel_path, project_id, "markdown", node_type="qa_log")]
 
     if language == "markdown":
         return _chunk_markdown(source, rel_path, project_id)
@@ -160,6 +174,8 @@ def _whole_file_chunk(
     rel_path: str,
     project_id: str,
     language: str,
+    *,
+    node_type: str = "document",
 ) -> CodeChunk:
     """Create a single chunk for the entire file."""
     name = Path(rel_path).stem
@@ -169,11 +185,11 @@ def _whole_file_chunk(
         project_id=project_id,
         file_path=rel_path,
         language=language,
-        node_type="document",
+        node_type=node_type,
         name=name,
         qualified_name=f"{rel_path}::{name}",
         content=source,
-        embedding_input=f"passage: [{language}] {name} in {rel_path}\n{source}",
+        embedding_input=f"passage: [{node_type}] {name} in {rel_path}\n{source}",
         start_line=1,
         end_line=source.count("\n") + 1,
         start_byte=0,
