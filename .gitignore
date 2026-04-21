@@ -26,3 +26,6 @@ build/
 
 # hybrid-search-mcp (auto-added — wiki is machine-local)
 .hybrid-search/needs_synthesis
+
+# hybrid-search-mcp (auto-added — wiki is machine-local)
+.hybrid-search/qa/
