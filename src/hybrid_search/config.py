@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +80,12 @@ class IndexingConfig:
     exclude_patterns: tuple[str, ...] = tuple(DEFAULT_EXCLUDE_PATTERNS)
     max_file_size_kb: int = 512
     supported_extensions: tuple[str, ...] = tuple(DEFAULT_SUPPORTED_EXTENSIONS)
+    # Sprint 3: opt-in self-reference for the Memory Layer. When True, the
+    # scanner walks into ``.hybrid-search/qa/`` and the resulting chunks are
+    # tagged ``node_type="qa_log"`` so hybrid_search can surface past queries
+    # alongside code. Default off — qa logs may contain user data that
+    # shouldn't leak into general-purpose search results without consent.
+    index_qa_logs: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,11 +175,18 @@ def load_config(config_path: Path | None = None) -> Config:
     )
 
     idx_raw = raw.get("indexing", {})
+    env_index_qa = os.environ.get("HYBRID_SEARCH_INDEX_QA", "").strip().lower()
     indexing = IndexingConfig(
         exclude_patterns=tuple(idx_raw.get("exclude_patterns", DEFAULT_EXCLUDE_PATTERNS)),
         max_file_size_kb=idx_raw.get("max_file_size_kb", 512),
         supported_extensions=tuple(
             idx_raw.get("supported_extensions", DEFAULT_SUPPORTED_EXTENSIONS)
+        ),
+        # Env var wins over config when set, so users can toggle per-shell.
+        index_qa_logs=(
+            env_index_qa in {"1", "true", "yes", "on"}
+            if env_index_qa
+            else bool(idx_raw.get("index_qa_logs", False))
         ),
     )
 
