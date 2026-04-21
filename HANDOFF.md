@@ -2,11 +2,67 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-20, 6회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 7회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
 
-**Q10 + M2 + M3 연속 완료 🎉** — Quick Wins 10/10 + M 시리즈 착수(2개). 396/396 tests passed. 전체 **12/28 (43%)**. 다음 세션은 **M1 (Confidence 3단계 라벨 + numeric score)** 또는 **M4 (`needs_synthesis` flag)**.
+**M1 (Confidence numeric score → fusion authority nudge) 완료** — 품질 축 전환 시작점. 406/406 tests passed. 전체 **13/28 (46%)**. 다음 세션은 **M4 (`needs_synthesis` flag, 반나절)** 또는 **M1.1 라벨 리네이밍(EXTRACTED/INFERRED/AMBIGUOUS, 반나절)**.
+
+### ✅ 이 세션 완료된 것 (7회차)
+
+**M1: Call edge numeric confidence score + fusion authority nudge** (`83bfa7c`)
+- **DB v4 마이그레이션:** `call_edges.confidence_score REAL DEFAULT 0.0` 컬럼 추가. `_migrate_schema`의 v3→v4 경로가 ALTER TABLE 후 `UPDATE ... CASE confidence WHEN 'high' THEN 1.0 ...`로 backfill. **핵심 이점:** 기존 인덱스를 재생성하지 않아도 backfill 즉시 authority 시그널 공급됨. 실측: breeze/hybrid-search-mcp/mathontonlogy 세 DB 모두 첫 오픈 시 v4로 자동 승격, hybrid-search-mcp 자체는 196 chunk가 authority [0.80..1.00] 즉시 확보.
+- **`CONFIDENCE_SCORES` 상수 (`storage/db.py:18`):** `{"high": 1.0, "medium": 0.8, "low": 0.3}`. callgraph resolver가 동일 값 재사용.
+- **`get_chunk_authority_scores(project_id)` 신규 헬퍼:** `SELECT callee_chunk_id, MAX(confidence_score) FROM call_edges WHERE callee_chunk_id IS NOT NULL GROUP BY ...`. 응답은 `dict[chunk_id, float]`. Unresolved edge(callee_chunk_id=NULL)는 제외 → fusion에서 "시그널 없음 = neutral" 의미 보존.
+- **`update_call_edge_resolution` 시그니처 확장:** `confidence_score: float = 0.0` 인자 추가. callgraph.py:139 `resolve_call_edges`가 라벨 결정 시 `CONFIDENCE_SCORES.get(confidence, 0.0)`으로 score 동반 저장.
+- **trace 쿼리 4곳 SELECT 확장:** `get_callers` / `get_callers_by_name` / `get_callees` / `get_all_call_edges` 모두 `ce.confidence_score` 노출 (trace_callers/callees MCP 도구에서 활용 가능).
+- **`reciprocal_rank_fusion` 확장:** optional `chunk_authority_scores: dict[str, float] | None = None` 파라미터. 공식 **`rrf * (0.5 + 0.5 * authority)`** — authority ∈ [0,1], 맵에 **없는** chunk는 `authority=None` → passthrough (중립). 원리: "저신뢰 엣지가 있는 chunk(authority=0.3)는 damping factor 0.65, 고신뢰(1.0)는 1.0 passthrough, 시그널 없는 chunk는 중립" → 저신뢰가 섞여도 0으로 죽지 않음. `FusedResult.authority: float | None` 필드로 trace/디버깅 노출.
+- **Orchestrator 연결:** `_search_single`과 `_search_cross_project` 둘 다 각 프로젝트 `db.get_chunk_authority_scores()` 호출 후 merge. cross-project는 chunk id가 UUID(전역 유일)라 단순 dict.update로 병합 가능. `hybrid_search()`가 `chunk_authority_scores=authority_scores or None`으로 fusion에 전달 → 신호 없으면 기존 경로와 완전 동일.
+- **Leiden/DAG는 confidence-blind 유지:** `index/dag.py`는 변경 없음. `CONFIDENCE_LEVELS` 필터만 사용하므로 구조 분석은 numeric score 영향 없음. 원칙: 구조는 정확성, 랭킹/리포트는 확률적.
+
+**의도적 제외:**
+- 라벨 리네이밍(EXTRACTED/INFERRED/AMBIGUOUS)은 M1.1로 분리. 이유: score 도입의 가치(fusion 가중)와 직교하는 cosmetic. 묶으면 리뷰 표면만 넓어짐. 본격 착수 시 schema v5 + `reindex --force` 체인으로 깔끔히 처리하고 매핑 레이어(두 이름 공존)는 피하기로 결정(장기적 실수 유발).
+- `COMMON_NAMES`에 대한 추가 score 감쇠(예: low→0.2)는 YAGNI. 실측 필요 시그널 발견 후 추가.
+
+**테스트 (M1 신규 10개):**
+- `tests/test_store_db.py::TestConfidenceScoreMigration` 3개 — fresh schema 컬럼/버전, **v3→v4 전환 시뮬레이션 (raw SQL로 v3 DB 구성 후 StoreDB 재오픈 → backfill 검증)**, `get_chunk_authority_scores`가 동일 callee에 대한 여러 edge 중 MAX를 집계하고 unresolved edge는 제외.
+- `tests/test_callgraph.py::TestConfidenceScorePersistence` 2개 — high/medium/low 각각 기대 score 저장 검증, 미해결 edge는 default 0.0 유지.
+- `tests/test_fusion.py::TestAuthorityNudge` 5개 — 맵 None이면 baseline과 동일, high authority가 동순위 tie-break, low authority(0.3) bounded factor(0.65) 정확성, authority=1.0 passthrough, **맵에 없는 chunk는 중립이라 damped chunk를 넘어섬** (neutral vs damped 구분 핵심 regression 테스트).
+- `tests/test_synthesizer.py::TestSchemaMigration::test_schema_version_is_current` — 하드코딩 "3" → `SCHEMA_VERSION` 상수 참조로 변경 (v 변경 시 자동 추적).
+
+**마이그레이션 주의:**
+- v3 → v4는 ALTER + UPDATE만 수행. 기존 `call_edges` 행의 confidence 라벨이 'high'/'medium'/'low'면 즉시 score 부여됨. 라벨이 'low'인 미해결 edge도 0.3으로 세팅되지만, `get_chunk_authority_scores`는 `callee_chunk_id IS NOT NULL` 필터로 제외하므로 랭킹엔 영향 없음.
+- `insert_call_edges`는 여전히 score 0.0 초기값으로 INSERT. resolver 실행 후 `update_call_edge_resolution`이 score 부여. 이 경로는 기존과 동일.
+- **신규 edge의 score는 resolver 없인 0.0.** Backfill UPDATE가 기존 edge는 커버하지만, 새 edge는 reindex + resolve 단계까지 가야 score가 생긴다. post-commit/post-checkout 훅이 이미 이 체인을 돌리므로 실사용 영향 거의 없음.
+- **`reindex --force`는 불필요.** backfill로 기존 해결된 edge들이 바로 authority를 공급하고, 신규/재해결 edge는 정상 resolver 경로로 채워짐.
+
+**실측 — 즉시 활용 가능한 신호:**
+```
+breeze          : schema=v4, no authority signal yet  (인덱스에 resolved edge 거의 없음)
+hybrid-search-mcp: schema=v4, authority_chunks=196, score range=[0.80..1.00]
+mathontonlogy   : schema=v4, authority_chunks=50,  score range=[0.80..1.00]
+```
+0.80 이상만 보이는 이유: backfill의 low(0.3)는 있지만 `get_chunk_authority_scores`가 chunk별 MAX를 뽑아서 resolved edge가 하나라도 medium(0.8)/high(1.0)로 들어온 chunk가 우세.
+
+**다음 세션 권장 순서:**
+- **M4 (반나절, 자율 루프 완성):** 훅이 LLM 호출 못 하므로 `.hybrid-search/needs_synthesis` flag 파일로 대체. `tools/index.py` stale 감지 시 write, `/search` 스킬이 read, `/maintain` 실행 시 clear. 패치 문서 M4 섹션 참조.
+- **M1.1 (반나절, 품질 축 마감):** 라벨 문자열을 `extracted/inferred/ambiguous`로 리네임. DB 값 UPDATE + `CONFIDENCE_LEVELS` 상수 변경 + callgraph/DAG 소비처 업데이트. schema v5 + `reindex` (force 불필요, UPDATE만).
+- **L6 (벤치마크, 1주):** M1의 score-fusion 효과를 숫자로 증명. NDCG@10 / MRR 벤치마크 세트 + with/without authority_scores 비교.
+
+### 이전 세션 완료
+
+**6회차 (2026-04-20):**
+- `178620f` — M3 post-commit hook이 diff를 커밋 시점에 동기 캡처 → env 전달
+- `b4319bc` — M2 post-checkout hook — 브랜치 스위치 시 자동 delta reindex
+- `c71ddb1` — Q10 .hybrid-search-ignore + upward walk to .git boundary
+
+---
+
+## 🔵 이전 세션 인계 — 참고용
+
+### 한줄 요약 (6회차)
+
+**Q10 + M2 + M3 연속 완료 🎉** — Quick Wins 10/10 + M 시리즈 착수(2개). 396/396 tests passed. 전체 **12/28 (43%)**.
 
 ### ✅ 이 세션 완료된 것 (6회차)
 
@@ -49,24 +105,13 @@
 - Q10은 opt-in — `.hybrid-search-ignore` 파일을 만들지 않으면 동작 동일.
 - M2: 기존 프로젝트는 post-commit만 설치되어 있음. `hybrid-search-mcp install-hook --cwd .` 재실행하면 post-checkout만 추가로 설치됨 (post-commit은 idempotent skip). `cmd_setup` 자동 체크도 두 훅 모두 확인하므로 다음 setup 실행 시 자동 보강.
 
-### ✅ 이 세션 완료된 것 (6회차)
+### 이전 세션 완료 (6회차 시점 기준)
 
-**구현:**
-- **Q10: `.hybrid-search-ignore` + upward walk** — `src/hybrid_search/index/scanner.py`에 `_collect_hybrid_search_ignore_patterns(project_root)` 추가. `project_root`부터 위로 walk하며 각 레벨의 `.hybrid-search-ignore`를 읽음. `.git` 디렉토리 있는 레벨(포함) 또는 filesystem root에서 중단. `_build_ignore_spec()`이 config excludes + `.gitignore` + 수집된 패턴 3개 소스를 하나의 pathspec으로 병합.
-- **포맷 선택:** graphify의 fnmatch 대신 **pathspec (gitignore 슈퍼셋)** 채택. 기존 `.gitignore` 파싱과 동일 엔진 → comments/blanks/negation(`!`) 네이티브 처리, 코드 중복 제거.
-- **안전장치:** 파일당 64KB 상한 (`_GITIGNORE_MAX_SIZE` 재사용), walk 최대 32레벨(`_IGNORE_WALK_MAX_DEPTH`) — symlink 사이클 방어.
-- **양방향 통합:** `scan_project`(full scan)와 `scan_project_subset`(git diff 경로) 둘 다 `_build_ignore_spec`/`_is_indexable_path`를 거쳐 Q10 패턴 존중.
+**5회차 (2026-04-20):** `f6f5938` — Q6 Markdown frontmatter strip
 
-**테스트:** `tests/test_scanner.py::TestHybridSearchIgnore` 8개 추가 — local ignore, parent upward walk (모노레포), git 경계 차단, `.gitignore` 병합, 주석/빈줄, 미존재 no-op, 64KB 초과 skip, subset scan. **378/378 passed** (이전 370 + 신규 8).
+---
 
-**마이그레이션 주의:** Q10은 opt-in 기능 — `.hybrid-search-ignore` 파일을 만들지 않으면 동작 동일. 기존 인덱스 영향 없음. 단, 새 ignore 파일을 추가/수정하면 이전에 포함되던 파일이 exclude되어 다음 reindex에서 해당 chunks/embeddings가 DB에서 삭제됨 (정상 동작).
-
-### 이전 세션 완료
-
-**5회차 (2026-04-20):**
-- Q6 Markdown frontmatter strip (f6f5938)
-
-## 🔵 이전 세션 인계 — 참고용
+## 🟣 5회차 이전 참고용 — 점점 요약
 
 ### 한줄 요약 (5회차)
 
@@ -136,7 +181,7 @@
 
 ### 📋 Quick Wins 완성 + 다음 M 시리즈 로드맵
 
-**Quick Wins (Q1~Q10): 10/10 완료 🎉 + M2 착수**
+**Quick Wins (Q1~Q10): 10/10 완료 🎉 + M 시리즈 착수(3개)**
 
 | # | 작업 | 완료 세션 |
 |---|------|-----------|
@@ -149,41 +194,48 @@
 | ~~Q6~~ | ~~Cache frontmatter strip~~ | 5회차 |
 | ~~Q10~~ | ~~`.hybrid-search-ignore` upward walk~~ | 6회차 |
 | ~~M2~~ | ~~post-checkout hook 추가~~ | 6회차 |
-| ~~M3~~ | ~~post-commit diff env 전달 (race 방지 + subprocess 절약)~~ | **6회차** |
+| ~~M3~~ | ~~post-commit diff env 전달 (race 방지 + subprocess 절약)~~ | 6회차 |
+| ~~M1~~ | ~~Confidence numeric score + fusion authority nudge~~ | **7회차** |
 
-**다음: M 시리즈 계속 — 품질 축 전환**
+**다음: M 시리즈 계속 — 품질 축 확장**
 
 | # | 작업 | 공수 | 축 | 우선순위 |
 |---|------|------|----|----|
-| **M1** | **Confidence 3단계 라벨 + numeric score** | **1일** | **품질** | **다음 1순위** |
-| M4 | `needs_synthesis` flag 파일 패턴 | 반나절 | 자율 루프 | 중 |
-| M5 | MCP 확장: `god_nodes`, `shortest_path`, `subgraph` | 2일 | 품질 | 낮음 |
+| **M4** | **`needs_synthesis` flag 파일 패턴** | **반나절** | **자율 루프** | **다음 1순위** |
+| M1.1 | 라벨 리네이밍 (EXTRACTED/INFERRED/AMBIGUOUS, schema v5) | 반나절 | 품질 | 중 |
+| M5 | MCP 확장: `god_nodes`, `shortest_path`, `subgraph` | 2일 | 품질 | 중 |
+| L6 | 벤치마크 세트 (NDCG@10 / MRR, authority 효과 숫자 검증) | 1주 | 벤치마크 | 착수 적기 |
 
-전체 진행률: **12/28 (43%)**.
+전체 진행률: **13/28 (46%)**.
 
 ### 🎬 다음 세션 시작 방법
 
 ```
 HANDOFF.md 최상단 섹션 + _study/graphify-analysis/99-actionable-patches-for-hybrid-search.md의
-M2 섹션 (line ~367) + graphify hooks.py 읽고, M2 (post-checkout hook) 구현하자.
-M3도 가까운 주제라 같은 세션 묶음 고려.
+M4 섹션 읽고, `needs_synthesis` flag 파일 패턴 구현하자.
 ```
 
 ### 🔧 현재 상태 스냅샷
 
-- **브랜치:** `main` (Q10 = `c71ddb1`, M2 = `b4319bc`, M3 = 이 세션 3번째 커밋)
-- **워킹 트리:** Q10 + M2 + M3 커밋됨
-- **테스트:** 396/396 passed (370 → +8 Q10 → +10 M2 → +8 M3)
-- **주 작업 파일:**
-  - `src/hybrid_search/index/scanner.py` (Q10 ignore walker, M3 `parse_git_diff_name_status` 추출)
-  - `src/hybrid_search/cli.py` (M2 훅 2종 설치, M3 `_HOOK_DIFF_ENV` 경로)
-  - `scripts/post-commit-hook.sh` (M3 synchronous diff capture)
-  - `scripts/post-checkout-hook.sh` (M2 레퍼런스, 수동 설치용)
-  - `tests/test_scanner.py` (+8 Q10, +5 M3), `tests/test_cli_hook_install.py` (+10 M2, +3 M3)
-- **status 출력:** post-commit + post-checkout 둘 다 표시 (PreToolUse hooks 4/4, CLAUDE.md routing ✓).
+- **브랜치:** `main` (M1 = `83bfa7c`, 이전 커밋들: M3 `178620f`, M2 `b4319bc`, Q10 `c71ddb1`)
+- **워킹 트리:** M1 커밋됨. origin/main 대비 5 commits ahead (미푸시).
+- **테스트:** 406/406 passed (396 → +10 M1).
+- **주 작업 파일 (M1):**
+  - `src/hybrid_search/storage/db.py` (schema v4, `CONFIDENCE_SCORES`, `get_chunk_authority_scores`, `update_call_edge_resolution` 시그니처 확장)
+  - `src/hybrid_search/index/callgraph.py` (resolver score 부여)
+  - `src/hybrid_search/search/fusion.py` (`chunk_authority_scores` 파라미터, bounded nudge, `FusedResult.authority`)
+  - `src/hybrid_search/search/orchestrator.py` (single/cross-project 경로에서 authority 수집/병합)
+  - `tests/test_store_db.py` (+3 M1 migration), `tests/test_callgraph.py` (+2 M1 score), `tests/test_fusion.py` (+5 M1 nudge), `tests/test_synthesizer.py` (schema 상수 참조로 수정)
+- **DB 실측:** 3개 프로젝트 모두 v4 자동 승격. hybrid-search-mcp 자체 196 chunks가 authority [0.80..1.00] 즉시 확보.
+- **route_hook 동작 확인됨:** 이 세션 동안 Glob/Grep 호출 시 `.hybrid-search/wiki/index.md` 안내가 additionalContext로 주입되는 것 실측. Q1 자율 루프가 실전 운영 중.
 
 ### ⚠️ 주의사항
 
+- **M1 authority 시그널 범위:** `get_chunk_authority_scores`는 `callee_chunk_id IS NOT NULL` 필터 사용 → unresolved edge는 authority에 기여하지 않음. 신규 프로젝트에서 call graph resolution이 돌기 전엔 fusion 효과 無. 실측에서 `breeze`가 "no authority signal yet"으로 나왔던 건 그 때문.
+- **M1 bounded nudge 경계:** 공식 `rrf * (0.5 + 0.5 * auth)`에서 맵에 **없는** chunk는 `authority=None` → passthrough. 맵에 `auth=0.0`으로 명시된 chunk는 `factor=0.5`로 damped. 즉 **명시적 0과 미설정의 의미가 다르다.** 현재 `get_chunk_authority_scores`는 resolved edge만 반환하므로 실무상 0.3 이상만 들어옴. 테스트 `test_chunks_outside_map_are_neutral`이 이 구분을 고정.
+- **M1 cross-project merge:** chunk id가 전역 UUID라 단순 `dict.update`로 병합. 만약 향후 chunk id 생성 규칙이 바뀌어 충돌 가능성이 생기면 `(project_id, chunk_id)` 복합키로 전환 필요.
+- **M1 label 리네이밍 보류:** `CONFIDENCE_LEVELS`는 여전히 `("low","medium","high")`. graphify 용어(EXTRACTED/INFERRED/AMBIGUOUS)를 쓰고 싶으면 M1.1에서 schema v5 + UPDATE로 DB 값 리네임 + 모든 소비처 동기 교체. 매핑 레이어(두 이름 공존)는 실수 유발로 피하기로 결정.
+- **M1 v3→v4 backfill 영향:** ALTER + `UPDATE ... WHERE confidence_score = 0.0 OR IS NULL` 구문. 이미 한 번 마이그레이션 된 DB를 다시 열어도 backfill 대상이 없어 no-op (정상). 만약 테스트나 특수 상황에서 score를 0으로 명시적 설정한 row가 있으면 재backfill될 수 있음 — 현재 프로덕션 경로에서는 발생하지 않음.
 - **graphify 분석 문서**는 `_study/` 폴더에 있고 이 프로젝트 git과 **별개** (추적 안 됨).
 - **Q4 sanitize 범위** — MCP 노출은 `hybrid_search` 1개뿐 (`server.py:89-125`). 향후 새 도구 노출 시 **반드시** `handle_*`에서 `sanitize_*` / `clamp_*` 호출. control char regex는 `\t\n\r` 보존이 의도된 동작.
 - **Q3 stdin filter** — `_filter_blank_stdin()`은 전역 fd 0를 `dup2`로 교체함. pytest 메인 프로세스에서 직접 호출 금지. 테스트는 subprocess 격리 (`tests/test_server_stdin_filter.py`).
