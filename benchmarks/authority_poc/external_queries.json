@@ -1,41 +1,145 @@
 {
-  "_note": "Spot check queries against valuein_homepage — 5 queries picked from benchmarks/query_set.json to give the Full L6 a sanity check outside the self-referential project. Relevance is scored via expected_files proxy (exact file match → rel=2, same directory → rel=1, otherwise 0) since I don't own the domain knowledge of that repo.",
-  "project": "valuein_homepage",
-  "queries": [
+  "_note": "Cross-project spot check — n=15 across 3 projects (valuein_homepage=5, mathontonlogy=5, breeze=5). Per-project labels use expected_files proxy (exact file match → rel=2, same directory → rel=1, otherwise 0). 13회차 확장: per-project 교차 검증을 위해 mathontonlogy + breeze 추가. Directional only — proxy labels, not decisive signal. Format: top-level 'projects' array, each with project name + queries[].",
+  "projects": [
     {
-      "id": "X01",
-      "type": "semantic",
-      "query": "로그인 처리",
-      "expected_files": ["app/(auth)/login/actions.ts", "app/(auth)/login/login-form.tsx"],
-      "source": "KR01"
+      "project": "valuein_homepage",
+      "queries": [
+        {
+          "id": "VX01",
+          "type": "semantic",
+          "query": "로그인 처리",
+          "expected_files": ["app/(auth)/login/actions.ts", "app/(auth)/login/login-form.tsx"],
+          "source": "KR01"
+        },
+        {
+          "id": "VX02",
+          "type": "semantic",
+          "query": "학생 출석 체크",
+          "expected_files": ["services/attendance-service.ts", "types/attendance.ts"],
+          "source": "KR03"
+        },
+        {
+          "id": "VX03",
+          "type": "structural",
+          "query": "generate monthly tuition fees",
+          "expected_files": ["services/tuition-service.ts"],
+          "source": "EN02"
+        },
+        {
+          "id": "VX04",
+          "type": "keyword",
+          "query": "checkIn 함수가 뭐하는지",
+          "expected_files": ["services/attendance-service.ts"],
+          "source": "MX01"
+        },
+        {
+          "id": "VX05",
+          "type": "semantic",
+          "query": "PaysSam webhook 처리",
+          "expected_files": ["services/payssam-service.ts"],
+          "source": "MX03"
+        }
+      ]
     },
     {
-      "id": "X02",
-      "type": "semantic",
-      "query": "학생 출석 체크",
-      "expected_files": ["services/attendance-service.ts", "types/attendance.ts"],
-      "source": "KR03"
+      "project": "mathontonlogy",
+      "queries": [
+        {
+          "id": "MX01",
+          "type": "semantic",
+          "query": "개념 그래프에서 순환 관계 감지",
+          "expected_files": [
+            "src/lib/services/concept-graph.ts",
+            "src/components/graph/CycleAlert.tsx"
+          ]
+        },
+        {
+          "id": "MX02",
+          "type": "structural",
+          "query": "Datalab API에 PDF 제출하고 결과를 폴링하는 흐름",
+          "expected_files": [
+            "src/lib/services/datalab.ts",
+            "src/lib/services/datalab.types.ts",
+            "src/app/api/parse-pdf/route.ts"
+          ]
+        },
+        {
+          "id": "MX03",
+          "type": "semantic",
+          "query": "PDF에서 수학 문제를 개별 단위로 분리하는 로직",
+          "expected_files": [
+            "src/lib/services/problem-segmenter.ts",
+            "src/lib/services/problem-content.ts"
+          ]
+        },
+        {
+          "id": "MX04",
+          "type": "keyword",
+          "query": "ConceptGraphService",
+          "expected_files": [
+            "src/lib/services/concept-graph.ts"
+          ]
+        },
+        {
+          "id": "MX05",
+          "type": "structural",
+          "query": "React Flow로 개념 그래프 편집기를 그리는 컴포넌트",
+          "expected_files": [
+            "src/components/graph/GraphEditor.tsx",
+            "src/components/graph/ConceptNode.tsx",
+            "src/components/graph/CustomEdge.tsx"
+          ]
+        }
+      ]
     },
     {
-      "id": "X03",
-      "type": "structural",
-      "query": "generate monthly tuition fees",
-      "expected_files": ["services/tuition-service.ts"],
-      "source": "EN02"
-    },
-    {
-      "id": "X04",
-      "type": "keyword",
-      "query": "checkIn 함수가 뭐하는지",
-      "expected_files": ["services/attendance-service.ts"],
-      "source": "MX01"
-    },
-    {
-      "id": "X05",
-      "type": "semantic",
-      "query": "PaysSam webhook 처리",
-      "expected_files": ["services/payssam-service.ts"],
-      "source": "MX03"
+      "project": "breeze",
+      "queries": [
+        {
+          "id": "BX01",
+          "type": "semantic",
+          "query": "미팅 회고를 카테고리별로 자동 분류",
+          "expected_files": [
+            "src/services/meeting-ai-service.ts",
+            "src/app/api/meetings/categorize/route.ts"
+          ]
+        },
+        {
+          "id": "BX02",
+          "type": "structural",
+          "query": "KPI 지표를 활동과 액션 아이템으로부터 계산",
+          "expected_files": [
+            "src/lib/kpi-calculator.ts",
+            "src/services/analysis-service.ts"
+          ]
+        },
+        {
+          "id": "BX03",
+          "type": "keyword",
+          "query": "sendTelegramNotification",
+          "expected_files": [
+            "src/lib/telegram.ts"
+          ]
+        },
+        {
+          "id": "BX04",
+          "type": "semantic",
+          "query": "병원 데이터를 중복 제거해서 조회",
+          "expected_files": [
+            "src/services/hospital-service.ts",
+            "src/services/hospital-diagnostics-service.ts"
+          ]
+        },
+        {
+          "id": "BX05",
+          "type": "structural",
+          "query": "분석 리포트 생성과 인사이트 저장 흐름",
+          "expected_files": [
+            "src/services/analysis-service.ts",
+            "src/app/api/analysis/generate/route.ts"
+          ]
+        }
+      ]
     }
   ]
 }
