@@ -1,9 +1,9 @@
-"""Tests for the Memory Layer reader — Sprint 2 (qa list/show/grep/stats)."""
+"""Tests for the Memory Layer reader — Sprint 2/4 (list/show/grep/stats/prune)."""
 
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -189,3 +189,100 @@ class TestReadBody:
 
     def test_read_missing_path_returns_empty(self, tmp_path: Path) -> None:
         assert reader.read_qa_body(tmp_path / "nope.md") == ""
+
+
+class TestParseDuration:
+    @pytest.mark.parametrize(
+        ("spec", "td"),
+        [
+            ("30d", timedelta(days=30)),
+            ("12h", timedelta(hours=12)),
+            ("2w", timedelta(weeks=2)),
+            ("3m", timedelta(days=90)),
+            ("  1d  ", timedelta(days=1)),
+            ("5H", timedelta(hours=5)),  # case-insensitive
+        ],
+    )
+    def test_units(self, spec: str, td: timedelta) -> None:
+        assert reader.parse_duration(spec) == td
+
+    @pytest.mark.parametrize("bad", ["", "30", "d30", "1.5d", "forever", "30 days"])
+    def test_rejects_garbage(self, bad: str) -> None:
+        with pytest.raises(ValueError):
+            reader.parse_duration(bad)
+
+
+class TestResolveCutoff:
+    def test_older_than_subtracts_from_now(self) -> None:
+        ref = datetime(2026, 4, 21, 12, 0, tzinfo=timezone.utc)
+        cutoff = reader.resolve_cutoff(older_than="10d", now=ref)
+        assert cutoff == ref - timedelta(days=10)
+
+    def test_before_parses_iso(self) -> None:
+        cutoff = reader.resolve_cutoff(before="2026-01-15")
+        assert cutoff == datetime(2026, 1, 15, tzinfo=timezone.utc)
+
+    def test_before_naive_is_treated_as_utc(self) -> None:
+        cutoff = reader.resolve_cutoff(before="2026-01-15T09:00:00")
+        assert cutoff.tzinfo is not None
+        assert cutoff.utcoffset() == timedelta(0)
+
+    def test_requires_exactly_one_input(self) -> None:
+        with pytest.raises(ValueError):
+            reader.resolve_cutoff()
+        with pytest.raises(ValueError):
+            reader.resolve_cutoff(older_than="1d", before="2026-01-01")
+
+    def test_bad_date_raises(self) -> None:
+        with pytest.raises(ValueError):
+            reader.resolve_cutoff(before="not-a-date")
+
+
+class TestPruneOlderThan:
+    def _age(self, path: Path, seconds_ago: float) -> None:
+        target = datetime.now(timezone.utc).timestamp() - seconds_ago
+        os.utime(path, (target, target))
+
+    def test_dry_run_lists_without_deleting(self, project_root: Path) -> None:
+        p = _write_log(project_root, "old")
+        self._age(p, 3600 * 24 * 30)  # 30d old
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        result = reader.prune_older_than(project_root, cutoff, dry_run=True)
+        assert [x.name for x in result.deleted] == [p.name]
+        assert p.exists()  # untouched
+        assert result.dirs_removed == []
+
+    def test_deletes_expired_and_cleans_empty_dirs(self, project_root: Path) -> None:
+        p = _write_log(project_root, "stale")
+        self._age(p, 3600 * 24 * 30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        result = reader.prune_older_than(project_root, cutoff)
+        assert result.deleted and not p.exists()
+        # YYYY/MM dirs should be rmdir'd since we removed the only entry.
+        qa_root = reader.qa_dir(project_root)
+        remaining = [x for x in qa_root.rglob("*") if x.is_file()]
+        assert remaining == []
+        assert any("04" in d.name for d in result.dirs_removed)
+
+    def test_keeps_recent_entries(self, project_root: Path) -> None:
+        fresh = _write_log(project_root, "fresh")
+        cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+        result = reader.prune_older_than(project_root, cutoff)
+        assert result.deleted == []
+        assert fresh.exists()
+
+    def test_mixed_retention(self, project_root: Path) -> None:
+        old = _write_log(project_root, "old")
+        self._age(old, 3600 * 24 * 30)
+        recent = _write_log(project_root, "recent")
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        result = reader.prune_older_than(project_root, cutoff)
+        assert old not in list(project_root.rglob("*.md"))
+        assert recent.exists()
+        assert [x.name for x in result.deleted] == [old.name]
+
+    def test_empty_dir_is_noop(self, project_root: Path) -> None:
+        cutoff = datetime.now(timezone.utc)
+        result = reader.prune_older_than(project_root, cutoff)
+        assert result.deleted == []
+        assert result.dirs_removed == []
