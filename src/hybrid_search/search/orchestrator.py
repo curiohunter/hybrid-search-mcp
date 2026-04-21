@@ -189,11 +189,17 @@ class SearchOrchestrator:
 
         # RRF fusion — numeric confidence scores nudge chunks with strong
         # incoming call edges ahead (M1). Absent chunks stay neutral.
+        # M1.2: EXACT_SYMBOL queries bypass authority — exact-match lookup
+        # (e.g. FusedResult, compute_file_hash) is hurt by boost that promotes
+        # well-connected call-sites ahead of the definition itself.
+        effective_authority = (
+            None if qtype == QueryType.EXACT_SYMBOL else (authority_scores or None)
+        )
         fused = reciprocal_rank_fusion(
             bm25_ids, vector_ids,
             k=self._config.search.rrf_k,
             bm25_weight=effective_weight,
-            chunk_authority_scores=authority_scores or None,
+            chunk_authority_scores=effective_authority,
         )
 
         # When reranking is enabled, return more candidates for Claude Code to rerank
