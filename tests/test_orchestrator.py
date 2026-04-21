@@ -130,3 +130,57 @@ class TestAuthorityGating:
 
         _, kwargs = fusion.call_args
         assert kwargs["chunk_authority_scores"] is None
+
+
+class TestBuildFilterExcludePattern:
+    """D — exclude_pattern drops chunks whose file matches the glob."""
+
+    @staticmethod
+    def _db_with_files(files: list[tuple[str, str]], chunks: list[tuple[str, str, str]]):
+        """files: list[(file_id, rel_path)], chunks: list[(chunk_id, file_id, node_type)]."""
+        db = MagicMock()
+        file_recs = [MagicMock(id=fid, relative_path=path) for fid, path in files]
+        chunk_recs = [
+            MagicMock(id=cid, file_id=fid, node_type=ntype)
+            for cid, fid, ntype in chunks
+        ]
+        db.get_all_files.return_value = file_recs
+        db.get_chunks_by_project.return_value = chunk_recs
+        return db
+
+    def test_exclude_pattern_drops_matching_files(self):
+        from hybrid_search.search.orchestrator import _build_filter
+
+        db = self._db_with_files(
+            files=[("f1", "src/app.py"), ("f2", "docs/guide.md")],
+            chunks=[("c1", "f1", "function"), ("c2", "f2", "section")],
+        )
+        result = _build_filter(db, "p1", None, None, exclude_pattern="docs/*")
+        assert result == {"c1"}
+
+    def test_exclude_pattern_combines_with_file_pattern(self):
+        from hybrid_search.search.orchestrator import _build_filter
+
+        db = self._db_with_files(
+            files=[
+                ("f1", "src/app.py"),
+                ("f2", "src/test_app.py"),
+                ("f3", "docs/guide.md"),
+            ],
+            chunks=[
+                ("c1", "f1", "function"),
+                ("c2", "f2", "function"),
+                ("c3", "f3", "section"),
+            ],
+        )
+        result = _build_filter(
+            db, "p1", file_pattern="src/*", node_types=None,
+            exclude_pattern="*test_*",
+        )
+        assert result == {"c1"}
+
+    def test_none_when_all_filters_empty(self):
+        from hybrid_search.search.orchestrator import _build_filter
+
+        db = MagicMock()
+        assert _build_filter(db, "p1", None, None, None) is None

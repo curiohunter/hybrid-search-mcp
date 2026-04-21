@@ -20,10 +20,15 @@ class FusedResult:
 # measured keyword Δ NDCG@10 = -0.049). Switching to a pure boost leaves
 # auth-less chunks at baseline and only rewards the highest-confidence
 # callees. α controls the ceiling: auth=1.0 → factor 1+α, auth=0 → 1.0.
-_AUTHORITY_BOOST_ALPHA = 0.3
+#
+# L6 n=60 (2026-04-21): α=0.3 best for self-contained, α=0.5 best for
+# external workloads. Configurable via SearchConfig.authority_alpha.
+DEFAULT_AUTHORITY_ALPHA = 0.3
 
 
-def _apply_authority_nudge(rrf: float, authority: float | None) -> float:
+def _apply_authority_nudge(
+    rrf: float, authority: float | None, alpha: float = DEFAULT_AUTHORITY_ALPHA,
+) -> float:
     """Boost-only nudge: rrf * (1.0 + α * authority).
 
     Chunks without an authority signal (None) pass through unchanged. Chunks
@@ -34,7 +39,7 @@ def _apply_authority_nudge(rrf: float, authority: float | None) -> float:
     """
     if authority is None:
         return rrf
-    return rrf * (1.0 + _AUTHORITY_BOOST_ALPHA * authority)
+    return rrf * (1.0 + alpha * authority)
 
 
 def reciprocal_rank_fusion(
@@ -43,6 +48,7 @@ def reciprocal_rank_fusion(
     k: int = 60,
     bm25_weight: float = 0.5,
     chunk_authority_scores: dict[str, float] | None = None,
+    authority_alpha: float = DEFAULT_AUTHORITY_ALPHA,
 ) -> list[FusedResult]:
     """
     RRF Score = Σ (weight / (k + rank))
@@ -72,7 +78,7 @@ def reciprocal_rank_fusion(
     for cid, raw in scores.items():
         auth = chunk_authority_scores.get(cid) if chunk_authority_scores else None
         authorities[cid] = auth
-        adjusted[cid] = _apply_authority_nudge(raw, auth)
+        adjusted[cid] = _apply_authority_nudge(raw, auth, authority_alpha)
 
     # Sort by adjusted score descending
     ranked = sorted(adjusted.keys(), key=lambda cid: adjusted[cid], reverse=True)
