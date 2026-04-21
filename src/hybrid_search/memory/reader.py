@@ -1,4 +1,4 @@
-"""Q&A log reader — list/show/grep over persisted hybrid_search responses.
+"""Q&A log reader — list/show/grep/prune over persisted hybrid_search responses.
 
 Companion to ``qa_log.py`` (writer). Parses the YAML frontmatter + markdown
 body format produced by ``qa_log._format_record`` without pulling in a YAML
@@ -8,19 +8,22 @@ Layout on disk:
     <project_root>/.hybrid-search/qa/YYYY/MM/DD-HHMMSS-<hash8>.md
 
 Reader surface:
-    iter_qa_files(root)       — yields Path, newest mtime first
-    parse_qa_index(path)      — returns QAIndex (metadata only) or None
-    iter_qa_indexes(root)     — combines the two, swallowing parse errors
-    read_qa_body(path)        — returns markdown body (without frontmatter)
-    find_qa_by_id(root, tok)  — resolves stem / hash-prefix / YYYY-MM-DD-… id
-    grep_qa(root, term)       — yields GrepHit over frontmatter + body
+    iter_qa_files(root)            — yields Path, newest mtime first
+    parse_qa_index(path)           — returns QAIndex (metadata only) or None
+    iter_qa_indexes(root)          — combines the two, swallowing parse errors
+    read_qa_body(path)             — returns markdown body (without frontmatter)
+    find_qa_by_id(root, tok)       — resolves stem / hash-prefix / YYYY-MM-DD-… id
+    grep_qa(root, term)            — yields GrepHit over frontmatter + body
+    parse_duration(spec)           — "30d"/"12h"/"2w"/"3m" → timedelta
+    select_older_than(root, cutoff)— files with mtime < cutoff
+    prune_older_than(root, cutoff) — delete + rmdir empty YYYY/MM. dry_run支持
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -240,3 +243,136 @@ def grep_qa(
             haystack = line.casefold() if case_insensitive else line
             if needle in haystack:
                 yield GrepHit(index=idx, line=line.rstrip(), lineno=lineno)
+
+
+# ── retention (Sprint 4) ──────────────────────────────────────────────
+
+_DURATION_RE = re.compile(r"^\s*(\d+)\s*([dhwm])\s*$", re.IGNORECASE)
+_MONTH_DAYS = 30  # rough — retention policies don't need calendar accuracy
+
+
+def parse_duration(spec: str) -> timedelta:
+    """Parse a retention duration: ``30d`` / ``12h`` / ``2w`` / ``3m``.
+
+    Months are treated as 30 days — good enough for "prune stuff older than
+    three months" intent; callers wanting calendar accuracy should pass an
+    explicit date instead.
+
+    Raises ``ValueError`` on malformed input.
+    """
+    m = _DURATION_RE.match(spec)
+    if not m:
+        raise ValueError(
+            f"invalid duration {spec!r}; expected <N>[d|h|w|m], e.g. '30d'"
+        )
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    if unit == "d":
+        return timedelta(days=n)
+    if unit == "h":
+        return timedelta(hours=n)
+    if unit == "w":
+        return timedelta(weeks=n)
+    return timedelta(days=n * _MONTH_DAYS)
+
+
+def resolve_cutoff(
+    *,
+    older_than: str | None = None,
+    before: str | None = None,
+    now: datetime | None = None,
+) -> datetime:
+    """Resolve CLI-ish ``--older-than`` / ``--before`` args to a UTC cutoff.
+
+    Files with mtime strictly less than the cutoff are considered expired.
+    """
+    if (older_than is None) == (before is None):
+        raise ValueError("pass exactly one of older_than= / before=")
+    ref = now if now is not None else datetime.now(timezone.utc)
+    if older_than is not None:
+        return ref - parse_duration(older_than)
+    assert before is not None
+    try:
+        cutoff = datetime.fromisoformat(before)
+    except ValueError as exc:
+        raise ValueError(f"invalid date {before!r}: {exc}") from exc
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    return cutoff
+
+
+def select_older_than(project_root: Path, cutoff: datetime) -> list[Path]:
+    """Return qa files with ``mtime < cutoff``, newest-expired first."""
+    cutoff_ts = cutoff.timestamp()
+    expired: list[tuple[float, Path]] = []
+    for path in iter_qa_files(project_root):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff_ts:
+            expired.append((mtime, path))
+    expired.sort(key=lambda pair: pair[0], reverse=True)
+    return [p for _, p in expired]
+
+
+@dataclass(frozen=True)
+class PruneResult:
+    deleted: list[Path]
+    skipped: list[Path]  # files that failed to delete — reported, not raised
+    dirs_removed: list[Path]
+
+
+def _rmdir_empty_ancestors(path: Path, stop: Path) -> list[Path]:
+    """Remove ``path`` and empty parent dirs up to (but not including) ``stop``."""
+    removed: list[Path] = []
+    cur = path
+    stop = stop.resolve()
+    while True:
+        try:
+            cur_resolved = cur.resolve()
+        except OSError:
+            break
+        if cur_resolved == stop:
+            break
+        try:
+            cur.rmdir()
+        except OSError:
+            break  # non-empty or gone already
+        removed.append(cur)
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    return removed
+
+
+def prune_older_than(
+    project_root: Path,
+    cutoff: datetime,
+    *,
+    dry_run: bool = False,
+) -> PruneResult:
+    """Delete qa files older than ``cutoff``. When ``dry_run`` is True the
+    result lists the same files without touching disk.
+
+    Empty ``YYYY/MM`` dirs are rmdir'd after a successful real prune — the
+    top-level ``.hybrid-search/qa/`` root is preserved as an anchor.
+    """
+    expired = select_older_than(project_root, cutoff)
+    if dry_run:
+        return PruneResult(deleted=list(expired), skipped=[], dirs_removed=[])
+
+    deleted: list[Path] = []
+    skipped: list[Path] = []
+    dirs_removed: list[Path] = []
+    qa_root = qa_dir(project_root)
+    for path in expired:
+        try:
+            path.unlink()
+            deleted.append(path)
+        except OSError:
+            skipped.append(path)
+            continue
+        dirs_removed.extend(_rmdir_empty_ancestors(path.parent, qa_root))
+    return PruneResult(deleted=deleted, skipped=skipped, dirs_removed=dirs_removed)

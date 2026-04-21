@@ -2278,15 +2278,39 @@ def _truncate_preview(text: str, limit: int = 72) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
+def _iter_all_project_roots() -> Iterator[tuple[str, Path]]:
+    """Yield (project_name, project_root) for every registered project.
+
+    Silent on the home directory (same policy as _detect_project).
+    """
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+    home = Path.home().resolve()
+    for pinfo in registry.list_all():
+        root = Path(pinfo.path)
+        if root.resolve() == home:
+            continue
+        yield pinfo.name, root
+
+
 def cmd_qa_list(args: argparse.Namespace) -> None:
-    """List recent qa logs for a project, newest first."""
+    """List recent qa logs. --all sweeps every registered project."""
     from hybrid_search.memory import reader
 
-    root = _resolve_qa_root(args)
-    if root is None:
-        sys.exit(1)
+    # Sources: either a single project or the whole registry.
+    sources: list[tuple[str | None, Path]]
+    if getattr(args, "all", False):
+        if args.project or (args.cwd and args.cwd != "."):
+            print("--all is mutually exclusive with --project/--cwd", file=sys.stderr)
+            sys.exit(1)
+        sources = [(name, root) for name, root in _iter_all_project_roots()]
+    else:
+        root = _resolve_qa_root(args)
+        if root is None:
+            sys.exit(1)
+        sources = [(None, root)]
 
-    indexes = list(reader.iter_qa_indexes(root))
+    cutoff: datetime | None = None
     if args.since:
         try:
             cutoff = datetime.fromisoformat(args.since)
@@ -2295,11 +2319,19 @@ def cmd_qa_list(args: argparse.Namespace) -> None:
             sys.exit(1)
         if cutoff.tzinfo is None:
             cutoff = cutoff.replace(tzinfo=timezone.utc)
-        indexes = [
-            i for i in indexes
-            if i.timestamp is not None and i.timestamp >= cutoff
-        ]
-    indexes = indexes[: args.limit]
+
+    # Aggregate newest-first across all sources.
+    pooled: list[tuple[str | None, reader.QAIndex]] = []
+    for label, root in sources:
+        for idx in reader.iter_qa_indexes(root):
+            if cutoff and (idx.timestamp is None or idx.timestamp < cutoff):
+                continue
+            pooled.append((label, idx))
+    pooled.sort(
+        key=lambda pair: pair[1].timestamp or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    pooled = pooled[: args.limit]
 
     if args.json:
         import json as _json
@@ -2307,6 +2339,7 @@ def cmd_qa_list(args: argparse.Namespace) -> None:
         print(_json.dumps(
             [
                 {
+                    "project": label,
                     "id": i.id,
                     "query": i.query,
                     "query_type": i.query_type,
@@ -2315,21 +2348,25 @@ def cmd_qa_list(args: argparse.Namespace) -> None:
                     "result_count": i.result_count,
                     "path": str(i.path),
                 }
-                for i in indexes
+                for label, i in pooled
             ],
             ensure_ascii=False,
             indent=2,
         ))
         return
 
-    if not indexes:
-        print(f"No qa logs under {root / reader.QA_DIRNAME}")
+    if not pooled:
+        if getattr(args, "all", False):
+            print("No qa logs across registered projects.")
+        else:
+            print(f"No qa logs under {sources[0][1] / reader.QA_DIRNAME}")
         return
 
-    for idx in indexes:
+    for label, idx in pooled:
         ts = idx.timestamp.strftime("%Y-%m-%d %H:%M") if idx.timestamp else "?"
         preview = _truncate_preview(idx.query)
-        print(f"{idx.id}  [{idx.query_type:<14}] n={idx.result_count}  {ts}  {preview}")
+        prefix = f"{label}:" if label else ""
+        print(f"{prefix}{idx.id}  [{idx.query_type:<14}] n={idx.result_count}  {ts}  {preview}")
 
 
 def cmd_qa_show(args: argparse.Namespace) -> None:
@@ -2361,6 +2398,38 @@ def cmd_qa_grep(args: argparse.Namespace) -> None:
 
     for hit in hits:
         print(f"{hit.index.id}:{hit.lineno}:{hit.line}")
+
+
+def cmd_qa_prune(args: argparse.Namespace) -> None:
+    """Delete qa logs older than --older-than / --before. --dry-run supported."""
+    from hybrid_search.memory import reader
+
+    if (args.older_than is None) == (args.before is None):
+        print("pass exactly one of --older-than / --before", file=sys.stderr)
+        sys.exit(2)
+
+    root = _resolve_qa_root(args)
+    if root is None:
+        sys.exit(1)
+
+    try:
+        cutoff = reader.resolve_cutoff(
+            older_than=args.older_than, before=args.before
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(2)
+
+    result = reader.prune_older_than(root, cutoff, dry_run=args.dry_run)
+    tag = "would remove" if args.dry_run else "removed"
+    print(f"{tag} {len(result.deleted)} qa log(s) older than {cutoff.isoformat()}")
+    if args.verbose:
+        for p in result.deleted:
+            print(f"  {tag}: {p}")
+    if result.skipped:
+        print(f"  skipped {len(result.skipped)} (unlink failed)")
+    if result.dirs_removed:
+        print(f"  also removed {len(result.dirs_removed)} empty directory/ies")
 
 
 def cmd_qa_stats(args: argparse.Namespace) -> None:
@@ -3188,6 +3257,11 @@ def main() -> None:
     p_qa_list.add_argument("--limit", type=int, default=20, help="Max entries (default: 20)")
     p_qa_list.add_argument("--since", help="ISO date cutoff, e.g. 2026-04-01")
     p_qa_list.add_argument("--json", action="store_true", help="Output as JSON")
+    p_qa_list.add_argument(
+        "--all",
+        action="store_true",
+        help="Aggregate across every registered project (mutually exclusive with --project/--cwd)",
+    )
 
     p_qa_show = sub.add_parser("qa-show", help="Print a single qa log by id / hash prefix")
     p_qa_show.add_argument("id", help="qa log id, file stem, or hash prefix (≥4 chars)")
@@ -3203,6 +3277,23 @@ def main() -> None:
     p_qa_stats = sub.add_parser("qa-stats", help="Summary of qa logs (total / by type / by month)")
     p_qa_stats.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
     p_qa_stats.add_argument("--project", help="Project name (overrides --cwd)")
+
+    p_qa_prune = sub.add_parser(
+        "qa-prune",
+        help="Delete qa logs older than --older-than or --before",
+    )
+    p_qa_prune.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_qa_prune.add_argument("--project", help="Project name (overrides --cwd)")
+    p_qa_prune.add_argument(
+        "--older-than",
+        help="Relative duration: 30d / 12h / 2w / 3m",
+    )
+    p_qa_prune.add_argument(
+        "--before",
+        help="Absolute cutoff (ISO date): e.g. 2026-01-01",
+    )
+    p_qa_prune.add_argument("--dry-run", action="store_true", help="Print, don't delete")
+    p_qa_prune.add_argument("--verbose", action="store_true", help="Print every path")
 
     p_sub = sub.add_parser("subgraph", help="N-hop forward+reverse call graph around a chunk/symbol")
     p_sub.add_argument("symbol", help="Chunk_id, qualified_name, or symbol name")
@@ -3273,6 +3364,8 @@ def main() -> None:
         cmd_qa_grep(args)
     elif args.command == "qa-stats":
         cmd_qa_stats(args)
+    elif args.command == "qa-prune":
+        cmd_qa_prune(args)
     else:
         parser.print_help()
         sys.exit(1)
