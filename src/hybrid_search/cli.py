@@ -982,6 +982,35 @@ def _extract_tags(stem: str, content: str) -> list[str]:
     return tags[:10]
 
 
+_PRESERVED_WIKI_NAMES = frozenset({"STALE.md"})
+
+
+def _cleanup_orphan_wiki_pages(wiki_dir: Path, expected_filenames: set[str]) -> int:
+    """Delete top-level .md files in wiki_dir that aren't in expected_filenames.
+
+    Called after full regeneration to purge pages from previous runs whose
+    module names have changed (e.g. ``test_wiki-1.md`` after the fragmentation
+    fix). Preserves ``STALE.md`` and any files inside sub-directories (synthesis
+    staging dirs).
+    """
+    if not wiki_dir.exists():
+        return 0
+    removed = 0
+    for path in wiki_dir.iterdir():
+        if not path.is_file() or path.suffix != ".md":
+            continue
+        if path.name in _PRESERVED_WIKI_NAMES:
+            continue
+        if path.name in expected_filenames:
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def _write_wiki_coverage(db: StoreDB, pages, wiki_dir: Path) -> None:
     """Write coverage.json — authoritative list of files covered by wiki."""
     import json as _json_cov
@@ -1126,7 +1155,12 @@ def cmd_generate_wiki(args: argparse.Namespace) -> None:
             page_path.write_text(page.content, encoding="utf-8")
             written += 1
 
+        expected_filenames = {page.filename for page in pages}
+        removed = _cleanup_orphan_wiki_pages(wiki_dir, expected_filenames)
+
         print(f"  Wrote {written} pages to {wiki_dir}")
+        if removed:
+            print(f"  Removed {removed} orphan page(s)")
 
         # Sync to DB
         wiki_store = db.wiki_store(max_pages=config.wiki.max_pages_per_project)

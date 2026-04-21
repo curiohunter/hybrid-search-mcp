@@ -369,9 +369,19 @@ def generate_wiki_plan(db: StoreDB, project_id: str) -> WikiPlan:
             representative_paths=_representative_paths(files),
         ))
 
+    # Enforce file-boundary invariant: chunks from the same file must live in
+    # the same module. Prevents wiki fragmentation (`test_wiki-1..N.md`) when a
+    # file has multiple disconnected call-graph components.
+    modules = _merge_file_overlapping_modules(modules)
+    isolated_modules = _merge_file_overlapping_modules(isolated_modules)
+
     # Deduplicate module names
     _deduplicate_names(modules)
     _deduplicate_names(isolated_modules)
+
+    # Reserve filenames used by the generated wiki (index.md).
+    _rename_reserved_slugs(modules)
+    _rename_reserved_slugs(isolated_modules)
 
     # Sort: largest modules first
     modules.sort(key=lambda m: m.chunk_count, reverse=True)
@@ -643,7 +653,7 @@ def generate_module_wiki(
             lines.append("")
 
     content = "\n".join(lines)
-    slug = module.name.lower().replace(" ", "-").replace("(", "").replace(")", "")
+    slug = _module_slug(module.name)
     tags = [module.name]
     for fpath in module.files[:5]:
         tag = PurePosixPath(fpath).stem
@@ -782,15 +792,14 @@ def generate_all_wiki_pages(
         index_lines.append(f"## Modules ({len(plan.modules)})")
         index_lines.append("")
         for m in plan.modules:
-            index_lines.append(f"- [{m.name}]({m.name.lower().replace(' ', '-')}.md) — {m.file_count} files, {m.chunk_count} symbols")
+            index_lines.append(f"- [{m.name}]({_module_slug(m.name)}.md) — {m.file_count} files, {m.chunk_count} symbols")
         index_lines.append("")
 
     if plan.isolated_modules:
         index_lines.append(f"## Isolated ({len(plan.isolated_modules)})")
         index_lines.append("")
         for m in plan.isolated_modules:
-            slug = m.name.lower().replace(" ", "-").replace("(", "").replace(")", "")
-            index_lines.append(f"- [{m.name}]({slug}.md) — {m.file_count} files, {m.chunk_count} symbols")
+            index_lines.append(f"- [{m.name}]({_module_slug(m.name)}.md) — {m.file_count} files, {m.chunk_count} symbols")
         index_lines.append("")
 
     index_lines.append(f"**Coverage**: {plan.covered_chunks}/{plan.total_chunks} chunks ({plan.coverage*100:.1f}%)")
@@ -820,3 +829,112 @@ def _deduplicate_names(modules: list[ModuleNode]) -> None:
             idx = duplicates.get(m.name, 0) + 1
             duplicates[m.name] = idx
             m.name = f"{m.name}-{idx}"
+
+
+_RESERVED_MODULE_SLUGS = frozenset({"index"})
+
+
+def _module_slug(name: str) -> str:
+    """Slug derivation mirroring the wiki filename rule in generate_module_wiki."""
+    return name.lower().replace(" ", "-").replace("(", "").replace(")", "")
+
+
+def _rename_reserved_slugs(modules: list[ModuleNode]) -> None:
+    """Rename modules whose slug collides with a reserved wiki filename.
+
+    Without this, a package named `index/` (e.g. `src/hybrid_search/index/`)
+    produces `index.md`, which overwrites the generated wiki index page.
+    """
+    for m in modules:
+        if _module_slug(m.name) in _RESERVED_MODULE_SLUGS:
+            m.name = f"{m.name} module"
+
+
+def _merge_file_overlapping_modules(modules: list[ModuleNode]) -> list[ModuleNode]:
+    """Merge modules that share any file into one.
+
+    Enforces the invariant: chunks from the same file always belong to the
+    same module. Without this, a file with N disconnected call-graph
+    components (common in test files where each test is its own component)
+    produces N modules with names like `test_wiki-1 ... test_wiki-N`, which
+    fragments the wiki.
+
+    Merge policy: union-find over (module, file). Name and representative_paths
+    inherit from the member with the most chunks; files/chunks/entry_points
+    are unioned.
+    """
+    if not modules:
+        return modules
+
+    n = len(modules)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    file_to_modules: dict[str, list[int]] = defaultdict(list)
+    for i, m in enumerate(modules):
+        for f in m.files:
+            file_to_modules[f].append(i)
+
+    for indices in file_to_modules.values():
+        first = indices[0]
+        for i in indices[1:]:
+            union(first, i)
+
+    groups: dict[int, list[int]] = defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(i)
+
+    merged: list[ModuleNode] = []
+    seen_roots: set[int] = set()
+    for i in range(n):
+        root = find(i)
+        if root in seen_roots:
+            continue
+        seen_roots.add(root)
+        indices = groups[root]
+        if len(indices) == 1:
+            merged.append(modules[indices[0]])
+            continue
+
+        members = sorted(
+            (modules[j] for j in indices),
+            key=lambda m: m.chunk_count,
+            reverse=True,
+        )
+        all_files = sorted({f for m in members for f in m.files})
+
+        seen_chunks: set[str] = set()
+        all_chunks: list[str] = []
+        for m in members:
+            for cid in m.chunks:
+                if cid not in seen_chunks:
+                    seen_chunks.add(cid)
+                    all_chunks.append(cid)
+
+        seen_entries: set[str] = set()
+        all_entries: list[str] = []
+        for m in members:
+            for ep in m.entry_points:
+                if ep not in seen_entries:
+                    seen_entries.add(ep)
+                    all_entries.append(ep)
+
+        merged.append(ModuleNode(
+            name=members[0].name,
+            files=all_files,
+            chunks=all_chunks,
+            entry_points=all_entries[:5],
+            representative_paths=_representative_paths(all_files),
+        ))
+
+    return merged
