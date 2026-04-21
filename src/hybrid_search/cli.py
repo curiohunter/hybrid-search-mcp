@@ -2085,6 +2085,171 @@ def cmd_god_nodes(args: argparse.Namespace) -> None:
         print(f"      {loc}")
 
 
+# ── annotate-wiki (M5) — inject god-nodes into wiki index.md ──
+
+_WIKI_GOD_START = "<!-- hybrid-search:god-nodes:start -->"
+_WIKI_GOD_END = "<!-- hybrid-search:god-nodes:end -->"
+
+
+def _module_slug(name: str) -> str:
+    """Slugify a module name the same way dag.generate_all_wiki_pages does."""
+    return name.lower().replace(" ", "-").replace("(", "").replace(")", "")
+
+
+def _build_chunk_module_map(db: StoreDB, project_id: str) -> dict[str, str]:
+    """Map chunk_id → wiki module name (including isolated modules).
+
+    Re-runs the wiki plan (graph queries only, no LLM). Used to produce
+    `[[module]]` wikilinks in the annotated god-nodes section.
+    """
+    from hybrid_search.index.dag import generate_wiki_plan
+
+    plan = generate_wiki_plan(db, project_id)
+    chunk_to_module: dict[str, str] = {}
+    for module in list(plan.modules) + list(plan.isolated_modules):
+        for cid in module.chunks:
+            chunk_to_module[cid] = module.name
+    return chunk_to_module
+
+
+def _format_god_nodes_section(
+    rows: list[dict],
+    chunk_to_module: dict[str, str],
+    top: int,
+) -> str:
+    """Render god-nodes rows as a marker-bounded markdown section.
+
+    Returns "" if rows is empty — caller should skip insertion entirely
+    so we don't leave behind an empty section.
+    """
+    if not rows:
+        return ""
+
+    lines: list[str] = [_WIKI_GOD_START]
+    lines.append(f"## 핵심 모듈 (God Nodes Top {min(top, len(rows))})")
+    lines.append("")
+    lines.append(
+        "> 호출 그래프 in-degree 기준 상위 심볼. "
+        "`hybrid-search-mcp god-nodes` 서브커맨드로 재생성됩니다."
+    )
+    lines.append("")
+    for i, r in enumerate(rows[:top], 1):
+        symbol = r.get("qualified_name") or r.get("name") or r["id"]
+        node_type = r.get("node_type") or "?"
+        in_deg = r.get("in_degree", 0)
+        module = chunk_to_module.get(r["id"])
+        if module:
+            slug = _module_slug(module)
+            # Wiki-style link — rendered by the wiki reader; plain [text](slug.md)
+            # also works for agents that resolve markdown links.
+            prefix = f"[[{module}]]({slug}.md)"
+        else:
+            prefix = "_(unscoped)_"
+        lines.append(
+            f"{i}. {prefix} — `{symbol}` (in={in_deg}, type={node_type})"
+        )
+    lines.append("")
+    lines.append(_WIKI_GOD_END)
+    return "\n".join(lines)
+
+
+def _apply_god_nodes_to_index(existing: str, section: str) -> str:
+    """Insert or replace the marker-bounded god-nodes section in index.md.
+
+    - If section is "" and no existing block: return unchanged.
+    - If section is "" and an existing block is present: strip the block.
+    - If existing block present: replace in place.
+    - Otherwise: insert after the first H1 (`# ...`) heading; if no H1,
+      prepend to the file.
+
+    The marker pair guarantees idempotency — running twice produces no diff.
+    Content outside the markers is never touched.
+    """
+    import re as _re
+
+    pattern = _re.compile(
+        _re.escape(_WIKI_GOD_START) + r".*?" + _re.escape(_WIKI_GOD_END),
+        flags=_re.DOTALL,
+    )
+
+    if not section:
+        # Remove existing block (if any); collapse a stray blank line pair.
+        stripped = pattern.sub("", existing)
+        return _re.sub(r"\n{3,}", "\n\n", stripped)
+
+    if pattern.search(existing):
+        return pattern.sub(lambda _m: section, existing)
+
+    # Insert after first H1 heading, preserving any blank line after it.
+    lines = existing.split("\n") if existing else []
+    insert_at = 0
+    for i, line in enumerate(lines):
+        if line.startswith("# "):
+            insert_at = i + 1
+            # Skip a single blank line after the H1 for clean spacing.
+            if insert_at < len(lines) and not lines[insert_at].strip():
+                insert_at += 1
+            break
+
+    block = ["", section, ""]
+    new_lines = lines[:insert_at] + block + lines[insert_at:]
+    # Normalize: drop accidental triple blank lines.
+    joined = "\n".join(new_lines)
+    return _re.sub(r"\n{3,}", "\n\n", joined)
+
+
+def cmd_annotate_wiki(args: argparse.Namespace) -> None:
+    """Annotate .hybrid-search/wiki/index.md with the god-nodes Top-N section.
+
+    Idempotent: re-running replaces the marker-bounded block in place.
+    Empty result (no god nodes) strips any existing block so we never
+    leave a stale empty section behind.
+    """
+    opened = _open_single_project_db(args.project, args.cwd)
+    if not opened:
+        sys.exit(1)
+    pinfo, db = opened
+
+    try:
+        rows = db.get_god_nodes(
+            pinfo.id, limit=args.top, min_confidence=args.min_confidence
+        )
+        chunk_to_module = _build_chunk_module_map(db, pinfo.id) if rows else {}
+    finally:
+        db.close()
+
+    section = _format_god_nodes_section(rows, chunk_to_module, args.top)
+
+    project_root = Path(pinfo.path)
+    wiki_dir = project_root / ".hybrid-search" / "wiki"
+    index_path = wiki_dir / "index.md"
+
+    if not index_path.exists():
+        if not rows:
+            print(f"No god nodes and no index.md — nothing to do ({index_path}).")
+            return
+        # First-time bootstrap: create a minimal index.md so we have a host.
+        wiki_dir.mkdir(parents=True, exist_ok=True)
+        existing = "# Wiki Index\n"
+    else:
+        existing = index_path.read_text(encoding="utf-8")
+
+    updated = _apply_god_nodes_to_index(existing, section)
+
+    if updated == existing:
+        print(f"Wiki god-nodes section unchanged: {index_path}")
+        return
+
+    # Preserve trailing newline convention — markdown files usually end with \n.
+    if existing.endswith("\n") and not updated.endswith("\n"):
+        updated += "\n"
+    index_path.write_text(updated, encoding="utf-8")
+    if not rows:
+        print(f"Wiki god-nodes section removed (no nodes found): {index_path}")
+    else:
+        print(f"Wiki god-nodes section updated ({len(rows[:args.top])} entries): {index_path}")
+
+
 def _bfs_shortest_path(
     db: StoreDB, project_id: str, start: str, goal: str, min_confidence: str
 ) -> list[str] | None:
@@ -2708,6 +2873,7 @@ def _ensure_gitignore_entries(project_root: Path) -> None:
         ".hybrid-search/.reindex.lock",
         ".hybrid-search/.gaps-shown",
         ".hybrid-search/needs_synthesis",
+        ".hybrid-search/qa/",
     ]
     existing = gi_path.read_text(encoding="utf-8") if gi_path.exists() else ""
     existing_lines = {line.strip() for line in existing.splitlines()}
@@ -2844,6 +3010,20 @@ def main() -> None:
     )
     p_god.add_argument("--json", action="store_true", help="Output as JSON")
 
+    p_annot = sub.add_parser(
+        "annotate-wiki",
+        help="Inject god-nodes Top-N into .hybrid-search/wiki/index.md (idempotent)",
+    )
+    p_annot.add_argument("--top", type=int, default=10, help="Number of god nodes to show (default: 10)")
+    p_annot.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_annot.add_argument("--project", help="Project name (overrides --cwd)")
+    p_annot.add_argument(
+        "--min-confidence",
+        choices=("ambiguous", "inferred", "extracted"),
+        default="inferred",
+        help="Minimum call-edge confidence (default: inferred)",
+    )
+
     p_path = sub.add_parser("shortest-path", help="Shortest call-graph path between two chunks/symbols")
     p_path.add_argument("source", help="Source chunk_id, qualified_name, or symbol name")
     p_path.add_argument("target", help="Target chunk_id, qualified_name, or symbol name")
@@ -2912,6 +3092,8 @@ def main() -> None:
         cmd_detect_wiki_gaps(args)
     elif args.command == "god-nodes":
         cmd_god_nodes(args)
+    elif args.command == "annotate-wiki":
+        cmd_annotate_wiki(args)
     elif args.command == "shortest-path":
         cmd_shortest_path(args)
     elif args.command == "subgraph":

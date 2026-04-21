@@ -192,3 +192,42 @@ class TestAuthorityNudge:
         score_a_zero = next(r.rrf_score for r in results_explicit_zero if r.chunk_id == "a")
         # factor 1.0 either way — no penalty for explicit zero.
         assert abs(score_a_absent - score_a_zero) < 1e-12
+
+
+class TestAuthorityAlphaConfigurable:
+    """L6 decision (2026-04-21): alpha is exposed via SearchConfig."""
+
+    def test_alpha_zero_disables_nudge(self):
+        """authority_alpha=0.0 → factor 1.0 regardless of authority value."""
+        nudged = reciprocal_rank_fusion(
+            ["x"], ["x"], bm25_weight=0.5,
+            chunk_authority_scores={"x": 1.0},
+            authority_alpha=0.0,
+        )
+        base = reciprocal_rank_fusion(["x"], ["x"], bm25_weight=0.5)
+        assert abs(nudged[0].rrf_score - base[0].rrf_score) < 1e-12
+
+    def test_alpha_05_yields_15x_ceiling(self):
+        """authority_alpha=0.5 + auth=1.0 → factor 1.5."""
+        results = reciprocal_rank_fusion(
+            ["x"], ["x"], bm25_weight=0.5,
+            chunk_authority_scores={"x": 1.0},
+            authority_alpha=0.5,
+        )
+        base = reciprocal_rank_fusion(["x"], ["x"], bm25_weight=0.5)
+        assert abs(results[0].rrf_score - base[0].rrf_score * 1.5) < 1e-12
+
+    def test_alpha_default_matches_constant(self):
+        """Omitting authority_alpha uses DEFAULT_AUTHORITY_ALPHA=0.3."""
+        from hybrid_search.search.fusion import DEFAULT_AUTHORITY_ALPHA
+        default = reciprocal_rank_fusion(
+            ["x"], ["x"], bm25_weight=0.5,
+            chunk_authority_scores={"x": 1.0},
+        )
+        explicit = reciprocal_rank_fusion(
+            ["x"], ["x"], bm25_weight=0.5,
+            chunk_authority_scores={"x": 1.0},
+            authority_alpha=DEFAULT_AUTHORITY_ALPHA,
+        )
+        assert DEFAULT_AUTHORITY_ALPHA == 0.3
+        assert abs(default[0].rrf_score - explicit[0].rrf_score) < 1e-12

@@ -2,9 +2,93 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 14회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 15회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
+
+**A/B/C/D 4개 선택지 병행 구현 완료 (에이전트 2 + 로컬 2 동시 진행).** A=`authority_alpha` config 노출 (SearchConfig + TOML, default 0.3), B=`annotate-wiki` CLI 신설 (god-nodes 결과를 `.hybrid-search/wiki/index.md` "핵심 모듈" 섹션에 마커 바운드 idempotent 삽입), C=Memory Layer MVP (`HYBRID_SEARCH_QA_LOG=1` opt-in, `memory/qa_log.py`로 MCP 응답을 `<project>/.hybrid-search/qa/YYYY/MM/DD-HHMMSS-<hash>.md`에 async 저장), D=`exclude_pattern` 파라미터 (MCP inputSchema + orchestrator `_build_filter`에서 `docs/*` 같은 glob 제외). **500/500 passed (+43)** — A(3) / B(13) / C(24) / D(3). 4축 모두 충돌 없이 수렴.
+
+### ✅ 이 세션 완료된 것 (15회차)
+
+**1. 선택 A — authority_alpha config 노출 (local)**
+- `config.py:SearchConfig`에 `authority_alpha: float = 0.3` 필드 추가 + TOML 주석 (L6 n=60 기반 근거 기록).
+- `fusion.py`: `_AUTHORITY_BOOST_ALPHA` 상수 → `DEFAULT_AUTHORITY_ALPHA=0.3`, `reciprocal_rank_fusion(authority_alpha=...)` 파라미터 추가, `_apply_authority_nudge`에 전달.
+- `orchestrator.py`: `self._config.search.authority_alpha` 전달.
+- `tests/test_fusion.py`: `TestAuthorityAlphaConfigurable` 3개 (α=0.0 비활성, α=0.5 1.5배 상한, default=0.3 상수 검증).
+- **결정**: 기본값 0.3 유지 (self-contained 안정성 우선). external-weighted 워크로드는 프로젝트 TOML에서 0.5로 오버라이드 가능.
+
+**2. 선택 B — Wiki annotate-wiki CLI (서브에이전트)**
+- 결정: **(a) 새 서브커맨드 `annotate-wiki`** — finalize 훅 대신 독립 실행. god-nodes는 그래프 쿼리라 LLM synthesis와 비용 프로파일 다름.
+- `cli.py` (+182줄): 마커 쌍 `<!-- hybrid-search:god-nodes:start/end -->`, `_module_slug()` / `_build_chunk_module_map()` / `_format_god_nodes_section()` / `_apply_god_nodes_to_index()` 순수 함수 + `cmd_annotate_wiki` 서브커맨드.
+- `tests/test_graph_cli.py` (+132줄, 13개): idempotency, 수동 content 보존, 빈 결과 skip, top cap, 기존 블록 교체/제거.
+- 삽입 예시: `[[storage]](storage.md) — StoreDB._migrate_schema (in=34, type=function)`.
+- **비고**: `.hybrid-search/wiki/`는 gitignored라 실제 실행 산출물은 staging 안 됨 (의도). 사용자는 설치 후 `hybrid-search-mcp annotate-wiki --cwd .`로 수동 실행.
+
+**3. 선택 C — Memory Layer MVP (서브에이전트)**
+- `memory/qa_log.py` (+230줄): 저장 경로 `<project>/.hybrid-search/qa/YYYY/MM/DD-HHMMSS-<sha256[:8]>.md`. YAML frontmatter + markdown body (query/query_type/bm25_weight/top-10 hits/timestamp).
+- Toggle: `HYBRID_SEARCH_QA_LOG` env var (`1/true/yes/on` truthy). **기본 off** (opt-in, 프라이버시/디스크 미지).
+- `tools/hybrid_search.py`: 응답 반환 직전 `qa_log.record()` 호출 (try/except 이중 보호, daemon thread, hot-path latency 영향 0).
+- `cli.py:_ensure_gitignore_entries`: `.hybrid-search/qa/` 추가.
+- `tests/test_qa_log.py` (24개): toggle matrix, path resolution, YYYY/MM 레이아웃, on/off 파일 생성, 디스크 실패 swallow, 핸들러 통합 2개.
+- **다음 스프린트 제안 (C 에이전트)**: Sprint 2 qa list/show/grep CLI, Sprint 3 qa 로그 색인 (self-referential memory), Sprint 4 cross-project aggregator + rotation.
+
+**4. 선택 D — exclude_pattern 파라미터 (local)**
+- `server.py` MCP inputSchema에 `exclude_pattern` (string, description: 'docs/*' 예시).
+- `tools/hybrid_search.py`: `exclude_pattern` 매개변수 + `sanitize_file_pattern` 재사용.
+- `orchestrator.py:_build_filter`: `exclude_pattern` glob 매칭 시 chunk 드롭. `file_pattern`과 combinable.
+- `tests/test_orchestrator.py`: `TestBuildFilterExcludePattern` 3개 (exclude 드롭, file_pattern 조합, 모두 None).
+
+### 🎯 다음 세션 진입점
+
+1. 이 15회차 섹션 전체
+2. `git log --oneline -10` — `d3710e0` HANDOFF 14, `0f4805a` L6 확장, … 이번 세션 커밋 2개.
+3. 에이전트 B가 제안한 후속: `hybrid-search-mcp annotate-wiki --cwd .` 수동 실행해서 실제 god-nodes 섹션이 index.md에 들어가는지 확인.
+4. C가 제안한 Sprint 2~4 로드맵 검토.
+
+### 🎯 다음 세션 권장 순서
+
+**15회차로 로드맵 거의 전부 소진. 남은 큰 결정은 Memory Layer 확장 or 벤치마크 축 재가동.**
+
+**선택 A — C Sprint 2 (Memory retrieval) 착수 (1~2일):** qa 로그 읽기 CLI (`hybrid-search-mcp qa list/show/grep`) + frontmatter 파싱 유틸. 사용자가 "저번에 뭐 물어봤더라" 재현 가능해야 Memory Layer 가치 입증. C MVP만으로는 write-only → 완전 가치 실현 X.
+
+**선택 B — 실사용 데이터 기반 재결정 (반나절):** 15회차 4축 기능을 며칠 쓴 후 실사용 피드백 모집. snippet 400자 조정, qa_log 기본값 on 승격 여부, α=0.5 외부 프로젝트 시도 등.
+
+**선택 C — 벤치마크 축 재가동 — gold label 품질 개선 (1일+):** proxy label 대신 도메인 지식 기반 수작업 gold (external 15q → 15q+10q 더). α 재튜닝의 근거 강화. "L6 external proxy labels 제약" 주의사항 해결.
+
+**선택 D — README 재작성 "Memory Layer for Claude Code" (반나절):** 전략 메모리의 포지셔닝 원래 계획. MVP가 실제 동작하기 시작한 지금이 적기. 기존 README는 BM25+vector 검색 도구로만 소개됨.
+
+**추천: 선택 A (C Sprint 2) → 선택 D (README).** Memory Layer가 실사용에서 write+read 둘 다 되어야 포지셔닝이 말이 됨.
+
+### 주의사항 / 알려진 이슈
+
+- **B annotate-wiki는 수동 실행.** post-commit 훅에 엮는 옵션은 논의 없이 X. 필요 시 `cli.py:_build_post_commit_script`에 추가. 실행 비용 저렴 (그래프 쿼리만).
+- **C qa_log는 opt-in.** 기본 off. 사용자가 `export HYBRID_SEARCH_QA_LOG=1` 하지 않으면 아무 로그도 쌓이지 않음. 승격 전 실사용 디스크 사용량/프라이버시 재검토 필요.
+- **D exclude_pattern은 glob-level.** SQL-level index filtering이 아니라 post-retrieval chunk filter. 매우 큰 프로젝트에서 `docs/*` 제외로 retrieval_depth가 부족해질 수 있음 — 필요 시 depth 증가 로직 추가 고려.
+- **A 기본값 0.3 유지.** 0.5 승격 전 self-contained variance를 다시 n=45로 측정 필요 (9회차 선택 근거).
+- **B Wiki annotate는 `.hybrid-search/wiki/` gitignored.** 테스트 picked up 되지 않음 — 수동 실행으로만 검증됨. 실제 산출물 보고 싶으면 사용자가 annotate-wiki 실행 후 `cat .hybrid-search/wiki/index.md`.
+- **C hot path 영향 0.** async_write=True 기본값 + daemon thread. 실패 시 swallow.
+- **12회차 이슈 잔존:** v4 → v5 마이그레이션 미검증 프로젝트 3개. 다음 MCP 호출 시 자동.
+
+### 마지막 상태
+
+- **브랜치:** `main` (origin/main 기준 이번 세션 커밋 2개 추가 예정)
+- **마지막 커밋 (세션 전):** `d3710e0 [docs] HANDOFF 14회차 — L6 확장 + 로드맵 감사 + Q1 archive`
+- **테스트:** **500/500 passed** (25s) — 이번 세션 +43 (A:3 / B:13 / C:24 / D:3).
+- **변경 파일:**
+  - A: `config.py`, `fusion.py`, `orchestrator.py` (fusion 호출), `tests/test_fusion.py`
+  - B: `cli.py` (annotate-wiki 함수들 + subparser), `tests/test_graph_cli.py`
+  - C: `memory/__init__.py`, `memory/qa_log.py` (신규), `tools/hybrid_search.py` (qa_log 호출), `cli.py` (gitignore 추가), `tests/test_qa_log.py`
+  - D: `orchestrator.py` (_build_filter + hybrid_search 시그니처), `server.py` (inputSchema), `tools/hybrid_search.py` (exclude_pattern), `tests/test_orchestrator.py`
+
+### 로드맵 진행률 업데이트
+
+15회차 기준 실제 완료: Q1~Q10 (10) + M1/M1.v2/M1.1/M1.2/M2/M3/M4/M5 (8) + L6 mini+Full+확장 (3) + Search DX snippet (1) + A/B/C/D 4개 = **26개**. 11회차 표 denominator 28에 Search DX + A/B/C/D 5개 추가하면 ~33. **26/33 (79%)**. 남은 핵심: C Sprint 2~4 (Memory Layer 완성) + README 재작성.
+
+---
+
+## 🔵 이전 세션 인계 (14회차) — 참고용
+
+### 한줄 요약 (14회차)
 
 **L6 외부 확장 (선택 A) 완료 + 로드맵 감사 + Q1 플랜 archive.** gold set 30q→45q, external 5q→15q (valuein + mathontonlogy + breeze), MRR@10 지표 + per-project α sweep 추가. **GRAND TOTAL n=60 α=0.3: Δ NDCG +0.061 [+0.029,+0.098] P=1.00, Δ MRR +0.062 [+0.015,+0.118] P=1.00** — authority nudge 효과 cross-project에서 최종 검증. α=0.5가 external에서 더 강함(+0.094) → 재튜닝 여지 confirmed. 로드맵 감사 중 **M1.2 (type-gating), M1.1 (schema v5 label rename)이 이미 이전 세션에 shipped**되어 있었음을 확인 — HANDOFF 11회차 표 "16/28 (57%)"가 현실 미반영이었음. PLAN_q1_routing_hook.md → `docs/plan/archive/`로 이동. **457/457 passed**, 5 파일 staged.
 
