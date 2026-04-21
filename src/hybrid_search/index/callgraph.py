@@ -1,9 +1,9 @@
 """Call Graph Resolution — resolves raw call edges to chunk IDs with confidence levels.
 
 Implements the 3-tier resolution strategy from design.md §12:
-  High:   import path + symbol name → exact chunk match
-  Medium: qualified_name match within the same project
-  Low:    name-only match (common names filtered)
+  extracted: import path + symbol name → exact chunk match
+  inferred:  qualified_name match within the same project
+  ambiguous: name-only match (common names filtered)
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from hybrid_search.storage.db import CONFIDENCE_SCORES, StoreDB
 logger = logging.getLogger(__name__)
 
 # Common function names that are too generic for reliable name-only matching.
-# These remain at 'low' confidence even if a single match is found.
+# These remain at 'ambiguous' confidence even if a single match is found.
 COMMON_NAMES = frozenset({
     "run", "init", "get", "set", "render", "handle", "process",
     "validate", "update", "create", "delete", "remove", "add",
@@ -82,7 +82,7 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
     """
     edges = db.get_all_call_edges(project_id)
     if not edges:
-        return {"total": 0, "high": 0, "medium": 0, "low": 0, "unresolved": 0}
+        return {"total": 0, "extracted": 0, "inferred": 0, "ambiguous": 0, "unresolved": 0}
 
     # Pre-build lookup indexes for the project
     all_chunks = db.get_chunks_by_project(project_id)
@@ -112,7 +112,7 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
     # Module path → chunks index (Step 2: import path resolution)
     module_index = _build_module_index(all_files, all_chunks)
 
-    stats = {"total": len(edges), "high": 0, "medium": 0, "low": 0, "unresolved": 0}
+    stats = {"total": len(edges), "extracted": 0, "inferred": 0, "ambiguous": 0, "unresolved": 0}
     # (rowid, chunk_id, qname, confidence, score)
     updates: list[tuple[int, str, str | None, str, float]] = []
 
@@ -121,9 +121,9 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
         callee_module = edge.get("callee_module")
         rowid = edge["rowid"]
 
-        # Skip edges already resolved at medium/high confidence.
-        # Re-resolve low-confidence edges — they may upgrade after more chunks are indexed.
-        if edge.get("callee_chunk_id") and edge.get("confidence") != "low":
+        # Skip edges already resolved at inferred/extracted confidence.
+        # Re-resolve ambiguous edges — they may upgrade after more chunks are indexed.
+        if edge.get("callee_chunk_id") and edge.get("confidence") != "ambiguous":
             continue
 
         resolved_id, resolved_qname, confidence = _resolve_single(
@@ -148,9 +148,9 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
                 )
 
     logger.info(
-        "Call edge resolution for %s: %d total, %d high, %d medium, %d low, %d unresolved",
-        project_id, stats["total"], stats["high"], stats["medium"],
-        stats["low"], stats["unresolved"],
+        "Call edge resolution for %s: %d total, %d extracted, %d inferred, %d ambiguous, %d unresolved",
+        project_id, stats["total"], stats["extracted"], stats["inferred"],
+        stats["ambiguous"], stats["unresolved"],
     )
     return stats
 
@@ -168,20 +168,20 @@ def _resolve_single(
 ) -> tuple[str | None, str | None, str]:
     """Try to resolve a single call edge. Returns (chunk_id, qualified_name, confidence)."""
 
-    # Strategy 0 (High): this/self method call → class member lookup
+    # Strategy 0 (extracted): this/self method call → class member lookup
     if callee_module and callee_module.startswith("__self__::") and class_members:
         class_name = callee_module.removeprefix("__self__::")
         members = class_members.get(class_name, {})
         matches = members.get(callee_name, [])
         if len(matches) == 1:
             chunk_id, qname = matches[0]
-            return chunk_id, qname, "high"
+            return chunk_id, qname, "extracted"
         elif len(matches) > 1:
-            # Multiple matches (e.g. overloaded) — pick first, medium confidence
+            # Multiple matches (e.g. overloaded) — pick first, inferred confidence
             chunk_id, qname = matches[0]
-            return chunk_id, qname, "medium"
+            return chunk_id, qname, "inferred"
 
-    # Strategy 1 (High): module index lookup — direct match via import path
+    # Strategy 1 (extracted): module index lookup — direct match via import path
     if callee_module and not callee_module.startswith("__self__::") and module_index:
         candidates = module_index.get(callee_module, [])
         for chunk_id, chunk_name in candidates:
@@ -189,21 +189,21 @@ def _resolve_single(
                 qname = next(
                     (q for q, cid in qname_index.items() if cid == chunk_id), None,
                 )
-                return chunk_id, qname, "high"
+                return chunk_id, qname, "extracted"
 
-    # Strategy 1b (High): fallback — scan qname_index for module match
+    # Strategy 1b (extracted): fallback — scan qname_index for module match
     if callee_module and not callee_module.startswith("__self__::"):
         for qname, chunk_id in qname_index.items():
             if callee_name in qname and _module_matches(callee_module, qname):
-                return chunk_id, qname, "high"
+                return chunk_id, qname, "extracted"
 
-    # Strategy 2 (Medium): qualified_name contains the callee name
+    # Strategy 2 (inferred): qualified_name contains the callee name
     if "." in callee_name:
         if callee_name in qname_index:
-            return qname_index[callee_name], callee_name, "medium"
+            return qname_index[callee_name], callee_name, "inferred"
         for qname, chunk_id in qname_index.items():
             if qname.endswith(f".{callee_name}") or qname.endswith(f"::{callee_name}"):
-                return chunk_id, qname, "medium"
+                return chunk_id, qname, "inferred"
 
     # Strategy 2b: exact name match with single candidate
     candidates = name_index.get(callee_name, [])
@@ -211,21 +211,21 @@ def _resolve_single(
     if len(candidates) == 1:
         chunk_id, qname = candidates[0]
         if callee_name.lower() in COMMON_NAMES and not has_context:
-            return chunk_id, qname, "low"
-        return chunk_id, qname, "medium"
+            return chunk_id, qname, "ambiguous"
+        return chunk_id, qname, "inferred"
 
-    # Strategy 3 (Low): name-only match with multiple candidates
+    # Strategy 3 (ambiguous): name-only match with multiple candidates
     if candidates and (callee_name.lower() not in COMMON_NAMES or has_context):
         # Pick the candidate in the same file as the caller if possible
         if caller_chunk_id:
             caller_file = file_index.get(caller_chunk_id)
             for chunk_id, qname in candidates:
                 if file_index.get(chunk_id) == caller_file:
-                    return chunk_id, qname, "medium"
+                    return chunk_id, qname, "inferred"
         chunk_id, qname = candidates[0]
-        return chunk_id, qname, "low"
+        return chunk_id, qname, "ambiguous"
 
-    return None, None, "low"
+    return None, None, "ambiguous"
 
 
 def _module_matches(import_path: str, qualified_name: str) -> bool:
