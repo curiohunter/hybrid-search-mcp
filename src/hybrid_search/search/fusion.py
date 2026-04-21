@@ -14,17 +14,27 @@ class FusedResult:
     authority: float | None = None
 
 
+# M1.v2: boost-only nudge. The original damping-only formula
+# ``rrf * (0.5 + 0.5*auth)`` penalised chunks with weak incoming edges,
+# which hurt keyword/exact-symbol queries the most (mini-PoC 2026-04-21
+# measured keyword Δ NDCG@10 = -0.049). Switching to a pure boost leaves
+# auth-less chunks at baseline and only rewards the highest-confidence
+# callees. α controls the ceiling: auth=1.0 → factor 1+α, auth=0 → 1.0.
+_AUTHORITY_BOOST_ALPHA = 0.3
+
+
 def _apply_authority_nudge(rrf: float, authority: float | None) -> float:
-    """Bounded nudge: rrf * (0.5 + 0.5 * authority).
+    """Boost-only nudge: rrf * (1.0 + α * authority).
 
     Chunks without an authority signal (None) pass through unchanged. Chunks
-    with a low-confidence incoming call edge (authority ~0.3) are damped but
-    never zeroed — a weak signal still leaves them in the ranking. High
-    confidence (1.0) neutralizes to a passthrough factor of 1.0.
+    with any authority signal are boosted — never damped — with the boost
+    proportional to call-edge confidence. A low-confidence incoming edge
+    (authority=0.3) yields a modest factor (~1.09), a high-confidence edge
+    (authority=1.0) yields the full ceiling (1+α).
     """
     if authority is None:
         return rrf
-    return rrf * (0.5 + 0.5 * authority)
+    return rrf * (1.0 + _AUTHORITY_BOOST_ALPHA * authority)
 
 
 def reciprocal_rank_fusion(
