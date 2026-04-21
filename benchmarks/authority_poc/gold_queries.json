@@ -1,0 +1,66 @@
+{
+  "_note": "Mini-PoC gold set for M1 authority nudge validation. 10 queries are DIRECTIONAL only — NDCG variance at n=10 is too high for statistical significance. Full L6 harness (30+ queries) will re-verify. Per-type aggregation surfaces the 'mixed results' case.",
+  "project": "hybrid-search-mcp",
+  "queries": [
+    {
+      "id": "S01",
+      "type": "structural",
+      "query": "wiki staleness 감지는 어디서 일어나는가",
+      "notes": "call graph + wiki dependency 모두 연결된 topic — authority 혜택 가설상 큼"
+    },
+    {
+      "id": "S02",
+      "type": "structural",
+      "query": "post-commit 훅이 reindex를 트리거하는 흐름",
+      "notes": "훅 → cli.py cmd_reindex 체인, authority가 cli/hook entry chunk를 올려주길 기대"
+    },
+    {
+      "id": "S03",
+      "type": "structural",
+      "query": "RRF 결과가 orchestrator에서 enrich되는 경로",
+      "notes": "fusion → _enrich_results → HybridResult 흐름"
+    },
+    {
+      "id": "S04",
+      "type": "structural",
+      "query": "call edge resolution에서 module index가 하는 역할",
+      "notes": "_build_module_index 자체 + 호출부"
+    },
+    {
+      "id": "K01",
+      "type": "keyword",
+      "query": "CONFIDENCE_SCORES",
+      "notes": "exact symbol — BM25가 우세해야 함, authority 개입은 노이즈 가능성"
+    },
+    {
+      "id": "K02",
+      "type": "keyword",
+      "query": "_NEEDS_SYNTHESIS_FLAG",
+      "notes": "exact symbol — M4 상수"
+    },
+    {
+      "id": "K03",
+      "type": "keyword",
+      "query": "reciprocal_rank_fusion",
+      "notes": "exact function name"
+    },
+    {
+      "id": "N01",
+      "type": "semantic",
+      "query": "저신뢰 엣지가 검색 결과에 미치는 영향",
+      "notes": "M1 authority nudge 설계 문맥 — 한국어 의미 질의"
+    },
+    {
+      "id": "N02",
+      "type": "semantic",
+      "query": "한국어 쿼리 분류 전략",
+      "notes": "classify_query 동작 — authority는 부차적"
+    },
+    {
+      "id": "N03",
+      "type": "semantic",
+      "query": "동시 커밋 race 방지 메커니즘",
+      "notes": "M3 env 전달 설계 + .reindex.lock"
+    }
+  ]
+}
