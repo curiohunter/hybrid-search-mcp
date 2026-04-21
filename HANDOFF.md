@@ -2,9 +2,81 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 12회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 13회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
+
+**Search DX hit-aware snippet (선택 1) + HANDOFF.md 정리 (선택 4) 완료.** snippet은 쿼리 토큰이 hit한 줄 ±5줄 / 최대 400자 윈도우로 변경 — `feedback_search_dx.md` "snippet 짧아서 Read 2단계가 된다" 피드백 직접 수렴. `src/hybrid_search/search/snippet.py` 신설로 orchestrator/semantic_search 두 호출지의 중복 `_make_snippet` 통합. 22개 신규 테스트, **457/457 passed** (435 + 22). HANDOFF.md 6~10회차를 한줄 요약 블록으로 압축 (1170줄 → 888줄, -282줄). 다음 세션은 **L6 외부 확장 (선택 2) or Wiki 구조 개선 (선택 3) or 실사용 후 snippet 길이 재조정**.
+
+### ✅ 이 세션 완료된 것 (13회차)
+
+**1. Hit-aware snippet 모듈 신설** (`src/hybrid_search/search/snippet.py`, +60줄)
+- `make_snippet(docstring, content, query)`: 우선순위 (1) 쿼리 토큰이 hit한 줄 중심 ±5줄 윈도우 (≤400자) → (2) docstring 머리 (≤400자) → (3) content 첫 10줄 (≤400자).
+- `_query_tokens(query)`: 영문 ≥3자 lowercased + 한글 ≥2자 토큰. 정규식 `[A-Za-z0-9_]+` + `[\uac00-\ud7a3]+`. 짧은 stopword(`is`, `of`, `id`) 자동 배제.
+- `_find_hit_line()`: 첫 매치 라인 반환. 대소문자 무시, content는 1회 lowercase 캐시.
+- 상수: `SNIPPET_MAX_CHARS=400`, `CONTEXT_LINES=5`, `DOCSTRING_FALLBACK_CHARS=400`, `HEAD_FALLBACK_LINES=10`.
+
+**2. 두 호출지 통합** (중복 제거)
+- `src/hybrid_search/search/orchestrator.py`: `_enrich_results`에 `query: str` 파라미터 추가, `make_snippet` 호출, 모듈 끝 `_make_snippet` 삭제.
+- `src/hybrid_search/tools/semantic_search.py`: `query`가 이미 스코프에 있어서 직접 전달, 모듈 끝 `_make_snippet` 삭제.
+
+**3. 테스트 (`tests/test_snippet.py`, +118줄, 22 케이스)**
+- `TestQueryTokens` 7개: 영문 lowercase + 길이 필터, 한글 ≥2, 혼합, underscore 보존, dot-qualified 분리, 빈 입력.
+- `TestHitCenteredSnippet` 7개: 중심 윈도우 / 시작 클램프 / 끝 클램프 / no-hit → docstring fallback / no-hit no-doc → head fallback / 한국어 hit / case-insensitive.
+- `TestLengthCap` 3개: hit window cap / docstring cap / head fallback cap.
+- `TestFallbacks` 5개: 쿼리 없으면 docstring → head, 빈 입력, 너무 짧은 쿼리(`"is of a"`)는 fallback, 상수 sane check.
+
+**4. 실사용 smoke test (hybrid-search-mcp 자신)**
+- 영문 쿼리 `upsert chunk`: result 1 = `StoreDB.upsert_file` (snippet 334자, `def upsert_file` 시작 줄에 hit centered).
+- 한국어 쿼리 `스키마 마이그레이션`: result 1 = `docs/plan/2026-04-16-conversation-indexing.md::스키마` (snippet 120자, `#### 스키마` 헤더 + SQL 코드 블록 시작).
+- 둘 다 의도대로 hit 위치 중심 컨텍스트 노출 — 사용자가 "이게 맞는 결과인가?" 즉시 판단 가능.
+
+**5. HANDOFF.md 정리 (선택 4)**
+- 6~10회차 본문 (319줄, 169-487행)을 "📚 6~10회차 한줄 요약" 블록(38줄)으로 교체.
+- 각 회차당 한줄 요약 + 핵심 커밋 SHA + 핵심 의사결정 키워드만 보존. 마이그레이션 디테일/실측 표/세부 수치 등은 git log + 커밋 본문으로 복원 가능.
+- 12회차/11회차는 풀 보존 (가장 최근 컨텍스트).
+- 결과: 1170줄 → 888줄 (-282줄, -24%).
+
+### 🎯 다음 세션 진입점
+
+**파일 읽기 순서:**
+1. **이 13회차 섹션 전체**
+2. `git log --oneline -10` — 최근 커밋 (`f767f60` Search DX snippet, `8591c72` M5, `c5731d3`+`c48910c` HANDOFF 11회차)
+3. 아래 "다음 세션 권장 순서"
+
+### 🎯 다음 세션 권장 순서
+
+**M 시리즈 + 선택 1/4 모두 일단락. 남은 큰 결정은 벤치마크 확장(L6) 또는 Wiki linkage(god-nodes 결합).**
+
+**선택 A — L6 외부 확장 (1일):** `benchmarks/` 아래 mathontonlogy + breeze 각 5q 추가 → external n=5 → n=15. α=0.5 vs 0.3 결정 데이터 보강. proxy label 한계 인정 — 도메인 지식 없는 자동 라벨은 directional only. 수작업 gold가 깔끔할 가능성 검토.
+
+**선택 B — Wiki 구조 개선 (1~2일):** Wiki는 LLM synthesis로 생성되지만 linkage가 제한적. god-nodes 결과를 `index.md`에 자동 삽입해 "핵심 모듈" 섹션 만들기. `cli.py` 확장 or 새 CLI `annotate-wiki-with-god-nodes`. 장점: Wiki 가치 상승 + god-nodes/Wiki 역할 상보.
+
+**선택 C — Snippet 실사용 피드백 후 재조정:** 13회차 변경을 며칠 써본 후 길이 조정 (300자 vs 400자 vs 500자), 노이즈 자동 필터(`include_doc_dirs=false` default 변경 검토), multi-hit 처리(현재는 first hit only — 토큰 빈도가 낮은 hit 선택이 더 정보가 큼). 데이터 없이는 결정 보류.
+
+**선택 D — 운영 문서 노이즈 자동 filter (반나절):** `docs/`, `plan/` 같은 디렉토리는 hybrid_search 결과 상위를 점유하는 경향. `--exclude-pattern` CLI 옵션 또는 ranking penalty. M1.2 같은 효과 — 데이터 없이 결정하지 말 것 (먼저 측정).
+
+**추천: 선택 A → 선택 B 또는 D.** L6 외부 확장은 측정 인프라라 선결제 가치, Wiki/필터는 그 측정 위에서 효과 비교 가능.
+
+### 주의사항 / 알려진 이슈
+
+- **Snippet 길이 400자는 토큰 비용/정보량 trade.** limit 10일 때 대략 4kB 추가. 너무 많이 잡힌다 싶으면 `SNIPPET_MAX_CHARS`를 300으로 낮추는 것이 가장 빠른 조정 노브.
+- **Vector-only hit (BM25 미스)에서는 hit 라인이 안 잡힘** → docstring 헤드 또는 첫 10줄로 fallback. 현행보다 나쁘지 않지만 vector 매치 의미를 시각적으로 보여주진 못함. 추후 cross-encoder rerank 결과를 snippet 위치로 활용하는 안 검토 가능.
+- **`_find_hit_line`는 첫 매치만 사용.** 같은 chunk에 여러 hit이 있으면 가장 정보가 많은 곳을 못 고름. 실사용에서 문제되면 `min(token freq) hit` 로 변경 (rare token이 더 변별력 있음).
+- **12회차 이슈 잔존:** v4 → v5 마이그레이션 미검증 프로젝트 3개 (`7c7631...`, `05de0b...`, `5f349647...`). 다음 MCP 호출 시 자동.
+
+### 마지막 상태
+
+- **브랜치:** `main` (origin/main 기준 **+8 커밋** — 13회차 작성 후 +9)
+- **마지막 커밋:** `f767f60 [feat] Search DX — hit-aware snippet (±5줄 / 400자 윈도우)`
+- **테스트:** 457/457 passed
+- **변경 파일:** `src/hybrid_search/search/snippet.py` (신규 +60), `src/hybrid_search/search/orchestrator.py` (-7/+5), `src/hybrid_search/tools/semantic_search.py` (-7/+1), `tests/test_snippet.py` (신규 +118), `HANDOFF.md` (정리 -282).
+
+---
+
+## 🔵 이전 세션 인계 (12회차) — 참고용
+
+### 한줄 요약 (12회차)
 
 **M5 graph exploration 완료 (CLI + /search 스킬 라우팅 통합).** `hybrid-search-mcp god-nodes / shortest-path / subgraph` 3개 CLI 추가 — MCP 도구는 늘리지 않고 Skill 오케스트레이션. `/search` 스킬은 70/15/10/5/5 비중 명시 + god-nodes 정식 레인 승격 + hybrid_search 사용 시 Read 보충 기본값 반영 (`feedback_search_dx.md` 피드백 수렴). `StoreDB.get_god_nodes()` 헬퍼 추가. 13개 신규 테스트, **435/435 passed**. 실사용 smoke test: god-nodes 1위 `StoreDB._migrate_schema` (in=25). 다음 세션은 **Search DX snippet 튜닝 or L6 외부 확장 or HANDOFF.md 정리/요약**.
 
@@ -166,323 +238,41 @@
 
 ---
 
-## 🔵 이전 세션 인계 (10회차) — 참고용
+## 📚 6~10회차 한줄 요약 — 참고용
 
-### 한줄 요약 (10회차)
+### 10회차 (2026-04-21) — M1.2 type-gating + Full L6 재측정
 
-**M1.2 type-gating 완료 + Full L6 재측정.** keyword Δ NDCG@10 **-0.032 (P=0.25) → +0.010 (P=0.66)** — 가설 정확히 검증. structural은 +0.117 → +0.123(P=0.94→0.97), semantic은 변동 없음, OVERALL P(Δ>0) 0.87 → **0.99**. 420/420 tests passed (413 + 7 신규). 다음 세션은 **M1.1 라벨 리네이밍(반나절)** 또는 **M5 god_nodes/shortest_path(2일)**.
+- `3af9fae` M1.2 EXACT_SYMBOL authority gating: `orchestrator.hybrid_search`에서 `effective_authority = None if qtype == EXACT_SYMBOL else (authority_scores or None)`. 혼합 쿼리(symbol+한글)는 `classify_query`가 KOREAN_NL로 분류해 authority 유지(의도).
+- 벤치마크(α=0.3, n=30 self + 5 external): keyword Δ NDCG@10 **-0.032 → +0.010** (P(Δ>0) 0.25→0.66), structural +0.117→+0.123, semantic 거의 동일, OVERALL P 0.87→**0.99**.
+- `test_orchestrator.py` 신규 7개 (mock으로 `reciprocal_rank_fusion` kwargs 검증). 420/420 passed.
 
-### ✅ 이 세션 완료된 것 (10회차)
+### 9회차 (2026-04-21) — M1.v2 boost-only + Full L6 (35q)
 
-**1. M1.2: EXACT_SYMBOL authority gating** (`3af9fae`)
-- **orchestrator.py::hybrid_search:** `effective_authority = None if qtype == QueryType.EXACT_SYMBOL else (authority_scores or None)` 추가. EXACT_SYMBOL에서만 None 강제, 나머지는 기존 `or None` 폴백 유지.
-- **혼합 쿼리 자연 처리:** `classify_query`가 symbol+Korean을 KOREAN_NL로 반환(orchestrator.py:63-65) → "resolve_call_edges 함수 역할" 같은 쿼리는 gating 안 됨(의도). external X04 "checkIn 함수가 뭐하는지"도 보존되어 α=0.3에서 +0.059 유지.
-- **`_NEEDS_SYNTHESIS_FLAG` edge case:** underscore prefix라 `_SYMBOL_RE` SCREAMING_SNAKE 패턴(`^[A-Z][A-Z0-9]*`)에 미매칭 → ENGLISH_NL로 분류. gating에서 빠지지만 결과적으로 +0.097 positive 획득 (authority가 실제로 도움 된 케이스). 현재 regex를 확장하진 않음 — 데이터상 이득이라 건드릴 이유 없음.
+- `c6fe7a1` 공식 변경 `rrf * (0.5 + 0.5*auth)` → `rrf * (1.0 + 0.3*auth)`. `_AUTHORITY_BOOST_ALPHA = 0.3` 상수. penalty 제거, 맵 외부는 passthrough.
+- `47b2b10` mini-PoC (10q): damping-only -0.015 → boost-only +0.041 역전. Negative baseline을 git에 남겨 PoC 가치 증명.
+- `379aa64` Full L6 35q (self 30 + external 5) × α{0.2,0.3,0.5} × {ON,OFF} × bootstrap 1000회 → `results_v2.json`. α=0.3 최적. keyword P(Δ>0)=0.25로 M1.2 필요성 확인.
+- 413/413 passed.
 
-**2. 벤치마크 일관성: `run_v2.py::_fuse` 게이트 반영**
-- production 경로와 동일하게 EXACT_SYMBOL에서 `chunk_authority_scores=None`. ON/OFF 비교에서 EXACT_SYMBOL 쿼리는 ON≡OFF로 수렴 — 9개 keyword 중 9개가 정확히 Δ=0.000으로 확인됨. 게이트가 정확히 작동 중이라는 sanity check.
+### 8회차 (2026-04-21) — M4 `.hybrid-search/needs_synthesis` flag
 
-**3. 테스트 (`tests/test_orchestrator.py` 신규 7개)**
-- `test_exact_symbol_disables_authority` (camelCase `FusedResult`), `test_snake_case_symbol_disables_authority` (`compute_file_hash`), `test_korean_nl_keeps_authority`, `test_english_nl_keeps_authority`, `test_mixed_korean_symbol_keeps_authority` (symbol+한글 → KOREAN_NL → authority 유지), 빈 authority map 경로 2개.
-- **전략:** `unittest.mock.patch`로 `reciprocal_rank_fusion`을 가로채서 호출 kwargs(`chunk_authority_scores`) 검사. `_search_single`, `_enrich_results`를 MagicMock으로 치환해 DB/embedder 의존성 제거. 빠르고 결정론적.
+- `6ed4f39` flag 파일 패턴 완성. JSON `{stale_count, stale_modules[:20], detected_at ISO-8601 UTC}`. `_mark_stale_wikis` write, reindex/finalize(`cmd_synthesize_wiki --finalize`) clear, `status` 명령 표시. `/search` 스킬 Step 0에서 read (검색 차단 X, 경고만).
+- gitignore에 `.hybrid-search/needs_synthesis` 추가 — 기존 프로젝트는 `install-hook` 재실행으로 보강.
+- 자율 루프 축 완성: Q1+Q7+Q8+M2+M3+M4 = 훅 인프라 6개.
+- 413/413 passed (+7 신규, `test_cli_hook_install.py`).
 
-**Full L6 재측정 (α=0.3, n=30 self + 5 external):**
+### 7회차 (2026-04-21) — M1 confidence numeric score + fusion authority nudge
 
-| type | n | Δ NDCG@10 (before) | Δ NDCG@10 (after) | P(Δ>0) before → after |
-|---|---|---|---|---|
-| structural | 10 | +0.117 [-0.019, +0.275] | **+0.123 [-0.002, +0.280]** | 0.94 → **0.97** |
-| keyword | 10 | **-0.032 [-0.131, +0.050] ⚠** | **+0.010 [+0.000, +0.029] ✓** | 0.25 → **0.66** |
-| semantic | 10 | +0.026 [+0.000, +0.079] | +0.028 [+0.000, +0.085] | 0.66 → 0.66 |
-| OVERALL | 30 | +0.037 [-0.024, +0.103] | **+0.054 [+0.006, +0.113]** | 0.87 → **0.99** |
+- `83bfa7c` DB v4 마이그레이션 (`call_edges.confidence_score REAL DEFAULT 0.0`). `CONFIDENCE_SCORES = {"high":1.0, "medium":0.8, "low":0.3}`. `get_chunk_authority_scores(project_id)` 헬퍼 (callee별 MAX, unresolved 제외). `reciprocal_rank_fusion`에 optional `chunk_authority_scores` 파라미터.
+- 실측: hybrid-search-mcp 196 chunk authority [0.80..1.00] 즉시 확보 (ALTER+UPDATE backfill, `reindex --force` 불필요).
+- Leiden/DAG는 confidence-blind 유지 — 구조는 정확성, 랭킹/리포트는 확률적.
+- 406/406 passed (+10 신규, `test_store_db.py`/`test_callgraph.py`/`test_fusion.py`).
 
-**External (valuein_homepage, proxy labels, α=0.3):**
-- Δ 평균 +0.153 (변화 없음 — 이 세트엔 EXACT_SYMBOL 쿼리가 없기 때문). X04 checkIn은 KOREAN_NL로 분류돼 +0.059 유지.
+### 6회차 (2026-04-20) — Q10 + M2 + M3 연속 완료 (Quick Wins 10/10 마감)
 
-**outlier 해소 확인:**
-- 이전 -0.369였던 K05 `FusedResult` → 0.000 (OFF와 동일). K07 compute_file_hash, K03 reciprocal_rank_fusion, K04 IndexingPipeline, K10 HybridResult 모두 0.000.
-- 남은 negative outlier: **S09 ProjectRegistry Δ -0.167** (KOREAN_NL 분류 → gating 미적용). "프로젝트 registry가 프로젝트를 등록하고 조회하는 로직" — exact symbol이 아닌 natural-language form이라 classify가 맞음. S04가 structural 평균을 끌어올려 전체는 여전히 +0.12. 혼합 쿼리 리스크는 acceptable.
-
-### 🎯 다음 세션 권장 순서
-
-**선택 1 — M1.1 라벨 리네이밍 (반나절, 품질 축 마감):**
-- `low/medium/high` → `ambiguous/inferred/extracted` 의미론 명시. DB schema v5 + UPDATE 마이그레이션 + `CONFIDENCE_LEVELS` 상수 교체.
-- cosmetic이지만 공개 API 안정화. numeric score는 이미 M1에서 분리됐으므로 라벨만 갈면 되는 작은 변경.
-- callgraph/DAG 소비처 업데이트 필요. `reindex --force` 불필요 (UPDATE만).
-
-**선택 2 — M5 MCP 확장 (2일, 새 기능 축):**
-- `god_nodes` (authority 상위 N개 chunk — 자연스럽게 M1 score 재사용), `shortest_path` (call graph 탐색), `subgraph` (특정 chunk 주변 N-hop) 도구 추가.
-- 사용 사례 먼저 검증 필요: Claude Code에서 god_nodes를 어떻게 소비할지. `/search` 스킬 내 "구조" 질문 라우팅에서 god_nodes가 Wiki index.md와 중복되지 않도록 role 명확화.
-
-**선택 3 — L6 외부 확장 (하루, 벤치마크 축 강화):**
-- 외부 프로젝트 gold set 2개 더 추가 (breeze, mathontonlogy) × 5q씩 → n=45. 현재 external n=5는 directional only. α=0.5가 external에서 더 좋게 나오는 패턴이 유의미한지 판단.
-- 리스크: 도메인 지식 없는 proxy labels은 신뢰도 한계. 수작업 gold 필요할 수도.
-
-**추천: M1.1 먼저 (반나절) → M5 (2일).** M1.1은 API 안정화 부채라 빨리 마감하면 좋고, M5는 사용 사례 검증 시간이 필요한 더 큰 결정.
-
-### 이전 세션 완료
-
-**9회차 (2026-04-21):**
-- `497f7d1` — HANDOFF 9회차 / `379aa64` — Full L6 benchmark / `c6fe7a1` — M1.v2 boost-only / `47b2b10` — authority PoC
-
-### ✅ M1.v2 (9회차) + M4 (8회차) + M1 (7회차) 상세는 🔵 섹션 참고
-
----
-
-## 🔵 이전 세션 인계 (9회차) — 참고용
-
-### 한줄 요약 (9회차)
-
-**M1.v2 (boost-only nudge α=0.3) + Full L6 benchmark (35q) 완료.** 품질 축 + 벤치마크 축 동시 진전. 413/413 tests passed. 다음 세션은 **M1.2 keyword type-gating (30분 스코프)** — Full L6에서 keyword가 일관되게 음수(P(Δ>0)=0.25)로 확인됐기 때문. 이후 M1.1 라벨 리네이밍 or M5 MCP 확장.
-
-### ✅ 이 세션 완료된 것 (9회차, 참고용)
-
-**1. M1.v2: damping-only → boost-only** (`c6fe7a1`)
-- **공식 변경:** `rrf * (0.5 + 0.5*auth)` → `rrf * (1.0 + 0.3*auth)`. `_AUTHORITY_BOOST_ALPHA = 0.3` 상수.
-- **의미 변화:** 맵에 없는 chunk는 **여전히 passthrough** (factor 1.0). 맵에 있고 auth=0인 chunk도 factor 1.0 (중립). auth=0.3 → 1.09 (modest boost), auth=1.0 → 1.3 (ceiling). **penalty 제거** — v1이 저신뢰 edge로 chunk를 damping했던 것이 keyword 쿼리에서 정답을 밀어내는 원인.
-- **TestAuthorityNudge 5개 업데이트:** `test_low_authority_applies_modest_boost` (factor 1.09), `test_authority_equal_one_hits_boost_ceiling` (factor 1.3), `test_chunks_outside_map_are_neutral`는 "absent ≡ explicit 0" 신의미로 재정의. 413/413 passed.
-
-**2. Mini-PoC (10q) — 가설 검증** (`47b2b10` PoC 보존, `c6fe7a1` 공식 변경 후 재측정)
-- **의도적 negative baseline을 먼저 보존:** PoC 1차 결과 -0.015 (damping-only 실패)를 git에 남겨놓고, 공식 수정 후 +0.041 역전 확인.
-- **Negative result가 PoC의 이상적 결과.** 1.5h 투자로 M1 공식의 근본 결함(damping-only, boost 부재)을 발견 + evidence 확보. 변수 1개 원칙 준수(공식만 수정).
-
-**3. Full L6 benchmark (35q, α 스윕 + bootstrap 95% CI)** (`379aa64`)
-- **Self-contained 30q** (hybrid-search-mcp, 타입 균형: structural 10 / keyword 10 / semantic 10) + **external spot check 5q** (valuein_homepage, expected_files proxy).
-- **α 스윕:** {0.2, 0.3, 0.5} × {OFF, ON} × 35q = 1400 rows in `results_v2.json`.
-- **Bootstrap 1000회 resampling** — 95% CI + P(Δ>0) 정량화.
-
-**Self-contained 핵심 결과 (α=0.3 기준):**
-
-| type | n | Δ NDCG@10 | 95% CI | P(Δ>0) |
-|---|---|---|---|---|
-| structural | 10 | **+0.117** | [-0.019, +0.275] | **0.94** |
-| keyword | 10 | **-0.032** | [-0.131, +0.050] | **0.25** ⚠ |
-| semantic | 10 | +0.026 | [+0.000, +0.079] | 0.66 |
-| OVERALL | 30 | +0.037 | [-0.024, +0.103] | 0.87 |
-
-**α=0.3이 optimal.** α=0.5는 external엔 더 좋지만 self의 structural variance 큼. 보수적 선택.
-
-**External spot check (n=5, proxy labels, α=0.3):**
-- Δ +0.153 평균. 한국어 NL(X01 로그인, X02 출석)이 가장 큰 이득.
-- self-contained와 달리 semantic이 α에 민감 — valuein은 service 함수 호출이 풍부해 authority chunk가 semantic 쿼리에서도 잡힘. **이 프로젝트 semantic=0 관찰은 일반화 안 됨**이 중요한 교훈.
-
-**Outlier 분석 — M1.2가 해결할 것:**
-
-음수 (모두 keyword-like):
-- K05 `FusedResult` Δ -0.369 (class def이 reciprocal_rank_fusion에 밀림)
-- S09 ProjectRegistry Δ -0.275 (exact symbol 쿼리성)
-- K07 compute_file_hash Δ -0.090
-- K03 reciprocal_rank_fusion Δ -0.094
-
-대규모 양:
-- S10 delta reindex scanner 로직 +0.576
-- S01 wiki staleness +0.400
-- S04 module index +0.372
-- N07 post-commit/checkout lock +0.262
-
-### 🎯 다음 세션: M1.2 keyword type-gating (30분 스코프)
-
-**가설:** `classify_query == EXACT_SYMBOL` 쿼리에서 authority를 OFF 강제하면 keyword Δ -0.032 → 0 근처로 회복. structural/semantic은 영향 없음.
-
-**구현:**
-- `src/hybrid_search/search/orchestrator.py::hybrid_search`에서 `qtype` 이미 계산됨 (line 147). 이후 fusion 호출 시:
-  ```python
-  effective_authority = None if qtype == QueryType.EXACT_SYMBOL else authority_scores
-  fused = reciprocal_rank_fusion(..., chunk_authority_scores=effective_authority or None)
-  ```
-- 혼합 쿼리(`KOREAN_NL` with symbol)는 authority 유지 — classify_query의 mixed handling이 이미 KOREAN_NL로 분류함(orchestrator.py:63-65).
-
-**검증:**
-- `benchmarks/authority_poc/run_v2.py` 재실행 (gold set 동일, labels 규칙 동일 — chunk_id 세트만 바뀜) → `score_v2.py` 재출력.
-- 기대: keyword P(Δ>0) 0.25 → ≥0.50으로 회복. structural P=0.94 유지.
-- 악화 시 원인: classify_query가 놓친 exact symbol 쿼리 있을 가능성 → per-query delta로 확인.
-
-**테스트 추가:**
-- `test_orchestrator.py`에 mock 기반 integration 테스트: EXACT_SYMBOL 분류 쿼리에서 fusion이 `chunk_authority_scores=None`으로 호출되는지 assert.
-
-**리스크:**
-- `_SYMBOL_RE`(orchestrator.py:44)가 classify 못하는 exact symbol(예: `FusedResult` PascalCase)이 있으면 gating 실패. 실제로 K05 `FusedResult`는 PascalCase만이라 현재 regex `^[a-zA-Z_][a-zA-Z0-9_]*(?:[A-Z][a-z]+)+...`에 매칭됨(확인 필요).
-
-### ✅ M4 (8회차) + M1 (7회차) 상세는 🔵 섹션 참고
-
-### 이전 세션 완료
-
-**8회차 (2026-04-21):**
-- `ccc4f98` — HANDOFF 8회차 / `6ed4f39` — M4 needs_synthesis flag
-
-**7회차 (2026-04-21):**
-- `d7b0531` — HANDOFF 7회차 / `83bfa7c` — M1 call edge numeric confidence score
-
-**6회차 (2026-04-20):**
-- `178620f` M3 / `b4319bc` M2 / `c71ddb1` Q10
-
----
-
-## 🔵 이전 세션 인계 (8회차) — 참고용
-
-### 한줄 요약 (8회차)
-
-**M4 (`needs_synthesis` flag) 완료** — 자율 루프 축 마감. 훅→스킬→사용자로 이어지는 UX 신호 loop 완성. 413/413 tests passed.
-
-### ✅ 이 세션 완료된 것 (8회차)
-
-**M4: needs_synthesis flag 파일 패턴** (`6ed4f39`)
-- **파일 위치:** `.hybrid-search/needs_synthesis`. `_NEEDS_SYNTHESIS_FLAG` 상수로 관리 (cli.py:34).
-- **포맷:** JSON `{stale_count: int, stale_modules: list[str], detected_at: ISO-8601 UTC}`. 모듈 리스트는 상위 20개로 cap (count는 정확 유지).
-- **Write 경로 — `_write_needs_synthesis_flag(project_path, stale_items)`:** `_mark_stale_wikis`가 stale_items 있으면 STALE.md 옆에 함께 생성. title이 없는 defensive 케이스에서 page_id로 fallback. parent dir 없으면 생성.
-- **Clear 경로 1 — reindex:** `_mark_stale_wikis`가 stale_items가 비면 STALE.md와 함께 flag도 unlink.
-- **Clear 경로 2 — finalize:** `cmd_synthesize_wiki --finalize` 끝에 `wiki_store.check_staleness(pinfo.id)`로 재평가. 남은 stale 0이면 unlink, 있으면 flag 갱신(최신 모듈 리스트로 rewrite) + "flag updated: N module(s) still pending" 출력.
-- **Read 경로 — /search 스킬 Step 0:** flag 존재 시 답변 상단에 한 줄 경고 + 상위 3개 모듈 미리보기. **검색 차단은 하지 않음** (급한 질의 차단 금지).
-- **Status 출력 확장:** `_check_project_status`가 flag JSON 파싱 → `⚠ needs_synthesis: N module(s) pending — run /maintain` + `Pending: mod1, mod2, mod3…` 표시. JSON 파싱 실패 시 "unreadable" fallback.
-- **gitignore:** `_ensure_gitignore_entries`의 required 리스트에 `.hybrid-search/needs_synthesis` 추가. 기존 프로젝트는 `install-hook` 재실행 시 1 entry 추가됨 (실측 완료).
-- **왜 STALE.md로 안 되나:** STALE.md는 사람 읽기용 상세 문서. Claude skill이 매 검색마다 parse하려면 무겁고, 이미 마크다운 헤더/경고 톤이라 "signal"과 "document"가 섞여 있음. needs_synthesis는 **machine-readable 마이크로 신호**로 분리 → 기능 경계 명확. 둘 다 같이 write/clear되므로 drift 없음.
-
-**스킬 변경 (`skills/*.md`):**
-- `search.md`: Step 0 추가 (bash로 flag cat → 답변 상단 경고). 자동 주입(`route_hook`) 설명은 그대로 유지.
-- `maintain.md`: "needs_synthesis flag 관리" 섹션 추가 — Step 2 (reindex) + Step 4 (finalize)로 자연 clear된다는 점만 명시. 수동 clear 명령은 **의도적으로 제공하지 않음** (사용자가 편법으로 경고를 끄는 것 방지).
-- 스킬 소스는 `skills/*.md`에 저장. `hybrid-search-mcp setup`이 `~/.claude/skills/<name>/skill.md`로 동기화. 다음 setup 실행 시 자동 반영.
-
-**테스트 (M4 신규 7개, 모두 `tests/test_cli_hook_install.py`):**
-- `TestEnsureGitignoreEntries::test_includes_needs_synthesis_entry` — gitignore에 엔트리 포함.
-- `TestNeedsSynthesisFlag` 6개 — JSON shape (count/modules/detected_at ISO), parent dir 자동 생성, 긴 stale 리스트 cap(>20), clear가 존재 시 True, 없을 때 False, title 없을 때 page_id fallback.
-
-**실측 (이 세션에서 직접 확인):**
-- `hybrid-search-mcp reindex --cwd .` → 11 stale 감지 → `Wiki: 11 stale page(s) → STALE.md written, needs_synthesis flag set` 로그 + 429 bytes JSON 생성.
-- `hybrid-search-mcp status` → `⚠ needs_synthesis: 11 module(s) pending — run /maintain` + `Pending: Tests (Isolated), Design (Isolated), Hybrid Search (Isolated)…` 표시.
-- `hybrid-search-mcp install-hook --cwd .` → 기존 훅은 idempotent skip, `Added 1 entries to .gitignore` (신규 엔트리만 추가).
-- `git check-ignore -v .hybrid-search/needs_synthesis` → 28번 줄에서 매칭 확인.
-
-**마이그레이션 주의:**
-- 기존 프로젝트는 flag 파일이 아직 없음. 다음 번 `reindex`가 stale 감지하면 자동 생성. 추가 마이그레이션 필요 없음.
-- **기존 프로젝트 gitignore는 구버전.** `install-hook` 재실행으로 엔트리 보강 필요. (M2 때와 동일 패턴.) 안 하면 flag 파일이 워킹 트리에 untracked로 노출되지만 커밋 위험은 없음(파일 경로가 `.hybrid-search/` 안이라 `.hybrid-search/wiki/` rule은 피해감 — 명시적 엔트리 없으면 tracked 상태가 될 수 있음).
-- `_synthesis_output` 폴더가 비어있는 상태에서 `--finalize`만 호출하면 "No synthesis output found" 메시지 출력 후 return — flag 갱신/삭제 로직은 실행 안 됨(의도). flag 정리는 실제 finalize된 모듈이 있을 때만.
-
-**자율 루프 축 완성도:**
-- Q1 (route_hook) + Q7 (CLAUDE.md marker) + Q8 (core.hooksPath) + M2 (post-checkout) + M3 (post-commit diff env) + **M4 (needs_synthesis)** = 훅 인프라 6개. Claude가 "인덱스 사용하도록" 유도하는 자율 신호망이 완성됨. 다음은 **품질 축(벤치마크 L6)** 또는 **MCP 확장(M5)**.
-
-**다음 세션 권장 순서:**
-- **L6 (1주, 벤치마크 — 강력 추천):** M1 authority nudge + M4 reminder loop 효과를 숫자로 증명. NDCG@10 / MRR 세트, with/without authority 비교. 이걸 통과하면 "Memory Layer for Claude Code" 포지셔닝을 객관 지표로 뒷받침 가능. 패치 문서 L6 섹션.
-- **M1.1 (반나절, 라벨 리네이밍):** `low/medium/high` → `ambiguous/inferred/extracted` 의미론 명시화. DB schema v5 + UPDATE 마이그레이션 + `CONFIDENCE_LEVELS` 상수 교체. cosmetic이지만 공개 API 안정화.
-- **M5 (2일, MCP 확장):** `god_nodes`, `shortest_path`, `subgraph` 도구. M1 score가 god_nodes 랭킹에 자연스럽게 기여. 사용 사례 먼저 검증 필요.
-
-### 이전 세션 완료
-
-**7회차 (2026-04-21):**
-- `d7b0531` — HANDOFF 7회차 갱신
-- `83bfa7c` — M1 call edge numeric confidence score → fusion authority nudge
-
-**6회차 (2026-04-20):**
-- `178620f` — M3 post-commit hook이 diff를 커밋 시점에 동기 캡처 → env 전달
-- `b4319bc` — M2 post-checkout hook — 브랜치 스위치 시 자동 delta reindex
-- `c71ddb1` — Q10 .hybrid-search-ignore + upward walk to .git boundary
-
----
-
-## 🔵 이전 세션 인계 (7회차) — 참고용
-
-### 한줄 요약 (7회차)
-
-**M1 (Confidence numeric score → fusion authority nudge) 완료** — 품질 축 전환 시작점. 406/406 tests passed.
-
-### ✅ 이 세션 완료된 것 (7회차)
-
-**M1: Call edge numeric confidence score + fusion authority nudge** (`83bfa7c`)
-- **DB v4 마이그레이션:** `call_edges.confidence_score REAL DEFAULT 0.0` 컬럼 추가. `_migrate_schema`의 v3→v4 경로가 ALTER TABLE 후 `UPDATE ... CASE confidence WHEN 'high' THEN 1.0 ...`로 backfill. **핵심 이점:** 기존 인덱스를 재생성하지 않아도 backfill 즉시 authority 시그널 공급됨. 실측: breeze/hybrid-search-mcp/mathontonlogy 세 DB 모두 첫 오픈 시 v4로 자동 승격, hybrid-search-mcp 자체는 196 chunk가 authority [0.80..1.00] 즉시 확보.
-- **`CONFIDENCE_SCORES` 상수 (`storage/db.py:18`):** `{"high": 1.0, "medium": 0.8, "low": 0.3}`. callgraph resolver가 동일 값 재사용.
-- **`get_chunk_authority_scores(project_id)` 신규 헬퍼:** `SELECT callee_chunk_id, MAX(confidence_score) FROM call_edges WHERE callee_chunk_id IS NOT NULL GROUP BY ...`. 응답은 `dict[chunk_id, float]`. Unresolved edge(callee_chunk_id=NULL)는 제외 → fusion에서 "시그널 없음 = neutral" 의미 보존.
-- **`update_call_edge_resolution` 시그니처 확장:** `confidence_score: float = 0.0` 인자 추가. callgraph.py:139 `resolve_call_edges`가 라벨 결정 시 `CONFIDENCE_SCORES.get(confidence, 0.0)`으로 score 동반 저장.
-- **trace 쿼리 4곳 SELECT 확장:** `get_callers` / `get_callers_by_name` / `get_callees` / `get_all_call_edges` 모두 `ce.confidence_score` 노출 (trace_callers/callees MCP 도구에서 활용 가능).
-- **`reciprocal_rank_fusion` 확장:** optional `chunk_authority_scores: dict[str, float] | None = None` 파라미터. 공식 **`rrf * (0.5 + 0.5 * authority)`** — authority ∈ [0,1], 맵에 **없는** chunk는 `authority=None` → passthrough (중립). 원리: "저신뢰 엣지가 있는 chunk(authority=0.3)는 damping factor 0.65, 고신뢰(1.0)는 1.0 passthrough, 시그널 없는 chunk는 중립" → 저신뢰가 섞여도 0으로 죽지 않음. `FusedResult.authority: float | None` 필드로 trace/디버깅 노출.
-- **Orchestrator 연결:** `_search_single`과 `_search_cross_project` 둘 다 각 프로젝트 `db.get_chunk_authority_scores()` 호출 후 merge. cross-project는 chunk id가 UUID(전역 유일)라 단순 dict.update로 병합 가능. `hybrid_search()`가 `chunk_authority_scores=authority_scores or None`으로 fusion에 전달 → 신호 없으면 기존 경로와 완전 동일.
-- **Leiden/DAG는 confidence-blind 유지:** `index/dag.py`는 변경 없음. `CONFIDENCE_LEVELS` 필터만 사용하므로 구조 분석은 numeric score 영향 없음. 원칙: 구조는 정확성, 랭킹/리포트는 확률적.
-
-**의도적 제외:**
-- 라벨 리네이밍(EXTRACTED/INFERRED/AMBIGUOUS)은 M1.1로 분리. 이유: score 도입의 가치(fusion 가중)와 직교하는 cosmetic. 묶으면 리뷰 표면만 넓어짐. 본격 착수 시 schema v5 + `reindex --force` 체인으로 깔끔히 처리하고 매핑 레이어(두 이름 공존)는 피하기로 결정(장기적 실수 유발).
-- `COMMON_NAMES`에 대한 추가 score 감쇠(예: low→0.2)는 YAGNI. 실측 필요 시그널 발견 후 추가.
-
-**테스트 (M1 신규 10개):**
-- `tests/test_store_db.py::TestConfidenceScoreMigration` 3개 — fresh schema 컬럼/버전, **v3→v4 전환 시뮬레이션 (raw SQL로 v3 DB 구성 후 StoreDB 재오픈 → backfill 검증)**, `get_chunk_authority_scores`가 동일 callee에 대한 여러 edge 중 MAX를 집계하고 unresolved edge는 제외.
-- `tests/test_callgraph.py::TestConfidenceScorePersistence` 2개 — high/medium/low 각각 기대 score 저장 검증, 미해결 edge는 default 0.0 유지.
-- `tests/test_fusion.py::TestAuthorityNudge` 5개 — 맵 None이면 baseline과 동일, high authority가 동순위 tie-break, low authority(0.3) bounded factor(0.65) 정확성, authority=1.0 passthrough, **맵에 없는 chunk는 중립이라 damped chunk를 넘어섬** (neutral vs damped 구분 핵심 regression 테스트).
-- `tests/test_synthesizer.py::TestSchemaMigration::test_schema_version_is_current` — 하드코딩 "3" → `SCHEMA_VERSION` 상수 참조로 변경 (v 변경 시 자동 추적).
-
-**마이그레이션 주의:**
-- v3 → v4는 ALTER + UPDATE만 수행. 기존 `call_edges` 행의 confidence 라벨이 'high'/'medium'/'low'면 즉시 score 부여됨. 라벨이 'low'인 미해결 edge도 0.3으로 세팅되지만, `get_chunk_authority_scores`는 `callee_chunk_id IS NOT NULL` 필터로 제외하므로 랭킹엔 영향 없음.
-- `insert_call_edges`는 여전히 score 0.0 초기값으로 INSERT. resolver 실행 후 `update_call_edge_resolution`이 score 부여. 이 경로는 기존과 동일.
-- **신규 edge의 score는 resolver 없인 0.0.** Backfill UPDATE가 기존 edge는 커버하지만, 새 edge는 reindex + resolve 단계까지 가야 score가 생긴다. post-commit/post-checkout 훅이 이미 이 체인을 돌리므로 실사용 영향 거의 없음.
-- **`reindex --force`는 불필요.** backfill로 기존 해결된 edge들이 바로 authority를 공급하고, 신규/재해결 edge는 정상 resolver 경로로 채워짐.
-
-**실측 — 즉시 활용 가능한 신호:**
-```
-breeze          : schema=v4, no authority signal yet  (인덱스에 resolved edge 거의 없음)
-hybrid-search-mcp: schema=v4, authority_chunks=196, score range=[0.80..1.00]
-mathontonlogy   : schema=v4, authority_chunks=50,  score range=[0.80..1.00]
-```
-0.80 이상만 보이는 이유: backfill의 low(0.3)는 있지만 `get_chunk_authority_scores`가 chunk별 MAX를 뽑아서 resolved edge가 하나라도 medium(0.8)/high(1.0)로 들어온 chunk가 우세.
-
-**다음 세션 권장 순서:**
-- **M4 (반나절, 자율 루프 완성):** 훅이 LLM 호출 못 하므로 `.hybrid-search/needs_synthesis` flag 파일로 대체. `tools/index.py` stale 감지 시 write, `/search` 스킬이 read, `/maintain` 실행 시 clear. 패치 문서 M4 섹션 참조.
-- **M1.1 (반나절, 품질 축 마감):** 라벨 문자열을 `extracted/inferred/ambiguous`로 리네임. DB 값 UPDATE + `CONFIDENCE_LEVELS` 상수 변경 + callgraph/DAG 소비처 업데이트. schema v5 + `reindex` (force 불필요, UPDATE만).
-- **L6 (벤치마크, 1주):** M1의 score-fusion 효과를 숫자로 증명. NDCG@10 / MRR 벤치마크 세트 + with/without authority_scores 비교.
-
-### 이전 세션 완료
-
-**6회차 (2026-04-20):**
-- `178620f` — M3 post-commit hook이 diff를 커밋 시점에 동기 캡처 → env 전달
-- `b4319bc` — M2 post-checkout hook — 브랜치 스위치 시 자동 delta reindex
-- `c71ddb1` — Q10 .hybrid-search-ignore + upward walk to .git boundary
-
----
-
-## 🔵 이전 세션 인계 — 참고용
-
-### 한줄 요약 (6회차)
-
-**Q10 + M2 + M3 연속 완료 🎉** — Quick Wins 10/10 + M 시리즈 착수(2개). 396/396 tests passed. 전체 **12/28 (43%)**.
-
-### ✅ 이 세션 완료된 것 (6회차)
-
-**M3: post-commit이 diff를 커밋 시점에 캡처 → env 전달** (M2 다음 커밋)
-- 문제: post-commit 훅이 `nohup reindex --git-delta &`를 띄우면, 배경 프로세스가 시작될 때 `get_changed_files_from_git(HEAD~1..HEAD)`를 재계산. 사용자가 빠르게 2차 커밋하면 HEAD~1이 이동해서 1차 커밋의 변경을 놓침 (race).
-- 해결: 훅이 `git diff --name-status HEAD~1 HEAD`를 **동기적으로** 캡처해 `HYBRID_SEARCH_CHANGED_STATUS` env로 export. `nohup bash -c` 자식 프로세스가 env 상속 → `cmd_reindex`가 내부 subprocess 호출 대신 env를 파싱.
-- `src/hybrid_search/index/scanner.py`에 `parse_git_diff_name_status(raw: str)` public 파서 추출. `get_changed_files_from_git`도 재사용.
-- `src/hybrid_search/cli.py` `cmd_reindex`: `--git-delta` 게이트 안에서 env 우선 체크 → 없으면 기존 subprocess 경로 fallback.
-- `_HOOK_DIFF_ENV = "HYBRID_SEARCH_CHANGED_STATUS"` 상수로 관리.
-- **초기 커밋 처리**: `git rev-parse HEAD~1` 실패 시 env 미설정 → `cmd_reindex`가 내부 fallback에서 `None` 받고 full scan 경로로 떨어짐 (기존 동작 유지).
-- `scripts/post-commit-hook.sh` 레퍼런스도 동일 패턴 적용.
-- **부수 효과**: subprocess 호출 1회 절약(~50ms) + race 방지.
-
-**테스트 (M3 신규 8개):**
-- `tests/test_scanner.py::TestParseGitDiffNameStatus` 5개 (empty/all-kinds/blank-lines/unknown-codes/rename-similarities)
-- `tests/test_cli_hook_install.py::TestScriptContentSanity::test_post_commit_script_exports_hook_diff_env` 1개
-- `tests/test_cli_hook_install.py::TestPostCommitDiffCapture` 2개 (실제 bash+git 통합: 2차 커밋 env export 검증, 초기 커밋 env 미설정 검증)
-
-**M2: post-checkout 훅 추가** (`b4319bc`)
-- `src/hybrid_search/cli.py`에 `_build_post_commit_script()`, `_build_post_checkout_script()`, `_install_hook_file()` 헬퍼로 리팩터. `cmd_install_hook`이 두 훅 동시 설치.
-- **post-checkout 게이트**: `[ "$3" = "1" ] || exit 0` (브랜치 스위치만 트리거, 파일 체크아웃 skip) + `[ -d "$PROJECT_DIR/.hybrid-search" ] || exit 0` (인덱스 미존재 시 자동 부트스트랩 금지).
-- **post-checkout 동작**: `reindex --wiki-scope affected` (NO `--git-delta`, NO `--synthesize`). 이유: `HEAD~1..HEAD`는 브랜치 스위치 후 무의미. 파일시스템 delta(size/mtime/hash) 사용. synthesis는 브랜치 스위치가 빈번하므로 비용 대비 효용 낮음.
-- **공유 lock**: `.hybrid-search/.reindex.lock` — post-commit과 동일. 동시 2회 리인덱스 방지.
-- **status 체크 확장**: `_check_project_status`가 post-commit + post-checkout 둘 다 표시.
-- `scripts/post-checkout-hook.sh` 레퍼런스 파일 추가 (수동 설치용, 베이크 안 된 버전).
-- **식별 마커**: `_HOOK_IDENTITY_MARKER = "hybrid_search.cli"` 상수로 추출. 레거시 설치도 동일 문자열 포함 → 기존 설치 자동 인식.
-
-**Q10: `.hybrid-search-ignore` + upward walk** (`c71ddb1`)
-- `src/hybrid_search/index/scanner.py`에 `_collect_hybrid_search_ignore_patterns(project_root)` 추가. `project_root`부터 위로 walk하며 각 레벨의 `.hybrid-search-ignore`를 읽음. `.git` 디렉토리 있는 레벨(포함) 또는 filesystem root에서 중단. `_build_ignore_spec()`이 config excludes + `.gitignore` + 수집된 패턴 3개 소스를 하나의 pathspec으로 병합.
-- **포맷 선택:** graphify의 fnmatch 대신 **pathspec (gitignore 슈퍼셋)** 채택. 기존 `.gitignore` 파싱과 동일 엔진 → comments/blanks/negation(`!`) 네이티브 처리, 코드 중복 제거.
-- **안전장치:** 파일당 64KB 상한 (`_GITIGNORE_MAX_SIZE` 재사용), walk 최대 32레벨(`_IGNORE_WALK_MAX_DEPTH`) — symlink 사이클 방어.
-- **양방향 통합:** `scan_project`(full scan)와 `scan_project_subset`(git diff 경로) 둘 다 `_build_ignore_spec`/`_is_indexable_path`를 거쳐 Q10 패턴 존중.
-
-**테스트:**
-- Q10: `tests/test_scanner.py::TestHybridSearchIgnore` 8개
-- M2: `tests/test_cli_hook_install.py`에 `TestInstallHookBothScripts`(5) + `TestPostCheckoutScriptGates`(3, 실제 bash 실행으로 게이트 검증) + `TestScriptContentSanity`(2) = 10개
-- **388/388 passed** (이전 370 + Q10 8 + M2 10).
-
-**마이그레이션 주의:**
-- Q10은 opt-in — `.hybrid-search-ignore` 파일을 만들지 않으면 동작 동일.
-- M2: 기존 프로젝트는 post-commit만 설치되어 있음. `hybrid-search-mcp install-hook --cwd .` 재실행하면 post-checkout만 추가로 설치됨 (post-commit은 idempotent skip). `cmd_setup` 자동 체크도 두 훅 모두 확인하므로 다음 setup 실행 시 자동 보강.
-
-### 이전 세션 완료 (6회차 시점 기준)
-
-**5회차 (2026-04-20):** `f6f5938` — Q6 Markdown frontmatter strip
+- `c71ddb1` Q10 `.hybrid-search-ignore` + upward walk (`.git` 경계까지). pathspec 엔진 재사용으로 gitignore와 동일 문법 + negation 지원. 파일당 64KB / 32레벨 상한. `_build_ignore_spec`이 config excludes + `.gitignore` + 수집 패턴 3-소스 병합.
+- `b4319bc` M2 post-checkout 훅. `$3 == 1` 게이트(브랜치 스위치만 트리거), `.hybrid-search/` 없으면 skip, `reindex --wiki-scope affected` (NO git-delta, NO synthesize). `.reindex.lock` 공유. `_HOOK_IDENTITY_MARKER = "hybrid_search.cli"` 상수로 레거시 훅 자동 인식.
+- `178620f` M3 post-commit이 `git diff --name-status HEAD~1 HEAD`를 동기 캡처 → `HYBRID_SEARCH_CHANGED_STATUS` env로 자식 프로세스에 전달. race 방지 + subprocess 50ms 절약. `parse_git_diff_name_status(raw)` public 파서를 `scanner.py`에 추출.
+- 396/396 passed (+18 신규).
 
 ---
 
