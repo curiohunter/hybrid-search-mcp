@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from pathlib import PurePosixPath
 
-from hybrid_search.storage.db import StoreDB
+from hybrid_search.storage.db import CONFIDENCE_SCORES, StoreDB
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,8 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
     module_index = _build_module_index(all_files, all_chunks)
 
     stats = {"total": len(edges), "high": 0, "medium": 0, "low": 0, "unresolved": 0}
-    updates: list[tuple[int, str, str | None, str]] = []  # (rowid, chunk_id, qname, confidence)
+    # (rowid, chunk_id, qname, confidence, score)
+    updates: list[tuple[int, str, str | None, str, float]] = []
 
     for edge in edges:
         callee_name = edge["callee_name"]
@@ -132,7 +133,8 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
         )
 
         if resolved_id:
-            updates.append((rowid, resolved_id, resolved_qname, confidence))
+            score = CONFIDENCE_SCORES.get(confidence, 0.0)
+            updates.append((rowid, resolved_id, resolved_qname, confidence, score))
             stats[confidence] += 1
         else:
             stats["unresolved"] += 1
@@ -140,8 +142,10 @@ def resolve_call_edges(db: StoreDB, project_id: str) -> dict:
     # Batch update within a transaction
     if updates:
         with db.transaction() as conn:
-            for rowid, chunk_id, qname, confidence in updates:
-                db.update_call_edge_resolution(conn, rowid, chunk_id, qname, confidence)
+            for rowid, chunk_id, qname, confidence, score in updates:
+                db.update_call_edge_resolution(
+                    conn, rowid, chunk_id, qname, confidence, score,
+                )
 
     logger.info(
         "Call edge resolution for %s: %d total, %d high, %d medium, %d low, %d unresolved",

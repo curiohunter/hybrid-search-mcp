@@ -405,9 +405,10 @@ class TestSchemaMigration:
         assert "synthesis_hash" in cols
         assert "last_synthesized_at" in cols
 
-    def test_schema_version_is_3(self, db: StoreDB):
+    def test_schema_version_is_current(self, db: StoreDB):
+        from hybrid_search.storage.db import SCHEMA_VERSION
         version = db.get_meta("schema_version")
-        assert version == "3"
+        assert version == SCHEMA_VERSION
 
 
 # -- Phase 9c: should_skip_synthesis --

@@ -178,20 +178,22 @@ class SearchOrchestrator:
 
         # Search each project
         if len(project_infos) == 1:
-            bm25_ids, vector_ids, total, skipped = self._search_single(
+            bm25_ids, vector_ids, total, skipped, authority_scores = self._search_single(
                 project_infos[0], query, query_vector, retrieval_depth, file_pattern, node_types,
             )
         else:
-            bm25_ids, vector_ids, total, skipped = self._search_cross_project(
+            bm25_ids, vector_ids, total, skipped, authority_scores = self._search_cross_project(
                 project_infos, query, query_vector, retrieval_depth, file_pattern, node_types,
                 primary_project_id=primary_project_id,
             )
 
-        # RRF fusion
+        # RRF fusion — numeric confidence scores nudge chunks with strong
+        # incoming call edges ahead (M1). Absent chunks stay neutral.
         fused = reciprocal_rank_fusion(
             bm25_ids, vector_ids,
             k=self._config.search.rrf_k,
             bm25_weight=effective_weight,
+            chunk_authority_scores=authority_scores or None,
         )
 
         # When reranking is enabled, return more candidates for Claude Code to rerank
@@ -220,13 +222,13 @@ class SearchOrchestrator:
         depth: int,
         file_pattern: str | None,
         node_types: list[str] | None,
-    ) -> tuple[list[str], list[str], int, list[str]]:
-        """Search a single project, return (bm25_ids, vector_ids, total, skipped)."""
+    ) -> tuple[list[str], list[str], int, list[str], dict[str, float]]:
+        """Search a single project, return (bm25_ids, vector_ids, total, skipped, authority)."""
         project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
         idx_paths = IndexPaths(project_dir)
 
         if not idx_paths.store_db.exists():
-            return [], [], 0, []
+            return [], [], 0, [], {}
 
         db = StoreDB(idx_paths.store_db)
         bm25_eng = BM25Engine(idx_paths.tantivy_dir, read_only=True)
@@ -246,10 +248,11 @@ class SearchOrchestrator:
             vector_ids = [r.chunk_id for r in vec_results]
 
             total = vec_eng.count
+            authority = db.get_chunk_authority_scores(pinfo.id)
         finally:
             db.close()
 
-        return bm25_ids, vector_ids, total, []
+        return bm25_ids, vector_ids, total, [], authority
 
     @staticmethod
     def _detect_primary_project(
@@ -280,7 +283,7 @@ class SearchOrchestrator:
         file_pattern: str | None,
         node_types: list[str] | None,
         primary_project_id: str | None = None,
-    ) -> tuple[list[str], list[str], int, list[str]]:
+    ) -> tuple[list[str], list[str], int, list[str], dict[str, float]]:
         """Cross-project search: interleave BM25 ranks, merge vector by cosine (§13).
 
         When primary_project_id is set (from cwd detection), primary project
@@ -289,6 +292,7 @@ class SearchOrchestrator:
         per_project_bm25: list[list[str]] = []
         primary_bm25: list[str] | None = None
         all_vector: list[tuple[str, float]] = []  # (chunk_id, similarity)
+        merged_authority: dict[str, float] = {}
         total = 0
         skipped: list[str] = []
 
@@ -296,7 +300,7 @@ class SearchOrchestrator:
             project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
             idx_paths = IndexPaths(project_dir)
             if not idx_paths.store_db.exists():
-                return None, None, 0
+                return None, None, 0, {}
 
             db = StoreDB(idx_paths.store_db)
             bm25_eng = BM25Engine(idx_paths.tantivy_dir, read_only=True)
@@ -312,10 +316,11 @@ class SearchOrchestrator:
                 vec_res = vec_eng.search(query_vector, limit=depth, chunk_ids_filter=chunk_filter)
                 vec_pairs = [(r.chunk_id, r.score) for r in vec_res]
                 count = vec_eng.count
+                authority = db.get_chunk_authority_scores(pinfo.id)
             finally:
                 db.close()
 
-            return bm25_ids, vec_pairs, count
+            return bm25_ids, vec_pairs, count, authority
 
         # Execute with timeout
         primary_chunk_ids: set[str] = set()
@@ -324,7 +329,7 @@ class SearchOrchestrator:
             for future in futures:
                 pinfo = futures[future]
                 try:
-                    bm25_ids, vec_pairs, count = future.result(timeout=PROJECT_TIMEOUT_S)
+                    bm25_ids, vec_pairs, count, authority = future.result(timeout=PROJECT_TIMEOUT_S)
                     if bm25_ids is not None:
                         if primary_project_id and pinfo.id == primary_project_id:
                             primary_bm25 = bm25_ids
@@ -334,6 +339,8 @@ class SearchOrchestrator:
                             per_project_bm25.append(bm25_ids)
                         all_vector.extend(vec_pairs)
                         total += count
+                        # chunk IDs are UUIDs (globally unique across projects)
+                        merged_authority.update(authority)
                 except (FutureTimeoutError, Exception) as e:
                     logger.warning("Project %s timed out or failed: %s", pinfo.name, e)
                     skipped.append(pinfo.name)
@@ -358,7 +365,7 @@ class SearchOrchestrator:
         all_vector.sort(key=lambda x: x[1], reverse=True)
         merged_vector = [cid for cid, _ in all_vector]
 
-        return merged_bm25, merged_vector, total, skipped
+        return merged_bm25, merged_vector, total, skipped, merged_authority
 
     def _enrich_results(
         self,
