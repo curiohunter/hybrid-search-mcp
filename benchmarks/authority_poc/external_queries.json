@@ -1,0 +1,41 @@
+{
+  "_note": "Spot check queries against valuein_homepage — 5 queries picked from benchmarks/query_set.json to give the Full L6 a sanity check outside the self-referential project. Relevance is scored via expected_files proxy (exact file match → rel=2, same directory → rel=1, otherwise 0) since I don't own the domain knowledge of that repo.",
+  "project": "valuein_homepage",
+  "queries": [
+    {
+      "id": "X01",
+      "type": "semantic",
+      "query": "로그인 처리",
+      "expected_files": ["app/(auth)/login/actions.ts", "app/(auth)/login/login-form.tsx"],
+      "source": "KR01"
+    },
+    {
+      "id": "X02",
+      "type": "semantic",
+      "query": "학생 출석 체크",
+      "expected_files": ["services/attendance-service.ts", "types/attendance.ts"],
+      "source": "KR03"
+    },
+    {
+      "id": "X03",
+      "type": "structural",
+      "query": "generate monthly tuition fees",
+      "expected_files": ["services/tuition-service.ts"],
+      "source": "EN02"
+    },
+    {
+      "id": "X04",
+      "type": "keyword",
+      "query": "checkIn 함수가 뭐하는지",
+      "expected_files": ["services/attendance-service.ts"],
+      "source": "MX01"
+    },
+    {
+      "id": "X05",
+      "type": "semantic",
+      "query": "PaysSam webhook 처리",
+      "expected_files": ["services/payssam-service.ts"],
+      "source": "MX03"
+    }
+  ]
+}
