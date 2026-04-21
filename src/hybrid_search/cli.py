@@ -29,6 +29,11 @@ from hybrid_search.index.scanner import (
 # parses the pre-computed diff instead of re-invoking git — which would race
 # if a second commit lands before the deferred reindex runs.
 _HOOK_DIFF_ENV = "HYBRID_SEARCH_CHANGED_STATUS"
+
+# M4: Lightweight signal file. Skills check existence to remind the user that
+# wiki synthesis is pending. Cleared automatically when reindex finds no stale
+# pages or when `synthesize-wiki --finalize` completes successfully.
+_NEEDS_SYNTHESIS_FLAG = ".hybrid-search/needs_synthesis"
 from hybrid_search.project import ProjectRegistry
 from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
@@ -330,6 +335,35 @@ def cmd_reindex(args: argparse.Namespace) -> None:
             print(f"  {err}")
 
 
+def _write_needs_synthesis_flag(project_path: Path, stale_items: list[dict]) -> None:
+    """Write a structured JSON signal listing stale modules.
+
+    Skills read this via existence-check + json.load — no DB query needed.
+    Modules are ordered by the DB's check_staleness sequence; we keep the
+    first few to fit a single-screen reminder.
+    """
+    import datetime
+    import json
+
+    payload = {
+        "stale_count": len(stale_items),
+        "stale_modules": [p.get("title", p.get("page_id", "")) for p in stale_items[:20]],
+        "detected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    flag_path = project_path / _NEEDS_SYNTHESIS_FLAG
+    flag_path.parent.mkdir(parents=True, exist_ok=True)
+    flag_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _clear_needs_synthesis_flag(project_path: Path) -> bool:
+    """Remove the flag if present. Returns True if a file was removed."""
+    flag_path = project_path / _NEEDS_SYNTHESIS_FLAG
+    if flag_path.exists():
+        flag_path.unlink()
+        return True
+    return False
+
+
 def _mark_stale_wikis(config, registry: ProjectRegistry, project_name: str) -> None:
     """Mark wiki pages as stale and write STALE.md for Claude auto-refresh."""
     pinfo = registry.get_by_name(project_name)
@@ -356,7 +390,8 @@ def _mark_stale_wikis(config, registry: ProjectRegistry, project_name: str) -> N
                     break
 
         if stale_items and project_path:
-            stale_md_path = Path(project_path) / ".hybrid-search" / "wiki" / "STALE.md"
+            project_root = Path(project_path)
+            stale_md_path = project_root / ".hybrid-search" / "wiki" / "STALE.md"
             lines = [
                 "# Stale Wiki Pages",
                 "",
@@ -373,13 +408,17 @@ def _mark_stale_wikis(config, registry: ProjectRegistry, project_name: str) -> N
 
             stale_md_path.parent.mkdir(parents=True, exist_ok=True)
             stale_md_path.write_text("\n".join(lines))
-            print(f"Wiki: {len(stale_items)} stale page(s) → STALE.md written")
+            _write_needs_synthesis_flag(project_root, stale_items)
+            print(f"Wiki: {len(stale_items)} stale page(s) → STALE.md written, needs_synthesis flag set")
         elif not stale_items and project_path:
             # Remove STALE.md if no stale pages
-            stale_md_path = Path(project_path) / ".hybrid-search" / "wiki" / "STALE.md"
+            project_root = Path(project_path)
+            stale_md_path = project_root / ".hybrid-search" / "wiki" / "STALE.md"
             if stale_md_path.exists():
                 stale_md_path.unlink()
                 print("Wiki: all pages fresh, STALE.md removed")
+            if _clear_needs_synthesis_flag(project_root):
+                print("Wiki: needs_synthesis flag cleared")
         else:
             stale_count = len(stale_items)
             if stale_count > 0:
@@ -696,6 +735,21 @@ def _check_project_status(project_path: Path) -> None:
         print(f"  {mark} Wiki:                         {detail}")
     else:
         print(f"  ⚠ Wiki not created yet           (run /bootstrap-wiki)")
+
+    # M4: needs_synthesis flag — user-facing reminder surfaced by /search skill.
+    flag_path = project_path / _NEEDS_SYNTHESIS_FLAG
+    if flag_path.exists():
+        import json
+        try:
+            payload = json.loads(flag_path.read_text(encoding="utf-8"))
+            count = payload.get("stale_count", "?")
+            mods = payload.get("stale_modules", [])[:3]
+            mod_preview = ", ".join(mods) + ("…" if len(payload.get("stale_modules", [])) > 3 else "")
+            print(f"  ⚠ needs_synthesis:               {count} module(s) pending — run /maintain")
+            if mod_preview:
+                print(f"    Pending: {mod_preview}")
+        except (json.JSONDecodeError, OSError):
+            print(f"  ⚠ needs_synthesis flag present (unreadable) — run /maintain")
 
     # post-commit + post-checkout hooks (respect core.hooksPath — Husky compat)
     hooks_dir = _git_hooks_dir(project_path)
@@ -1780,6 +1834,21 @@ def cmd_synthesize_wiki(args: argparse.Namespace) -> None:
                 for f in input_dir.glob("*.md"):
                     f.unlink()
                 print(f"\nDone: {finalized} module(s) finalized. Input/output files cleaned.")
+
+                # M4: clear the needs_synthesis flag if no pages are stale anymore.
+                # Finalize rewrites file_hash_at_compile, so a fresh staleness
+                # check reflects the post-finalize state.
+                remaining = [
+                    p for p in wiki_store.check_staleness(pinfo.id) if p["stale"]
+                ]
+                project_root = Path(project_path)
+                if not remaining:
+                    if _clear_needs_synthesis_flag(project_root):
+                        print("needs_synthesis flag cleared.")
+                else:
+                    # Still stale — refresh the flag so the module list is accurate.
+                    _write_needs_synthesis_flag(project_root, remaining)
+                    print(f"needs_synthesis flag updated: {len(remaining)} module(s) still pending.")
             return
 
         # -- PREPARE / DRY-RUN MODE --
@@ -2348,6 +2417,7 @@ def _ensure_gitignore_entries(project_root: Path) -> None:
         ".hybrid-search/coverage.json",
         ".hybrid-search/.reindex.lock",
         ".hybrid-search/.gaps-shown",
+        ".hybrid-search/needs_synthesis",
     ]
     existing = gi_path.read_text(encoding="utf-8") if gi_path.exists() else ""
     existing_lines = {line.strip() for line in existing.splitlines()}

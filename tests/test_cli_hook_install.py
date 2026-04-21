@@ -13,12 +13,15 @@ from hybrid_search.cli import (
     _CLAUDE_MD_MARKER,
     _CLAUDE_MD_SECTION,
     _HOOK_IDENTITY_MARKER,
+    _NEEDS_SYNTHESIS_FLAG,
     _build_post_checkout_script,
     _build_post_commit_script,
+    _clear_needs_synthesis_flag,
     _ensure_claude_md,
     _ensure_gitignore_entries,
     _git_hooks_dir,
     _remove_claude_md,
+    _write_needs_synthesis_flag,
     cmd_install_hook,
 )
 
@@ -75,6 +78,67 @@ class TestEnsureGitignoreEntries:
         # Must not produce both variants
         assert not ({".hybrid-search/wiki", ".hybrid-search/wiki/"} <= lines), \
             "Should not add wiki/ if wiki (no-slash) already present"
+
+    def test_includes_needs_synthesis_entry(self, tmp_path: Path) -> None:
+        """M4: needs_synthesis flag must be git-ignored so it never leaks into commits."""
+        _ensure_gitignore_entries(tmp_path)
+        content = (tmp_path / ".gitignore").read_text()
+        assert ".hybrid-search/needs_synthesis" in content
+
+
+# ---------------------------------------------------------------------------
+# M4 — needs_synthesis flag helpers
+# ---------------------------------------------------------------------------
+
+
+class TestNeedsSynthesisFlag:
+    """Lightweight flag file driving the /search → /maintain reminder loop."""
+
+    def test_write_creates_json_with_expected_shape(self, tmp_path: Path) -> None:
+        stale_items = [
+            {"page_id": "pg1", "title": "tools"},
+            {"page_id": "pg2", "title": "storage"},
+        ]
+        _write_needs_synthesis_flag(tmp_path, stale_items)
+
+        flag = tmp_path / _NEEDS_SYNTHESIS_FLAG
+        assert flag.exists()
+        payload = json.loads(flag.read_text(encoding="utf-8"))
+        assert payload["stale_count"] == 2
+        assert payload["stale_modules"] == ["tools", "storage"]
+        # ISO 8601 UTC — ends with "+00:00" or "Z"; we only guarantee parsability.
+        from datetime import datetime
+        datetime.fromisoformat(payload["detected_at"])
+
+    def test_write_creates_parent_dir(self, tmp_path: Path) -> None:
+        """Flag path lives under .hybrid-search/ — parent must be created on demand."""
+        assert not (tmp_path / ".hybrid-search").exists()
+        _write_needs_synthesis_flag(tmp_path, [{"page_id": "p", "title": "m"}])
+        assert (tmp_path / ".hybrid-search").is_dir()
+
+    def test_write_truncates_module_list(self, tmp_path: Path) -> None:
+        """Long stale lists should be capped so the flag stays small/readable."""
+        stale = [{"page_id": f"p{i}", "title": f"m{i}"} for i in range(50)]
+        _write_needs_synthesis_flag(tmp_path, stale)
+        payload = json.loads((tmp_path / _NEEDS_SYNTHESIS_FLAG).read_text())
+        assert payload["stale_count"] == 50  # count stays honest
+        assert len(payload["stale_modules"]) <= 20  # preview capped
+
+    def test_clear_removes_existing_flag(self, tmp_path: Path) -> None:
+        _write_needs_synthesis_flag(tmp_path, [{"page_id": "p", "title": "m"}])
+        removed = _clear_needs_synthesis_flag(tmp_path)
+        assert removed is True
+        assert not (tmp_path / _NEEDS_SYNTHESIS_FLAG).exists()
+
+    def test_clear_is_noop_when_missing(self, tmp_path: Path) -> None:
+        removed = _clear_needs_synthesis_flag(tmp_path)
+        assert removed is False
+
+    def test_write_falls_back_to_page_id_when_title_missing(self, tmp_path: Path) -> None:
+        """Defensive: stale_items without title shouldn't crash the writer."""
+        _write_needs_synthesis_flag(tmp_path, [{"page_id": "pg-xyz"}])
+        payload = json.loads((tmp_path / _NEEDS_SYNTHESIS_FLAG).read_text())
+        assert payload["stale_modules"] == ["pg-xyz"]
 
 
 # ---------------------------------------------------------------------------

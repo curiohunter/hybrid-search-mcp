@@ -10,6 +10,22 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash, Agent, mcp__hybrid-search__h
 
 **자동 주입:** Claude가 `Grep`/`Glob`을 호출하기 직전, 이 프로젝트에 `.hybrid-search/wiki/index.md`가 있으면 **PreToolUse 훅**이 wiki 우선 탐색을 리마인드한다 (`route_hook`, matcher=`Glob|Grep`). 구조/관계 질문에서 Wiki를 스킵하고 Grep으로 직행하는 경향을 바로잡기 위함.
 
+## Step 0: needs_synthesis flag 체크 (선행)
+
+검색 시작 전 `.hybrid-search/needs_synthesis` 존재 여부를 한 번만 확인한다. 파일이 있으면 최근 커밋으로 wiki가 stale 상태 → 검색 결과에 **오래된 wiki**가 섞일 수 있음을 사용자에게 고지한다.
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+FLAG="$PROJECT_ROOT/.hybrid-search/needs_synthesis"
+if [ -f "$FLAG" ]; then
+  cat "$FLAG"
+fi
+```
+
+- flag가 있으면: 답변 상단에 한 줄 경고 — "⚠ wiki가 stale입니다 (N개 모듈). `/maintain` 실행 후 재질문 권장." (stale_modules 중 상위 3개 미리 보여줘도 됨)
+- 없으면: 조용히 진행. 다음 Step으로.
+- **기능 차단 금지:** 경고만 하고 검색은 그대로 수행. 사용자가 급히 답을 원할 수 있음.
+
 ## CLI 단독 사용
 
 Claude Code 없이도 터미널에서 바로 검색 가능:
