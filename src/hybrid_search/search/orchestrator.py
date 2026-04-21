@@ -140,6 +140,7 @@ class SearchOrchestrator:
         node_types: list[str] | None = None,
         bm25_weight: float | None = None,
         cwd: str | None = None,
+        exclude_pattern: str | None = None,
     ) -> HybridSearchResponse:
         """Execute hybrid BM25 + Vector search with RRF fusion."""
         start = time.monotonic()
@@ -180,12 +181,15 @@ class SearchOrchestrator:
         # Search each project
         if len(project_infos) == 1:
             bm25_ids, vector_ids, total, skipped, authority_scores = self._search_single(
-                project_infos[0], query, query_vector, retrieval_depth, file_pattern, node_types,
+                project_infos[0], query, query_vector, retrieval_depth,
+                file_pattern, node_types, exclude_pattern,
             )
         else:
             bm25_ids, vector_ids, total, skipped, authority_scores = self._search_cross_project(
-                project_infos, query, query_vector, retrieval_depth, file_pattern, node_types,
+                project_infos, query, query_vector, retrieval_depth,
+                file_pattern, node_types,
                 primary_project_id=primary_project_id,
+                exclude_pattern=exclude_pattern,
             )
 
         # RRF fusion — numeric confidence scores nudge chunks with strong
@@ -201,6 +205,7 @@ class SearchOrchestrator:
             k=self._config.search.rrf_k,
             bm25_weight=effective_weight,
             chunk_authority_scores=effective_authority,
+            authority_alpha=self._config.search.authority_alpha,
         )
 
         # When reranking is enabled, return more candidates for Claude Code to rerank
@@ -229,6 +234,7 @@ class SearchOrchestrator:
         depth: int,
         file_pattern: str | None,
         node_types: list[str] | None,
+        exclude_pattern: str | None = None,
     ) -> tuple[list[str], list[str], int, list[str], dict[str, float]]:
         """Search a single project, return (bm25_ids, vector_ids, total, skipped, authority)."""
         project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
@@ -242,7 +248,9 @@ class SearchOrchestrator:
         vec_eng = VectorEngine(idx_paths.vectors_dir, self._embedder.embedding_dim)
 
         try:
-            chunk_filter = _build_filter(db, pinfo.id, file_pattern, node_types)
+            chunk_filter = _build_filter(
+                db, pinfo.id, file_pattern, node_types, exclude_pattern,
+            )
 
             # BM25 search
             bm25_results = bm25_eng.search(query, limit=depth)
@@ -290,6 +298,7 @@ class SearchOrchestrator:
         file_pattern: str | None,
         node_types: list[str] | None,
         primary_project_id: str | None = None,
+        exclude_pattern: str | None = None,
     ) -> tuple[list[str], list[str], int, list[str], dict[str, float]]:
         """Cross-project search: interleave BM25 ranks, merge vector by cosine (§13).
 
@@ -314,7 +323,9 @@ class SearchOrchestrator:
             vec_eng = VectorEngine(idx_paths.vectors_dir, self._embedder.embedding_dim)
 
             try:
-                chunk_filter = _build_filter(db, pinfo.id, file_pattern, node_types)
+                chunk_filter = _build_filter(
+                    db, pinfo.id, file_pattern, node_types, exclude_pattern,
+                )
                 bm25_res = bm25_eng.search(query, limit=depth)
                 bm25_ids = [r.chunk_id for r in bm25_res]
                 if chunk_filter:
@@ -473,9 +484,14 @@ def _build_filter(
     project_id: str,
     file_pattern: str | None,
     node_types: list[str] | None,
+    exclude_pattern: str | None = None,
 ) -> set[str] | None:
-    """Build a set of matching chunk IDs for filtering."""
-    if not file_pattern and not node_types:
+    """Build a set of matching chunk IDs for filtering.
+
+    ``exclude_pattern`` drops chunks whose file matches the glob (e.g.
+    ``docs/*`` to suppress documentation noise from results).
+    """
+    if not file_pattern and not node_types and not exclude_pattern:
         return None
 
     import fnmatch
@@ -485,15 +501,16 @@ def _build_filter(
 
     # Pre-load file paths to avoid N+1 queries
     file_path_cache: dict[str, str] = {}
-    if file_pattern:
+    if file_pattern or exclude_pattern:
         for file_rec in db.get_all_files(project_id):
             file_path_cache[file_rec.id] = file_rec.relative_path
 
     for chunk in chunks:
-        if file_pattern:
-            rel_path = file_path_cache.get(chunk.file_id, "")
-            if not fnmatch.fnmatch(rel_path, file_pattern):
-                continue
+        rel_path = file_path_cache.get(chunk.file_id, "")
+        if file_pattern and not fnmatch.fnmatch(rel_path, file_pattern):
+            continue
+        if exclude_pattern and fnmatch.fnmatch(rel_path, exclude_pattern):
+            continue
         if node_types and chunk.node_type not in node_types:
             continue
         filtered_ids.add(chunk.id)

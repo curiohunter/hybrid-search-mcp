@@ -67,6 +67,10 @@ class SearchConfig:
     rrf_k: int = 60
     query_classifier: bool = True
     default_bm25_weight: float = 0.5
+    # M1.v2 boost ceiling. L6 n=60 (2026-04-21): α=0.3 is best for
+    # self-contained projects; α=0.5 is stronger on external-weighted
+    # workloads (+0.094 vs +0.065 NDCG). Override per-project via config.
+    authority_alpha: float = 0.3
     reranking: RerankingConfig = field(default_factory=RerankingConfig)
 
 
@@ -159,6 +163,7 @@ def load_config(config_path: Path | None = None) -> Config:
         rrf_k=search_raw.get("rrf_k", 60),
         query_classifier=search_raw.get("query_classifier", True),
         default_bm25_weight=search_raw.get("default_bm25_weight", 0.5),
+        authority_alpha=float(search_raw.get("authority_alpha", 0.3)),
         reranking=reranking,
     )
 
@@ -218,6 +223,9 @@ default_limit = 10
 rrf_k = 60
 query_classifier = true
 default_bm25_weight = 0.5
+# authority_alpha: call-graph boost ceiling (M1.v2). α=0.3 = default.
+# Try 0.5 for external-weighted workloads (+0.094 vs +0.065 NDCG at L6 n=15).
+authority_alpha = 0.3
 
 [indexing]
 exclude_patterns = [

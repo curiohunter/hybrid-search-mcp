@@ -10,6 +10,7 @@ and every code chunk returned to the caller is stripped of control chars.
 
 from __future__ import annotations
 
+from hybrid_search.memory import qa_log
 from hybrid_search.search.orchestrator import SearchOrchestrator
 from hybrid_search.security import (
     clamp_float,
@@ -45,12 +46,14 @@ def handle_hybrid_search(
     node_types: list[str] | None = None,
     bm25_weight: float | None = None,
     cwd: str | None = None,
+    exclude_pattern: str | None = None,
 ) -> dict:
     """Handle hybrid_search tool call — sanitizes all inputs and outputs."""
     safe_query = sanitize_query(query)
     safe_project = validate_project_name(project)
     safe_limit = clamp_int(limit, _LIMIT_LO, _LIMIT_HI, name="limit")
     safe_file_pattern = sanitize_file_pattern(file_pattern)
+    safe_exclude_pattern = sanitize_file_pattern(exclude_pattern)
     safe_node_types = sanitize_node_types(node_types)
     safe_weight = (
         clamp_float(bm25_weight, _BM25_LO, _BM25_HI, name="bm25_weight")
@@ -66,6 +69,7 @@ def handle_hybrid_search(
         node_types=safe_node_types,
         bm25_weight=safe_weight,
         cwd=safe_cwd,
+        exclude_pattern=safe_exclude_pattern,
     )
 
     result: dict = {
@@ -100,5 +104,25 @@ def handle_hybrid_search(
             limit=safe_limit,
             query=safe_query,
         )
+
+    # Memory layer — persist the exchange for cross-session recall (opt-in).
+    # Fire-and-forget: disabled unless HYBRID_SEARCH_QA_LOG=1, never blocks
+    # the response, swallows its own errors.
+    try:
+        project_infos = None
+        registry = getattr(orchestrator, "_registry", None)
+        if registry is not None:
+            try:
+                project_infos = registry.list_all()
+            except Exception:
+                project_infos = None
+        qa_log.record(
+            query=safe_query,
+            response=response,
+            cwd=safe_cwd,
+            project_infos=project_infos,
+        )
+    except Exception:  # pragma: no cover — belt-and-suspenders
+        pass
 
     return result
