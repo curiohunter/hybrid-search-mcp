@@ -71,6 +71,16 @@ hybrid-search-mcp annotate-wiki --cwd .      # inject god-nodes Top-N into wiki/
 hybrid-search-mcp shortest-path <a> <b>      # call-graph path between two symbols
 hybrid-search-mcp subgraph <symbol>          # N-hop forward+reverse call graph
 
+# Memory Layer — persistent Q&A log
+export HYBRID_SEARCH_QA_LOG=1                # enable persistence (opt-in)
+hybrid-search-mcp qa-list --cwd .            # recent queries, newest first
+hybrid-search-mcp qa-list --all              # across every registered project
+hybrid-search-mcp qa-show <id-or-hash>       # full entry (accepts hash prefix ≥4)
+hybrid-search-mcp qa-grep "authority"        # frontmatter + body match
+hybrid-search-mcp qa-stats --cwd .           # total / by type / by month
+hybrid-search-mcp qa-prune --older-than 90d  # rotation
+hybrid-search-mcp qa-prune --before 2026-01-01 --dry-run
+
 # Status & maintenance
 hybrid-search-mcp status                     # show indexed projects + hooks + skills
 hybrid-search-mcp reindex --git-delta --cwd . # delta reindex (changed files only)
@@ -154,22 +164,60 @@ Copy skills from `skills/` directory to `~/.claude/skills/`:
 | Accuracy | 90%+ | Noisy |
 | Token usage | Low | High |
 
-### Memory Layer (opt-in, MVP)
+### Memory Layer
 
-Every hybrid_search response can be persisted as markdown for cross-session recall.
+Persist hybrid_search responses as markdown and use them as first-class search
+targets. Four axes, each independently opt-in.
 
 ```bash
-export HYBRID_SEARCH_QA_LOG=1
+export HYBRID_SEARCH_QA_LOG=1      # write:    persist every response
+export HYBRID_SEARCH_INDEX_QA=1    # self-ref: treat qa logs as indexable corpus
 ```
 
-Entries land in `<project>/.hybrid-search/qa/YYYY/MM/DD-HHMMSS-<hash>.md` with
-YAML frontmatter (query, query_type, effective BM25 weight, timestamp) + top-10
-result snippets. Writes happen on a daemon thread — the search hot path is not
-touched. Default **off**.
+#### 1. Write
 
-**Status:** write-only in this release. A retrieval CLI (`qa list/show/grep`) is
-the next milestone. Only the long-running MCP server guarantees every write
-lands; CLI one-shot runs may race with the daemon thread.
+Each response lands at `<project>/.hybrid-search/qa/YYYY/MM/DD-HHMMSS-<hash>.md`
+with YAML frontmatter (query, query_type, effective BM25 weight, timestamp)
++ top-10 result snippets. A daemon thread does the I/O so the search hot
+path is not touched. Default **off**.
+
+#### 2. Read (human)
+
+```
+qa-list [--all] [--since 2026-04-01] [--limit 20] [--json]
+qa-show <id | file-stem | hash-prefix≥4>
+qa-grep <term> [--case-sensitive]
+qa-stats
+```
+
+`qa-list --all` aggregates across every registered project in newest-first
+order and prefixes each line with the project name.
+
+#### 3. Self-reference (AI)
+
+When `HYBRID_SEARCH_INDEX_QA=1`, the scanner walks into `.hybrid-search/qa/`
+(overriding the `.gitignore` entry that `setup` writes). Each log becomes a
+single whole-file chunk tagged `node_type="qa_log"`, so future `hybrid_search`
+queries surface past conversations alongside code. Search JSON preserves
+`node_type` — clients can filter or re-rank qa hits separately.
+
+#### 4. Rotation
+
+```
+qa-prune --older-than 30d      # or --before 2026-01-01
+qa-prune --older-than 90d --dry-run --verbose
+```
+
+Durations accept `d / h / w / m` (months are 30d approximations). Empty
+`YYYY/MM` directories are rmdir'd after a real prune; the `qa/` root is
+preserved as an anchor.
+
+**Caveats**
+- The daemon write is reliable under the long-running MCP server. Short-lived
+  CLI invocations may race with process exit — use the MCP server for
+  production writes.
+- qa logs may contain user content — keep both toggles off if you do not
+  want those to leak into general-purpose searches.
 
 ### Tunables
 
@@ -244,6 +292,11 @@ Supported languages: TypeScript, JavaScript, Python, Rust, Go, Ruby, Java, C, C+
 | `shortest-path <a> <b>` | Shortest call-graph path between two symbols |
 | `subgraph <symbol>` | N-hop forward + reverse call graph |
 | `synthesize-wiki --cwd .` | LLM synthesis for wiki pages |
+| `qa-list [--all]` | Recent qa logs (Memory Layer); `--all` aggregates across projects |
+| `qa-show <id>` | Full qa log by id / stem / hash prefix (≥4 chars) |
+| `qa-grep <term>` | Substring search over frontmatter + body |
+| `qa-stats` | Totals by query_type and month |
+| `qa-prune --older-than 30d` | Delete logs older than a duration or `--before <ISO>` |
 | `remove-project <name>` | Unregister a project |
 
 ---
@@ -258,7 +311,8 @@ Supported languages: TypeScript, JavaScript, Python, Rust, Go, Ruby, Java, C, C+
 | Rate limit errors | Auto-retry with 0.2s batch interval |
 | Hooks not working | `hybrid-search-mcp setup` (re-run) |
 | Docs dominate search | `--exclude-pattern "docs/*"` or `"plan/*"` |
-| qa log not written from CLI | Expected — async daemon races process exit. Use via MCP server. |
+| qa log not written from CLI | Expected — async daemon races short-lived CLI exit. Writes via the long-running MCP server are reliable. |
+| qa logs not surfacing in search | Set `HYBRID_SEARCH_INDEX_QA=1` and re-run `reindex --force --cwd .` |
 
 ---
 
