@@ -2,11 +2,103 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 11회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 12회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
 
-**M1.1 라벨 리네이밍 완료 + M5 아키텍처 재설계.** `low/medium/high` → `ambiguous/inferred/extracted` 전면 교체. DB schema v4 → v5 + UPDATE 마이그레이션. 4개 실사용 v4 인덱스(hybrid-search-mcp + valuein + mathontology + breeze) 자동 호환 — `reindex` 불필요. 422/422 tests passed (420 + 2 신규 마이그레이션 테스트). **M5는 MCP 도구 추가 X, CLI + Skill 패턴으로 재정의** (MCP 토큰 비용 회피 — 매 도구당 ~1k 영구 상주). 다음 세션은 **M5 (god-nodes CLI + /search 스킬 라우팅 통합, ~2일)**.
+**M5 graph exploration 완료 (CLI + /search 스킬 라우팅 통합).** `hybrid-search-mcp god-nodes / shortest-path / subgraph` 3개 CLI 추가 — MCP 도구는 늘리지 않고 Skill 오케스트레이션. `/search` 스킬은 70/15/10/5/5 비중 명시 + god-nodes 정식 레인 승격 + hybrid_search 사용 시 Read 보충 기본값 반영 (`feedback_search_dx.md` 피드백 수렴). `StoreDB.get_god_nodes()` 헬퍼 추가. 13개 신규 테스트, **435/435 passed**. 실사용 smoke test: god-nodes 1위 `StoreDB._migrate_schema` (in=25). 다음 세션은 **Search DX snippet 튜닝 or L6 외부 확장 or HANDOFF.md 정리/요약**.
+
+### ✅ 이 세션 완료된 것 (12회차)
+
+**1. `/search` 스킬 라우팅 재설계** (`~/.claude/skills/search/skill.md`, 저장소 외)
+- **5축 분류 + 비중 명시:** 정밀 조회(Grep) ~65% / 구조(Wiki) ~15% / 탐색(hybrid_search) ~10% / 설계(hybrid_search) ~5% / 권위(god-nodes) ~5%.
+- **hybrid_search 사용 시 Read 보충 기본값:** `feedback_search_dx.md` 메모리의 "snippet 짧아서 Read 2단계가 된다" 피드백 직접 반영. "Snippet은 히트 위치 포인터로만 읽을 것" 명시.
+- **노이즈 대응:** `file_pattern="*.py"`, `"*.md"`, `"migrations/*.sql"` 등 재호출 팁.
+- **god-nodes 라우팅 승격:** "핵심 함수 / 가장 많이 쓰이는 / 중심 모듈 / 진입점 / god node" 신호 → `Bash: hybrid-search-mcp god-nodes`.
+- **실행 예시 5개 추가** (정밀/구조/탐색/설계/스키마 각 1개).
+
+**2. CLI 명령 3개** (`src/hybrid_search/cli.py`, +331줄)
+- **`god-nodes [--top N] [--project X] [--min-confidence {ambiguous,inferred,extracted}] [--json]`**: in-degree + max confidence_score로 authority 상위 N chunk. 기본 top=20, min-confidence=inferred.
+- **`shortest-path A B`**: `call_edges` BFS caller→callee. forward 없으면 reverse(B→A) 시도 후 방향 리포트. 심볼/qualified_name/chunk_id 모두 수용.
+- **`subgraph SYMBOL --hops N`**: 양방향 (callees forward + callers reverse) N-hop BFS. 기본 hops=2.
+- **공유 헬퍼:** `_resolve_chunk_for_graph()` (raw id → qualified_name → bare name → fuzzy LIKE), `_open_single_project_db()` (cwd auto-detect 또는 `--project` override).
+- **main() dispatch 3개 추가**, subparser 3개 등록.
+
+**3. DB 헬퍼 추가** (`src/hybrid_search/storage/db.py`, +31줄)
+- `StoreDB.get_god_nodes(project_id, limit, min_confidence)`: 단일 SQL — `JOIN call_edges + chunks + files + GROUP BY c.id + ORDER BY in_degree DESC, max_score DESC, qualified_name`. N+1 회피.
+
+**4. 테스트 (435/435 passed, +13 신규)**
+- `tests/test_graph_cli.py` 신설:
+  - `TestGodNodes`: top-N by in-degree / min_confidence 필터 / limit / isolated 제외
+  - `TestBfsShortestPath`: forward direct neighbor / 2-hop / self-trivial / no-path None / min_confidence가 엣지 차단
+  - `TestResolveChunkForGraph`: raw chunk_id / qualified_name / bare name / unknown None
+- 시드 그래프: `caller_a/b/c → popular` (authority), `caller_a → mid → leaf` (shortest-path chain), `caller_b →(ambiguous) mid` (필터 테스트), `isolated` (엣지 없음).
+
+**5. 수동 smoke test (hybrid-search-mcp 자신)**
+- `god-nodes --top 5`:
+  1. `StoreDB._migrate_schema` in=25 score=1.00
+  2. `load_config` in=21 score=0.80
+  3. `chunk_code_file` in=18 score=0.80
+  4. `StoreDB.upsert_file` in=14 score=0.80
+  5. `VectorEngine.search` in=13 score=1.00
+- `shortest-path load_config StoreDB.upsert_file` → "No path" (직접 호출 없음, 정상)
+- `subgraph load_config --hops 1` → forward 1 (`_create_default_config`), reverse 21 (테스트/CLI 다수)
+
+### 🎯 다음 세션 진입점
+
+**파일 읽기 순서:**
+1. **이 12회차 섹션 전체**
+2. `git log --oneline -10` — 최근 커밋 (`8591c72` M5, `c5731d3`+`c48910c` HANDOFF 11회차)
+3. 아래 "다음 세션 권장 순서"
+
+### 🎯 다음 세션 권장 순서
+
+**큰 M은 일단락(M1/M1.1/M1.2/M4/M5 완료).** 남은 건 품질/DX 축 개선.
+
+**선택 1 — Search DX snippet 튜닝 (반나절):**
+- 현재 hybrid_search snippet은 평균 3줄. 피드백: "결국 Read로 다시 읽어야 함."
+- `src/hybrid_search/tools/hybrid_search.py` snippet 생성 지점에서 길이 확장 + 히트 라인 주변 context +/- 5줄로. 너무 길면 토큰 비용 증가 → limit당 300자 정도가 sweet spot.
+- 운영 문서 노이즈 자동 filter 옵션: `--exclude-pattern` 또는 `include_doc_dirs=false` default 변경 검토.
+- 장점: 매 쿼리 개선, 사용자 체감 큼.
+
+**선택 2 — L6 외부 확장 (1일):**
+- `benchmarks/` 아래 외부 프로젝트 gold set 추가 (mathontology + breeze 각 5q) → external n=5 → n=15.
+- α=0.5 vs 0.3 결정 데이터 보강. proxy label 한계 인정 — 수작업 gold가 더 깔끔할 수도.
+- 장점: 벤치마크 축 강화.
+
+**선택 3 — Wiki 구조 개선 (1~2일):**
+- 현재 Wiki는 LLM synthesis로 생성되지만 linkage가 제한적. god-nodes 결과를 `index.md`에 자동 삽입하여 "핵심 모듈" 섹션 만들기.
+- `cli.py generate-wiki-plan` 확장 or 새 CLI `annotate-wiki-with-god-nodes`.
+- 장점: Wiki 가치 상승 + god-nodes와 wiki 역할 상보.
+
+**선택 4 — HANDOFF.md 정리 (30분):**
+- 현재 1100+줄. 5회차 이전 섹션은 이미 압축돼 있지만 6~10회차도 요약 가능.
+- 새 섹션 "📚 Phase 6~10 한줄 요약" 만들고 본문 삭제. 현재 세션 가독성 향상.
+
+**추천: 선택 1 (Search DX snippet) → 선택 4 (HANDOFF 정리).** 선택 1은 매일 체감되는 부분이고, 선택 4는 부채 청산. 선택 2/3은 결정이 필요한 더 큰 작업.
+
+### 주의사항 / 알려진 이슈
+
+- **CLI 명령 entry-point는 `~/.hybrid-search/` 환경 의존:** `DEFAULT_DATA_DIR` env override 없음 → 통합 테스트가 DB 헬퍼와 in-CLI BFS만 커버. 향후 env 추가 고려 가능하지만 지금은 수동 smoke test로 충분.
+- **`shortest-path` forward/reverse 방향성:** forward 탐색 실패 시 reverse 자동 fallback인데, 대칭성을 기대하는 사용자에게 혼란 가능. 출력에 방향 표시(`direction: forward/reverse`) 포함해서 완화 중. 필요 시 `--bidirectional` 플래그 명시화 검토.
+- **`god-nodes` min_confidence 기본값 `inferred`:** MCP trace 도구와 일치. 프로젝트에 따라 `extracted`만 보고 싶을 수도 있음 — CLI는 `--min-confidence` 옵션으로 해결.
+- **11회차 이슈 잔존:** v4 → v5 마이그레이션 미검증 프로젝트 3개 (`7c7631...`, `05de0b...`, `5f349647...`). 다음 MCP 호출 시 자동. 큰 DB 성능 관찰 필요.
+
+### 마지막 상태
+
+- **브랜치:** `main` (origin/main 기준 **+6 커밋** — 12회차 작성 후 +7)
+- **마지막 커밋:** `8591c72 [feat] M5 graph exploration — god-nodes / shortest-path / subgraph CLI`
+- **테스트:** 435/435 passed (25.08s)
+- **변경 파일:** `src/hybrid_search/cli.py` (+331), `src/hybrid_search/storage/db.py` (+31), `tests/test_graph_cli.py` (신규 +190)
+- **스킬 변경 (저장소 외):** `~/.claude/skills/search/skill.md` 재작성 — Git에 추적되지 않으므로 별도 백업 필요 시 수동.
+
+---
+
+## 🔵 이전 세션 인계 (11회차) — 참고용
+
+### 한줄 요약 (11회차)
+
+**M1.1 라벨 리네이밍 완료 + M5 아키텍처 재설계.** `low/medium/high` → `ambiguous/inferred/extracted` 전면 교체. DB schema v4 → v5 + UPDATE 마이그레이션. 4개 실사용 v4 인덱스(hybrid-search-mcp + valuein + mathontology + breeze) 자동 호환 — `reindex` 불필요. 422/422 tests passed (420 + 2 신규 마이그레이션 테스트). **M5는 MCP 도구 추가 X, CLI + Skill 패턴으로 재정의** (MCP 토큰 비용 회피 — 매 도구당 ~1k 영구 상주).
 
 ### ✅ 이 세션 완료된 것 (11회차)
 
