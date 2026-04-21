@@ -344,16 +344,22 @@ def _walk_files(
     extensions = set(config.supported_extensions)
     results: list[Path] = []
 
+    qa_opt_in = config.index_qa_logs
+
+    def _keep_dir(rel_dir: Path, name: str) -> bool:
+        if name.startswith("."):
+            # Opt-in: walk into .hybrid-search so the qa subtree is reachable.
+            # Everything else under the dotdir is still blocked by ignore_spec.
+            if not (qa_opt_in and rel_dir == Path(".") and name == ".hybrid-search"):
+                return False
+        return not ignore_spec.match_file(str(rel_dir / name) + "/")
+
     for dirpath, dirnames, filenames in os.walk(project_root, followlinks=False):
         dir_path = Path(dirpath)
         rel_dir = dir_path.relative_to(project_root)
 
         # Prune ignored directories in-place
-        dirnames[:] = [
-            d for d in dirnames
-            if not d.startswith(".")
-            and not ignore_spec.match_file(str(rel_dir / d) + "/")
-        ]
+        dirnames[:] = [d for d in dirnames if _keep_dir(rel_dir, d)]
 
         for fname in filenames:
             file_path = dir_path / fname
@@ -475,7 +481,12 @@ def _build_ignore_spec(
     project_root: Path,
     config: IndexingConfig,
 ) -> pathspec.PathSpec:
-    """Build pathspec from config excludes + .gitignore + .hybrid-search-ignore."""
+    """Build pathspec from config excludes + .gitignore + .hybrid-search-ignore.
+
+    When ``config.index_qa_logs`` is True we append a gitignore-style negation
+    for ``.hybrid-search/qa/**`` so .gitignore entries the ``setup`` command
+    auto-adds no longer block the qa tree from indexing.
+    """
     patterns = list(config.exclude_patterns)
 
     gitignore = project_root / ".gitignore"
@@ -487,5 +498,14 @@ def _build_ignore_spec(
             pass
 
     patterns.extend(_collect_hybrid_search_ignore_patterns(project_root))
+
+    if config.index_qa_logs:
+        # Negations must come last — pathspec evaluates patterns in order and
+        # the final match wins.
+        patterns.extend([
+            "!.hybrid-search/",
+            "!.hybrid-search/qa/",
+            "!.hybrid-search/qa/**",
+        ])
 
     return pathspec.PathSpec.from_lines("gitignore", patterns)
