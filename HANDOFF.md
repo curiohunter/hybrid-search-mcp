@@ -6,7 +6,7 @@
 
 ### 한줄 요약
 
-**M1.1 라벨 리네이밍 완료.** `low/medium/high` → `ambiguous/inferred/extracted` 전면 교체. DB schema v4 → v5 + UPDATE 마이그레이션. 4개 실사용 v4 인덱스(hybrid-search-mcp + valuein + mathontology + breeze) 자동 호환 — `reindex` 불필요. 422/422 tests passed (420 + 2 신규 마이그레이션 테스트). 다음 세션은 **M5 god_nodes/shortest_path/subgraph (2일)** 또는 **L6 외부 확장 (1일)**.
+**M1.1 라벨 리네이밍 완료 + M5 아키텍처 재설계.** `low/medium/high` → `ambiguous/inferred/extracted` 전면 교체. DB schema v4 → v5 + UPDATE 마이그레이션. 4개 실사용 v4 인덱스(hybrid-search-mcp + valuein + mathontology + breeze) 자동 호환 — `reindex` 불필요. 422/422 tests passed (420 + 2 신규 마이그레이션 테스트). **M5는 MCP 도구 추가 X, CLI + Skill 패턴으로 재정의** (MCP 토큰 비용 회피 — 매 도구당 ~1k 영구 상주). 다음 세션은 **M5 (god-nodes CLI + /search 스킬 라우팅 통합, ~2일)**.
 
 ### ✅ 이 세션 완료된 것 (11회차)
 
@@ -37,22 +37,28 @@
 
 ### 🎯 다음 세션 권장 순서
 
-**선택 1 — M5 MCP 확장 (2일, 새 기능 축, 추천):**
-- 신규 도구 3개:
-  - `god_nodes`: authority 상위 N개 chunk (M1 score 직접 재사용 — `get_chunk_authority_scores` 이미 존재). "이 코드베이스에서 가장 많이 호출되는 핵심" 질의 대응.
-  - `shortest_path`: 두 chunk 간 call edge 최단 경로 (BFS on `call_edges`). "A 함수가 B에 어떻게 도달하는지" 질의 대응.
-  - `subgraph`: 특정 chunk 주변 N-hop forward+reverse. trace_callers/trace_callees의 양방향 통합 버전.
-- **선결 검증 필요:** Claude Code `/search` 스킬에서 god_nodes를 어떻게 라우팅할지. Wiki `index.md`와 역할 중복 안 되게 — Wiki는 "구조 개요", god_nodes는 "랭킹" 으로 분리.
-- **테스트 전략:** trace.py 패턴 재사용 (mock-free integration test).
+**아키텍처 원칙 (11회차 후반 결정):** **MCP 도구는 추가하지 않는다.** MCP 도구 정의는 매 세션 컨텍스트에 영구 상주(~1k 토큰/도구) — 빈도 낮은 niche 기능엔 과한 비용. 새 기능은 **CLI 명령 + Skill 오케스트레이션** 패턴으로 추가. 기존 `mcp__hybrid-search__hybrid_search`는 매 쿼리에서 쓰이므로 MCP 유지 정당. 기존 패턴 참고: `/search`, `/maintain`, `/bootstrap-wiki`가 이미 skill orchestration 사용 중.
 
-**선택 2 — L6 외부 확장 (1일, 벤치마크 축 강화):**
+**선택 1 — M5 graph exploration (재설계, CLI + Skill, 1.5~2일, 추천):**
+- **CLI 명령 3개 (src/hybrid_search/cli.py 확장):**
+  - `hybrid-search god-nodes [--top N] [--project X]`: authority 상위 N chunk 출력. `db.get_chunk_authority_scores()` 직접 재사용.
+  - `hybrid-search shortest-path A B [--project X]`: 두 chunk 간 call edge 최단 경로 (BFS on `call_edges`).
+  - `hybrid-search subgraph CHUNK_ID --hops N`: forward+reverse N-hop. `tools/trace.py`의 양방향 통합 버전.
+- **Skill 1개 (umbrella):** `~/.claude/skills/explore-graph/` — args 파싱 → 적절한 CLI 호출 → 결과 정리. 또는 기존 `/search` 스킬에 graph 라우팅 케이스 추가.
+- **장점:** ① 컨텍스트 부담 0 (skill description ~200토큰만), ② CLI 단독 테스트 가능, ③ 다른 프로젝트는 MCP 재설치 없이 CLI만 설치하면 됨 (valuein/mathontology/breeze 모두 자동 혜택).
+- **테스트 전략:** CLI 명령은 stdout 캡처 기반 통합 테스트 (`tests/test_cli.py` 패턴 재사용). Bash 호출 round-trip 없이 직접 함수 호출 가능하므로 빠름.
+- **선결 검증:** `/search` 스킬에서 god_nodes를 라우팅할 케이스 정의 — Wiki `index.md`(구조 개요)와 역할 분리, god_nodes는 "랭킹". `feedback_search_dx.md` 메모리(70%는 Grep이 빠름)와 묶어서 라우팅 분기를 정리하면 시너지.
+
+**선택 2 — Search DX 라우팅 개선 (1일, M5와 묶을 수 있음):**
+- `feedback_search_dx.md` 메모리 기반: `/search` 스킬에 query intent 분류 강화 — exact symbol → Grep 우선, 자연어 → hybrid_search, 구조 질문 → Wiki/god_nodes (M5 완료 시).
+- snippet 노이즈 줄이기: hybrid_search 결과의 snippet 길이/위치 튜닝, 또는 후처리 필터.
+- M5 직전에 라우팅 케이스 정의가 필요하므로 **M5 첫날 with this**가 자연스러움.
+
+**선택 3 — L6 외부 확장 (1일, 벤치마크 축 강화):**
 - 외부 프로젝트 gold set 추가 (mathontology + breeze 각 5q) → external n=5 → n=15. α=0.5 vs 0.3 결정에 데이터 더 모음.
 - **리스크:** proxy labels 신뢰도 한계. 도메인 지식 없는 자동 labeling은 noise → 수작업 gold 필요할 수도.
 
-**선택 3 — Search DX 개선 (메모리 기록 참고):**
-- `feedback_search_dx.md` 메모리: hybrid_search 노이즈/snippet 개선 필요, 70%는 Grep이 빠름. M5와 묶어서 도구 분화 + 라우팅 개선이 자연스러움.
-
-**추천: M5 (god_nodes부터). M1 작업 묶음(M1, M1.v2, M1.2, M1.1) 완전 마감했고, authority score가 god_nodes로 즉시 재사용되어 단일 기능 단위로 출시 가능.**
+**추천: M5 + Search DX를 묶어서 (선택 1+2, 총 ~2일).** 라우팅 정의가 god_nodes 설계의 선결조건이라 같이 가는 게 효율적. 구현 순서: ① `/search` 스킬 라우팅 분기 정리 (Grep/hybrid_search/Wiki) → ② CLI god-nodes 추가 → ③ shortest-path/subgraph → ④ `/explore-graph` skill 또는 `/search` 통합. 첫날 세션 끝까지 god-nodes는 동작 가능해야 함.
 
 ### 주의사항 / 알려진 이슈
 
