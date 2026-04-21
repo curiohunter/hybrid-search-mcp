@@ -17,6 +17,7 @@ from hybrid_search.index.embedder import Embedder
 from hybrid_search.project import ProjectRegistry, ProjectInfo
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.fusion import FusedResult, reciprocal_rank_fusion
+from hybrid_search.search.snippet import make_snippet
 from hybrid_search.search.vector import VectorEngine
 from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
@@ -207,7 +208,7 @@ class SearchOrchestrator:
         effective_limit = reranking_cfg.max_candidates if reranking_cfg.enabled else limit
 
         # Enrich results with chunk metadata
-        results = self._enrich_results(fused[:effective_limit], project_infos)
+        results = self._enrich_results(fused[:effective_limit], project_infos, query)
 
         elapsed_ms = (time.monotonic() - start) * 1000
         return HybridSearchResponse(
@@ -377,6 +378,7 @@ class SearchOrchestrator:
         self,
         fused: list[FusedResult],
         project_infos: list[ProjectInfo],
+        query: str,
     ) -> list[HybridResult]:
         """Look up chunk metadata for fused results."""
         results: list[HybridResult] = []
@@ -412,7 +414,7 @@ class SearchOrchestrator:
                         start_line=chunk.start_line,
                         end_line=chunk.end_line,
                         content=chunk.content,
-                        snippet=_make_snippet(chunk.docstring, chunk.content),
+                        snippet=make_snippet(chunk.docstring, chunk.content, query),
                     ))
                     break  # Found the chunk, no need to check other projects
         finally:
@@ -499,10 +501,3 @@ def _build_filter(
     return filtered_ids
 
 
-def _make_snippet(docstring: str | None, content: str | None) -> str:
-    if docstring:
-        return docstring[:200]
-    if content:
-        lines = content.strip().split("\n")
-        return "\n".join(lines[:5])[:200]
-    return ""
