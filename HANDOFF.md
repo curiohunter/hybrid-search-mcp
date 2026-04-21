@@ -2,11 +2,71 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 7회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 8회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
 
-**M1 (Confidence numeric score → fusion authority nudge) 완료** — 품질 축 전환 시작점. 406/406 tests passed. 전체 **13/28 (46%)**. 다음 세션은 **M4 (`needs_synthesis` flag, 반나절)** 또는 **M1.1 라벨 리네이밍(EXTRACTED/INFERRED/AMBIGUOUS, 반나절)**.
+**M4 (`needs_synthesis` flag) 완료** — 자율 루프 축 마감. 훅→스킬→사용자로 이어지는 UX 신호 loop 완성. 413/413 tests passed. 전체 **14/28 (50%)**. 다음 세션은 **L6 (벤치마크 세트, 1주)** 또는 **M1.1 라벨 리네이밍(반나절)** 또는 **M5 (MCP 확장, 2일)**.
+
+### ✅ 이 세션 완료된 것 (8회차)
+
+**M4: needs_synthesis flag 파일 패턴** (`6ed4f39`)
+- **파일 위치:** `.hybrid-search/needs_synthesis`. `_NEEDS_SYNTHESIS_FLAG` 상수로 관리 (cli.py:34).
+- **포맷:** JSON `{stale_count: int, stale_modules: list[str], detected_at: ISO-8601 UTC}`. 모듈 리스트는 상위 20개로 cap (count는 정확 유지).
+- **Write 경로 — `_write_needs_synthesis_flag(project_path, stale_items)`:** `_mark_stale_wikis`가 stale_items 있으면 STALE.md 옆에 함께 생성. title이 없는 defensive 케이스에서 page_id로 fallback. parent dir 없으면 생성.
+- **Clear 경로 1 — reindex:** `_mark_stale_wikis`가 stale_items가 비면 STALE.md와 함께 flag도 unlink.
+- **Clear 경로 2 — finalize:** `cmd_synthesize_wiki --finalize` 끝에 `wiki_store.check_staleness(pinfo.id)`로 재평가. 남은 stale 0이면 unlink, 있으면 flag 갱신(최신 모듈 리스트로 rewrite) + "flag updated: N module(s) still pending" 출력.
+- **Read 경로 — /search 스킬 Step 0:** flag 존재 시 답변 상단에 한 줄 경고 + 상위 3개 모듈 미리보기. **검색 차단은 하지 않음** (급한 질의 차단 금지).
+- **Status 출력 확장:** `_check_project_status`가 flag JSON 파싱 → `⚠ needs_synthesis: N module(s) pending — run /maintain` + `Pending: mod1, mod2, mod3…` 표시. JSON 파싱 실패 시 "unreadable" fallback.
+- **gitignore:** `_ensure_gitignore_entries`의 required 리스트에 `.hybrid-search/needs_synthesis` 추가. 기존 프로젝트는 `install-hook` 재실행 시 1 entry 추가됨 (실측 완료).
+- **왜 STALE.md로 안 되나:** STALE.md는 사람 읽기용 상세 문서. Claude skill이 매 검색마다 parse하려면 무겁고, 이미 마크다운 헤더/경고 톤이라 "signal"과 "document"가 섞여 있음. needs_synthesis는 **machine-readable 마이크로 신호**로 분리 → 기능 경계 명확. 둘 다 같이 write/clear되므로 drift 없음.
+
+**스킬 변경 (`skills/*.md`):**
+- `search.md`: Step 0 추가 (bash로 flag cat → 답변 상단 경고). 자동 주입(`route_hook`) 설명은 그대로 유지.
+- `maintain.md`: "needs_synthesis flag 관리" 섹션 추가 — Step 2 (reindex) + Step 4 (finalize)로 자연 clear된다는 점만 명시. 수동 clear 명령은 **의도적으로 제공하지 않음** (사용자가 편법으로 경고를 끄는 것 방지).
+- 스킬 소스는 `skills/*.md`에 저장. `hybrid-search-mcp setup`이 `~/.claude/skills/<name>/skill.md`로 동기화. 다음 setup 실행 시 자동 반영.
+
+**테스트 (M4 신규 7개, 모두 `tests/test_cli_hook_install.py`):**
+- `TestEnsureGitignoreEntries::test_includes_needs_synthesis_entry` — gitignore에 엔트리 포함.
+- `TestNeedsSynthesisFlag` 6개 — JSON shape (count/modules/detected_at ISO), parent dir 자동 생성, 긴 stale 리스트 cap(>20), clear가 존재 시 True, 없을 때 False, title 없을 때 page_id fallback.
+
+**실측 (이 세션에서 직접 확인):**
+- `hybrid-search-mcp reindex --cwd .` → 11 stale 감지 → `Wiki: 11 stale page(s) → STALE.md written, needs_synthesis flag set` 로그 + 429 bytes JSON 생성.
+- `hybrid-search-mcp status` → `⚠ needs_synthesis: 11 module(s) pending — run /maintain` + `Pending: Tests (Isolated), Design (Isolated), Hybrid Search (Isolated)…` 표시.
+- `hybrid-search-mcp install-hook --cwd .` → 기존 훅은 idempotent skip, `Added 1 entries to .gitignore` (신규 엔트리만 추가).
+- `git check-ignore -v .hybrid-search/needs_synthesis` → 28번 줄에서 매칭 확인.
+
+**마이그레이션 주의:**
+- 기존 프로젝트는 flag 파일이 아직 없음. 다음 번 `reindex`가 stale 감지하면 자동 생성. 추가 마이그레이션 필요 없음.
+- **기존 프로젝트 gitignore는 구버전.** `install-hook` 재실행으로 엔트리 보강 필요. (M2 때와 동일 패턴.) 안 하면 flag 파일이 워킹 트리에 untracked로 노출되지만 커밋 위험은 없음(파일 경로가 `.hybrid-search/` 안이라 `.hybrid-search/wiki/` rule은 피해감 — 명시적 엔트리 없으면 tracked 상태가 될 수 있음).
+- `_synthesis_output` 폴더가 비어있는 상태에서 `--finalize`만 호출하면 "No synthesis output found" 메시지 출력 후 return — flag 갱신/삭제 로직은 실행 안 됨(의도). flag 정리는 실제 finalize된 모듈이 있을 때만.
+
+**자율 루프 축 완성도:**
+- Q1 (route_hook) + Q7 (CLAUDE.md marker) + Q8 (core.hooksPath) + M2 (post-checkout) + M3 (post-commit diff env) + **M4 (needs_synthesis)** = 훅 인프라 6개. Claude가 "인덱스 사용하도록" 유도하는 자율 신호망이 완성됨. 다음은 **품질 축(벤치마크 L6)** 또는 **MCP 확장(M5)**.
+
+**다음 세션 권장 순서:**
+- **L6 (1주, 벤치마크 — 강력 추천):** M1 authority nudge + M4 reminder loop 효과를 숫자로 증명. NDCG@10 / MRR 세트, with/without authority 비교. 이걸 통과하면 "Memory Layer for Claude Code" 포지셔닝을 객관 지표로 뒷받침 가능. 패치 문서 L6 섹션.
+- **M1.1 (반나절, 라벨 리네이밍):** `low/medium/high` → `ambiguous/inferred/extracted` 의미론 명시화. DB schema v5 + UPDATE 마이그레이션 + `CONFIDENCE_LEVELS` 상수 교체. cosmetic이지만 공개 API 안정화.
+- **M5 (2일, MCP 확장):** `god_nodes`, `shortest_path`, `subgraph` 도구. M1 score가 god_nodes 랭킹에 자연스럽게 기여. 사용 사례 먼저 검증 필요.
+
+### 이전 세션 완료
+
+**7회차 (2026-04-21):**
+- `d7b0531` — HANDOFF 7회차 갱신
+- `83bfa7c` — M1 call edge numeric confidence score → fusion authority nudge
+
+**6회차 (2026-04-20):**
+- `178620f` — M3 post-commit hook이 diff를 커밋 시점에 동기 캡처 → env 전달
+- `b4319bc` — M2 post-checkout hook — 브랜치 스위치 시 자동 delta reindex
+- `c71ddb1` — Q10 .hybrid-search-ignore + upward walk to .git boundary
+
+---
+
+## 🔵 이전 세션 인계 (7회차) — 참고용
+
+### 한줄 요약 (7회차)
+
+**M1 (Confidence numeric score → fusion authority nudge) 완료** — 품질 축 전환 시작점. 406/406 tests passed.
 
 ### ✅ 이 세션 완료된 것 (7회차)
 
@@ -181,7 +241,7 @@ mathontonlogy   : schema=v4, authority_chunks=50,  score range=[0.80..1.00]
 
 ### 📋 Quick Wins 완성 + 다음 M 시리즈 로드맵
 
-**Quick Wins (Q1~Q10): 10/10 완료 🎉 + M 시리즈 착수(3개)**
+**Quick Wins (Q1~Q10): 10/10 완료 🎉 + M 시리즈 4개 + 자율 루프 축 마감**
 
 | # | 작업 | 완료 세션 |
 |---|------|-----------|
@@ -195,42 +255,48 @@ mathontonlogy   : schema=v4, authority_chunks=50,  score range=[0.80..1.00]
 | ~~Q10~~ | ~~`.hybrid-search-ignore` upward walk~~ | 6회차 |
 | ~~M2~~ | ~~post-checkout hook 추가~~ | 6회차 |
 | ~~M3~~ | ~~post-commit diff env 전달 (race 방지 + subprocess 절약)~~ | 6회차 |
-| ~~M1~~ | ~~Confidence numeric score + fusion authority nudge~~ | **7회차** |
+| ~~M1~~ | ~~Confidence numeric score + fusion authority nudge~~ | 7회차 |
+| ~~M4~~ | ~~`needs_synthesis` flag (훅→스킬→사용자 UX 신호 loop)~~ | **8회차** |
 
-**다음: M 시리즈 계속 — 품질 축 확장**
+**다음: 벤치마크 축(L6) + 품질 축 확장**
 
 | # | 작업 | 공수 | 축 | 우선순위 |
 |---|------|------|----|----|
-| **M4** | **`needs_synthesis` flag 파일 패턴** | **반나절** | **자율 루프** | **다음 1순위** |
+| **L6** | **벤치마크 세트 (NDCG@10 / MRR, M1 authority 효과 숫자 검증)** | **1주** | **벤치마크** | **다음 1순위** |
 | M1.1 | 라벨 리네이밍 (EXTRACTED/INFERRED/AMBIGUOUS, schema v5) | 반나절 | 품질 | 중 |
 | M5 | MCP 확장: `god_nodes`, `shortest_path`, `subgraph` | 2일 | 품질 | 중 |
-| L6 | 벤치마크 세트 (NDCG@10 / MRR, authority 효과 숫자 검증) | 1주 | 벤치마크 | 착수 적기 |
 
-전체 진행률: **13/28 (46%)**.
+전체 진행률: **14/28 (50%)**. 자율 루프 축 6개(Q1/Q7/Q8/M2/M3/M4) 마감 완료.
 
 ### 🎬 다음 세션 시작 방법
 
 ```
 HANDOFF.md 최상단 섹션 + _study/graphify-analysis/99-actionable-patches-for-hybrid-search.md의
-M4 섹션 읽고, `needs_synthesis` flag 파일 패턴 구현하자.
+L6 섹션 읽고, 벤치마크 세트 설계하자. M1 authority_scores의 with/without 비교로
+시작 → NDCG@10 / MRR 측정 기반.
 ```
 
 ### 🔧 현재 상태 스냅샷
 
-- **브랜치:** `main` (M1 = `83bfa7c`, 이전 커밋들: M3 `178620f`, M2 `b4319bc`, Q10 `c71ddb1`)
-- **워킹 트리:** M1 커밋됨. origin/main 대비 5 commits ahead (미푸시).
-- **테스트:** 406/406 passed (396 → +10 M1).
-- **주 작업 파일 (M1):**
-  - `src/hybrid_search/storage/db.py` (schema v4, `CONFIDENCE_SCORES`, `get_chunk_authority_scores`, `update_call_edge_resolution` 시그니처 확장)
-  - `src/hybrid_search/index/callgraph.py` (resolver score 부여)
-  - `src/hybrid_search/search/fusion.py` (`chunk_authority_scores` 파라미터, bounded nudge, `FusedResult.authority`)
-  - `src/hybrid_search/search/orchestrator.py` (single/cross-project 경로에서 authority 수집/병합)
-  - `tests/test_store_db.py` (+3 M1 migration), `tests/test_callgraph.py` (+2 M1 score), `tests/test_fusion.py` (+5 M1 nudge), `tests/test_synthesizer.py` (schema 상수 참조로 수정)
-- **DB 실측:** 3개 프로젝트 모두 v4 자동 승격. hybrid-search-mcp 자체 196 chunks가 authority [0.80..1.00] 즉시 확보.
-- **route_hook 동작 확인됨:** 이 세션 동안 Glob/Grep 호출 시 `.hybrid-search/wiki/index.md` 안내가 additionalContext로 주입되는 것 실측. Q1 자율 루프가 실전 운영 중.
+- **브랜치:** `main` (M4 = `6ed4f39`, M1 = `83bfa7c`, 이전 커밋들: M3 `178620f`, M2 `b4319bc`, Q10 `c71ddb1`)
+- **워킹 트리:** M4 커밋됨 + HANDOFF 갱신 중. origin/main 대비 7 commits ahead (미푸시).
+- **테스트:** 413/413 passed (406 → +7 M4).
+- **주 작업 파일 (M4):**
+  - `src/hybrid_search/cli.py` (`_NEEDS_SYNTHESIS_FLAG` 상수, `_write_needs_synthesis_flag` / `_clear_needs_synthesis_flag` 헬퍼, `_mark_stale_wikis`에서 호출, `cmd_synthesize_wiki --finalize` 끝에서 재평가/clear, `_check_project_status`에 경고 표시, `_ensure_gitignore_entries`에 엔트리)
+  - `skills/search.md` (Step 0 flag 체크 + 사용자 경고)
+  - `skills/maintain.md` (flag 자연 clear 흐름 설명)
+  - `tests/test_cli_hook_install.py` (+7 M4: 1 gitignore + 6 flag helpers)
+  - `.gitignore` (신규 엔트리)
+- **Live 검증:** hybrid-search-mcp 프로젝트에서 `reindex` → 11 stale 감지 → flag 생성 + status에 경고 노출 → `install-hook` 재실행 → gitignore 자동 보강 → `git check-ignore` 통과 확인. End-to-end 흐름 모두 실측.
+- **route_hook 동작 확인됨:** 이 세션 동안 Glob/Grep 호출 시 `.hybrid-search/wiki/index.md` 안내가 additionalContext로 주입되는 것 실측. 자율 루프 축이 실전 운영 중.
 
 ### ⚠️ 주의사항
 
+- **M4 flag 생성 타이밍:** `_mark_stale_wikis`에서만 write/clear. 즉 `reindex` 또는 `sync-wiki` 경로를 타야 flag가 갱신됨. 순수 `synthesize-wiki --prepare`만 돌리면 flag는 건드리지 않음(staleness 평가 안 하므로). `--finalize`는 예외 — 끝에서 `check_staleness`로 재평가해 flag 정리.
+- **M4 STALE.md vs needs_synthesis 분리:** 둘 다 같은 트리거(stale_items 존재)로 write/clear되지만 역할 분리. STALE.md는 human-readable 상세 (changed_files 포함), needs_synthesis는 skill이 parse하는 구조화 signal (JSON). 한쪽만 write하는 경로는 없어야 — 두 파일 drift 방지 위해 `_mark_stale_wikis` 한 곳에서만 처리.
+- **M4 gitignore 재설치 필요:** 기존 프로젝트는 gitignore에 needs_synthesis 엔트리가 없음. `hybrid-search-mcp install-hook --cwd .` 재실행 시 1 entry 자동 추가됨. 이미 flag 파일이 tracked로 들어간 경우 `git rm --cached .hybrid-search/needs_synthesis` 필요할 수 있음(드문 케이스).
+- **M4 finalize의 flag 재평가 비용:** 매 `--finalize` 호출마다 `wiki_store.check_staleness(pinfo.id)`를 한 번 더 돌림. 페이지 수 많은 프로젝트에선 수백 ms 정도. DB 쿼리 기반이라 IO 비용은 크지 않지만, 매우 큰 프로젝트(valuein_homepage 1,330 files 급)에선 모니터링 필요. 최적화 필요 시 finalize가 터치한 module 이름만 check_staleness에 page_id로 필터 전달 가능.
+- **M4 스킬 sync:** `skills/*.md` 수정만으로는 `~/.claude/skills/`에 반영 안 됨. `hybrid-search-mcp setup` 실행 시 자동 복사. 다음 세션에서 사용자가 스킬 사용 전에 setup 한 번 권장.
 - **M1 authority 시그널 범위:** `get_chunk_authority_scores`는 `callee_chunk_id IS NOT NULL` 필터 사용 → unresolved edge는 authority에 기여하지 않음. 신규 프로젝트에서 call graph resolution이 돌기 전엔 fusion 효과 無. 실측에서 `breeze`가 "no authority signal yet"으로 나왔던 건 그 때문.
 - **M1 bounded nudge 경계:** 공식 `rrf * (0.5 + 0.5 * auth)`에서 맵에 **없는** chunk는 `authority=None` → passthrough. 맵에 `auth=0.0`으로 명시된 chunk는 `factor=0.5`로 damped. 즉 **명시적 0과 미설정의 의미가 다르다.** 현재 `get_chunk_authority_scores`는 resolved edge만 반환하므로 실무상 0.3 이상만 들어옴. 테스트 `test_chunks_outside_map_are_neutral`이 이 구분을 고정.
 - **M1 cross-project merge:** chunk id가 전역 UUID라 단순 `dict.update`로 병합. 만약 향후 chunk id 생성 규칙이 바뀌어 충돌 가능성이 생기면 `(project_id, chunk_id)` 복합키로 전환 필요.
