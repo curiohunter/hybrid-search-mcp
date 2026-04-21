@@ -32,7 +32,7 @@ from hybrid_search.project import ProjectRegistry
 from hybrid_search.search import fusion as fusion_mod
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.fusion import reciprocal_rank_fusion
-from hybrid_search.search.orchestrator import get_bm25_weight
+from hybrid_search.search.orchestrator import QueryType, get_bm25_weight
 from hybrid_search.search.vector import VectorEngine
 from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
@@ -157,14 +157,20 @@ def _enrich(pinfo, chunk_ids: set, config) -> dict[str, dict]:
 
 
 def _fuse(bm25_ids, vec_ids, authority_map, query, k, alpha) -> list:
-    """Run fusion once with given α (patched on module) and authority map."""
+    """Run fusion once with given α (patched on module) and authority map.
+
+    Mirrors the production gate from orchestrator.hybrid_search (M1.2):
+    EXACT_SYMBOL queries disable the authority nudge so the definition
+    itself doesn't lose to well-connected call-sites.
+    """
     original = fusion_mod._AUTHORITY_BOOST_ALPHA
     fusion_mod._AUTHORITY_BOOST_ALPHA = alpha
     try:
-        weight, _ = get_bm25_weight(query)
+        weight, qtype = get_bm25_weight(query)
+        effective_authority = None if qtype == QueryType.EXACT_SYMBOL else authority_map
         return reciprocal_rank_fusion(
             bm25_ids, vec_ids, k=k, bm25_weight=weight,
-            chunk_authority_scores=authority_map,
+            chunk_authority_scores=effective_authority,
         )[:TOP_K]
     finally:
         fusion_mod._AUTHORITY_BOOST_ALPHA = original
