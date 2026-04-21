@@ -2,11 +2,100 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 8회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 9회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
 
-**M4 (`needs_synthesis` flag) 완료** — 자율 루프 축 마감. 훅→스킬→사용자로 이어지는 UX 신호 loop 완성. 413/413 tests passed. 전체 **14/28 (50%)**. 다음 세션은 **L6 (벤치마크 세트, 1주)** 또는 **M1.1 라벨 리네이밍(반나절)** 또는 **M5 (MCP 확장, 2일)**.
+**M1.v2 (boost-only nudge α=0.3) + Full L6 benchmark (35q) 완료.** 품질 축 + 벤치마크 축 동시 진전. 413/413 tests passed. 다음 세션은 **M1.2 keyword type-gating (30분 스코프)** — Full L6에서 keyword가 일관되게 음수(P(Δ>0)=0.25)로 확인됐기 때문. 이후 M1.1 라벨 리네이밍 or M5 MCP 확장.
+
+### ✅ 이 세션 완료된 것 (9회차)
+
+**1. M1.v2: damping-only → boost-only** (`c6fe7a1`)
+- **공식 변경:** `rrf * (0.5 + 0.5*auth)` → `rrf * (1.0 + 0.3*auth)`. `_AUTHORITY_BOOST_ALPHA = 0.3` 상수.
+- **의미 변화:** 맵에 없는 chunk는 **여전히 passthrough** (factor 1.0). 맵에 있고 auth=0인 chunk도 factor 1.0 (중립). auth=0.3 → 1.09 (modest boost), auth=1.0 → 1.3 (ceiling). **penalty 제거** — v1이 저신뢰 edge로 chunk를 damping했던 것이 keyword 쿼리에서 정답을 밀어내는 원인.
+- **TestAuthorityNudge 5개 업데이트:** `test_low_authority_applies_modest_boost` (factor 1.09), `test_authority_equal_one_hits_boost_ceiling` (factor 1.3), `test_chunks_outside_map_are_neutral`는 "absent ≡ explicit 0" 신의미로 재정의. 413/413 passed.
+
+**2. Mini-PoC (10q) — 가설 검증** (`47b2b10` PoC 보존, `c6fe7a1` 공식 변경 후 재측정)
+- **의도적 negative baseline을 먼저 보존:** PoC 1차 결과 -0.015 (damping-only 실패)를 git에 남겨놓고, 공식 수정 후 +0.041 역전 확인.
+- **Negative result가 PoC의 이상적 결과.** 1.5h 투자로 M1 공식의 근본 결함(damping-only, boost 부재)을 발견 + evidence 확보. 변수 1개 원칙 준수(공식만 수정).
+
+**3. Full L6 benchmark (35q, α 스윕 + bootstrap 95% CI)** (`379aa64`)
+- **Self-contained 30q** (hybrid-search-mcp, 타입 균형: structural 10 / keyword 10 / semantic 10) + **external spot check 5q** (valuein_homepage, expected_files proxy).
+- **α 스윕:** {0.2, 0.3, 0.5} × {OFF, ON} × 35q = 1400 rows in `results_v2.json`.
+- **Bootstrap 1000회 resampling** — 95% CI + P(Δ>0) 정량화.
+
+**Self-contained 핵심 결과 (α=0.3 기준):**
+
+| type | n | Δ NDCG@10 | 95% CI | P(Δ>0) |
+|---|---|---|---|---|
+| structural | 10 | **+0.117** | [-0.019, +0.275] | **0.94** |
+| keyword | 10 | **-0.032** | [-0.131, +0.050] | **0.25** ⚠ |
+| semantic | 10 | +0.026 | [+0.000, +0.079] | 0.66 |
+| OVERALL | 30 | +0.037 | [-0.024, +0.103] | 0.87 |
+
+**α=0.3이 optimal.** α=0.5는 external엔 더 좋지만 self의 structural variance 큼. 보수적 선택.
+
+**External spot check (n=5, proxy labels, α=0.3):**
+- Δ +0.153 평균. 한국어 NL(X01 로그인, X02 출석)이 가장 큰 이득.
+- self-contained와 달리 semantic이 α에 민감 — valuein은 service 함수 호출이 풍부해 authority chunk가 semantic 쿼리에서도 잡힘. **이 프로젝트 semantic=0 관찰은 일반화 안 됨**이 중요한 교훈.
+
+**Outlier 분석 — M1.2가 해결할 것:**
+
+음수 (모두 keyword-like):
+- K05 `FusedResult` Δ -0.369 (class def이 reciprocal_rank_fusion에 밀림)
+- S09 ProjectRegistry Δ -0.275 (exact symbol 쿼리성)
+- K07 compute_file_hash Δ -0.090
+- K03 reciprocal_rank_fusion Δ -0.094
+
+대규모 양:
+- S10 delta reindex scanner 로직 +0.576
+- S01 wiki staleness +0.400
+- S04 module index +0.372
+- N07 post-commit/checkout lock +0.262
+
+### 🎯 다음 세션: M1.2 keyword type-gating (30분 스코프)
+
+**가설:** `classify_query == EXACT_SYMBOL` 쿼리에서 authority를 OFF 강제하면 keyword Δ -0.032 → 0 근처로 회복. structural/semantic은 영향 없음.
+
+**구현:**
+- `src/hybrid_search/search/orchestrator.py::hybrid_search`에서 `qtype` 이미 계산됨 (line 147). 이후 fusion 호출 시:
+  ```python
+  effective_authority = None if qtype == QueryType.EXACT_SYMBOL else authority_scores
+  fused = reciprocal_rank_fusion(..., chunk_authority_scores=effective_authority or None)
+  ```
+- 혼합 쿼리(`KOREAN_NL` with symbol)는 authority 유지 — classify_query의 mixed handling이 이미 KOREAN_NL로 분류함(orchestrator.py:63-65).
+
+**검증:**
+- `benchmarks/authority_poc/run_v2.py` 재실행 (gold set 동일, labels 규칙 동일 — chunk_id 세트만 바뀜) → `score_v2.py` 재출력.
+- 기대: keyword P(Δ>0) 0.25 → ≥0.50으로 회복. structural P=0.94 유지.
+- 악화 시 원인: classify_query가 놓친 exact symbol 쿼리 있을 가능성 → per-query delta로 확인.
+
+**테스트 추가:**
+- `test_orchestrator.py`에 mock 기반 integration 테스트: EXACT_SYMBOL 분류 쿼리에서 fusion이 `chunk_authority_scores=None`으로 호출되는지 assert.
+
+**리스크:**
+- `_SYMBOL_RE`(orchestrator.py:44)가 classify 못하는 exact symbol(예: `FusedResult` PascalCase)이 있으면 gating 실패. 실제로 K05 `FusedResult`는 PascalCase만이라 현재 regex `^[a-zA-Z_][a-zA-Z0-9_]*(?:[A-Z][a-z]+)+...`에 매칭됨(확인 필요).
+
+### ✅ M4 (8회차) + M1 (7회차) 상세는 🔵 섹션 참고
+
+### 이전 세션 완료
+
+**8회차 (2026-04-21):**
+- `ccc4f98` — HANDOFF 8회차 / `6ed4f39` — M4 needs_synthesis flag
+
+**7회차 (2026-04-21):**
+- `d7b0531` — HANDOFF 7회차 / `83bfa7c` — M1 call edge numeric confidence score
+
+**6회차 (2026-04-20):**
+- `178620f` M3 / `b4319bc` M2 / `c71ddb1` Q10
+
+---
+
+## 🔵 이전 세션 인계 (8회차) — 참고용
+
+### 한줄 요약 (8회차)
+
+**M4 (`needs_synthesis` flag) 완료** — 자율 루프 축 마감. 훅→스킬→사용자로 이어지는 UX 신호 loop 완성. 413/413 tests passed.
 
 ### ✅ 이 세션 완료된 것 (8회차)
 
@@ -256,42 +345,50 @@ mathontonlogy   : schema=v4, authority_chunks=50,  score range=[0.80..1.00]
 | ~~M2~~ | ~~post-checkout hook 추가~~ | 6회차 |
 | ~~M3~~ | ~~post-commit diff env 전달 (race 방지 + subprocess 절약)~~ | 6회차 |
 | ~~M1~~ | ~~Confidence numeric score + fusion authority nudge~~ | 7회차 |
-| ~~M4~~ | ~~`needs_synthesis` flag (훅→스킬→사용자 UX 신호 loop)~~ | **8회차** |
+| ~~M4~~ | ~~`needs_synthesis` flag (훅→스킬→사용자 UX 신호 loop)~~ | 8회차 |
+| ~~M1.v2~~ | ~~boost-only nudge (α=0.3), damping 제거~~ | **9회차** |
+| ~~L6 mini-PoC + Full~~ | ~~35q benchmark, bootstrap CI, α sweep 검증~~ | **9회차** |
 
-**다음: 벤치마크 축(L6) + 품질 축 확장**
+**다음: 품질 축 미세 조정 + 확장**
 
 | # | 작업 | 공수 | 축 | 우선순위 |
 |---|------|------|----|----|
-| **L6** | **벤치마크 세트 (NDCG@10 / MRR, M1 authority 효과 숫자 검증)** | **1주** | **벤치마크** | **다음 1순위** |
+| **M1.2** | **keyword type-gating (EXACT_SYMBOL → authority OFF)** | **30분** | **품질** | **다음 1순위 (L6 근거)** |
 | M1.1 | 라벨 리네이밍 (EXTRACTED/INFERRED/AMBIGUOUS, schema v5) | 반나절 | 품질 | 중 |
 | M5 | MCP 확장: `god_nodes`, `shortest_path`, `subgraph` | 2일 | 품질 | 중 |
+| L6 확장 | gold set 50q+ 확대, MRR 추가, per-project 교차 검증 | 1일 | 벤치마크 | 낮음 |
 
-전체 진행률: **14/28 (50%)**. 자율 루프 축 6개(Q1/Q7/Q8/M2/M3/M4) 마감 완료.
+전체 진행률: **16/28 (57%)**. 자율 루프(6) + 품질(M1+M1.v2) + 벤치마크(PoC+Full L6) 3축 모두 실제 측정 기반으로 전진.
 
 ### 🎬 다음 세션 시작 방법
 
 ```
-HANDOFF.md 최상단 섹션 + _study/graphify-analysis/99-actionable-patches-for-hybrid-search.md의
-L6 섹션 읽고, 벤치마크 세트 설계하자. M1 authority_scores의 with/without 비교로
-시작 → NDCG@10 / MRR 측정 기반.
+HANDOFF.md 최상단 + benchmarks/authority_poc/score_v2.py 실행 결과 읽고,
+M1.2 keyword type-gating 구현 (30분):
+  orchestrator.hybrid_search에서 qtype==EXACT_SYMBOL이면 authority=None 강제.
+  run_v2.py 재실행으로 keyword P(Δ>0) 0.25 → ≥0.50 회복 확인.
+  test_orchestrator.py에 mock integration 테스트 추가.
 ```
 
 ### 🔧 현재 상태 스냅샷
 
-- **브랜치:** `main` (M4 = `6ed4f39`, M1 = `83bfa7c`, 이전 커밋들: M3 `178620f`, M2 `b4319bc`, Q10 `c71ddb1`)
-- **워킹 트리:** M4 커밋됨 + HANDOFF 갱신 중. origin/main 대비 7 commits ahead (미푸시).
-- **테스트:** 413/413 passed (406 → +7 M4).
-- **주 작업 파일 (M4):**
-  - `src/hybrid_search/cli.py` (`_NEEDS_SYNTHESIS_FLAG` 상수, `_write_needs_synthesis_flag` / `_clear_needs_synthesis_flag` 헬퍼, `_mark_stale_wikis`에서 호출, `cmd_synthesize_wiki --finalize` 끝에서 재평가/clear, `_check_project_status`에 경고 표시, `_ensure_gitignore_entries`에 엔트리)
-  - `skills/search.md` (Step 0 flag 체크 + 사용자 경고)
-  - `skills/maintain.md` (flag 자연 clear 흐름 설명)
-  - `tests/test_cli_hook_install.py` (+7 M4: 1 gitignore + 6 flag helpers)
-  - `.gitignore` (신규 엔트리)
-- **Live 검증:** hybrid-search-mcp 프로젝트에서 `reindex` → 11 stale 감지 → flag 생성 + status에 경고 노출 → `install-hook` 재실행 → gitignore 자동 보강 → `git check-ignore` 통과 확인. End-to-end 흐름 모두 실측.
-- **route_hook 동작 확인됨:** 이 세션 동안 Glob/Grep 호출 시 `.hybrid-search/wiki/index.md` 안내가 additionalContext로 주입되는 것 실측. 자율 루프 축이 실전 운영 중.
+- **브랜치:** `main` (L6 = `379aa64`, M1.v2 = `c6fe7a1`, PoC = `47b2b10`, M4 = `6ed4f39`, M1 = `83bfa7c`)
+- **워킹 트리:** L6 커밋됨 + HANDOFF 갱신 중. origin/main 대비 10 commits ahead (미푸시).
+- **테스트:** 413/413 passed (공식 변경 포함 regression 없음).
+- **주 작업 파일 (9회차):**
+  - `src/hybrid_search/search/fusion.py` (공식 boost-only, α=0.3, `_AUTHORITY_BOOST_ALPHA` 상수)
+  - `tests/test_fusion.py` (TestAuthorityNudge 5개 재작성)
+  - `benchmarks/authority_poc/` 전체 (run.py + score.py + run_v2.py + score_v2.py + gold_queries.json + gold_queries_v2.json + external_queries.json + results.json + results_v2.json + label_me.tsv + apply_labels.py)
+- **Benchmark α=0.3 최종 결과:** OVERALL Δ +0.037 (P=0.87). structural +0.117 (P=0.94) / semantic +0.026 (P=0.66) / **keyword -0.032 (P=0.25) ← M1.2 해결 대상**.
+- **route_hook 동작 확인됨:** Glob/Grep 호출 시 안내 주입 실측.
 
 ### ⚠️ 주의사항
 
+- **M1.v2 boost-only 의미 변화 (v1 테스트 전체 재작성):** v1에서는 "absent ≡ neutral, explicit 0 = damped"였는데 v2에서는 "absent ≡ explicit 0 = 둘 다 factor 1.0". 기존 제3자 코드가 authority=0.0을 penalty 의도로 사용했다면 더 이상 동작 안 함. `_apply_authority_nudge`의 의미 변화를 문서화 필요. `get_chunk_authority_scores`는 resolved edge만 반환하므로 실무 경로엔 영향 없음.
+- **α=0.3 선택 근거 (Full L6 기반):** structural P(Δ>0)=0.94가 α=0.3에서 최고. α=0.5는 external 프로젝트엔 더 좋지만(+0.235 vs +0.153) self-contained의 structural variance가 커짐 (표준편차 확대). 보수적 선택. 다른 프로젝트 배포 후 α 재튜닝 필요 가능 — 현재는 상수, 나중에 config 노출 고려.
+- **L6 gold set의 한계:** self-contained 30q 중 semantic 10q는 `N01/N03/N08/N10`이 baseline NDCG=0 (top-10에 relevance>0 chunk 무). 이 프로젝트의 semantic 질의가 docs/plan 문서 chunk를 많이 끌어오는데 expected primary/secondary와 mismatch. 외부 프로젝트(valuein)에선 완전히 다른 패턴 — semantic이 가장 큰 authority 혜택. **"semantic에 authority 효과 없음"은 이 프로젝트 편향, 일반화 금지.**
+- **L6 external proxy labels 제약:** `expected_files` 기반 매칭이라 "같은 기능을 다른 파일이 구현"한 경우 miss. spot check로만 사용, 결정적 신호로 쓰지 말 것. 본격 평가엔 도메인 전문가 라벨 필요.
+- **M1.2 type-gating 구현 시 주의:** classify_query가 `EXACT_SYMBOL`인지 판별하는 `_SYMBOL_RE`가 PascalCase 단독(예: `FusedResult`)을 잡지 못할 수 있음. 현재 regex 확인 후 필요시 보강. 혼합 쿼리(`createUser 로직`)는 KOREAN_NL로 분류되므로 authority 유지 → 의도대로.
 - **M4 flag 생성 타이밍:** `_mark_stale_wikis`에서만 write/clear. 즉 `reindex` 또는 `sync-wiki` 경로를 타야 flag가 갱신됨. 순수 `synthesize-wiki --prepare`만 돌리면 flag는 건드리지 않음(staleness 평가 안 하므로). `--finalize`는 예외 — 끝에서 `check_staleness`로 재평가해 flag 정리.
 - **M4 STALE.md vs needs_synthesis 분리:** 둘 다 같은 트리거(stale_items 존재)로 write/clear되지만 역할 분리. STALE.md는 human-readable 상세 (changed_files 포함), needs_synthesis는 skill이 parse하는 구조화 signal (JSON). 한쪽만 write하는 경로는 없어야 — 두 파일 drift 방지 위해 `_mark_stale_wikis` 한 곳에서만 처리.
 - **M4 gitignore 재설치 필요:** 기존 프로젝트는 gitignore에 needs_synthesis 엔트리가 없음. `hybrid-search-mcp install-hook --cwd .` 재실행 시 1 entry 자동 추가됨. 이미 flag 파일이 tracked로 들어간 경우 `git rm --cached .hybrid-search/needs_synthesis` 필요할 수 있음(드문 케이스).
