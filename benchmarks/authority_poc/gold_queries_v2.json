@@ -1,0 +1,489 @@
+{
+  "_note": "Full L6 gold set — self-contained 30q (hybrid-search-mcp) + structured 'expected' patterns for reproducible automatic labeling. 'primary' matches → rel=2, 'secondary' → rel=1. Each match rule is {file_path_suffix?, name_eq?, name_contains?, snippet_contains?} — any rule in the list that matches, scores.",
+  "project": "hybrid-search-mcp",
+  "queries": [
+    {
+      "id": "S01",
+      "type": "structural",
+      "query": "wiki staleness 감지는 어디서 일어나는가",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "storage/wiki.py", "name_eq": "check_staleness"},
+          {"file_path_suffix": "storage/wiki.py", "name_eq": "_check_page_staleness"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "tools/wiki.py", "name_contains": "staleness"},
+          {"file_path_suffix": "cli.py", "name_eq": "cmd_stale"},
+          {"file_path_suffix": "cli.py", "name_eq": "cmd_sync_wiki"},
+          {"file_path_suffix": "test_wiki.py", "name_contains": "stale"}
+        ]
+      }
+    },
+    {
+      "id": "S02",
+      "type": "structural",
+      "query": "post-commit 훅이 reindex를 트리거하는 흐름",
+      "expected": {
+        "primary": [
+          {"snippet_contains": "post-commit hook"},
+          {"snippet_contains": "nohup python -m hybrid_search.cli reindex"},
+          {"snippet_contains": "M3: post-commit"}
+        ],
+        "secondary": [
+          {"snippet_contains": "Phase 6a"},
+          {"snippet_contains": "Phase 8d"},
+          {"snippet_contains": "M3 post-commit"}
+        ]
+      }
+    },
+    {
+      "id": "S03",
+      "type": "structural",
+      "query": "RRF 결과가 orchestrator에서 enrich되는 경로",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "orchestrator.py", "name_eq": "_enrich_results"},
+          {"file_path_suffix": "orchestrator.py", "name_eq": "hybrid_search"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "orchestrator.py", "name_contains": "HybridResult"},
+          {"file_path_suffix": "fusion.py", "name_eq": "reciprocal_rank_fusion"},
+          {"snippet_contains": "Phase 10"},
+          {"snippet_contains": "10.2 재랭킹"}
+        ]
+      }
+    },
+    {
+      "id": "S04",
+      "type": "structural",
+      "query": "call edge resolution에서 module index가 하는 역할",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "callgraph.py", "name_eq": "_build_module_index"},
+          {"file_path_suffix": "callgraph.py", "name_eq": "resolve_call_edges"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "test_callgraph.py", "name_contains": "module"},
+          {"file_path_suffix": "test_callgraph.py", "name_contains": "import"},
+          {"snippet_contains": "Phase 7"},
+          {"snippet_contains": "Call Graph (Phase 7)"}
+        ]
+      }
+    },
+    {
+      "id": "S05",
+      "type": "structural",
+      "query": "wiki link 그래프에서 BFS 확장이 어떻게 일어나는가",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "storage/wiki.py", "name_eq": "_expand_graph"},
+          {"file_path_suffix": "storage/wiki.py", "name_contains": "linked_pages"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "storage/wiki.py", "name_contains": "link"},
+          {"snippet_contains": "Phase 8e"},
+          {"snippet_contains": "wikilink"}
+        ]
+      }
+    },
+    {
+      "id": "S06",
+      "type": "structural",
+      "query": "USearch vector engine이 HNSW 인덱스를 구축하는 과정",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "search/vector.py", "name_eq": "VectorEngine"},
+          {"file_path_suffix": "search/vector.py", "name_eq": "add"},
+          {"file_path_suffix": "search/vector.py", "name_eq": "search"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "search/vector.py"}
+        ]
+      }
+    },
+    {
+      "id": "S07",
+      "type": "structural",
+      "query": "embedder가 OpenAI API를 호출하는 흐름",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/embedder.py", "name_eq": "_embed_openai_batch"},
+          {"file_path_suffix": "index/embedder.py", "name_eq": "embed_query"},
+          {"file_path_suffix": "index/embedder.py", "name_eq": "embed_batch"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/embedder.py"}
+        ]
+      }
+    },
+    {
+      "id": "S08",
+      "type": "structural",
+      "query": "ast_chunker가 tree-sitter로 심볼을 추출하는 방법",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/ast_chunker.py", "name_eq": "chunk_code_file"},
+          {"file_path_suffix": "index/ast_chunker.py", "name_eq": "_extract_name"},
+          {"file_path_suffix": "index/ast_chunker.py", "name_eq": "_classify_node_type"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/ast_chunker.py"}
+        ]
+      }
+    },
+    {
+      "id": "S09",
+      "type": "structural",
+      "query": "프로젝트 registry가 프로젝트를 등록하고 조회하는 로직",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "project.py", "name_eq": "register"},
+          {"file_path_suffix": "project.py", "name_eq": "ProjectRegistry"},
+          {"file_path_suffix": "project.py", "name_eq": "get_by_name"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "project.py"}
+        ]
+      }
+    },
+    {
+      "id": "S10",
+      "type": "structural",
+      "query": "delta reindex가 변경된 파일만 식별하는 scanner 로직",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/scanner.py", "name_eq": "scan_project_subset"},
+          {"file_path_suffix": "index/scanner.py", "name_eq": "_is_changed"},
+          {"file_path_suffix": "index/scanner.py", "name_eq": "get_changed_files_from_git"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/scanner.py"}
+        ]
+      }
+    },
+
+    {
+      "id": "K01",
+      "type": "keyword",
+      "query": "CONFIDENCE_SCORES",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "storage/db.py", "name_contains": "CONFIDENCE"},
+          {"file_path_suffix": "storage/db.py", "name_eq": "get_chunk_authority_scores"},
+          {"file_path_suffix": "test_store_db.py", "name_contains": "confidence_score"},
+          {"file_path_suffix": "test_store_db.py", "name_contains": "authority_scores"},
+          {"file_path_suffix": "test_callgraph.py", "name_contains": "expected_score"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "callgraph.py", "name_eq": "resolve_call_edges"},
+          {"snippet_contains": "M1: Call edge numeric"}
+        ]
+      }
+    },
+    {
+      "id": "K02",
+      "type": "keyword",
+      "query": "_NEEDS_SYNTHESIS_FLAG",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "cli.py", "name_contains": "needs_synthesis_flag"},
+          {"file_path_suffix": "cli.py", "name_eq": "cmd_synthesize_wiki"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "search.md", "snippet_contains": "needs_synthesis"},
+          {"file_path_suffix": "test_cli_hook_install.py", "name_contains": "json_with_expected_shape"},
+          {"snippet_contains": "M4: needs_synthesis"}
+        ]
+      }
+    },
+    {
+      "id": "K03",
+      "type": "keyword",
+      "query": "reciprocal_rank_fusion",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "fusion.py", "name_eq": "reciprocal_rank_fusion"},
+          {"file_path_suffix": "test_fusion.py", "name_contains": "TestReciprocalRankFusion"},
+          {"file_path_suffix": "test_fusion.py", "name_contains": "authority"},
+          {"file_path_suffix": "orchestrator.py", "name_eq": "hybrid_search"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "fusion.py", "name_contains": "authority_nudge"},
+          {"file_path_suffix": "orchestrator.py", "name_eq": "_enrich_results"},
+          {"snippet_contains": "M1: Call edge numeric"}
+        ]
+      }
+    },
+    {
+      "id": "K04",
+      "type": "keyword",
+      "query": "IndexingPipeline",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/pipeline.py", "name_eq": "IndexingPipeline"},
+          {"file_path_suffix": "test_pipeline.py"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/pipeline.py"}
+        ]
+      }
+    },
+    {
+      "id": "K05",
+      "type": "keyword",
+      "query": "FusedResult",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "fusion.py", "name_eq": "FusedResult"},
+          {"file_path_suffix": "fusion.py", "name_eq": "reciprocal_rank_fusion"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "orchestrator.py", "name_contains": "FusedResult"},
+          {"file_path_suffix": "test_fusion.py"}
+        ]
+      }
+    },
+    {
+      "id": "K06",
+      "type": "keyword",
+      "query": "WikiStore",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "storage/wiki.py", "name_eq": "WikiStore"},
+          {"file_path_suffix": "storage/db.py", "name_eq": "wiki_store"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "storage/wiki.py"},
+          {"file_path_suffix": "test_wiki.py"}
+        ]
+      }
+    },
+    {
+      "id": "K07",
+      "type": "keyword",
+      "query": "compute_file_hash",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/scanner.py", "name_eq": "compute_file_hash"},
+          {"file_path_suffix": "test_scanner.py", "name_contains": "hash"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/scanner.py"}
+        ]
+      }
+    },
+    {
+      "id": "K08",
+      "type": "keyword",
+      "query": "resolve_call_edges",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "callgraph.py", "name_eq": "resolve_call_edges"},
+          {"file_path_suffix": "test_callgraph.py", "name_contains": "resolve"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "callgraph.py"},
+          {"file_path_suffix": "cli.py", "snippet_contains": "call graph re-resolve"}
+        ]
+      }
+    },
+    {
+      "id": "K09",
+      "type": "keyword",
+      "query": "SCHEMA_VERSION",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "storage/db.py", "name_contains": "SCHEMA_VERSION"},
+          {"file_path_suffix": "storage/db.py", "name_eq": "_migrate_schema"},
+          {"file_path_suffix": "test_store_db.py", "name_contains": "schema"},
+          {"file_path_suffix": "test_synthesizer.py", "name_contains": "schema_version"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "storage/db.py"}
+        ]
+      }
+    },
+    {
+      "id": "K10",
+      "type": "keyword",
+      "query": "HybridResult",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "orchestrator.py", "name_contains": "HybridResult"},
+          {"file_path_suffix": "orchestrator.py", "name_eq": "_enrich_results"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "orchestrator.py"},
+          {"file_path_suffix": "tools/hybrid_search.py"}
+        ]
+      }
+    },
+
+    {
+      "id": "N01",
+      "type": "semantic",
+      "query": "저신뢰 엣지가 검색 결과에 미치는 영향",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "fusion.py", "name_contains": "authority_nudge"},
+          {"file_path_suffix": "fusion.py", "name_eq": "reciprocal_rank_fusion"},
+          {"snippet_contains": "M1: Call edge numeric"},
+          {"snippet_contains": "damping-only"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "test_fusion.py", "name_contains": "authority"},
+          {"snippet_contains": "confidence_score"}
+        ]
+      }
+    },
+    {
+      "id": "N02",
+      "type": "semantic",
+      "query": "한국어 쿼리 분류 전략",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "orchestrator.py", "name_eq": "classify_query"},
+          {"file_path_suffix": "orchestrator.py", "name_eq": "get_bm25_weight"},
+          {"file_path_suffix": "CLAUDE.md", "snippet_contains": "라우팅"},
+          {"file_path_suffix": "search.md", "snippet_contains": "의도 분류"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "search.md", "snippet_contains": "한국어"},
+          {"snippet_contains": "KOREAN_NL"},
+          {"file_path_suffix": "test_query_classifier.py"}
+        ]
+      }
+    },
+    {
+      "id": "N03",
+      "type": "semantic",
+      "query": "동시 커밋 race 방지 메커니즘",
+      "expected": {
+        "primary": [
+          {"snippet_contains": "M3 race 방지"},
+          {"snippet_contains": "M3: post-commit"},
+          {"snippet_contains": ".reindex.lock"}
+        ],
+        "secondary": [
+          {"snippet_contains": "M3"},
+          {"snippet_contains": "race"}
+        ]
+      }
+    },
+    {
+      "id": "N04",
+      "type": "semantic",
+      "query": "인덱스가 손상되었을 때 복구 방법",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "rebuild-index.md"},
+          {"snippet_contains": "ConsistencyMismatch"},
+          {"snippet_contains": "force rebuild"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/pipeline.py", "snippet_contains": "force"},
+          {"snippet_contains": "rebuild"}
+        ]
+      }
+    },
+    {
+      "id": "N05",
+      "type": "semantic",
+      "query": "환각 방지 메커니즘이 wiki 합성에 어떻게 적용되는가",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/synthesizer.py", "name_eq": "verify_references"},
+          {"file_path_suffix": "index/synthesizer.py", "name_eq": "verify_symbols"},
+          {"file_path_suffix": "cli.py", "name_eq": "cmd_verify_synthesis"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "synthesizer.py"},
+          {"snippet_contains": "환각 방지"},
+          {"snippet_contains": "verify_references"}
+        ]
+      }
+    },
+    {
+      "id": "N06",
+      "type": "semantic",
+      "query": "cross-project 검색이 현재 프로젝트를 어떻게 우선하는가",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "orchestrator.py", "name_eq": "_search_cross_project"},
+          {"file_path_suffix": "orchestrator.py", "name_eq": "_detect_primary_project"},
+          {"file_path_suffix": "orchestrator.py", "name_eq": "_weighted_interleave"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "test_cwd_boost.py"},
+          {"snippet_contains": "primary_project"},
+          {"snippet_contains": "CWD boost"}
+        ]
+      }
+    },
+    {
+      "id": "N07",
+      "type": "semantic",
+      "query": "post-commit과 post-checkout 훅이 공유하는 lock 메커니즘",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "cli.py", "snippet_contains": ".reindex.lock"},
+          {"file_path_suffix": "cli.py", "snippet_contains": "post-checkout"},
+          {"file_path_suffix": "cli.py", "snippet_contains": "post-commit"}
+        ],
+        "secondary": [
+          {"snippet_contains": "reindex.lock"},
+          {"snippet_contains": "M2"},
+          {"snippet_contains": "M3"}
+        ]
+      }
+    },
+    {
+      "id": "N08",
+      "type": "semantic",
+      "query": "wiki 합성에서 결정론적 구조와 LLM 출력이 어떻게 합쳐지는가",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/synthesizer.py", "name_eq": "merge_synthesis_with_structure"},
+          {"file_path_suffix": "index/synthesizer.py", "name_eq": "finalize_module"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "synthesizer.py"},
+          {"snippet_contains": "deterministic wiki"}
+        ]
+      }
+    },
+    {
+      "id": "N09",
+      "type": "semantic",
+      "query": "검색 결과의 재랭킹을 Claude Code가 수행하는 방식",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "tools/hybrid_search.py", "snippet_contains": "rerank"},
+          {"file_path_suffix": "orchestrator.py", "snippet_contains": "reranking"},
+          {"snippet_contains": "rerank_hint"}
+        ],
+        "secondary": [
+          {"snippet_contains": "Phase 10"},
+          {"snippet_contains": "LLM 재랭킹"},
+          {"file_path_suffix": "test_reranker.py"}
+        ]
+      }
+    },
+    {
+      "id": "N10",
+      "type": "semantic",
+      "query": "프로젝트 스캔에서 민감 파일을 제외하는 기준",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "security.py", "name_contains": "sensitive"},
+          {"file_path_suffix": "test_security.py"}
+        ],
+        "secondary": [
+          {"snippet_contains": "Q5"},
+          {"snippet_contains": "sensitive"},
+          {"file_path_suffix": "index/scanner.py", "snippet_contains": "ignore"}
+        ]
+      }
+    }
+  ]
+}
