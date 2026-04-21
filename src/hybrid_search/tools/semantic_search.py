@@ -7,6 +7,7 @@ import time
 from hybrid_search.config import Config
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.project import ProjectRegistry, project_hash
+from hybrid_search.search.snippet import make_snippet
 from hybrid_search.search.vector import VectorEngine
 from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
@@ -90,7 +91,7 @@ def handle_semantic_search(
                     "start_line": chunk.start_line,
                     "end_line": chunk.end_line,
                     "content": chunk.content,
-                    "snippet": _make_snippet(chunk.docstring, chunk.content),
+                    "snippet": make_snippet(chunk.docstring, chunk.content, query),
                 })
         finally:
             db.close()
@@ -138,11 +139,3 @@ def _build_filter(
     return filtered_ids if (file_pattern or node_types) else None
 
 
-def _make_snippet(docstring: str | None, content: str | None) -> str:
-    """Create a short snippet for display."""
-    if docstring:
-        return docstring[:200]
-    if content:
-        lines = content.strip().split("\n")
-        return "\n".join(lines[:5])[:200]
-    return ""
