@@ -8,7 +8,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hybrid_search.cli import _bfs_shortest_path, _resolve_chunk_for_graph
+from hybrid_search.cli import (
+    _apply_god_nodes_to_index,
+    _bfs_shortest_path,
+    _format_god_nodes_section,
+    _resolve_chunk_for_graph,
+    _WIKI_GOD_END,
+    _WIKI_GOD_START,
+)
 from hybrid_search.storage.db import ChunkRecord, FileRecord, StoreDB
 
 
@@ -198,3 +205,126 @@ class TestResolveChunkForGraph:
         db = StoreDB(tmp_path / "store.db")
         _seed_project(db)
         assert _resolve_chunk_for_graph(db, "p1", "does_not_exist_xyz") is None
+
+
+# ── annotate-wiki: format + apply helpers ──
+
+_SAMPLE_ROWS: list[dict] = [
+    {
+        "id": "popular",
+        "qualified_name": "mod.popular",
+        "name": "popular",
+        "node_type": "function",
+        "in_degree": 3,
+    },
+    {
+        "id": "mid",
+        "qualified_name": "mod.mid",
+        "name": "mid",
+        "node_type": "function",
+        "in_degree": 1,
+    },
+]
+
+
+class TestFormatGodNodesSection:
+    def test_empty_rows_returns_empty_string(self) -> None:
+        assert _format_god_nodes_section([], {}, top=10) == ""
+
+    def test_wraps_content_with_markers(self) -> None:
+        section = _format_god_nodes_section(_SAMPLE_ROWS, {}, top=10)
+        assert section.startswith(_WIKI_GOD_START)
+        assert section.rstrip().endswith(_WIKI_GOD_END)
+
+    def test_includes_symbol_and_in_degree(self) -> None:
+        section = _format_god_nodes_section(_SAMPLE_ROWS, {}, top=10)
+        assert "mod.popular" in section
+        assert "in=3" in section
+        assert "type=function" in section
+
+    def test_uses_module_link_when_mapped(self) -> None:
+        mapping = {"popular": "Core Search"}
+        section = _format_god_nodes_section(_SAMPLE_ROWS, mapping, top=10)
+        # Wikilink to [[Core Search]] with slug core-search.md
+        assert "[[Core Search]](core-search.md)" in section
+        # mid is unmapped
+        assert "_(unscoped)_" in section
+
+    def test_top_caps_rows(self) -> None:
+        section = _format_god_nodes_section(_SAMPLE_ROWS, {}, top=1)
+        assert "mod.popular" in section
+        assert "mod.mid" not in section
+
+    def test_heading_reflects_effective_top(self) -> None:
+        # top=10 but only 2 rows — heading shows 2, not 10.
+        section = _format_god_nodes_section(_SAMPLE_ROWS, {}, top=10)
+        assert "Top 2" in section
+
+
+class TestApplyGodNodesToIndex:
+    def _make_section(self) -> str:
+        return _format_god_nodes_section(_SAMPLE_ROWS, {}, top=10)
+
+    def test_first_insert_after_h1(self) -> None:
+        existing = "# Wiki Index\n\n## Modules (5)\n\n- [tests](tests.md)\n"
+        section = self._make_section()
+        result = _apply_god_nodes_to_index(existing, section)
+        assert _WIKI_GOD_START in result
+        # Heading must still precede the modules section.
+        assert result.index("# Wiki Index") < result.index(_WIKI_GOD_START)
+        assert result.index(_WIKI_GOD_START) < result.index("## Modules (5)")
+        # Manual content preserved.
+        assert "- [tests](tests.md)" in result
+
+    def test_first_insert_without_h1_prepends(self) -> None:
+        existing = "no heading here\n"
+        section = self._make_section()
+        result = _apply_god_nodes_to_index(existing, section)
+        assert result.startswith(section) or result.lstrip().startswith(_WIKI_GOD_START)
+        assert "no heading here" in result
+
+    def test_idempotent_reapply(self) -> None:
+        existing = "# Wiki Index\n\n## Modules\n\n- [a](a.md)\n"
+        section = self._make_section()
+        once = _apply_god_nodes_to_index(existing, section)
+        twice = _apply_god_nodes_to_index(once, section)
+        assert once == twice
+        # Exactly one start marker and one end marker.
+        assert once.count(_WIKI_GOD_START) == 1
+        assert once.count(_WIKI_GOD_END) == 1
+
+    def test_replaces_existing_block(self) -> None:
+        old_section = (
+            f"{_WIKI_GOD_START}\n## Old God Nodes\n\nstale content\n{_WIKI_GOD_END}"
+        )
+        existing = f"# Wiki Index\n\n{old_section}\n\n## Modules\n- [a](a.md)\n"
+        new_section = self._make_section()
+        result = _apply_god_nodes_to_index(existing, new_section)
+        assert "stale content" not in result
+        assert "mod.popular" in result
+        # Manual modules section untouched.
+        assert "- [a](a.md)" in result
+        assert result.count(_WIKI_GOD_START) == 1
+
+    def test_preserves_manual_content_outside_markers(self) -> None:
+        manual = (
+            "# Wiki Index\n\n"
+            "## 프로젝트 개요\n\n수동으로 작성한 내용입니다.\n\n"
+            "## Modules\n- [tests](tests.md)\n"
+        )
+        result = _apply_god_nodes_to_index(manual, self._make_section())
+        assert "수동으로 작성한 내용입니다." in result
+        assert "## 프로젝트 개요" in result
+        assert "- [tests](tests.md)" in result
+
+    def test_empty_section_strips_existing_block(self) -> None:
+        old_section = f"{_WIKI_GOD_START}\nstuff\n{_WIKI_GOD_END}"
+        existing = f"# Wiki Index\n\n{old_section}\n\n## Modules\n- [a](a.md)\n"
+        result = _apply_god_nodes_to_index(existing, "")
+        assert _WIKI_GOD_START not in result
+        assert _WIKI_GOD_END not in result
+        assert "- [a](a.md)" in result
+
+    def test_empty_section_no_existing_block_is_noop(self) -> None:
+        existing = "# Wiki Index\n\n## Modules\n- [a](a.md)\n"
+        assert _apply_god_nodes_to_index(existing, "") == existing

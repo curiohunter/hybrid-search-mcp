@@ -103,6 +103,10 @@ def create_server(config: Config, config_path: Path | None = None) -> Server:
                         "project": {"type": "string", "description": "Project name. Omit for all projects."},
                         "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
                         "file_pattern": {"type": "string", "description": "Glob pattern to filter files (e.g., '*.ts')"},
+                        "exclude_pattern": {
+                            "type": "string",
+                            "description": "Glob pattern to EXCLUDE files (e.g., 'docs/*' to drop documentation noise).",
+                        },
                         "node_types": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -144,6 +148,7 @@ def create_server(config: Config, config_path: Path | None = None) -> Server:
                     project=args.get("project"),
                     limit=args.get("limit", 10),
                     file_pattern=args.get("file_pattern"),
+                    exclude_pattern=args.get("exclude_pattern"),
                     node_types=args.get("node_types"),
                     bm25_weight=args.get("bm25_weight"),
                     cwd=args.get("cwd"),
