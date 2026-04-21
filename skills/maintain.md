@@ -13,6 +13,11 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent
 `_synthesis_input/*.md`는 이미 쌓여있을 수 있다. 이 스킬은 거기서부터 이어받아
 **LLM synthesis → finalize**까지 자동으로 돌린다.
 
+**needs_synthesis flag 관리**: 이 스킬이 Step 2 → Step 4를 완료하면
+`.hybrid-search/needs_synthesis` flag가 자동으로 사라진다. Step 2의 reindex는
+stale이 0이면 flag를 제거하고, Step 4의 finalize는 합성 후 남은 stale을 기준으로
+flag를 갱신하거나 삭제한다. 수동으로 지울 필요 없음.
+
 ## Step 1: 상태 확인
 
 ```bash
