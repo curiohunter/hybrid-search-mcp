@@ -1993,6 +1993,292 @@ def cmd_search(args: argparse.Namespace) -> None:
         print()
 
 
+def _resolve_chunk_for_graph(
+    db: StoreDB, project_id: str, token: str
+) -> str | None:
+    """Resolve a chunk_id OR symbol token to a single chunk_id for graph CLI.
+
+    Priority: raw chunk_id → exact qualified_name → exact name → fuzzy LIKE.
+    Returns None if unresolved.
+    """
+    chunk = db.get_chunk(token)
+    if chunk:
+        return chunk.id
+    chunk = db.find_chunk_by_qualified_name(token, project_id)
+    if chunk:
+        return chunk.id
+    chunks = db.find_chunks_by_name(token, project_id)
+    if chunks:
+        return chunks[0].id
+    chunks = db.search_chunks_by_name(token, project_id)
+    if chunks:
+        return chunks[0].id
+    return None
+
+
+def _open_single_project_db(
+    project: str | None, cwd: str
+) -> tuple[object, StoreDB] | None:
+    """Open DB for a single project (by name, or auto-detect from cwd). Caller closes."""
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    if project:
+        pinfo = registry.get_by_name(project)
+        if not pinfo:
+            print(f"Project '{project}' not found", file=sys.stderr)
+            return None
+    else:
+        match = _detect_project(registry, str(Path(cwd).resolve()))
+        if not match:
+            print(
+                "No indexed project detected for this directory. Use --project NAME.",
+                file=sys.stderr,
+            )
+            return None
+        pinfo = registry.get_by_name(match[0])
+        if not pinfo:
+            print(f"Project '{match[0]}' missing from registry", file=sys.stderr)
+            return None
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print(f"No index found for '{pinfo.name}'. Run `hybrid-search-mcp index`.", file=sys.stderr)
+        return None
+    return pinfo, StoreDB(idx_paths.store_db)
+
+
+def cmd_god_nodes(args: argparse.Namespace) -> None:
+    """List top-N authority chunks (most-called functions/classes) in a project."""
+    import json as _json
+
+    opened = _open_single_project_db(args.project, args.cwd)
+    if not opened:
+        sys.exit(1)
+    pinfo, db = opened
+
+    try:
+        rows = db.get_god_nodes(
+            pinfo.id, limit=args.top, min_confidence=args.min_confidence
+        )
+    finally:
+        db.close()
+
+    if args.json:
+        print(_json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+
+    if not rows:
+        print(f"No god nodes found in '{pinfo.name}' (min_confidence={args.min_confidence}).")
+        return
+
+    print(f"Top {len(rows)} god nodes in '{pinfo.name}' (min_confidence={args.min_confidence}):")
+    print()
+    width = len(str(rows[0]["in_degree"]))
+    for i, r in enumerate(rows, 1):
+        name = r.get("qualified_name") or r.get("name") or r["id"]
+        loc = f"{r['relative_path']}:{r['start_line']}"
+        deg = str(r["in_degree"]).rjust(width)
+        score = r.get("max_score") or 0.0
+        print(f"  {i:>2}. in={deg}  score={score:.2f}  {name}  ({r.get('node_type', '?')})")
+        print(f"      {loc}")
+
+
+def _bfs_shortest_path(
+    db: StoreDB, project_id: str, start: str, goal: str, min_confidence: str
+) -> list[str] | None:
+    """BFS on call_edges (caller → callee) from start to goal. Returns chunk_id path or None."""
+    from collections import deque
+
+    if start == goal:
+        return [start]
+
+    visited: set[str] = {start}
+    parent: dict[str, str] = {}
+    queue: deque[str] = deque([start])
+    while queue:
+        node = queue.popleft()
+        callees = db.get_callees(node, project_id, min_confidence)
+        for callee in callees:
+            cid = callee.get("callee_chunk_id")
+            if not cid or cid in visited:
+                continue
+            visited.add(cid)
+            parent[cid] = node
+            if cid == goal:
+                path = [cid]
+                cur = cid
+                while cur in parent:
+                    cur = parent[cur]
+                    path.append(cur)
+                path.reverse()
+                return path
+            queue.append(cid)
+    return None
+
+
+def cmd_shortest_path(args: argparse.Namespace) -> None:
+    """Find shortest call-graph path between two chunks/symbols."""
+    import json as _json
+
+    opened = _open_single_project_db(args.project, args.cwd)
+    if not opened:
+        sys.exit(1)
+    pinfo, db = opened
+
+    try:
+        start_id = _resolve_chunk_for_graph(db, pinfo.id, args.source)
+        goal_id = _resolve_chunk_for_graph(db, pinfo.id, args.target)
+        if not start_id:
+            print(f"Could not resolve source: {args.source}", file=sys.stderr)
+            sys.exit(2)
+        if not goal_id:
+            print(f"Could not resolve target: {args.target}", file=sys.stderr)
+            sys.exit(2)
+
+        direction = "forward"
+        path = _bfs_shortest_path(db, pinfo.id, start_id, goal_id, args.min_confidence)
+        if path is None:
+            # Try reverse direction (target → source via callees)
+            reverse = _bfs_shortest_path(db, pinfo.id, goal_id, start_id, args.min_confidence)
+            if reverse is not None:
+                path = list(reversed(reverse))
+                direction = "reverse"
+
+        if path is None:
+            if args.json:
+                print(_json.dumps({"found": False, "source": start_id, "target": goal_id}))
+            else:
+                print(f"No path between {args.source} and {args.target}.")
+            return
+
+        nodes = []
+        for cid in path:
+            chunk = db.get_chunk(cid)
+            if not chunk:
+                nodes.append({"chunk_id": cid, "name": None})
+                continue
+            file_rec = db.get_file(chunk.file_id) if chunk.file_id else None
+            nodes.append({
+                "chunk_id": cid,
+                "name": chunk.name,
+                "qualified_name": chunk.qualified_name,
+                "node_type": chunk.node_type,
+                "file_path": file_rec.relative_path if file_rec else None,
+                "start_line": chunk.start_line,
+            })
+    finally:
+        db.close()
+
+    if args.json:
+        print(_json.dumps({
+            "found": True,
+            "direction": direction,
+            "hops": len(nodes) - 1,
+            "path": nodes,
+        }, ensure_ascii=False, indent=2))
+        return
+
+    arrow = "→" if direction == "forward" else "←"
+    print(f"Shortest path ({direction}, {len(nodes) - 1} hops):")
+    print()
+    for i, n in enumerate(nodes):
+        name = n.get("qualified_name") or n.get("name") or n["chunk_id"]
+        loc = f"{n.get('file_path', '?')}:{n.get('start_line') or '?'}"
+        prefix = "    " if i == 0 else f"  {arrow} "
+        print(f"{prefix}{name}")
+        print(f"      {loc}")
+
+
+def cmd_subgraph(args: argparse.Namespace) -> None:
+    """Dump N-hop forward + reverse call graph around a chunk/symbol."""
+    import json as _json
+    from collections import deque
+
+    opened = _open_single_project_db(args.project, args.cwd)
+    if not opened:
+        sys.exit(1)
+    pinfo, db = opened
+
+    try:
+        root_id = _resolve_chunk_for_graph(db, pinfo.id, args.symbol)
+        if not root_id:
+            print(f"Could not resolve: {args.symbol}", file=sys.stderr)
+            sys.exit(2)
+
+        # Bidirectional BFS — callees (forward) + callers (reverse).
+        def bfs(get_neighbors, id_key: str) -> list[dict]:
+            nodes: list[dict] = []
+            visited: set[str] = {root_id}
+            queue: deque[tuple[str, int]] = deque([(root_id, 0)])
+            while queue:
+                node, depth = queue.popleft()
+                if depth >= args.hops:
+                    continue
+                for edge in get_neighbors(node, pinfo.id, args.min_confidence):
+                    nid = edge.get(id_key)
+                    if not nid:
+                        continue
+                    if nid in visited:
+                        continue
+                    visited.add(nid)
+                    nodes.append({
+                        "chunk_id": nid,
+                        "name": edge.get("name"),
+                        "qualified_name": edge.get("qualified_name"),
+                        "node_type": edge.get("node_type"),
+                        "file_path": edge.get("relative_path"),
+                        "start_line": edge.get("start_line"),
+                        "confidence": edge.get("confidence"),
+                        "depth": depth + 1,
+                        "parent": node,
+                    })
+                    queue.append((nid, depth + 1))
+            return nodes
+
+        callees = bfs(db.get_callees, "callee_chunk_id")
+        callers = bfs(db.get_callers, "caller_chunk_id")
+
+        root_chunk = db.get_chunk(root_id)
+        root_file = db.get_file(root_chunk.file_id) if root_chunk and root_chunk.file_id else None
+    finally:
+        db.close()
+
+    if args.json:
+        print(_json.dumps({
+            "root": {
+                "chunk_id": root_id,
+                "name": root_chunk.name if root_chunk else None,
+                "qualified_name": root_chunk.qualified_name if root_chunk else None,
+                "file_path": root_file.relative_path if root_file else None,
+                "start_line": root_chunk.start_line if root_chunk else None,
+            },
+            "hops": args.hops,
+            "callees": callees,
+            "callers": callers,
+        }, ensure_ascii=False, indent=2))
+        return
+
+    root_name = (root_chunk.qualified_name if root_chunk else None) or args.symbol
+    print(f"Subgraph ({args.hops}-hop) around {root_name}:")
+    print(f"  {root_file.relative_path if root_file else '?'}:{root_chunk.start_line if root_chunk else '?'}")
+    print()
+    print(f"Callees (forward, {len(callees)}):")
+    for n in callees[:50]:
+        name = n.get("qualified_name") or n.get("name") or n["chunk_id"]
+        print(f"  d={n['depth']}  {name}  ({n.get('file_path', '?')}:{n.get('start_line') or '?'})")
+    if len(callees) > 50:
+        print(f"  ... and {len(callees) - 50} more")
+    print()
+    print(f"Callers (reverse, {len(callers)}):")
+    for n in callers[:50]:
+        name = n.get("qualified_name") or n.get("name") or n["chunk_id"]
+        print(f"  d={n['depth']}  {name}  ({n.get('file_path', '?')}:{n.get('start_line') or '?'})")
+    if len(callers) > 50:
+        print(f"  ... and {len(callers) - 50} more")
+
+
 def cmd_index(args: argparse.Namespace) -> None:
     """User-friendly index command — wraps reindex with sensible defaults."""
     # Build a namespace compatible with cmd_reindex
@@ -2545,6 +2831,45 @@ def main() -> None:
     p_vsyn.add_argument("--json", action="store_true", help="Output as JSON")
     p_vsyn.add_argument("--fix", action="store_true", help="Auto-remove bad refs from DB content")
 
+    # ── Graph exploration (M5) ──
+    p_god = sub.add_parser("god-nodes", help="Top-N authority chunks (most-called functions/classes)")
+    p_god.add_argument("--top", type=int, default=20, help="Number of god nodes to return")
+    p_god.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_god.add_argument("--project", help="Project name (overrides --cwd)")
+    p_god.add_argument(
+        "--min-confidence",
+        choices=("ambiguous", "inferred", "extracted"),
+        default="inferred",
+        help="Minimum call-edge confidence (default: inferred)",
+    )
+    p_god.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_path = sub.add_parser("shortest-path", help="Shortest call-graph path between two chunks/symbols")
+    p_path.add_argument("source", help="Source chunk_id, qualified_name, or symbol name")
+    p_path.add_argument("target", help="Target chunk_id, qualified_name, or symbol name")
+    p_path.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_path.add_argument("--project", help="Project name (overrides --cwd)")
+    p_path.add_argument(
+        "--min-confidence",
+        choices=("ambiguous", "inferred", "extracted"),
+        default="inferred",
+        help="Minimum call-edge confidence (default: inferred)",
+    )
+    p_path.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_sub = sub.add_parser("subgraph", help="N-hop forward+reverse call graph around a chunk/symbol")
+    p_sub.add_argument("symbol", help="Chunk_id, qualified_name, or symbol name")
+    p_sub.add_argument("--hops", type=int, default=2, help="Traversal depth (default: 2)")
+    p_sub.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_sub.add_argument("--project", help="Project name (overrides --cwd)")
+    p_sub.add_argument(
+        "--min-confidence",
+        choices=("ambiguous", "inferred", "extracted"),
+        default="inferred",
+        help="Minimum call-edge confidence (default: inferred)",
+    )
+    p_sub.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
     if args.command == "index":
@@ -2585,6 +2910,12 @@ def main() -> None:
         cmd_verify_synthesis(args)
     elif args.command == "detect-wiki-gaps":
         cmd_detect_wiki_gaps(args)
+    elif args.command == "god-nodes":
+        cmd_god_nodes(args)
+    elif args.command == "shortest-path":
+        cmd_shortest_path(args)
+    elif args.command == "subgraph":
+        cmd_subgraph(args)
     else:
         parser.print_help()
         sys.exit(1)
