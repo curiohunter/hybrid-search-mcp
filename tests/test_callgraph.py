@@ -619,3 +619,85 @@ class TestCommonNames:
 
     def test_common_names_is_frozen(self) -> None:
         assert isinstance(COMMON_NAMES, frozenset)
+
+
+class TestConfidenceScorePersistence:
+    """M1 — resolver must persist a numeric score alongside the label.
+
+    Score fuels the fusion authority nudge; label drives existing filters.
+    """
+
+    def test_high_medium_low_each_get_expected_score(self, tmp_path: Path) -> None:
+        from hybrid_search.storage.db import CONFIDENCE_SCORES
+
+        db = _make_db(tmp_path)
+        with db.transaction() as conn:
+            # handler.ts → auth.ts (imported) + user.ts (no import) + handler.ts self-name
+            db.upsert_file(conn, FileRecord(
+                id="file-auth", project_id=PROJECT_ID,
+                relative_path="src/auth.ts", file_hash="h1",
+            ))
+            db.upsert_file(conn, FileRecord(
+                id="file-user", project_id=PROJECT_ID,
+                relative_path="src/user.ts", file_hash="h2",
+            ))
+            db.upsert_file(conn, FileRecord(
+                id="file-handler", project_id=PROJECT_ID,
+                relative_path="src/handler.ts", file_hash="h3",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(
+                    id="chunk-login", file_id="file-auth", project_id=PROJECT_ID,
+                    name="login", qualified_name="src/auth.ts::login",
+                ),
+                ChunkRecord(
+                    id="chunk-create-user", file_id="file-user", project_id=PROJECT_ID,
+                    name="create_user", qualified_name="src/user.ts::create_user",
+                ),
+                # "init" is a COMMON_NAME — resolves to low without module context.
+                ChunkRecord(
+                    id="chunk-init", file_id="file-handler", project_id=PROJECT_ID,
+                    name="init", qualified_name="src/handler.ts::init",
+                ),
+                ChunkRecord(
+                    id="chunk-handler", file_id="file-handler", project_id=PROJECT_ID,
+                    name="handler", qualified_name="src/handler.ts::handler",
+                ),
+            ])
+            db.insert_call_edges(conn, "chunk-handler", [
+                ("login", "./auth"),        # high — module + name match
+                ("create_user", None),       # medium — single name-only match
+                ("init", None),              # low — common name w/o context
+            ], PROJECT_ID)
+
+        resolve_call_edges(db, PROJECT_ID)
+
+        edges = {e["callee_name"]: e for e in db.get_all_call_edges(PROJECT_ID)}
+        assert edges["login"]["confidence"] == "high"
+        assert edges["login"]["confidence_score"] == CONFIDENCE_SCORES["high"]
+        assert edges["create_user"]["confidence"] == "medium"
+        assert edges["create_user"]["confidence_score"] == CONFIDENCE_SCORES["medium"]
+        assert edges["init"]["confidence"] == "low"
+        assert edges["init"]["confidence_score"] == CONFIDENCE_SCORES["low"]
+
+    def test_unresolved_edge_keeps_default_score(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        with db.transaction() as conn:
+            db.upsert_file(conn, FileRecord(
+                id="f", project_id=PROJECT_ID,
+                relative_path="a.py", file_hash="h",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(id="caller", file_id="f", project_id=PROJECT_ID,
+                            name="caller", qualified_name="a.py::caller"),
+            ])
+            db.insert_call_edges(conn, "caller", [
+                ("nonexistent", None),
+            ], PROJECT_ID)
+
+        resolve_call_edges(db, PROJECT_ID)
+
+        edges = db.get_all_call_edges(PROJECT_ID)
+        assert edges[0]["callee_chunk_id"] is None
+        # Default from column definition; no authority signal emitted.
+        assert edges[0]["confidence_score"] == 0.0
