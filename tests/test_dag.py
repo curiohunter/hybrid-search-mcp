@@ -13,6 +13,9 @@ from hybrid_search.index.dag import (
     topological_sort,
     _derive_module_name,
     _deduplicate_names,
+    _merge_file_overlapping_modules,
+    _module_slug,
+    _rename_reserved_slugs,
     ModuleNode,
 )
 from hybrid_search.storage.db import ChunkRecord, FileRecord, StoreDB
@@ -262,6 +265,155 @@ class TestDeduplicateNames:
         assert names[0] == "utils-1"
         assert names[1] == "utils-2"
         assert names[2] == "auth"
+
+
+class TestRenameReservedSlugs:
+    """Module names whose slug collides with the generated wiki index must be renamed."""
+
+    def test_index_renamed(self):
+        mods = [ModuleNode(name="index", files=["src/index/a.py"], chunks=["c1"])]
+        _rename_reserved_slugs(mods)
+        assert mods[0].name == "index module"
+        assert _module_slug(mods[0].name) == "index-module"
+
+    def test_non_reserved_untouched(self):
+        mods = [ModuleNode(name="auth", files=["src/auth.py"], chunks=["c1"])]
+        _rename_reserved_slugs(mods)
+        assert mods[0].name == "auth"
+
+    def test_isolated_variant_not_reserved(self):
+        """`index (isolated)` slugs to `index-isolated`, no collision."""
+        mods = [ModuleNode(name="index (isolated)", files=["x.py"], chunks=["c1"])]
+        _rename_reserved_slugs(mods)
+        assert mods[0].name == "index (isolated)"
+
+    def test_generated_index_page_wins_collision(self, tmp_path):
+        """End-to-end: a package directory named `index/` must not overwrite wiki index.md."""
+        db = _make_db(tmp_path)
+        with db.transaction() as conn:
+            db.upsert_file(conn, FileRecord(
+                id="f1", project_id=PROJECT_ID,
+                relative_path="src/index/a.py", file_hash="h1",
+            ))
+            db.upsert_file(conn, FileRecord(
+                id="f2", project_id=PROJECT_ID,
+                relative_path="src/index/b.py", file_hash="h2",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(id="c1", file_id="f1", project_id=PROJECT_ID, name="foo", node_type="function"),
+                ChunkRecord(id="c2", file_id="f2", project_id=PROJECT_ID, name="bar", node_type="function"),
+            ])
+
+        plan, pages = generate_all_wiki_pages(db, PROJECT_ID)
+
+        filenames = [p.filename for p in pages]
+        assert filenames.count("index.md") == 1
+        # The actual index page must be the generated wiki index
+        index_page = next(p for p in pages if p.filename == "index.md")
+        assert index_page.name == "index"
+        assert "Wiki Index" in index_page.content
+
+        db.close()
+
+
+class TestMergeFileOverlappingModules:
+    """Tests for _merge_file_overlapping_modules() — file-boundary invariant."""
+
+    def test_empty_input(self):
+        assert _merge_file_overlapping_modules([]) == []
+
+    def test_no_overlap_unchanged(self):
+        mods = [
+            ModuleNode(name="a", files=["src/a.py"], chunks=["c1"]),
+            ModuleNode(name="b", files=["src/b.py"], chunks=["c2"]),
+        ]
+        result = _merge_file_overlapping_modules(mods)
+        assert len(result) == 2
+        assert {m.name for m in result} == {"a", "b"}
+
+    def test_two_modules_sharing_file_merge(self):
+        mods = [
+            ModuleNode(name="test_wiki", files=["tests/test_wiki.py"], chunks=["c1", "c2"]),
+            ModuleNode(name="test_wiki", files=["tests/test_wiki.py"], chunks=["c3"]),
+        ]
+        result = _merge_file_overlapping_modules(mods)
+        assert len(result) == 1
+        assert result[0].name == "test_wiki"
+        assert result[0].chunks == ["c1", "c2", "c3"]
+        assert result[0].files == ["tests/test_wiki.py"]
+
+    def test_three_modules_sharing_file_merge(self):
+        mods = [
+            ModuleNode(name="mod", files=["f.py"], chunks=["c1"]),
+            ModuleNode(name="mod", files=["f.py"], chunks=["c2"]),
+            ModuleNode(name="mod", files=["f.py"], chunks=["c3"]),
+        ]
+        result = _merge_file_overlapping_modules(mods)
+        assert len(result) == 1
+        assert sorted(result[0].chunks) == ["c1", "c2", "c3"]
+
+    def test_transitive_overlap_merge(self):
+        # A & B share f1, B & C share f2 → all three unioned
+        mods = [
+            ModuleNode(name="A", files=["f1.py", "x.py"], chunks=["c1"]),
+            ModuleNode(name="B", files=["f1.py", "f2.py"], chunks=["c2", "c3"]),
+            ModuleNode(name="C", files=["f2.py", "y.py"], chunks=["c4"]),
+        ]
+        result = _merge_file_overlapping_modules(mods)
+        assert len(result) == 1
+        assert set(result[0].files) == {"f1.py", "f2.py", "x.py", "y.py"}
+        assert set(result[0].chunks) == {"c1", "c2", "c3", "c4"}
+        # Name inherited from largest member (B, 2 chunks)
+        assert result[0].name == "B"
+
+    def test_disjoint_groups_stay_separate(self):
+        mods = [
+            ModuleNode(name="g1a", files=["f1.py"], chunks=["c1"]),
+            ModuleNode(name="g1b", files=["f1.py"], chunks=["c2"]),
+            ModuleNode(name="g2a", files=["f2.py"], chunks=["c3"]),
+            ModuleNode(name="g2b", files=["f2.py"], chunks=["c4"]),
+        ]
+        result = _merge_file_overlapping_modules(mods)
+        assert len(result) == 2
+        file_sets = sorted(tuple(sorted(m.files)) for m in result)
+        assert file_sets == [("f1.py",), ("f2.py",)]
+
+    def test_entry_points_unioned_and_capped(self):
+        mods = [
+            ModuleNode(name="m", files=["f.py"], chunks=["c1"], entry_points=["ep1", "ep2"]),
+            ModuleNode(name="m", files=["f.py"], chunks=["c2"], entry_points=["ep3", "ep4", "ep5", "ep6"]),
+        ]
+        result = _merge_file_overlapping_modules(mods)
+        assert len(result) == 1
+        assert len(result[0].entry_points) == 5
+        assert set(result[0].entry_points) <= {"ep1", "ep2", "ep3", "ep4", "ep5", "ep6"}
+
+    def test_chunk_dedup(self):
+        mods = [
+            ModuleNode(name="m", files=["f.py"], chunks=["c1", "c2"]),
+            ModuleNode(name="m", files=["f.py"], chunks=["c2", "c3"]),
+        ]
+        result = _merge_file_overlapping_modules(mods)
+        assert len(result) == 1
+        assert result[0].chunks == ["c1", "c2", "c3"]
+
+    def test_single_module_passthrough(self):
+        mods = [ModuleNode(name="only", files=["a.py", "b.py"], chunks=["c1"])]
+        result = _merge_file_overlapping_modules(mods)
+        assert len(result) == 1
+        assert result[0] is mods[0]
+
+    def test_dedup_after_merge_produces_clean_name(self):
+        """After merge + dedup, a fragmented file should yield a single un-suffixed module."""
+        mods = [
+            ModuleNode(name="test_wiki", files=["tests/test_wiki.py"], chunks=["c1"]),
+            ModuleNode(name="test_wiki", files=["tests/test_wiki.py"], chunks=["c2"]),
+            ModuleNode(name="test_wiki", files=["tests/test_wiki.py"], chunks=["c3"]),
+        ]
+        result = _merge_file_overlapping_modules(mods)
+        _deduplicate_names(result)
+        assert len(result) == 1
+        assert result[0].name == "test_wiki"  # no -N suffix
 
 
 class TestGenerateWikiPlan:
