@@ -209,6 +209,124 @@ class TestChunkCodeFileMultiLang:
         assert isinstance(chunks, list)
 
 
+class TestRationaleExtraction:
+    """M10: NOTE / WHY / TODO / FIXME / HACK / XXX comments get folded into docstring."""
+
+    def _make_chunks(self, source: str, language: str = "python", suffix: str = ".py") -> list[CodeChunk]:
+        fp = PROJECT_ROOT / f"rationale_example{suffix}"
+        return chunk_code_file(fp, PROJECT_ROOT, PROJECT_ID, language, source=source)
+
+    def test_python_note_comment_appended_to_docstring(self) -> None:
+        body = "\n".join(f"    x_{i} = {i}" for i in range(60))  # avoid merging
+        source = (
+            'def handler():\n'
+            '    """Primary request handler."""\n'
+            '    # NOTE: retry on 429, legal requirement\n'
+            f'{body}\n'
+        )
+        chunks = self._make_chunks(source)
+        chunk = next(c for c in chunks if "def handler" in c.content)
+        assert chunk.docstring is not None
+        assert "Primary request handler." in chunk.docstring
+        assert "NOTE: retry on 429, legal requirement" in chunk.docstring
+
+    def test_python_rationale_without_docstring(self) -> None:
+        body = "\n".join(f"    x_{i} = {i}" for i in range(60))
+        source = (
+            'def handler():\n'
+            '    # WHY: legacy API contract, do not change return type\n'
+            f'{body}\n'
+        )
+        chunks = self._make_chunks(source)
+        chunk = next(c for c in chunks if "def handler" in c.content)
+        assert chunk.docstring == "WHY: legacy API contract, do not change return type"
+
+    def test_python_multiple_tags_deduplicated_and_ordered(self) -> None:
+        body = "\n".join(f"    x_{i} = {i}" for i in range(60))
+        source = (
+            'def handler():\n'
+            '    # TODO: add timeout\n'
+            '    # NOTE: must be idempotent\n'
+            '    # TODO: add timeout\n'  # duplicate
+            f'{body}\n'
+        )
+        chunks = self._make_chunks(source)
+        chunk = next(c for c in chunks if "def handler" in c.content)
+        assert chunk.docstring is not None
+        # Each tag kept once, in first-seen order
+        lines = [l for l in chunk.docstring.splitlines() if l]
+        assert lines.count("TODO: add timeout") == 1
+        assert lines.count("NOTE: must be idempotent") == 1
+        assert lines.index("TODO: add timeout") < lines.index("NOTE: must be idempotent")
+
+    def test_python_no_rationale_keeps_docstring_only(self) -> None:
+        body = "\n".join(f"    x_{i} = {i}" for i in range(60))
+        source = (
+            'def handler():\n'
+            '    """Just a plain function."""\n'
+            f'{body}\n'
+        )
+        chunks = self._make_chunks(source)
+        chunk = next(c for c in chunks if "def handler" in c.content)
+        assert chunk.docstring == "Just a plain function."
+
+    def test_python_plain_comment_ignored(self) -> None:
+        """Comments without NOTE/WHY/TODO tags should not be included."""
+        body = "\n".join(f"    x_{i} = {i}" for i in range(60))
+        source = (
+            'def handler():\n'
+            '    # just a regular comment\n'
+            '    # NOTE: the real rationale\n'
+            f'{body}\n'
+        )
+        chunks = self._make_chunks(source)
+        chunk = next(c for c in chunks if "def handler" in c.content)
+        assert "just a regular comment" not in (chunk.docstring or "")
+        assert "NOTE: the real rationale" in (chunk.docstring or "")
+
+    def test_python_case_insensitive_tag(self) -> None:
+        body = "\n".join(f"    x_{i} = {i}" for i in range(60))
+        source = (
+            'def handler():\n'
+            '    # note: lowercase tag still captured\n'
+            f'{body}\n'
+        )
+        chunks = self._make_chunks(source)
+        chunk = next(c for c in chunks if "def handler" in c.content)
+        # Tag normalized to uppercase
+        assert chunk.docstring == "NOTE: lowercase tag still captured"
+
+    def test_typescript_note_comment(self) -> None:
+        body = "\n".join(f"  const x_{i} = {i};" for i in range(60))
+        source = (
+            'export function handler(): void {\n'
+            '  // NOTE: browser-specific quirk\n'
+            f'{body}\n'
+            '}\n'
+        )
+        chunks = self._make_chunks(source, language="typescript", suffix=".ts")
+        chunk = next(c for c in chunks if "handler" in c.content)
+        assert chunk.docstring is not None
+        assert "NOTE: browser-specific quirk" in chunk.docstring
+
+    def test_jsdoc_remarks_captured(self) -> None:
+        body = "\n".join(f"  const x_{i} = {i};" for i in range(60))
+        source = (
+            '/**\n'
+            ' * Do the thing.\n'
+            ' * @remarks This runs under the legacy auth boundary.\n'
+            ' */\n'
+            'export function doit(): void {\n'
+            f'{body}\n'
+            '}\n'
+        )
+        chunks = self._make_chunks(source, language="typescript", suffix=".ts")
+        chunk = next(c for c in chunks if "doit" in c.content)
+        assert chunk.docstring is not None
+        assert "REMARKS" in chunk.docstring.upper()
+        assert "legacy auth boundary" in chunk.docstring
+
+
 class TestMultiByteHandling:
     """Verify byte offset handling for multi-byte characters (Korean, emoji)."""
 
