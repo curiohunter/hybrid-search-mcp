@@ -2,7 +2,104 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 16회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 17회차) — 다음 세션 여기부터 읽을 것
+
+### 한줄 요약
+
+**Phase 2 (Wiki 파편화 + drift) + Phase 3 (M9 two-pass callgraph + M10 rationale) 한 세션 shipped.** Phase 2에서 `_deduplicate_names`의 `-N` 접미사가 `test_wiki-1..11.md` 류 파편화를 유발하던 원인 파악 → union-find 기반 `_merge_file_overlapping_modules`로 "같은 파일 = 같은 모듈" 불변식 강제, 추가로 `src/hybrid_search/index/` 패키지가 wiki `index.md`를 덮어쓰던 slug 충돌을 `_rename_reserved_slugs`로 방어, 재생성 후 stale `.md` 청소 `_cleanup_orphan_wiki_pages` 추가. 실측 파일 수 **215 → 36** (test_wiki 11조각 → `tests.md` 1개, coverage.json 36 == disk 36). Phase 3에서 `callgraph.py`에 context-aware 2차 패스 추가(caller-file의 해석된 target files로 ambiguous → inferred 업그레이드, 실측 6943 edges 중 24 upgrade), `ast_chunker.py`에 NOTE/WHY/TODO/FIXME/HACK/XXX + JSDoc `@remarks`/`@note` 추출기 `_extract_rationale` 추가(Python/TS/JS/Java/Rust/Go/Ruby 지원, export_statement 래핑 처리). docstring 필드에 append되어 BM25/임베딩에 자연 반영. 실제 `# WHY:` 주석이 reindex 후 DB에 들어가는 end-to-end 검증 성공. **580/580 passed (+32)**. 커밋 2개(`295c07d` Phase 2, `a4dc5c2` Phase 3) main에 있음 (푸시 전).
+
+### ✅ 이 세션 완료된 것 (17회차)
+
+**1. Phase 2 — Wiki 파편화 원인 파악 + 패치 (커밋 `295c07d`)**
+- 원인: `src/hybrid_search/index/dag.py:811 _deduplicate_names`가 동일 이름 모듈에 `-N` 접미사. `test_wiki.py` 파일에서 서로 호출 안 하는 테스트 함수들이 각각 disconnected component → 11개 모듈 → `test_wiki-1..11.md`.
+- `_merge_file_overlapping_modules` (+100줄): union-find로 파일 공유 모듈을 하나로. generate_wiki_plan에서 `_deduplicate_names` 직전 호출. 이름은 가장 많은 chunk를 가진 멤버에서 계승, files/chunks/entry_points는 union.
+- `_rename_reserved_slugs` + `_module_slug` 헬퍼: 모듈명 slug가 "index"면 `"index module"`로 재명명. 원래 `src/hybrid_search/index/` 패키지가 `index.md` 파일명으로 slug되어 generated wiki index를 덮어쓰던 버그 수정. Generated index 파일 보존.
+- `cli.py:_cleanup_orphan_wiki_pages` (+28줄): 전체 재생성 시 expected_filenames 밖의 top-level .md 파일 제거. `STALE.md`와 서브디렉토리(`_synthesis_input/` 등) 보존.
+- 테스트 +21 (test_dag +14 [merge 10 + reserved 4], test_wiki_cleanup 신규 +7)
+- 실제 재생성 결과: 215 → 36 파일, coverage.json total_pages=36 == disk .md 36, `tests.md` 1개에 22 files 142 symbols 통합
+
+**2. Phase 3.1 — M9 two-pass callgraph (커밋 `a4dc5c2` 일부)**
+- `callgraph.py` 리팩토링: pass 1 결과를 리스트로 수집(rowid, caller_chunk_id, chunk_id, qname, confidence) → pass 2에서 DB 업데이트 전에 재검토.
+- Pass 2 로직: pre-existing + pass1 결과에서 caller_file → target_files 맵 구축(자기 파일 제외 — Strategy 3가 이미 same-file 우선). ambiguous 에지 중 caller의 target_files 안에 후보가 있으면 inferred로 업그레이드 + `stats["pass2_upgraded"]` 카운트.
+- 내 자신의 reindex에서 실측: 6943 total, 249 extracted + 1488 inferred + 8 ambiguous + 5198 unresolved, **pass2 24 업그레이드**. ambiguous 32 → 8로 감소.
+- 테스트 +3 (context로 업그레이드 / related-file 없으면 업그레이드 X / same-file은 context에서 제외)
+
+**3. Phase 3.2 — M10 rationale 추출 (커밋 `a4dc5c2` 나머지)**
+- `_extract_rationale(node, source_bytes, language)` (+85줄): 함수/클래스 본문의 comment 노드를 후위 순회하며 `NOTE:/WHY:/TODO:/FIXME:/HACK:/XXX:` 태그 매칭, 대소문자 정규화 + 중복 제거 + 첫 등장 순서 보존. JSDoc/Javadoc의 `@remarks`, `@note` 태그도 `/** */` 블록에서 regex 추출.
+- export_statement 래핑 처리: TS/JS에서 `export function doit()`의 function_declaration은 parent가 export_statement라 JSDoc이 한 단계 위에 있음 → doc_target을 한 단계 올려서 찾음.
+- `_walk_node`에서 `_extract_docstring` 직후 rationale 추출하여 docstring 필드에 `\n\n` 구분자로 append. 기존 `_build_embedding_input`이 docstring을 이미 임베딩 인풋에 포함 → BM25 + 벡터 모두 자연 반영.
+- 테스트 +8 (Python NOTE/WHY 단독 추출, 다중 태그 dedup+순서, 태그 없으면 docstring 유지, 플레인 주석 무시, 대소문자, TS `// NOTE:`, JSDoc `@remarks`)
+- 검증: `callgraph.py`에 실제 `# WHY: same-file edges are excluded...` 주석 추가 후 `reindex --force` → DB의 `resolve_call_edges_part1` 청크 docstring에 `WHY: same-file edges are excluded — Strategy 3` 포함 확인.
+
+**4. 테스트 상태**
+- 548 (16회차) → 569 (Phase 2) → 580 (Phase 3). +32 cases.
+
+### 🎯 다음 세션 진입점
+
+1. **이 17회차 섹션 전체**
+2. `docs/plan/2026-04-21-memory-layer-10x.md` — Phase 4 세부 (valuein_homepage 골드셋 + 벤치마크)
+3. `git log --oneline -6` — 확인 및 push 여부 결정
+4. 아래 "다음 세션 권장 순서"
+
+### 🎯 다음 세션 권장 순서
+
+**Phase 4 — valuein_homepage 실전 검증 (1주).** 플랜 문서의 Phase 4 섹션.
+
+**Step 1 (1~2일) — 골드셋 작성:**
+- `benchmarks/valuein_gold.json` — 15~20 쿼리:
+  - 구조 질문 5 (e.g. "수학 문제 모델 구성", "인증 흐름 클래스")
+  - 기능 탐색 5 (한국어 자연어)
+  - 정밀 조회 5 (exact symbol)
+  - Rationale 질문 5 ("왜 이 설계를 택했나")
+- 도메인 지식 기반 수작업 gold (proxy label 아님)
+- valuein_homepage가 이미 인덱싱되어 있는지 `hybrid-search-mcp status --cwd /path/to/valuein_homepage` 확인. 없으면 reindex.
+
+**Step 2 (반나절) — 측정:**
+- Baseline 1: Claude가 Grep+Read로 탐색 (턴 수, 토큰, 정답 도달률)
+- Baseline 2: DeepWiki/MCP-other 있으면
+- Ours: hybrid+wiki+qa (Phase 1-3 반영본, rationale 인덱스 포함)
+- 지표: NDCG@10, MRR@10, time-to-answer, tokens consumed
+
+**Step 3 (반나절) — 리포트:**
+- `benchmarks/valuein_report_2026-04-XX.md` 표 + 분석
+- README에 "Real-world benchmark" 섹션 신설
+
+**Phase 4 완료 조건:**
+- [ ] valuein_gold.json 15~20q
+- [ ] baseline 대비 token 효율 ≥10x, latency ≥2x 증거 (또는 개선 여지 투명 리포트)
+- [ ] README Real-world benchmark 섹션
+
+대안: **Phase 4 대신 Phase 2/3 실사용 피드백 주간** — 며칠 써보고 wiki 파편화 재발 여부, rationale 검색 체감, pass2 효과 재측정.
+
+### 주의사항 / 알려진 이슈
+
+- **M9 pass2 effect는 현 repo에선 24 upgrades (미미).** 큰 효과는 cross-file method call이 많은 프로젝트(valuein_homepage)에서 측정 필요. 현 repo는 파이썬 내부 호출 위주라 Strategy 3 same-file 선호가 이미 많은 걸 잡음.
+- **M10 rationale은 이 프로젝트 자체에 NOTE/WHY/TODO 주석이 거의 없어 효과 불가시.** 내가 `callgraph.py`에 추가한 `# WHY: ...` 한 개가 유일한 실례. valuein_homepage에서 측정해야 진짜 가치 확인.
+- **Wiki `-N` 접미사가 완전히 사라지진 않음.** `search (isolated)-1/-2` 같은 건 정당한 동명이인(`src/hybrid_search/search/` + `skills/search.md`). 파일 집합이 disjoint라 merge되지 않음. 이건 버그 아님.
+- **reindex 시 wiki-gaps.txt 91행으로 증가 유지.** qa 로그 인덱싱 opt-in 때문. Phase 2는 파편화만 다뤘고 wiki-gaps에서 qa 경로 제외는 안 함. 필요 시 detect_wiki_gaps 로직에 qa/ 예외 추가 (Phase 4 이후).
+- **Phase 2 patch는 단일 파일 기준만 병합.** 여러 파일을 연결하는 connected component 간에 공유 파일이 있으면 transitive merge됨 (union-find 특성). 의도된 동작. 거대 merge가 드물게 발생할 수 있음 → 임계 초과는 한 페이지 안에서 처리 (plan doc 명시).
+- **커밋 `295c07d`, `a4dc5c2`은 main 있으나 origin에 push 안 됨.** 다음 세션 시작 시 `git push origin main` 필요.
+- **15/16회차 이슈 잔존:** v4 → v5 마이그레이션 미검증 프로젝트 3개.
+
+### 마지막 상태
+
+- **브랜치:** `main` — origin/main 기준 로컬 +2 (Phase 2/3 미푸시)
+- **마지막 커밋:** `a4dc5c2 [feat] Phase 3 — M9 two-pass callgraph + M10 rationale 추출`
+- **테스트:** **580/580 passed** (25s) — 16회차 548 + Phase 2 +21 + Phase 3 +11
+- **변경 파일 (17회차):**
+  - Phase 2 (`295c07d`): `src/hybrid_search/index/dag.py` (+126, merge + reserved slugs + slug 헬퍼 통합), `src/hybrid_search/cli.py` (+34, cleanup_orphan_wiki_pages), `tests/test_dag.py` (+152), `tests/test_wiki_cleanup.py` (신규)
+  - Phase 3 (`a4dc5c2`): `src/hybrid_search/index/ast_chunker.py` (+83, _extract_rationale + export_statement JSDoc 처리 + 실제 `# WHY:` 주석 1개), `src/hybrid_search/index/callgraph.py` (+74, 2차 패스 + caller_to_targets), `tests/test_ast_chunker.py` (+118, rationale 8 cases), `tests/test_callgraph.py` (+167, pass2 3 cases)
+
+### 로드맵 진행률 업데이트
+
+16회차 29/33 (88%). 17회차 +2 (Phase 2, Phase 3) = **31/33 (94%)**. 남은 핵심:
+- Phase 4 — valuein_homepage 실전 gold set + 벤치마크 (1주)
+- L2 Leiden 풀스케일 wiki auto-gen (Phase 4 이후 재평가)
+- L4 watch / L5 two-tier merge (선택)
+
+---
+
+## 🔵 이전 세션 인계 (16회차) — 참고용
 
 ### 한줄 요약
 
