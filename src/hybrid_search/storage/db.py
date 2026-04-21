@@ -11,16 +11,21 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 
-CONFIDENCE_LEVELS = ("low", "medium", "high")
+# Semantic labels for call-edge confidence (M1.1).
+# Order: weakest → strongest; _confidence_filter relies on this ordering.
+#   ambiguous — name-only match, multiple candidates or common names
+#   inferred  — qualified_name or single-candidate name match
+#   extracted — import path + symbol name, authoritatively bound
+CONFIDENCE_LEVELS = ("ambiguous", "inferred", "extracted")
 
 # Numeric scores attached to each confidence label (M1).
 # Used by fusion for authority-aware ranking; Leiden/DAG stays confidence-blind.
 CONFIDENCE_SCORES: dict[str, float] = {
-    "high": 1.0,
-    "medium": 0.8,
-    "low": 0.3,
+    "extracted": 1.0,
+    "inferred": 0.8,
+    "ambiguous": 0.3,
 }
 
 
@@ -82,7 +87,7 @@ CREATE TABLE IF NOT EXISTS call_edges (
     callee_chunk_id TEXT,
     callee_module TEXT,
     project_id TEXT NOT NULL,
-    confidence TEXT DEFAULT 'low',
+    confidence TEXT DEFAULT 'ambiguous',
     confidence_score REAL DEFAULT 0.0,
     FOREIGN KEY (caller_chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
 );
@@ -244,6 +249,21 @@ class StoreDB:
                    WHERE confidence_score = 0.0 OR confidence_score IS NULL"""
             )
             logger.info("Migrated schema v3 → v4 (call_edges.confidence_score)")
+
+        if cur_ver < 5:
+            # v4 → v5: rename confidence labels to graphify-aligned semantics.
+            #   low → ambiguous, medium → inferred, high → extracted.
+            # Numeric confidence_score is unchanged (label is the only public surface).
+            self._conn.execute(
+                """UPDATE call_edges SET confidence = CASE confidence
+                        WHEN 'high' THEN 'extracted'
+                        WHEN 'medium' THEN 'inferred'
+                        WHEN 'low' THEN 'ambiguous'
+                        ELSE confidence
+                   END
+                   WHERE confidence IN ('low', 'medium', 'high')"""
+            )
+            logger.info("Migrated schema v4 → v5 (confidence label rename)")
 
         self._conn.execute(
             "UPDATE index_meta SET value = ? WHERE key = 'schema_version'",
@@ -415,7 +435,7 @@ class StoreDB:
         conn.executemany(
             """INSERT INTO call_edges
                (caller_chunk_id, callee_name, callee_module, project_id, confidence)
-               VALUES (?, ?, ?, ?, 'low')""",
+               VALUES (?, ?, ?, ?, 'ambiguous')""",
             [(caller_chunk_id, name, module, project_id) for name, module in calls],
         )
 
@@ -493,7 +513,7 @@ class StoreDB:
         self,
         chunk_id: str,
         project_id: str | None = None,
-        min_confidence: str = "low",
+        min_confidence: str = "ambiguous",
     ) -> list[dict]:
         """Find all chunks that call the given chunk (reverse call graph)."""
         conf_levels = _confidence_filter(min_confidence)
@@ -533,7 +553,7 @@ class StoreDB:
         self,
         symbol: str,
         project_id: str | None = None,
-        min_confidence: str = "low",
+        min_confidence: str = "ambiguous",
     ) -> list[dict]:
         """Find callers by callee symbol name (when chunk_id not available)."""
         conf_levels = _confidence_filter(min_confidence)
@@ -575,7 +595,7 @@ class StoreDB:
         self,
         chunk_id: str,
         project_id: str | None = None,
-        min_confidence: str = "low",
+        min_confidence: str = "ambiguous",
     ) -> list[dict]:
         """Find all chunks called by the given chunk (forward call graph)."""
         conf_levels = _confidence_filter(min_confidence)

@@ -86,20 +86,20 @@ def _seed_graph_db(db: StoreDB) -> None:
             ),
         ])
 
-        # Call edges (resolved with high/medium confidence)
-        # handler → login (high)
+        # Call edges (resolved with extracted/inferred confidence)
+        # handler → login (extracted)
         db.insert_call_edges(
             conn, "chunk-handler",
             [("login", "src/auth/login")],
             PROJECT_ID,
         )
-        # handler → create_user (high)
+        # handler → create_user (extracted)
         db.insert_call_edges(
             conn, "chunk-handler",
             [("create_user", "src/user/create")],
             PROJECT_ID,
         )
-        # login → validate_token (high)
+        # login → validate_token (extracted)
         db.insert_call_edges(
             conn, "chunk-login",
             [("validate_token", "src/auth/login")],
@@ -111,11 +111,11 @@ def _seed_graph_db(db: StoreDB) -> None:
     with db.transaction() as conn:
         for e in edges:
             if e["callee_name"] == "login":
-                db.update_call_edge_resolution(conn, e["rowid"], "chunk-login", "src/auth/login.py::login", "high")
+                db.update_call_edge_resolution(conn, e["rowid"], "chunk-login", "src/auth/login.py::login", "extracted")
             elif e["callee_name"] == "create_user":
-                db.update_call_edge_resolution(conn, e["rowid"], "chunk-create-user", "src/user/create.py::create_user", "high")
+                db.update_call_edge_resolution(conn, e["rowid"], "chunk-create-user", "src/user/create.py::create_user", "extracted")
             elif e["callee_name"] == "validate_token":
-                db.update_call_edge_resolution(conn, e["rowid"], "chunk-validate", "src/auth/login.py::validate_token", "high")
+                db.update_call_edge_resolution(conn, e["rowid"], "chunk-validate", "src/auth/login.py::validate_token", "extracted")
 
 
 class TestBuildDependencyGraph:
@@ -123,16 +123,16 @@ class TestBuildDependencyGraph:
 
     def test_builds_forward_and_reverse(self):
         edges = [
-            {"caller_chunk_id": "A", "callee_chunk_id": "B", "confidence": "high"},
-            {"caller_chunk_id": "A", "callee_chunk_id": "C", "confidence": "medium"},
+            {"caller_chunk_id": "A", "callee_chunk_id": "B", "confidence": "extracted"},
+            {"caller_chunk_id": "A", "callee_chunk_id": "C", "confidence": "inferred"},
         ]
         fwd, rev = build_dependency_graph(edges)
         assert fwd == {"A": {"B", "C"}}
         assert rev == {"B": {"A"}, "C": {"A"}}
 
-    def test_ignores_low_confidence(self):
+    def test_ignores_ambiguous_confidence(self):
         edges = [
-            {"caller_chunk_id": "A", "callee_chunk_id": "B", "confidence": "low"},
+            {"caller_chunk_id": "A", "callee_chunk_id": "B", "confidence": "ambiguous"},
         ]
         fwd, rev = build_dependency_graph(edges)
         assert fwd == {}
@@ -140,14 +140,14 @@ class TestBuildDependencyGraph:
 
     def test_ignores_unresolved(self):
         edges = [
-            {"caller_chunk_id": "A", "callee_chunk_id": None, "confidence": "high"},
+            {"caller_chunk_id": "A", "callee_chunk_id": None, "confidence": "extracted"},
         ]
         fwd, rev = build_dependency_graph(edges)
         assert fwd == {}
 
     def test_ignores_self_loops(self):
         edges = [
-            {"caller_chunk_id": "A", "callee_chunk_id": "A", "confidence": "high"},
+            {"caller_chunk_id": "A", "callee_chunk_id": "A", "confidence": "extracted"},
         ]
         fwd, rev = build_dependency_graph(edges)
         assert fwd == {}
