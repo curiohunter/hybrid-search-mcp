@@ -1,5 +1,5 @@
 {
-  "_note": "Full L6 gold set — self-contained 30q (hybrid-search-mcp) + structured 'expected' patterns for reproducible automatic labeling. 'primary' matches → rel=2, 'secondary' → rel=1. Each match rule is {file_path_suffix?, name_eq?, name_contains?, snippet_contains?} — any rule in the list that matches, scores.",
+  "_note": "Full L6 gold set — self-contained 45q (hybrid-search-mcp) with structured 'expected' patterns for reproducible automatic labeling. 'primary' matches → rel=2, 'secondary' → rel=1. Each match rule is {file_path_suffix?, name_eq?, name_contains?, snippet_contains?} — any rule in the list that matches, scores. 13회차 확장: 15q 추가 (keyword 5, structural 5, semantic 5) — total 45q.",
   "project": "hybrid-search-mcp",
   "queries": [
     {
@@ -161,6 +161,83 @@
         ]
       }
     },
+    {
+      "id": "S11",
+      "type": "structural",
+      "query": "wiki dependency graph가 모듈별로 연결 요소를 묶는 과정",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/dag.py", "name_eq": "build_dependency_graph"},
+          {"file_path_suffix": "index/dag.py", "name_eq": "find_connected_components"},
+          {"file_path_suffix": "index/dag.py", "name_eq": "generate_wiki_plan"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/dag.py", "name_eq": "topological_sort"},
+          {"file_path_suffix": "index/dag.py"}
+        ]
+      }
+    },
+    {
+      "id": "S12",
+      "type": "structural",
+      "query": "trace_callers가 재귀적으로 호출자를 추적하는 방식",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "tools/trace.py", "name_eq": "_trace_callers_recursive"},
+          {"file_path_suffix": "tools/trace.py", "name_eq": "handle_trace_callers"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "tools/trace.py", "name_eq": "_trace_callees_recursive"},
+          {"file_path_suffix": "tools/trace.py"}
+        ]
+      }
+    },
+    {
+      "id": "S13",
+      "type": "structural",
+      "query": "인덱싱 파이프라인이 파일을 청크로 쪼개고 저장하는 단계",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/pipeline.py", "name_eq": "IndexingPipeline"},
+          {"file_path_suffix": "index/pipeline.py", "name_contains": "run"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/ast_chunker.py", "name_eq": "chunk_code_file"},
+          {"file_path_suffix": "index/doc_chunker.py"},
+          {"file_path_suffix": "index/pipeline.py"}
+        ]
+      }
+    },
+    {
+      "id": "S14",
+      "type": "structural",
+      "query": "BM25 엔진이 tantivy 인덱스에 문서를 추가하고 검색하는 흐름",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "search/bm25.py", "name_eq": "BM25Engine"},
+          {"file_path_suffix": "search/bm25.py", "name_eq": "add"},
+          {"file_path_suffix": "search/bm25.py", "name_eq": "search"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "search/bm25.py"}
+        ]
+      }
+    },
+    {
+      "id": "S15",
+      "type": "structural",
+      "query": "검색 결과 hit-aware snippet 생성 로직",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "search/snippet.py", "name_eq": "make_snippet"},
+          {"file_path_suffix": "search/snippet.py", "name_eq": "_find_hit_line"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "search/snippet.py", "name_eq": "_query_tokens"},
+          {"file_path_suffix": "search/snippet.py"}
+        ]
+      }
+    },
 
     {
       "id": "K01",
@@ -315,6 +392,78 @@
         "secondary": [
           {"file_path_suffix": "orchestrator.py"},
           {"file_path_suffix": "tools/hybrid_search.py"}
+        ]
+      }
+    },
+    {
+      "id": "K11",
+      "type": "keyword",
+      "query": "build_dependency_graph",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/dag.py", "name_eq": "build_dependency_graph"},
+          {"file_path_suffix": "test_dag.py", "name_contains": "dependency_graph"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/dag.py"}
+        ]
+      }
+    },
+    {
+      "id": "K12",
+      "type": "keyword",
+      "query": "make_snippet",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "search/snippet.py", "name_eq": "make_snippet"},
+          {"file_path_suffix": "test_snippet.py", "name_contains": "snippet"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "search/snippet.py"},
+          {"file_path_suffix": "orchestrator.py", "snippet_contains": "make_snippet"}
+        ]
+      }
+    },
+    {
+      "id": "K13",
+      "type": "keyword",
+      "query": "ProjectRegistry",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "project.py", "name_eq": "ProjectRegistry"},
+          {"file_path_suffix": "test_project.py", "name_contains": "registry"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "project.py"}
+        ]
+      }
+    },
+    {
+      "id": "K14",
+      "type": "keyword",
+      "query": "generate_wiki_plan",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/dag.py", "name_eq": "generate_wiki_plan"},
+          {"file_path_suffix": "test_dag.py", "name_contains": "wiki_plan"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/dag.py", "name_eq": "WikiPlan"},
+          {"file_path_suffix": "cli.py", "snippet_contains": "generate_wiki_plan"}
+        ]
+      }
+    },
+    {
+      "id": "K15",
+      "type": "keyword",
+      "query": "handle_trace_callers",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "tools/trace.py", "name_eq": "handle_trace_callers"},
+          {"file_path_suffix": "test_trace.py", "name_contains": "callers"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "tools/trace.py"}
         ]
       }
     },
@@ -482,6 +631,89 @@
           {"snippet_contains": "Q5"},
           {"snippet_contains": "sensitive"},
           {"file_path_suffix": "index/scanner.py", "snippet_contains": "ignore"}
+        ]
+      }
+    },
+    {
+      "id": "N11",
+      "type": "semantic",
+      "query": "탐색적 검색과 정밀 조회의 차이를 어떻게 라우팅하는가",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "search.md", "snippet_contains": "의도 기반"},
+          {"file_path_suffix": "CLAUDE.md", "snippet_contains": "라우팅"},
+          {"file_path_suffix": "orchestrator.py", "name_eq": "classify_query"}
+        ],
+        "secondary": [
+          {"snippet_contains": "정밀 조회"},
+          {"snippet_contains": "fallback"},
+          {"file_path_suffix": "search.md"}
+        ]
+      }
+    },
+    {
+      "id": "N12",
+      "type": "semantic",
+      "query": "wiki 자동 생성이 결정론적으로 동작하는 이유",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "index/dag.py", "name_eq": "generate_wiki_plan"},
+          {"file_path_suffix": "index/dag.py", "name_eq": "build_dependency_graph"},
+          {"snippet_contains": "deterministic"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/dag.py"},
+          {"snippet_contains": "토폴로지"}
+        ]
+      }
+    },
+    {
+      "id": "N13",
+      "type": "semantic",
+      "query": "검색 결과 스니펫이 질의어 주변 라인을 보여주는 이유",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "search/snippet.py", "name_eq": "make_snippet"},
+          {"file_path_suffix": "search/snippet.py", "name_eq": "_find_hit_line"},
+          {"snippet_contains": "hit-aware"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "search/snippet.py"},
+          {"snippet_contains": "±5줄"},
+          {"snippet_contains": "400자"}
+        ]
+      }
+    },
+    {
+      "id": "N14",
+      "type": "semantic",
+      "query": "인덱스 일관성 검증이 실패했을 때 어떤 전략을 쓰는가",
+      "expected": {
+        "primary": [
+          {"snippet_contains": "ConsistencyMismatch"},
+          {"file_path_suffix": "rebuild-index.md"},
+          {"snippet_contains": "force rebuild"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "index/pipeline.py", "snippet_contains": "consistency"},
+          {"snippet_contains": "mismatch"}
+        ]
+      }
+    },
+    {
+      "id": "N15",
+      "type": "semantic",
+      "query": "authority nudge가 구조적 질의에 어떤 효과를 주는가",
+      "expected": {
+        "primary": [
+          {"file_path_suffix": "fusion.py", "name_contains": "authority_nudge"},
+          {"snippet_contains": "structural"},
+          {"snippet_contains": "L6"}
+        ],
+        "secondary": [
+          {"file_path_suffix": "test_fusion.py", "name_contains": "authority"},
+          {"snippet_contains": "NDCG"},
+          {"snippet_contains": "alpha"}
         ]
       }
     }
