@@ -1,4 +1,7 @@
-"""Full L6 sweep runner — self-contained + external spot check × α ∈ {0.2, 0.3, 0.5}.
+"""Full L6 sweep runner — self-contained + external cross-project × α ∈ {0.2, 0.3, 0.5}.
+
+13회차 확장: external_queries.json은 top-level 'projects' 배열 구조로 바뀌어
+valuein_homepage + mathontonlogy + breeze 각 5q씩 총 15q를 돌린다.
 
 Per-α, per-project:
   1. Retrieve bm25_ids/vector_ids once per query (shared across ON/OFF).
@@ -181,17 +184,22 @@ def _fuse(bm25_ids, vec_ids, authority_map, query, k, alpha) -> list:
 # ---------------------------------------------------------------------------
 
 
-def _run_project(gold_path: Path, registry, config, embedder, is_external: bool):
-    """Return list[QueryRun] for one gold file (self or external)."""
-    gold = json.loads(gold_path.read_text(encoding="utf-8"))
-    project_name = gold["project"]
+def _run_project_queries(
+    project_name: str,
+    queries: list[dict],
+    registry,
+    config,
+    embedder,
+    is_external: bool,
+):
+    """Return list[QueryRun] for one (project, queries) pair."""
     pinfo = registry.get_by_name(project_name)
     if pinfo is None:
         print(f"  ⚠ skipping {project_name} — not registered", file=sys.stderr)
         return []
 
     rows: list[QueryRun] = []
-    for entry in gold["queries"]:
+    for entry in queries:
         print(f"  [{entry['id']:4s}] {entry['query'][:60]}")
         bm25_ids, vec_ids, authority = _retrieve(pinfo, entry["query"], config, embedder)
 
@@ -248,18 +256,42 @@ def main() -> None:
     registry = ProjectRegistry(config.global_dir)
     embedder = Embedder(config.embedding)
 
-    print("Self-contained (hybrid-search-mcp):")
-    self_rows = _run_project(SELF_GOLD, registry, config, embedder, is_external=False)
+    all_rows: list = []
 
-    print("\nExternal spot check (valuein_homepage):")
-    external_rows = _run_project(EXTERNAL_GOLD, registry, config, embedder, is_external=True)
+    # --- Self-contained ---
+    self_gold = json.loads(SELF_GOLD.read_text(encoding="utf-8"))
+    print(f"Self-contained ({self_gold['project']}) n={len(self_gold['queries'])}:")
+    self_rows = _run_project_queries(
+        self_gold["project"],
+        self_gold["queries"],
+        registry, config, embedder,
+        is_external=False,
+    )
+    all_rows.extend(self_rows)
 
-    all_rows = [row.__dict__ for row in self_rows + external_rows]
+    # --- External (multi-project) ---
+    ext_gold = json.loads(EXTERNAL_GOLD.read_text(encoding="utf-8"))
+    # Back-compat: older schema used a single "project" + "queries".
+    if "projects" in ext_gold:
+        project_blocks = ext_gold["projects"]
+    else:
+        project_blocks = [{"project": ext_gold["project"], "queries": ext_gold["queries"]}]
+
+    for block in project_blocks:
+        pname = block["project"]
+        qs = block["queries"]
+        print(f"\nExternal cross-project ({pname}) n={len(qs)}:")
+        ext_rows = _run_project_queries(
+            pname, qs, registry, config, embedder, is_external=True,
+        )
+        all_rows.extend(ext_rows)
+
+    serialized = [row.__dict__ for row in all_rows]
     OUTPUT_PATH.write_text(
-        json.dumps(all_rows, ensure_ascii=False, indent=2),
+        json.dumps(serialized, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(f"\nWrote {OUTPUT_PATH} — {len(all_rows)} rows.")
+    print(f"\nWrote {OUTPUT_PATH} — {len(serialized)} rows.")
 
 
 if __name__ == "__main__":
