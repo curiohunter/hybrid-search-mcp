@@ -61,11 +61,18 @@ hybrid-search-mcp search "login handler"
 hybrid-search-mcp search "인증 로직"                     # Korean works
 hybrid-search-mcp search "handleSubmit" --node-types function
 hybrid-search-mcp search "migration" --file-pattern "*.sql"
+hybrid-search-mcp search "auth" --exclude-pattern "docs/*"  # drop doc noise
 hybrid-search-mcp search "auth" --json                   # JSON output
 hybrid-search-mcp search "query" --limit 20
 
+# Graph exploration
+hybrid-search-mcp god-nodes --cwd .          # top-N authority chunks
+hybrid-search-mcp annotate-wiki --cwd .      # inject god-nodes Top-N into wiki/index.md (idempotent)
+hybrid-search-mcp shortest-path <a> <b>      # call-graph path between two symbols
+hybrid-search-mcp subgraph <symbol>          # N-hop forward+reverse call graph
+
 # Status & maintenance
-hybrid-search-mcp status                     # show indexed projects
+hybrid-search-mcp status                     # show indexed projects + hooks + skills
 hybrid-search-mcp reindex --git-delta --cwd . # delta reindex (changed files only)
 hybrid-search-mcp stale --cwd .              # check stale wiki pages
 ```
@@ -97,6 +104,7 @@ This registers:
 - Auto-index hook (indexes new projects on first file read)
 - Stale wiki warning hook
 - Wiki gap notification hook
+- Route reminder hook (nudges Claude to check wiki before Grep/Glob when `.hybrid-search/wiki/index.md` exists)
 
 Restart Claude Code after setup.
 
@@ -108,17 +116,20 @@ Copy skills from `skills/` directory to `~/.claude/skills/`:
 |-------|------|-----------|
 | `/setup-hybrid-search` | First install | Once |
 | `/bootstrap-wiki` | Project onboarding | Per project |
-| `/search` | Code/doc search | Every time |
+| `/search` | Code/doc search with intent routing | Every time |
 | `/save-wiki` | Save analysis to wiki | Optional |
 | `/maintain` | Index/wiki maintenance | Occasionally |
+| `/rebuild-index` | Recovery when index is corrupted or out of sync | Rare |
 
 ### Automation
 
 | Trigger | Action | User action |
 |---------|--------|-------------|
 | Commit | Git delta reindex + affected wiki refresh | None |
+| Branch checkout | Reindex switched branch | None |
+| Before Grep/Glob | Wiki-first reminder injected into context | None |
 | Before Edit/Write | STALE.md warning | Update wiki |
-| After Edit/Write | Undocumented module alert | Add wiki |
+| After Read/Edit/Write | Undocumented module alert (`wiki-gaps.txt`) | Add wiki |
 
 ---
 
@@ -142,6 +153,34 @@ Copy skills from `skills/` directory to `~/.claude/skills/`:
 | Time | ~3s | 20-30s |
 | Accuracy | 90%+ | Noisy |
 | Token usage | Low | High |
+
+### Memory Layer (opt-in, MVP)
+
+Every hybrid_search response can be persisted as markdown for cross-session recall.
+
+```bash
+export HYBRID_SEARCH_QA_LOG=1
+```
+
+Entries land in `<project>/.hybrid-search/qa/YYYY/MM/DD-HHMMSS-<hash>.md` with
+YAML frontmatter (query, query_type, effective BM25 weight, timestamp) + top-10
+result snippets. Writes happen on a daemon thread — the search hot path is not
+touched. Default **off**.
+
+**Status:** write-only in this release. A retrieval CLI (`qa list/show/grep`) is
+the next milestone. Only the long-running MCP server guarantees every write
+lands; CLI one-shot runs may race with the daemon thread.
+
+### Tunables
+
+`~/.hybrid-search/config.toml`:
+
+```toml
+[search]
+authority_alpha = 0.3  # god-node boost weight. 0.0 disables.
+                       # Validated on n=60 (NDCG +0.061, P=1.00).
+                       # Externally-weighted workloads may prefer 0.5.
+```
 
 ---
 
@@ -178,9 +217,10 @@ Supported languages: TypeScript, JavaScript, Python, Rust, Go, Ruby, Java, C, C+
 
 <project>/.hybrid-search/                # Per project
 ├── wiki/
-│   ├── index.md
+│   ├── index.md                         # god-nodes Top-N auto-injected via annotate-wiki
 │   ├── STALE.md
 │   └── {module}.md
+├── qa/YYYY/MM/                          # Q&A log (opt-in, HYBRID_SEARCH_QA_LOG=1)
 └── wiki-gaps.txt
 ```
 
@@ -191,14 +231,19 @@ Supported languages: TypeScript, JavaScript, Python, Rust, Go, Ruby, Java, C, C+
 | Command | Description |
 |---------|-------------|
 | `index <path>` | Index a project |
-| `search <query>` | Hybrid search |
+| `search <query>` | Hybrid search (`--file-pattern`, `--exclude-pattern`, `--node-types`, `--json`) |
 | `serve` | Start MCP server (for Claude Code) |
-| `setup` | Register MCP server + hooks in Claude Code |
-| `status` | Show indexed projects |
+| `setup` | Register MCP server + PreToolUse hooks in Claude Code |
+| `status` | Show indexed projects, hook health, skill install state |
 | `reindex --cwd .` | Delta reindex |
 | `reindex --force --cwd .` | Full reindex |
 | `stale --cwd .` | Check stale wiki pages |
-| `install-hook --cwd .` | Install post-commit hook |
+| `install-hook --cwd .` | Install post-commit + post-checkout hooks + `.gitignore` entries |
+| `annotate-wiki --cwd .` | Inject god-nodes Top-N into wiki/index.md (idempotent) |
+| `god-nodes --cwd .` | Top-N authority chunks by call-graph in-degree |
+| `shortest-path <a> <b>` | Shortest call-graph path between two symbols |
+| `subgraph <symbol>` | N-hop forward + reverse call graph |
+| `synthesize-wiki --cwd .` | LLM synthesis for wiki pages |
 | `remove-project <name>` | Unregister a project |
 
 ---
@@ -212,6 +257,8 @@ Supported languages: TypeScript, JavaScript, Python, Rust, Go, Ruby, Java, C, C+
 | Too few results | `hybrid-search-mcp index . --force` |
 | Rate limit errors | Auto-retry with 0.2s batch interval |
 | Hooks not working | `hybrid-search-mcp setup` (re-run) |
+| Docs dominate search | `--exclude-pattern "docs/*"` or `"plan/*"` |
+| qa log not written from CLI | Expected — async daemon races process exit. Use via MCP server. |
 
 ---
 
