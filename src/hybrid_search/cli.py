@@ -266,8 +266,12 @@ def cmd_reindex(args: argparse.Namespace) -> None:
             db = StoreDB(p_idx.store_db)
             try:
                 stats = resolve_call_edges(db, pinfo.id)
-                resolved = stats["high"] + stats["medium"]
-                print(f"Call graph: {resolved} resolved ({stats['high']}H + {stats['medium']}M), {stats['unresolved']} unresolved")
+                resolved = stats["extracted"] + stats["inferred"]
+                print(
+                    f"Call graph: {resolved} resolved "
+                    f"({stats['extracted']} extracted + {stats['inferred']} inferred), "
+                    f"{stats['unresolved']} unresolved"
+                )
             finally:
                 db.close()
 
@@ -1055,8 +1059,8 @@ def cmd_call_graph_stats(args: argparse.Namespace) -> None:
             print(f"Project: {name} — no call edges found.")
             return
 
-        high = sum(1 for e in edges if e["confidence"] == "high")
-        medium = sum(1 for e in edges if e["confidence"] == "medium")
+        extracted = sum(1 for e in edges if e["confidence"] == "extracted")
+        inferred = sum(1 for e in edges if e["confidence"] == "inferred")
         resolved = sum(1 for e in edges if e["callee_chunk_id"] is not None)
         unresolved = total - resolved
 
@@ -1066,12 +1070,12 @@ def cmd_call_graph_stats(args: argparse.Namespace) -> None:
         without_mod = [e for e in edges if not e.get("callee_module")]
         nomod_resolved = sum(1 for e in without_mod if e["callee_chunk_id"])
 
-        # "Project dependency edges" = High + Medium (useful for CodeWiki / topo sort)
-        project_deps = high + medium
+        # "Project dependency edges" = extracted + inferred (useful for CodeWiki / topo sort)
+        project_deps = extracted + inferred
 
         print(f"Project: {name}")
         print(f"  Total edges:       {total}")
-        print(f"  Project deps:      {project_deps} (High {high} + Medium {medium})")
+        print(f"  Project deps:      {project_deps} (extracted {extracted} + inferred {inferred})")
         print(f"  All resolved:      {resolved}/{total} ({resolved/total*100:.1f}%)")
         print(f"  With module:       {len(with_mod)} → resolved {mod_resolved} ({mod_resolved/max(len(with_mod),1)*100:.1f}%)")
         print(f"  Without module:    {len(without_mod)} → resolved {nomod_resolved} ({nomod_resolved/max(len(without_mod),1)*100:.1f}%)")

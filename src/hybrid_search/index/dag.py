@@ -65,7 +65,7 @@ class WikiPlan:
 def build_dependency_graph(
     edges: list[dict],
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Build adjacency lists from resolved call_edges (High+Medium only).
+    """Build adjacency lists from resolved call_edges (extracted+inferred only).
 
     Returns (forward_graph, reverse_graph) where:
       forward[caller] = {callee1, callee2, ...}
@@ -77,9 +77,9 @@ def build_dependency_graph(
     for edge in edges:
         caller = edge["caller_chunk_id"]
         callee = edge.get("callee_chunk_id")
-        confidence = edge.get("confidence", "low")
+        confidence = edge.get("confidence", "ambiguous")
 
-        if not callee or confidence not in ("high", "medium"):
+        if not callee or confidence not in ("extracted", "inferred"):
             continue
         if caller == callee:
             continue  # skip self-loops
@@ -270,7 +270,7 @@ def generate_wiki_plan(db: StoreDB, project_id: str) -> WikiPlan:
 
     Pipeline:
     1. Load all call_edges + chunks + files
-    2. Build dependency DAG (High+Medium confidence)
+    2. Build dependency DAG (extracted+inferred confidence)
     3. Find connected components
     4. For each component: topological sort, identify entry points, derive name
     5. Isolated nodes: group by directory as fallback
@@ -285,7 +285,7 @@ def generate_wiki_plan(db: StoreDB, project_id: str) -> WikiPlan:
     file_map: dict[str, FileRecord] = {f.id: f for f in all_files}
     all_chunk_ids = set(chunk_map.keys())
 
-    # Step 1: Build dependency graph
+    # Step 1: Build dependency graph (extracted+inferred only)
     forward, reverse = build_dependency_graph(edges)
 
     # Step 2: Find connected components
