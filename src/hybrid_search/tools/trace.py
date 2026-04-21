@@ -28,7 +28,7 @@ def handle_trace_callers(
     chunk_id: str | None = None,
     project: str | None = None,
     depth: int = 2,
-    min_confidence: str = "medium",
+    min_confidence: str = "inferred",
 ) -> dict:
     """Trace all functions that call the given function (reverse call graph)."""
     if not symbol and not chunk_id:
@@ -78,7 +78,7 @@ def handle_trace_callees(
     chunk_id: str | None = None,
     project: str | None = None,
     depth: int = 2,
-    min_confidence: str = "medium",
+    min_confidence: str = "inferred",
 ) -> dict:
     """Trace all functions called by the given function (forward call graph)."""
     if not symbol and not chunk_id:

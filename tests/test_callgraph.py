@@ -97,39 +97,39 @@ class TestResolveSingle:
         }
         return qname_index, name_index, file_index
 
-    def test_high_confidence_with_module(self) -> None:
+    def test_extracted_confidence_with_module(self) -> None:
         qname_index, name_index, file_index = self._build_indexes()
         chunk_id, qname, confidence = _resolve_single(
             "login", "src/auth", None, qname_index, name_index, file_index, PROJECT_ID,
         )
-        assert confidence == "high"
+        assert confidence == "extracted"
         assert chunk_id == "chunk-login"
 
-    def test_medium_confidence_single_candidate(self) -> None:
+    def test_inferred_confidence_single_candidate(self) -> None:
         qname_index, name_index, file_index = self._build_indexes()
         chunk_id, qname, confidence = _resolve_single(
             "create_user", None, None, qname_index, name_index, file_index, PROJECT_ID,
         )
-        assert confidence == "medium"
+        assert confidence == "inferred"
         assert chunk_id == "chunk-create-user"
 
-    def test_medium_confidence_dot_qualified(self) -> None:
+    def test_inferred_confidence_dot_qualified(self) -> None:
         qname_index, name_index, file_index = self._build_indexes()
         chunk_id, qname, confidence = _resolve_single(
             "src/auth.py::login", None, None, qname_index, name_index, file_index, PROJECT_ID,
         )
-        assert confidence == "medium"
+        assert confidence == "inferred"
         assert chunk_id == "chunk-login"
 
-    def test_common_name_stays_low(self) -> None:
+    def test_common_name_stays_ambiguous(self) -> None:
         qname_index, name_index, file_index = self._build_indexes()
         # Add "init" as a single candidate
         name_index["init"] = [("chunk-init", "src/app.py::init")]
         chunk_id, qname, confidence = _resolve_single(
             "init", None, None, qname_index, name_index, file_index, PROJECT_ID,
         )
-        # "init" is in COMMON_NAMES → low confidence even with single match
-        assert confidence == "low"
+        # "init" is in COMMON_NAMES → ambiguous confidence even with single match
+        assert confidence == "ambiguous"
 
     def test_unresolved_no_candidates(self) -> None:
         qname_index, name_index, file_index = self._build_indexes()
@@ -155,9 +155,9 @@ class TestResolveSingle:
         )
         # Should prefer chunk in file-auth (same file as caller)
         assert chunk_id == "chunk-helper-auth"
-        assert confidence == "medium"
+        assert confidence == "inferred"
 
-    def test_multiple_candidates_no_same_file_returns_low(self) -> None:
+    def test_multiple_candidates_no_same_file_returns_ambiguous(self) -> None:
         qname_index, name_index, file_index = self._build_indexes()
         name_index["helper"] = [
             ("chunk-helper-auth", "src/auth.py::helper"),
@@ -171,7 +171,7 @@ class TestResolveSingle:
         chunk_id, qname, confidence = _resolve_single(
             "helper", None, "chunk-other", qname_index, name_index, file_index, PROJECT_ID,
         )
-        assert confidence == "low"
+        assert confidence == "ambiguous"
 
 
 class TestModuleMatches:
@@ -195,28 +195,28 @@ class TestResolveCallEdgesIntegration:
         _seed_db(db)
         stats = resolve_call_edges(db, PROJECT_ID)
         assert stats["total"] == 3
-        # login → medium (single candidate), create_user → medium, init → unresolved (no chunk)
-        assert stats["high"] + stats["medium"] + stats["low"] >= 2
+        # login → inferred (single candidate), create_user → inferred, init → unresolved (no chunk)
+        assert stats["extracted"] + stats["inferred"] + stats["ambiguous"] >= 2
 
     def test_no_edges(self, tmp_path: Path) -> None:
         db = _make_db(tmp_path)
         stats = resolve_call_edges(db, PROJECT_ID)
-        assert stats == {"total": 0, "high": 0, "medium": 0, "low": 0, "unresolved": 0}
+        assert stats == {"total": 0, "extracted": 0, "inferred": 0, "ambiguous": 0, "unresolved": 0}
 
     def test_idempotent_resolution(self, tmp_path: Path) -> None:
         db = _make_db(tmp_path)
         _seed_db(db)
         stats1 = resolve_call_edges(db, PROJECT_ID)
         stats2 = resolve_call_edges(db, PROJECT_ID)
-        # Second run should not re-resolve already resolved edges (medium/high are skipped)
+        # Second run should not re-resolve already resolved edges (inferred/extracted are skipped)
         assert stats2["unresolved"] <= stats1["unresolved"]
 
 
 class TestImportCallBinding:
     """Phase 7 Step 1: Import-Call Binding tests."""
 
-    def test_high_confidence_with_module_from_import(self, tmp_path: Path) -> None:
-        """callee_module이 있으면 High confidence로 resolve."""
+    def test_extracted_confidence_with_module_from_import(self, tmp_path: Path) -> None:
+        """callee_module이 있으면 extracted confidence로 resolve."""
         db = _make_db(tmp_path)
         with db.transaction() as conn:
             db.upsert_file(conn, FileRecord(
@@ -247,7 +247,7 @@ class TestImportCallBinding:
             ], PROJECT_ID)
 
         stats = resolve_call_edges(db, PROJECT_ID)
-        assert stats["high"] == 1
+        assert stats["extracted"] == 1
 
     def test_import_call_binding_ts(self, tmp_path: Path) -> None:
         """TS: import { login } from './auth' → login() call has callee_module='./auth'."""
@@ -470,35 +470,35 @@ class AuthService {
             ], PROJECT_ID)
 
         stats = resolve_call_edges(db, PROJECT_ID)
-        assert stats["high"] == 1
+        assert stats["extracted"] == 1
 
         # Verify the resolved edge
         edges = db.get_all_call_edges(PROJECT_ID)
         edge = next(e for e in edges if e["callee_name"] == "validate")
         assert edge["callee_chunk_id"] == "chunk-validate"
-        assert edge["confidence"] == "high"
+        assert edge["confidence"] == "extracted"
 
 
 class TestCommonNameRelaxation:
     """Phase 7 Step 4: COMMON_NAMES with context upgrades confidence."""
 
-    def test_common_name_with_module_upgrades_to_medium(self) -> None:
-        """'init' with callee_module should resolve as medium, not low."""
+    def test_common_name_with_module_upgrades_to_inferred(self) -> None:
+        """'init' with callee_module should resolve as inferred, not ambiguous."""
         qname_index = {"src/app.py::init": "chunk-init"}
         name_index = {"init": [("chunk-init", "src/app.py::init")]}
         file_index = {"chunk-init": "file-app"}
 
-        # Without module → low (existing behavior for common names)
+        # Without module → ambiguous (existing behavior for common names)
         chunk_id, qname, confidence = _resolve_single(
             "init", None, None, qname_index, name_index, file_index, PROJECT_ID,
         )
-        assert confidence == "low"
+        assert confidence == "ambiguous"
 
-        # With module (import context) → medium (Step 4: context upgrades)
+        # With module (import context) → inferred or extracted (Step 4: context upgrades)
         chunk_id, qname, confidence = _resolve_single(
             "init", "./app", None, qname_index, name_index, file_index, PROJECT_ID,
         )
-        assert confidence in ("high", "medium")
+        assert confidence in ("extracted", "inferred")
 
     def test_common_name_multiple_candidates_with_module(self) -> None:
         """Multiple candidates for common name should still resolve when module context exists."""
@@ -627,7 +627,7 @@ class TestConfidenceScorePersistence:
     Score fuels the fusion authority nudge; label drives existing filters.
     """
 
-    def test_high_medium_low_each_get_expected_score(self, tmp_path: Path) -> None:
+    def test_each_label_persists_expected_score(self, tmp_path: Path) -> None:
         from hybrid_search.storage.db import CONFIDENCE_SCORES
 
         db = _make_db(tmp_path)
@@ -665,20 +665,20 @@ class TestConfidenceScorePersistence:
                 ),
             ])
             db.insert_call_edges(conn, "chunk-handler", [
-                ("login", "./auth"),        # high — module + name match
-                ("create_user", None),       # medium — single name-only match
-                ("init", None),              # low — common name w/o context
+                ("login", "./auth"),        # extracted — module + name match
+                ("create_user", None),       # inferred — single name-only match
+                ("init", None),              # ambiguous — common name w/o context
             ], PROJECT_ID)
 
         resolve_call_edges(db, PROJECT_ID)
 
         edges = {e["callee_name"]: e for e in db.get_all_call_edges(PROJECT_ID)}
-        assert edges["login"]["confidence"] == "high"
-        assert edges["login"]["confidence_score"] == CONFIDENCE_SCORES["high"]
-        assert edges["create_user"]["confidence"] == "medium"
-        assert edges["create_user"]["confidence_score"] == CONFIDENCE_SCORES["medium"]
-        assert edges["init"]["confidence"] == "low"
-        assert edges["init"]["confidence_score"] == CONFIDENCE_SCORES["low"]
+        assert edges["login"]["confidence"] == "extracted"
+        assert edges["login"]["confidence_score"] == CONFIDENCE_SCORES["extracted"]
+        assert edges["create_user"]["confidence"] == "inferred"
+        assert edges["create_user"]["confidence_score"] == CONFIDENCE_SCORES["inferred"]
+        assert edges["init"]["confidence"] == "ambiguous"
+        assert edges["init"]["confidence_score"] == CONFIDENCE_SCORES["ambiguous"]
 
     def test_unresolved_edge_keeps_default_score(self, tmp_path: Path) -> None:
         db = _make_db(tmp_path)
