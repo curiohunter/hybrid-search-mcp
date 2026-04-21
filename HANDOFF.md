@@ -2,7 +2,83 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 13회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-21, 14회차) — 다음 세션 여기부터 읽을 것
+
+### 한줄 요약
+
+**L6 외부 확장 (선택 A) 완료 + 로드맵 감사 + Q1 플랜 archive.** gold set 30q→45q, external 5q→15q (valuein + mathontonlogy + breeze), MRR@10 지표 + per-project α sweep 추가. **GRAND TOTAL n=60 α=0.3: Δ NDCG +0.061 [+0.029,+0.098] P=1.00, Δ MRR +0.062 [+0.015,+0.118] P=1.00** — authority nudge 효과 cross-project에서 최종 검증. α=0.5가 external에서 더 강함(+0.094) → 재튜닝 여지 confirmed. 로드맵 감사 중 **M1.2 (type-gating), M1.1 (schema v5 label rename)이 이미 이전 세션에 shipped**되어 있었음을 확인 — HANDOFF 11회차 표 "16/28 (57%)"가 현실 미반영이었음. PLAN_q1_routing_hook.md → `docs/plan/archive/`로 이동. **457/457 passed**, 5 파일 staged.
+
+### ✅ 이 세션 완료된 것 (14회차)
+
+**1. L6 확장 (서브에이전트 병렬 실행, HANDOFF.md:375 로드맵 항목)**
+- `gold_queries_v2.json`: 30q → **45q** (keyword/structural/semantic 각 15q).
+- `external_queries.json`: 5q → **15q** (valuein_homepage 5 + mathontonlogy 5 + breeze 5). projects 배열 구조로 승격 (back-compat 유지).
+- `run_v2.py`: 다중 external 프로젝트 루프.
+- `score_v2.py`: MRR@10 계산 + bootstrap CI + per-project 분리 표 + GRAND TOTAL.
+- `results_v2.json`: 2400 rows (60q × 10 limit × 4 mode).
+- breeze 인덱스 stale → 선행 reindex 수행 (155 files, 323 chunks).
+
+**2. L6 최종 결과 요약 (α=0.3 기준)**
+| scope | n | Δ NDCG [95% CI] P | Δ MRR [95% CI] P |
+|---|---|---|---|
+| self-contained | 45 | +0.060 [+0.019,+0.104] **1.00** | +0.056 [+0.003,+0.122] 0.98 |
+| external pooled | 15 | +0.065 [+0.009,+0.128] 0.99 | +0.236 (valuein만 유의) |
+| **GRAND TOTAL** | **60** | **+0.061 [+0.029,+0.098] 1.00** | **+0.062 [+0.015,+0.118] 1.00** |
+- structural Δ NDCG +0.142 (α=0.3, P=1.00) 전 α에서 최강. keyword Δ=0 (OFF MRR=1.0 천장 효과). semantic 미약한 양수.
+- external α sweep: valuein +0.088 (α=0.2) → +0.235 (α=0.5). mathontonlogy +0.022 → +0.070. breeze −0.022 → −0.021 (5q 중 4q가 이미 OFF NDCG≥0.76으로 천장). **external-weighted이면 α=0.5가 더 강함.** 현재는 self에서 α=0.3/0.5 거의 동일이라 보수적으로 0.3 유지.
+
+**3. 로드맵 감사 — 57%의 정체**
+- 11회차 표 `16/28 (57%)`는 11회차 시점 스냅샷. 이후 업데이트 안 됨.
+- 12회차 M5 shipped, 13회차 Search DX snippet shipped.
+- **M1.2 type-gating도 이미 shipped** — `orchestrator.py:193-198` "M1.2: EXACT_SYMBOL queries bypass authority", `tests/test_orchestrator.py`, `tests/test_query_classifier.py` 존재. 시점 11~13 사이 (커밋 로그 추적 필요).
+- **M1.1 label 리네이밍도 이미 shipped** — `db.py:14 SCHEMA_VERSION="5"`, `db.py:21 CONFIDENCE_LEVELS=("ambiguous","inferred","extracted")`, v4→v5 migration 로그 (`db.py:266`).
+- 실제 진행률 재계산: Q1/Q3/Q4/Q5/Q6/Q7/Q8/Q10 (8) + M1/M1.v2/M1.1/M1.2/M2/M3/M4/M5 (8) + L6 mini+Full+확장 (3) + Search DX snippet (1) = **20개 완료**. 원래 denominator 28에 Search DX snippet이 포함 안 됐다면 20/28 (71%). 포함 고려 시 20/29 (69%).
+
+**4. PLAN_q1_routing_hook.md archive**
+- Q1 본문 + "다음 단계" Q7/Q8/M2/M4 모두 이전 세션에 완료 확인됨 (cli.py `_ensure_claude_md`, `_git_hooks_dir`, `_build_post_checkout_script`, `_write_needs_synthesis_flag`).
+- 파일 → `docs/plan/archive/2026-04-21-PLAN_q1_routing_hook.md` 이동. `git mv` 사용.
+
+### 🎯 다음 세션 진입점
+
+**파일 읽기 순서:**
+1. **이 14회차 섹션 전체**
+2. `git log --oneline -10` — 최근 커밋
+3. `benchmarks/authority_poc/results_v2.json` 최신 결과
+4. 아래 "다음 세션 권장 순서"
+
+### 🎯 다음 세션 권장 순서
+
+**로드맵 원래 계획 거의 소진. 남은 결정은 α 재튜닝 또는 새 축(Memory Layer / Wiki 품질) 착수.**
+
+**선택 A — α=0.5 재검증 (반나절):** L6 결과가 external-weighted면 α=0.5가 더 강함을 시사. config로 α를 노출해 프로젝트별 튜닝 가능하게 하거나, 기본값 변경 여부 결정. 현재 `fusion.py:_AUTHORITY_BOOST_ALPHA=0.3` 상수. 변경 시 `test_fusion.py` TestAuthorityNudge 업데이트 필요.
+
+**선택 B — Wiki 품질 개선 (1~2일):** god-nodes 결과(`StoreDB.get_god_nodes()`)를 `.hybrid-search/wiki/index.md` "핵심 모듈" 섹션에 자동 삽입. `cli.py`에 `annotate-wiki` 서브커맨드 신설 or `synthesize-wiki --finalize` 후반에 훅. Wiki 가치 상승 + god-nodes 활용 증가.
+
+**선택 C — L1 Q&A feedback loop 시작 (4주, 전략 3축 중 Memory Layer 진입):** 매 MCP 응답을 markdown으로 영구 저장 → 대화 지식 ↔ 코드 연결. 메모리 `project_strategic_direction.md` "3개 축"의 핵심. 벤치마크 + 자율 루프 축은 거의 마감이라 이 축 시작이 다음 큰 임팩트.
+
+**선택 D — 운영 문서 노이즈 filter (반나절):** `docs/`, `plan/`이 hybrid_search 상위 점유. `--exclude-pattern` CLI 옵션 또는 ranking penalty. 먼저 실측 데이터 (어느 쿼리가 얼마나 오염되는지) 수집 후 결정 권장.
+
+**추천: 선택 A (α 결정 마감) → 선택 C (Memory layer 시작).** B/D는 실사용 pain이 축적된 후.
+
+### 주의사항 / 알려진 이슈
+
+- **5 파일 staged, 커밋 대기 중.** `git status` 확인 후 `git commit` 필요. PLAN_q1 archive는 rename(R)으로 같이 들어감.
+- **breeze external 결과 약점:** 5q 중 4q가 이미 OFF NDCG≥0.76. proxy label + 천장 효과로 noise. 결정적 신호 X, directional 참고만.
+- **MRR@10 한계:** keyword 15q 전원 OFF MRR=1.0 → Δ=0 (top-1 이미 정답). MRR 차별화는 structural/semantic에서만.
+- **α=0.5 재튜닝 위험:** self-contained variance 확대 가능성 (9회차 α=0.3 선택 근거). 바꾸려면 self n=45에서 α=0.5 안정성 다시 검증 필요.
+- **12회차 이슈 잔존:** v4 → v5 마이그레이션 미검증 프로젝트 3개 (`7c7631...`, `05de0b...`, `5f349647...`). 다음 MCP 호출 시 자동.
+
+### 마지막 상태
+
+- **브랜치:** `main` (origin/main 기준 +9 커밋, 이번 세션 staging만 + 미커밋)
+- **마지막 커밋:** `cebed66 [docs] HANDOFF 13회차 — Search DX snippet + 6~10회차 압축`
+- **테스트:** 457/457 passed (25s)
+- **Staged 변경:** `benchmarks/authority_poc/{external_queries,gold_queries_v2,results_v2,run_v2,score_v2}.{json,py}` (5) + `PLAN_q1_routing_hook.md → docs/plan/archive/2026-04-21-PLAN_q1_routing_hook.md` (R)
+- **Diff 규모:** +25,895 / −9,404 (results_v2.json 대부분)
+
+---
+
+## 🔵 이전 세션 인계 (13회차) — 참고용
 
 ### 한줄 요약
 
