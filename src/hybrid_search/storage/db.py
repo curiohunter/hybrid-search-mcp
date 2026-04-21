@@ -677,6 +677,37 @@ class StoreDB:
         )
         return {row["callee_chunk_id"]: row["score"] for row in cur.fetchall()}
 
+    def get_god_nodes(
+        self,
+        project_id: str,
+        limit: int = 20,
+        min_confidence: str = "inferred",
+    ) -> list[dict]:
+        """Return top-N chunks by in-degree (distinct callers), tiebreak by max confidence_score.
+
+        'God nodes' = high-authority chunks — the most-called functions/classes
+        in a project. Used by M5 graph exploration (CLI + /search routing).
+        """
+        conf_levels = _confidence_filter(min_confidence)
+        placeholders = ",".join("?" for _ in conf_levels)
+        cur = self._conn.execute(
+            f"""SELECT c.id, c.name, c.qualified_name, c.node_type,
+                       c.start_line, c.end_line,
+                       f.relative_path,
+                       COUNT(DISTINCT ce.caller_chunk_id) AS in_degree,
+                       MAX(ce.confidence_score) AS max_score
+                FROM chunks c
+                JOIN call_edges ce ON ce.callee_chunk_id = c.id
+                JOIN files f ON f.id = c.file_id
+                WHERE c.project_id = ?
+                  AND ce.confidence IN ({placeholders})
+                GROUP BY c.id
+                ORDER BY in_degree DESC, max_score DESC, c.qualified_name
+                LIMIT ?""",
+            (project_id, *conf_levels, limit),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
     def find_chunk_by_qualified_name(
         self, qualified_name: str, project_id: str
     ) -> ChunkRecord | None:
