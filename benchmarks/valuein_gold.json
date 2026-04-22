@@ -48,7 +48,8 @@
         "agent-architecture.html",
         "docs/plans/agent-system-plan.md"
       ],
-      "primary_target": "docs/plans/agent-system-plan.md"
+      "primary_target": "docs/plans/agent-system-plan.md",
+      "acceptable_module_names": ["agent"]
     },
     {
       "id": "S4",

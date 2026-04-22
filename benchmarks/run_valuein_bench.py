@@ -244,12 +244,18 @@ def hybrid_track(
     seen: list[str] = []
     module_names: list[str | None] = []
     snippet_bytes = 0
+    # Step K: ``module_member`` entries carry their parent module's
+    # ``name`` so ``acceptable_module_names`` matching is satisfied by a
+    # member file, not just the card. Without this, emitting the
+    # admissions SQL as a member would lose the module primary-hit
+    # signal even though the SQL is the gold's primary_target.
+    _MODULE_LIKE = {"module", "module_member"}
     for hit in resp.results:
         snippet_bytes += len(hit.snippet or "")
         if hit.file_path in seen:
             continue
         seen.append(hit.file_path)
-        module_names.append(hit.name if hit.node_type == "module" else None)
+        module_names.append(hit.name if hit.node_type in _MODULE_LIKE else None)
     return seen, module_names, elapsed, snippet_bytes
 
 

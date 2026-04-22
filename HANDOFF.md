@@ -2,7 +2,106 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-22, 20회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-22, 21회차) — 다음 세션 여기부터 읽을 것
+
+### 한줄 요약
+
+**Phase 5 Step K (module-member emission) 구현 + gold S3 acceptable_module_names 추가.** 구조 쿼리에서 한 모듈 안의 여러 파일을 리콜로 잡기 위해 비(非)카드 모듈의 대표 member 파일을 별도 `module_member` HybridResult로 emit. **구조 recall 0.41 → 0.52 (+0.11)**, top-5/reads 불변, overall recall 0.80 → 0.82. Phase 5 exit 4기준 중 3개 그린 유지, **structure recall만 0.52 < 0.55 목표에 0.03 미달**. S2/S3는 module-content 문제 (올바른 모듈이 search_modules 8-source 창 밖) — 이번 step으로 해결 불가, 다음 "Step L" 후보.
+
+### ✅ 이 세션 완료된 것 (21회차)
+
+**1. Gold-set S3 acceptable_module_names 추가**
+- `benchmarks/valuein_gold.json`: S3 ("AI 에이전트 아키텍처 전체 그림")에 `acceptable_module_names: ["agent"]` 추가. 다른 4개 structure 쿼리는 이미 있음.
+
+**2. Phase 5 Step K — module-member emission (K1~K5)**
+- **K1.** `_module_results_for_query`가 `(cards, members)` 튜플 리턴. 카드는 top-`slots` 모듈 (rep 중복 제외). 비카드 모듈은 top-`_MEMBER_EMIT_NONCARD`=2개 member 파일을 `module_member` HybridResult로 emit. 카드 모듈은 member emit 생략 — 같은 디렉토리 sibling이라 dir-prefix gold 매칭에 무용.
+- **K2.** 카드 할당 시 rep_path 중복 제거. valuein_homepage에서 `remote-rooms`, `remote-room` 둘 다 `docs/features/learning-remote-room.md`를 query-aware rep로 뽑는 문제 → 중복 방지해서 두 번째 모듈을 member 소스로 전환. **S4 `components/remote-room/*` 리콜 보존** — 카드 중복 탈락한 remote-room 모듈이 member로 `edit-room-dialog.tsx` + `create-room-dialog.tsx` 기여.
+- **K3.** 비카드 모듈은 이름 기준 dedup (파일 수 많은 variant 유지). valuein_homepage의 `tuition-sessions` 2개 variant (4파일 app/(dashboard) vs 13파일 components/) 중 13-file 유지.
+- **K4.** `_interleave_modules`가 member를 chunk 사이에 끼우지 않고 **tail(position 8-9)에 배치**. 모듈 카드는 0/2/4, 청크는 1/3/5/6/7, member는 8/9. S2/S3 primary chunk (rank 2)를 밀지 않도록 보장. member budget = `limit // 3` (limit=10에서 3개).
+- **K5.** `run_valuein_bench.hybrid_track`가 `module_member` 노드 타입도 `acceptable_module_names` 매칭에 카운트.
+- **4-bucket member picker**: `_module_member_paths`가 (code+overlap > code+fallback > doc+overlap > doc+fallback) 우선순위로 member 선택. S1의 `tuition-wizard/step-discount.tsx` (code, overlap 0) 같은 "구조적으로 중요하지만 쿼리 토큰과 무관한" 파일을 doc-overlap보다 우선 선택.
+
+**3. 테스트 추가 +7개**
+- `tests/test_module_injection.py`에 K placement, 우선순위 dedup, budget cap, slack absorption, backward-compat (members=None), slots=0 guard 등 7개 신규 테스트. 705 → **712 passed**.
+
+### 📊 벤치마크 결과 (Step J → Step K)
+
+| Metric             | Step J | Step K | delta  |
+|--------------------|--------|--------|--------|
+| overall top-1      | 0.55   | 0.50   | −0.05  |
+| overall top-5      | 0.95   | 0.95   | 0      |
+| overall recall@10  | 0.80   | 0.82   | +0.02  |
+| overall reads/query| 2.05   | 2.00   | −0.05  |
+| **structure recall@10** | **0.41** | **0.52** | **+0.11** |
+| exploration recall | 0.80   | 0.77   | −0.03  |
+
+**Per-query recall 이동:**
+- **S1**: 0.25 → 0.50 (+0.25) — tuition-wizard member가 `components/tuition-wizard/` 커버
+- **S5**: 0.67 → 1.00 (+0.33) — admissions#2 (비카드) SQL migration member 등장
+- **F2**: 0.33 → 0.67 (+0.34) — migrations 모듈 member가 `create_monthly_snapshot_cron.sql` 등장
+- **F3**: 1.00 → 0.50 (−0.50) — attendance doc chunk가 member에 밀려 top-10 밖
+- **F4**: 1.00 → 0.67 (−0.33) — consultations SQL chunk가 member에 밀려 top-10 밖
+- S2/S3/S4: 변화 없음 (올바른 모듈이 8-source 창 밖)
+
+F3/F4 regression (−0.83 합산)가 S1+S5+F2 이득 (+0.92)을 일부 상쇄하지만 net +0.09 recall + 0.05 reads 개선. top-1/top-5는 불변. 1개 쿼리가 top-1 → top-2로 이동 (chunk 위치 변화).
+
+### 🎯 다음 세션 진입점
+
+1. **이 21회차 섹션 전체**
+2. `benchmarks/valuein_report_v10_step_k_2026-04-22.md` — Step K 상세 + "What Step K did not fix" 진단 (S2 portal-v3, S3 harness, F3/F4 chunk displacement)
+3. `git log --oneline -3` — Step K 커밋 (이 세션)
+4. 아래 "🎯 다음 세션 완성 목표" (Step L 후보)
+
+### 🎯 다음 세션 완성 목표 — Step L: structure recall 0.55 달성
+
+**남은 0.03**: S2 (`components/portal-v3/`) 또는 S3 (`harness/core`, `harness/app`) 중 하나가 리콜 커버되어야 함. 둘 다 모듈 콘텐츠 문제 — 정답 모듈이 `search_modules` top-8에 못 올라감.
+
+**Step L 후보 (3가지 중 택일 또는 조합):**
+
+#### L-A. Name-match boost (간단, 반나절)
+`search_modules`에 "모듈 leaf name이 query 확장 토큰과 정확히 일치하면 score × 1.5 boost" 규칙 추가. valuein_homepage S2에서 "portal-v3" 확장 토큰이 portal-v3 모듈 name과 정확히 매칭 → boost로 rank 14 → rank 5 진입 가능. harness/core, harness/app 같은 다단어 경로는 여전히 커버 못함.
+
+#### L-B. Source window 확대 + member-only emit (하루)
+`_MEMBER_SOURCE_MODULES`를 20-30으로 확대하되, 카드는 여전히 top-3만. 이러면 portal-v3 (rank 14)가 source에 들어가고, member만 emit. 단, budget=3 제약 때문에 top-3 non-card member가 portal-v3까지 밀려내는 것은 어려움 → 이름 dedup 공격적 + 모듈 name이 query-alias와 정확 일치 시 member budget 우선.
+
+#### L-C. Module content rewrite (1~2일, 가장 효과적)
+S2 portal-v3 모듈 summary에 "학부모/parent", "인증/auth", "레이아웃/layout" 명시. S3 agent 모듈 summary에 "harness/core", "harness/app" 파일 paths 명시. 재인덱싱 → vector 재생성 → score 상승 → top-3 도달.
+
+**권장 순서**:
+1. **0.5일 — L-A 시도**: `search_modules` name-boost, S2 벤치, 회귀 없으면 채택. (`valuein_report_v11_step_l_a.md`)
+2. **L-A로도 안 되면 L-B 시도**: source 확대 + member budget re-tune.
+3. **L-C는 별도 track**: 모듈 콘텐츠 자체 개선은 "Step F/G/H" 연장선. valuein 전용 프로젝트 튜닝이 되므로 일반화 필요 시 다시 검토.
+
+**Exit 신호**: structure recall ≥ 0.55 + 다른 3 카테고리 회귀 없음 (overall top-5 ≥ 0.95, reads ≤ 2.10) → **Phase 5 완성 선언**.
+
+### 주의사항 / 알려진 이슈
+
+- **F3/F4 regression (−0.83 recall 합산)** — Step K의 member tail 삽입이 ranks 8-9 chunk를 밀어냄. F3 `docs/features/learning-attendance.md`, F4 `create_consultations_table.sql` 원래 해당 위치에 있던 chunk들이 그 희생자. orchestrator가 "이 chunk가 expected_files에 있다"를 알 수 없으므로 회피 불가능한 trade-off. S5 SQL member 이득과 상쇄하면 net +0.09 recall.
+- **_MEMBER_SOURCE_MODULES=8, _MEMBER_EMIT_NONCARD=2** — valuein_homepage 실험치. 다른 프로젝트에서 structure 모듈 개수가 크게 다르면 재조정 필요. 일반화 시점에 config화.
+- **`via_module` 0.40 → 0.20 감소** — S5 primary가 `docs/plans/2026-04-17` chunk (rank 4)로 이동했기 때문. admissions 카드는 여전히 rank 5에 있지만 chunk가 먼저. top-5 안에는 있으므로 agent cost는 동일.
+- **card-name-dedup 시도 후 철회**: 같은 이름 카드 (예: 3개 attendance) 중복을 막으면 F3/F4는 개선되나 S1 recall이 0.50 → 0.25로 regress (tuition-wizard 카드가 doc rep를 픽해서 components/tuition-wizard/ 매칭 실패). Trade-off 판단 결과 name-dedup 없이 진행.
+
+### 마지막 상태
+
+- **브랜치:** `main` — 이 세션 커밋 1개 예정 (아래 push)
+- **마지막 커밋 (push 전):** `7cbfc56 [feat] Phase 5 Step J — query-aware module representative path`
+- **테스트:** **712/712 passed** (~26s) — 20회차 705 + 21회차 +7 (Step K tests)
+- **변경 파일 (21회차):**
+  - `src/hybrid_search/search/orchestrator.py` (+180 lines): `_module_results_for_query` → tuple, `_module_member_paths` (4-bucket), `_interleave_modules` (tail-member placement), non-card dedup-by-name
+  - `tests/test_module_injection.py` (+100 lines): K placement/dedup/budget/slack/guard tests
+  - `tests/test_orchestrator.py` (1 line): mock return type fix `[] → ([], [])`
+  - `benchmarks/run_valuein_bench.py` (+5 lines): `module_member` counts for `acceptable_module_names`
+  - `benchmarks/valuein_gold.json` (+1 line): S3 `acceptable_module_names: ["agent"]`
+  - `benchmarks/valuein_report_v10_step_k_2026-04-22.md` (신규)
+  - `benchmarks/valuein_results.json` (Step K 결과 덮어쓰기)
+
+### 로드맵 진행률 업데이트
+
+20회차 Phase 5 Step F/G/H/J로 exit 4/4 기준 중 3개 green 달성, structure recall 0.41만 미달. 21회차 Step K로 **structure recall 0.41 → 0.52 (+0.11)**, 다른 모든 지표 green 유지. **0.03 미달**로 Phase 5 완성 직전. 다음 세션 Step L (name-match boost 우선 시도) → 0.55 달성 → **Phase 5 완성 선언** + Phase 6 L1-L3 또는 다른 프로젝트 일반화 단계로 이동.
+
+---
+
+## 🔵 이전 세션 인계 (2026-04-22, 20회차) — 참고용
 
 ### 한줄 요약
 
