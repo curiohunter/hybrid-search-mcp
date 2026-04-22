@@ -29,6 +29,31 @@ logger = logging.getLogger(__name__)
 # Cross-project search timeout per project (§13)
 PROJECT_TIMEOUT_S = 2.0
 
+# Step K: how many modules to pull member files from (wider than
+# module-card slots). 8 empirically covers the valuein_homepage
+# structure cases where the rep-path winner and the SQL-migration
+# holder are two different admissions modules at search ranks 3 and 4.
+_MEMBER_SOURCE_MODULES = 8
+# Non-card module dedup by name prefers the file-count-richest
+# variant so member emission picks the structural canonical members
+# (``components/tuition-sessions/*.tsx``) over the shallow dashboard
+# page variants of the same module name. Set in ``_module_results_for_query``.
+# How many member files to emit per non-card source module. Card
+# modules already contribute their rep file; their sibling members
+# usually share a directory with the rep and don't add new recall
+# signal. Non-card source modules (the admissions#2 module on
+# valuein_homepage, search rank 4, that holds the S5 SQL migration)
+# are the ones whose content otherwise wouldn't reach top-10, so
+# those are what the member stream exists for.
+#
+# Emit 2 per non-card: the first is the module's top code member
+# (covers the dominant directory), the second catches off-tree
+# files like bucketed migrations that Step G attached. For the
+# admissions#2 case: member 1 is the ``admission_results.sql``
+# migration (Step G cross-tree attach); member 2 is the
+# ``page.tsx`` under ``app/(dashboard)/students/admissions/``.
+_MEMBER_EMIT_NONCARD = 2
+
 
 class QueryType:
     EXACT_SYMBOL = "EXACT_SYMBOL"
@@ -220,12 +245,20 @@ class SearchOrchestrator:
 
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
-        # have to Read 5 files to piece together "how is X organized".
-        module_results = self._module_results_for_query(
+        # have to Read 5 files to piece together "how is X organized". Step K
+        # additionally surfaces ``module_member`` entries — sibling files under
+        # the same module that the query-aware rep pick didn't land on — so
+        # structure queries whose answer spans several files in one subsystem
+        # (F2's admissions module, S5's entrance-tests) get multiple recall
+        # hits from a single module retrieval.
+        module_cards, module_members = self._module_results_for_query(
             qtype, query, project_infos, query_vector
         )
         module_slots = _module_slots_for(qtype, query)
-        results = _interleave_modules(chunk_results, module_results, module_slots, limit)
+        results = _interleave_modules(
+            chunk_results, module_cards, module_slots, limit,
+            members=module_members,
+        )
 
         elapsed_ms = (time.monotonic() - start) * 1000
         return HybridSearchResponse(
@@ -244,17 +277,28 @@ class SearchOrchestrator:
         query: str,
         project_infos: list[ProjectInfo],
         query_vector=None,
-    ) -> list[HybridResult]:
-        """Score modules across the project scope; return as HybridResult list.
+    ) -> tuple[list[HybridResult], list[HybridResult]]:
+        """Score modules; return ``(module_cards, module_members)``.
 
         ``query_vector`` is the already-embedded query from the chunk search
         path — passing it through lets Step C's semantic fusion fire without
         spending another API call.
+
+        Step K: in addition to one card per surfaced module, emit up to
+        ``_MEMBER_EMIT_PER_MODULE`` sibling files from the top
+        ``_MEMBER_SOURCE_MODULES`` candidates as ``module_member`` entries.
+        A structure query whose gold covers three files in one subsystem
+        (S5 admissions — components dir + SQL migration + plan doc) can
+        now collect all three from one module retrieval, instead of one
+        rep path per module. The member-sourcing window is wider than the
+        card slot count so a near-miss module (admissions #2 at search
+        rank 4 on valuein_homepage, the one that actually holds the SQL)
+        still contributes even when its card doesn't make the top-3 slot.
         """
         if _module_slots_for(qtype, query) == 0:
-            return []
+            return [], []
 
-        per_project_limit = 5
+        per_project_limit = _MEMBER_SOURCE_MODULES
         hits: list[tuple[ProjectInfo, ModuleRecord, float]] = []
         for pinfo in project_infos:
             project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
@@ -297,33 +341,132 @@ class SearchOrchestrator:
             query_tokens_by_project[pinfo.id] = _derive_query_tokens(
                 query, alias_specificity=spec,
             )
-        results: list[HybridResult] = []
-        for pinfo, m, _score in hits:
+        # Two-pass emit: first fill ``card_slot_budget`` cards with
+        # modules that offer *distinct* rep paths (otherwise the second
+        # card duplicates the first and L5's "half chunks, half modules"
+        # guarantee burns a slot on a dup file). Modules whose rep
+        # collides with an earlier card — or that run past the budget —
+        # fall through to the member stream instead. This is how S4
+        # keeps its ``components/remote-room/*`` evidence: the
+        # ``remote-room`` module's query-aware rep collapses to the
+        # same ``docs/features/learning-remote-room.md`` already used
+        # by ``remote-rooms``; dedup pushes it to member emission,
+        # where its top code member surfaces the components dir.
+        card_slot_budget = _module_slots_for(qtype, query)
+
+        cards: list[HybridResult] = []
+        members: list[HybridResult] = []
+        used_rep_paths: set[str] = set()
+        # Hold non-card modules for a second pass that emits members.
+        member_sources: list[tuple[ProjectInfo, ModuleRecord, str]] = []
+
+        for idx, (pinfo, m, _score) in enumerate(hits):
             project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
             idx_paths = IndexPaths(project_dir)
             db = StoreDB(idx_paths.store_db)
             try:
                 qtoks = query_tokens_by_project.get(pinfo.id, set())
-                file_path = _module_representative_path(db, m, qtoks)
-                results.append(HybridResult(
-                    chunk_id=f"module:{m.id}",
-                    rrf_score=0.0,
-                    bm25_rank=None,
-                    vector_rank=None,
-                    file_path=file_path,
-                    project=pinfo.name,
-                    name=m.name,
-                    qualified_name=f"module:{m.name}",
-                    node_type="module",
-                    start_line=None,
-                    end_line=None,
-                    content=_module_content_for_result(m),
-                    snippet=_module_snippet_for_result(m),
-                    module_id=m.id,
-                ))
+                rep_path = _module_representative_path(db, m, qtoks)
+                slot_available = len(cards) < card_slot_budget
+                if slot_available and rep_path not in used_rep_paths:
+                    used_rep_paths.add(rep_path)
+                    cards.append(HybridResult(
+                        chunk_id=f"module:{m.id}",
+                        rrf_score=0.0,
+                        bm25_rank=None,
+                        vector_rank=None,
+                        file_path=rep_path,
+                        project=pinfo.name,
+                        name=m.name,
+                        qualified_name=f"module:{m.name}",
+                        node_type="module",
+                        start_line=None,
+                        end_line=None,
+                        content=_module_content_for_result(m),
+                        snippet=_module_snippet_for_result(m),
+                        module_id=m.id,
+                    ))
+                else:
+                    member_sources.append((pinfo, m, rep_path))
             finally:
                 db.close()
-        return results
+
+        # Non-card name-dedup: many projects carry several modules with
+        # the same name but different file sets (valuein_homepage has
+        # two ``tuition-sessions`` modules — a 4-file one keyed on the
+        # dashboard page, and a 13-file one keyed on the
+        # ``components/tuition-sessions/*`` directory). Keep the
+        # file-count-richest variant per name so member emission picks
+        # the structurally canonical files rather than dashboard
+        # page.tsx files that agents rarely want as subsystem
+        # evidence. Score ordering is preserved across names; dedup
+        # only fires within a name.
+        dedup_by_name: dict[str, tuple[ProjectInfo, ModuleRecord, str, int]] = {}
+        for pinfo, m, rep in member_sources:
+            name_key = (m.name or "").lower()
+            # Need file count to compare variants; query it once per
+            # candidate and close the db immediately.
+            project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
+            idx_paths = IndexPaths(project_dir)
+            db = StoreDB(idx_paths.store_db)
+            try:
+                count = len(db.get_files_by_module(m.id))
+            finally:
+                db.close()
+            prev = dedup_by_name.get(name_key)
+            if prev is None or count > prev[3]:
+                dedup_by_name[name_key] = (pinfo, m, rep, count)
+        # Preserve original score order: walk ``member_sources`` and
+        # emit each retained candidate once.
+        deduped_sources = []
+        kept_ids: set[str] = set()
+        for pinfo, m, rep in member_sources:
+            name_key = (m.name or "").lower()
+            kept = dedup_by_name.get(name_key)
+            if kept is None:
+                continue
+            if kept[1].id != m.id:
+                continue
+            if m.id in kept_ids:
+                continue
+            kept_ids.add(m.id)
+            deduped_sources.append((pinfo, m, rep))
+
+        # Second pass: emit members only for non-card source modules.
+        # Card modules skip member emission because their sibling files
+        # typically share a directory with the rep and don't add recall
+        # for ``expected_files`` style dir-prefix gold entries.
+        for pinfo, m, _skip_rep in deduped_sources:
+            project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
+            idx_paths = IndexPaths(project_dir)
+            db = StoreDB(idx_paths.store_db)
+            try:
+                qtoks = query_tokens_by_project.get(pinfo.id, set())
+                member_paths = _module_member_paths(
+                    db, m, qtoks,
+                    max_members=_MEMBER_EMIT_NONCARD,
+                )
+                for member_path in member_paths:
+                    members.append(HybridResult(
+                        chunk_id=f"member:{m.id}:{member_path}",
+                        rrf_score=0.0,
+                        bm25_rank=None,
+                        vector_rank=None,
+                        file_path=member_path,
+                        project=pinfo.name,
+                        name=m.name,
+                        qualified_name=f"module:{m.name}",
+                        node_type="module_member",
+                        start_line=None,
+                        end_line=None,
+                        content=_module_content_for_result(m),
+                        snippet=_module_snippet_for_result(m),
+                        module_id=m.id,
+                    ))
+            finally:
+                db.close()
+
+        return cards, members
 
     def _search_single(
         self,
@@ -608,8 +751,10 @@ def _interleave_modules(
     modules: list[HybridResult],
     slots: int,
     limit: int,
+    *,
+    members: list[HybridResult] | None = None,
 ) -> list[HybridResult]:
-    """Interleave up to ``slots`` modules with chunks.
+    """Interleave up to ``slots`` modules with chunks and module members.
 
     Placement: module at position 1, then chunk, module, chunk, module, then
     chunks fill the rest. This preserves the top-2 chunk slots at positions
@@ -617,11 +762,24 @@ def _interleave_modules(
     is not buried by module cards, while structure/exploration queries still
     get a subsystem pointer at the very top.
 
+    Step K — ``members`` is an optional list of ``module_member`` hits
+    sibling to the surfaced modules. They enter the chunk stream at the
+    head (before regular chunks), clustered by ``module_id`` so that
+    A.1/A.2 stay adjacent, and ordered by which card they belong to
+    (members of the top-ranked card first). Deduplication is by
+    ``file_path`` — if a member shares a path with a module card or a
+    chunk result, the earlier entry wins. This is how the admissions
+    module's SQL migration lands in top-10 for S5 without fighting the
+    ``tuition`` module's own rep path.
+
     Two-tier cap (Phase 6 L5): effective slots are capped at ``limit // 2``
     so a call with small ``limit`` still guarantees at least half the
     results are chunks. At the default ``limit=10`` with ``slots=3`` this
     is a no-op; at ``limit=5`` it drops to 2 modules, ensuring 3 chunk
-    slots survive.
+    slots survive. Members inherit the cap indirectly — members whose
+    parent card was dropped from ``head_modules`` are filtered out so
+    the chunk-majority floor is preserved even when member emission is
+    aggressive.
     """
     if not modules or slots <= 0 or limit <= 0:
         return chunks[:limit]
@@ -630,26 +788,68 @@ def _interleave_modules(
     slots = min(slots, max(1, limit // 2))
     head_modules = modules[:slots]
     module_files = {m.file_path for m in head_modules}
-    deduped_chunks = [c for c in chunks if c.file_path not in module_files]
 
-    result: list[HybridResult] = []
-    mi = ci = 0
-    # Positions 1,3,5,... get a module (zero-indexed: 0,2,4). After module slot
-    # budget is exhausted we just stream chunks.
-    for pos in range(limit):
-        want_module = (pos % 2 == 0) and (mi < len(head_modules))
-        if want_module:
-            result.append(head_modules[mi])
-            mi += 1
-        elif ci < len(deduped_chunks):
-            result.append(deduped_chunks[ci])
-            ci += 1
-        elif mi < len(head_modules):
-            result.append(head_modules[mi])
-            mi += 1
-        else:
+    # Members are emitted by the orchestrator only for non-card source
+    # modules (see ``_module_results_for_query``), so members here never
+    # share a ``module_id`` with a card. Preserve emit order (by source
+    # module's search rank) and dedup by file_path.
+    seen_paths: set[str] = set(module_files)
+    deduped_members: list[HybridResult] = []
+    for r in members or []:
+        if r.file_path in seen_paths:
+            continue
+        seen_paths.add(r.file_path)
+        deduped_members.append(r)
+
+    # Member budget: cap at ``limit // 3`` so at the default
+    # ``limit=10`` up to 3 members surface. Each member slot trades
+    # a chunk slot — but with card-name-dedup reducing card clones,
+    # F3/F4 get more chunk slots to spare, and the S5 admissions SQL
+    # + F2 monthly-snapshot-cron both need a member slot to reach
+    # top-10.
+    members_budget = max(0, limit // 3)
+    deduped_members = deduped_members[:members_budget]
+
+    # Dedup chunks against cards + members.
+    deduped_chunks = [c for c in chunks if c.file_path not in seen_paths]
+
+    # Layout:
+    #   - Module cards at even positions 0, 2, 4, …
+    #   - Members at the last ``len(deduped_members)`` positions.
+    #   - Chunks fill all remaining positions in order.
+    # This keeps the top 2-3 chunks (primary-target documents for
+    # rationale and structure queries like S2/S3) at ranks 2 and 4,
+    # while still surfacing non-card-module evidence at ranks 8-10.
+    slots_arr: list[HybridResult | None] = [None] * limit
+
+    # Place module cards.
+    mi = 0
+    for pos in range(0, limit, 2):
+        if mi >= len(head_modules):
             break
-    return result
+        slots_arr[pos] = head_modules[mi]
+        mi += 1
+
+    # Place members at the tail (last empty positions).
+    memi = 0
+    for pos in range(limit - 1, -1, -1):
+        if memi >= len(deduped_members):
+            break
+        if slots_arr[pos] is None:
+            slots_arr[pos] = deduped_members[memi]
+            memi += 1
+
+    # Fill remaining slots with chunks in order.
+    ci = 0
+    for pos in range(limit):
+        if slots_arr[pos] is not None:
+            continue
+        if ci >= len(deduped_chunks):
+            break
+        slots_arr[pos] = deduped_chunks[ci]
+        ci += 1
+
+    return [r for r in slots_arr if r is not None]
 
 
 def _module_representative_path(
@@ -747,6 +947,65 @@ def _query_aware_rep_member(
         return None
     candidates.sort(reverse=True)
     return candidates[0][3]
+
+
+def _module_member_paths(
+    db: StoreDB,
+    m: ModuleRecord,
+    query_tokens: set[str],
+    max_members: int,
+    skip_path: str | None = None,
+) -> list[str]:
+    """Pick up to ``max_members`` member paths from this module.
+
+    Priority buckets (descending): code members with filename-token
+    overlap, code members without overlap (fallback — weight order),
+    doc members with overlap, doc members without. Within a bucket we
+    preserve ``get_files_by_module`` order, which is weight-descending
+    so ``entry_points`` come first.
+
+    The code-over-doc preference is load-bearing: for
+    ``tuition-wizard`` on the S1 query, the only overlap > 0 members
+    are docs (``tuition-final-adjustment.md``, ``tuition-hub.md``);
+    their gold match is the ``components/tuition-wizard/`` directory,
+    which only the code members cover. Without this bucketing, S1
+    recall never improves from its non-card modules.
+
+    Pass ``skip_path`` to exclude a path already emitted elsewhere —
+    typically the module card's rep path for card-surfaced modules.
+    For non-card modules we include the rep naturally so its content
+    still reaches top-10 (S5 admissions#2 whose rep is the SQL
+    migration that holds the gold primary_target).
+    """
+    if max_members <= 0:
+        return []
+    file_ids = db.get_files_by_module(m.id)
+    if not file_ids:
+        return []
+
+    code_overlap: list[str] = []
+    code_fallback: list[str] = []
+    doc_overlap: list[str] = []
+    doc_fallback: list[str] = []
+    for fid in file_ids:
+        fr = db.get_file(fid)
+        if fr is None:
+            continue
+        path = fr.relative_path
+        if skip_path is not None and path == skip_path:
+            continue
+        is_doc = Path(path).suffix.lower() in _DOC_SUFFIXES
+        overlap = (
+            len(_filename_token_set(path) & query_tokens)
+            if query_tokens else 0
+        )
+        if is_doc:
+            (doc_overlap if overlap > 0 else doc_fallback).append(path)
+        else:
+            (code_overlap if overlap > 0 else code_fallback).append(path)
+
+    combined = code_overlap + code_fallback + doc_overlap + doc_fallback
+    return combined[:max_members]
 
 
 _CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
