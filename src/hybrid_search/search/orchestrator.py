@@ -222,7 +222,7 @@ class SearchOrchestrator:
         # Module cards give agents a subsystem-level answer unit so they don't
         # have to Read 5 files to piece together "how is X organized".
         module_results = self._module_results_for_query(qtype, query, project_infos)
-        module_slots = _module_slots_for(qtype)
+        module_slots = _module_slots_for(qtype, query)
         results = _interleave_modules(chunk_results, module_results, module_slots, limit)
 
         elapsed_ms = (time.monotonic() - start) * 1000
@@ -243,7 +243,7 @@ class SearchOrchestrator:
         project_infos: list[ProjectInfo],
     ) -> list[HybridResult]:
         """Score modules across the project scope; return as HybridResult list."""
-        if _module_slots_for(qtype) == 0:
+        if _module_slots_for(qtype, query) == 0:
             return []
 
         per_project_limit = 5
@@ -498,8 +498,47 @@ class SearchOrchestrator:
         return results
 
 
-def _module_slots_for(qtype: str) -> int:
-    """How many module cards to reserve at the top of results per query type."""
+# Rationale signal tokens (Step A). When present the query is asking "why" —
+# the real answer lives in a single plan/design doc, so module cards only
+# inflate read_count. Keep this list conservative: a false positive costs us
+# the structure-query improvement the module injection was designed for.
+_RATIONALE_TOKENS_KO = ("이유", "배경", "목적", "의도", "동기", "취지")
+_RATIONALE_TOKENS_EN = (
+    "rationale", "why", "reason", "reasons", "motivation",
+    "purpose", "intent", "background",
+)
+# Korean interrogative "왜" is a one-char particle; handle as whole-token.
+_RATIONALE_INTERROGATIVE_KO = "왜"
+
+
+def _has_rationale_signal(query: str) -> bool:
+    """True when the query is asking for a design/motivation answer."""
+    q = query.strip()
+    if not q:
+        return False
+    if any(tok in q for tok in _RATIONALE_TOKENS_KO):
+        return True
+    # Whole-token match for "왜" to avoid accidental substring hits.
+    tokens_ko = q.split()
+    if any(tok == _RATIONALE_INTERROGATIVE_KO or tok.startswith(_RATIONALE_INTERROGATIVE_KO) for tok in tokens_ko):
+        return True
+    lower = q.lower()
+    for tok in _RATIONALE_TOKENS_EN:
+        # Word-boundary match so "purpose" doesn't fire on "multipurpose".
+        if re.search(rf"\b{tok}\b", lower):
+            return True
+    return False
+
+
+def _module_slots_for(qtype: str, query: str = "") -> int:
+    """How many module cards to reserve at the top of results per query type.
+
+    Rationale queries ("왜", "이유", "배경", "why", "purpose"…) skip module
+    injection entirely: the right answer is a single plan/design doc, and
+    prepending subsystem cards just forces the agent to Read more files.
+    """
+    if query and _has_rationale_signal(query):
+        return 0
     if qtype == QueryType.KOREAN_NL:
         return 3
     if qtype == QueryType.ENGLISH_NL:
