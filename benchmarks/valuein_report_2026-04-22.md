@@ -25,14 +25,38 @@
 
 ### Overall (all 20 queries)
 
-| Metric | hybrid | grep | ratio |
-|--------|--------|------|-------|
+| Metric | hybrid | grep | ratio (hybrid better) |
+|--------|--------|------|-----------------------|
 | primary top-1 | **0.35** | 0.10 | 3.5× |
 | primary top-5 | **0.65** | 0.35 | 1.9× |
 | any_hit rate | **0.90** | 0.45 | 2.0× |
 | recall@10 (mean) | **0.67** | 0.37 | 1.8× |
 | MRR (mean) | **0.532** | 0.228 | 2.3× |
-| time (mean) | 314ms | 147ms | 0.5× |
+| **read_count_estimate** (mean) | **3.65** | 7.40 | **2.0×** |
+| context_pack_bytes (mean) | 19.2 KB | 12.4 KB* | 0.65× |
+| time (mean) | 314 ms | 147 ms | 0.5× |
+
+`* grep's context_pack is underestimated — when primary is missed (rank=None) we assign read_cost_bytes=0. In practice the agent burns additional turns hunting.`
+
+### Phase 5 baseline — agent-cost proxy (Step 1 output)
+
+**read_count_estimate** = rank of primary_target if hit, else `limit+1 (=11)` as penalty proxy for "agent exhausts top-K and switches tool." This is the closest single number for "how many Read calls does the agent make to reach primary."
+
+| Category | track | read_count_estimate | context_pack_bytes |
+|----------|-------|-----|-----|
+| structure    | hybrid | 3.60 | 11.6 KB |
+|              | grep   | 7.60 | 3.4 KB |
+| exploration  | hybrid | 6.20 | 14.2 KB |
+|              | grep   | 6.60 | 10.0 KB |
+| precision    | hybrid | **2.40** | 6.7 KB |
+|              | grep   | 10.00 | 0.8 KB |
+| rationale    | hybrid | **2.40** | 44.2 KB |
+|              | grep   | 5.40 | 35.6 KB |
+
+**Phase 5 targets** (to be re-measured after subsystem-first retrieval lands):
+- structure recall@10: 0.22 → **≥0.55**
+- overall read_count_estimate: 3.65 → **≤2.5** (≥30% reduction)
+- context_pack_bytes tradeoff explicit: +snippet cost acceptable if −read_cost dominates
 
 ### Per-category
 
@@ -98,10 +122,11 @@
 
 ## Roadmap Readback
 
-The 10× token-efficiency claim in the plan doc is **not proven** by this benchmark (we don't measure LLM token consumption). What we *do* show:
+The 10× token-efficiency claim in the plan doc is **not proven** by this benchmark (no full LLM-in-the-loop measurement). What we *do* show:
 
 - **Primary-top5 1.9× lift** on retrieval quality vs. NL-query-tokenized grep
+- **read_count_estimate 2.0× reduction** (3.65 vs 7.40) — closest proxy for agent Read cost
 - **Recall@10 1.8× lift** overall, with **precision+rationale category at 1.00 recall** (hybrid)
-- **Structure/exploration categories remain the improvement target** — current hybrid hits structure primary top-5 at 0.80 but recall@10 is only 0.22, meaning expected directory entries (non-primary) aren't surfacing. Likely a chunking granularity issue.
+- **Structure/exploration categories remain the real improvement target.** Root cause diagnosed 2026-04-22: retrieval unit is "chunk" but answer unit should be "subsystem". See `docs/plan/2026-04-21-memory-layer-10x.md` Phase 5 for the subsystem-first retrieval design.
 
-Phase 2 + Phase 3 shipped as of commit `a4dc5c2`. Phase 4 status: **partially complete** (automated benchmark shipped; LLM-in-the-loop measurement deferred).
+Phase 2 + Phase 3 shipped (`a4dc5c2`). Phase 4 status: **retrieval-only complete** (`2dcc198`). Phase 5 Step 1 (agent-cost proxy instrumentation) shipped in this same commit. Next: module discovery (Step 2).
