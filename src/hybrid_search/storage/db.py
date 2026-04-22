@@ -11,7 +11,7 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 
 # Semantic labels for call-edge confidence (M1.1).
 # Order: weakest → strongest; _confidence_filter relies on this ordering.
@@ -140,6 +140,36 @@ CREATE TABLE IF NOT EXISTS wiki_links (
 
 CREATE INDEX IF NOT EXISTS idx_wiki_links_source ON wiki_links(source_page_id);
 CREATE INDEX IF NOT EXISTS idx_wiki_links_target ON wiki_links(target_page_id);
+
+CREATE TABLE IF NOT EXISTS modules (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    summary TEXT,
+    entry_points TEXT,
+    depends_on TEXT,
+    related_docs TEXT,
+    rationale TEXT,
+    signals TEXT,
+    member_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_modules_project ON modules(project_id);
+CREATE INDEX IF NOT EXISTS idx_modules_name ON modules(name);
+
+CREATE TABLE IF NOT EXISTS file_modules (
+    file_id TEXT NOT NULL,
+    module_id TEXT NOT NULL,
+    weight REAL DEFAULT 1.0,
+    project_id TEXT NOT NULL,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+    PRIMARY KEY (file_id, module_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_modules_module ON file_modules(module_id);
+CREATE INDEX IF NOT EXISTS idx_file_modules_project ON file_modules(project_id);
 """
 
 
@@ -171,6 +201,21 @@ class ChunkRecord:
     embedding_input: str | None = None
     docstring: str | None = None
     parent_name: str | None = None
+
+
+@dataclass
+class ModuleRecord:
+    id: str
+    project_id: str
+    name: str
+    summary: str | None = None
+    entry_points: str | None = None
+    depends_on: str | None = None
+    related_docs: str | None = None
+    rationale: str | None = None
+    signals: str | None = None
+    member_hash: str = ""
+    updated_at: str = ""
 
 
 class StoreDB:
@@ -264,6 +309,41 @@ class StoreDB:
                    WHERE confidence IN ('low', 'medium', 'high')"""
             )
             logger.info("Migrated schema v4 → v5 (confidence label rename)")
+
+        if cur_ver < 6:
+            # v5 → v6: add modules + file_modules tables (Phase 5 subsystem retrieval).
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS modules (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    summary TEXT,
+                    entry_points TEXT,
+                    depends_on TEXT,
+                    related_docs TEXT,
+                    rationale TEXT,
+                    signals TEXT,
+                    member_hash TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_modules_project ON modules(project_id);
+                CREATE INDEX IF NOT EXISTS idx_modules_name ON modules(name);
+
+                CREATE TABLE IF NOT EXISTS file_modules (
+                    file_id TEXT NOT NULL,
+                    module_id TEXT NOT NULL,
+                    weight REAL DEFAULT 1.0,
+                    project_id TEXT NOT NULL,
+                    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+                    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+                    PRIMARY KEY (file_id, module_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_file_modules_module ON file_modules(module_id);
+                CREATE INDEX IF NOT EXISTS idx_file_modules_project ON file_modules(project_id);
+                """
+            )
+            logger.info("Migrated schema v5 → v6 (modules + file_modules tables)")
 
         self._conn.execute(
             "UPDATE index_meta SET value = ? WHERE key = 'schema_version'",
@@ -753,4 +833,107 @@ class StoreDB:
             embedding_input=row["embedding_input"],
             docstring=row["docstring"],
             parent_name=row["parent_name"],
+        )
+
+    # ---------- Modules (Phase 5) ----------
+
+    def upsert_module(self, conn: sqlite3.Connection, record: "ModuleRecord") -> None:
+        conn.execute(
+            """INSERT INTO modules (id, project_id, name, summary, entry_points,
+                depends_on, related_docs, rationale, signals, member_hash, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 name=excluded.name,
+                 summary=excluded.summary,
+                 entry_points=excluded.entry_points,
+                 depends_on=excluded.depends_on,
+                 related_docs=excluded.related_docs,
+                 rationale=excluded.rationale,
+                 signals=excluded.signals,
+                 member_hash=excluded.member_hash,
+                 updated_at=excluded.updated_at""",
+            (
+                record.id, record.project_id, record.name, record.summary,
+                record.entry_points, record.depends_on, record.related_docs,
+                record.rationale, record.signals, record.member_hash, record.updated_at,
+            ),
+        )
+
+    def set_file_modules(
+        self,
+        conn: sqlite3.Connection,
+        project_id: str,
+        rows: list[tuple[str, str, float]],
+    ) -> None:
+        """Replace all file_modules rows for this project."""
+        conn.execute("DELETE FROM file_modules WHERE project_id = ?", (project_id,))
+        if not rows:
+            return
+        conn.executemany(
+            "INSERT INTO file_modules (file_id, module_id, weight, project_id) VALUES (?, ?, ?, ?)",
+            [(fid, mid, w, project_id) for fid, mid, w in rows],
+        )
+
+    def delete_project_modules(self, conn: sqlite3.Connection, project_id: str) -> None:
+        conn.execute("DELETE FROM file_modules WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM modules WHERE project_id = ?", (project_id,))
+
+    def get_modules(self, project_id: str) -> list["ModuleRecord"]:
+        cur = self._conn.execute(
+            "SELECT * FROM modules WHERE project_id = ? ORDER BY name", (project_id,),
+        )
+        return [self._row_to_module(r) for r in cur.fetchall()]
+
+    def get_module(self, module_id: str) -> "ModuleRecord | None":
+        cur = self._conn.execute("SELECT * FROM modules WHERE id = ?", (module_id,))
+        row = cur.fetchone()
+        return self._row_to_module(row) if row else None
+
+    def get_module_count(self, project_id: str) -> int:
+        cur = self._conn.execute(
+            "SELECT COUNT(*) FROM modules WHERE project_id = ?", (project_id,),
+        )
+        return cur.fetchone()[0]
+
+    def get_files_by_module(self, module_id: str) -> list[str]:
+        """Return file_ids in this module, highest weight first."""
+        cur = self._conn.execute(
+            "SELECT file_id FROM file_modules WHERE module_id = ? ORDER BY weight DESC",
+            (module_id,),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    def get_modules_by_file(self, file_id: str) -> list[str]:
+        cur = self._conn.execute(
+            "SELECT module_id FROM file_modules WHERE file_id = ? ORDER BY weight DESC",
+            (file_id,),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    def search_modules_by_name(
+        self, name_pattern: str, project_id: str, limit: int = 20,
+    ) -> list["ModuleRecord"]:
+        cur = self._conn.execute(
+            """SELECT * FROM modules
+               WHERE project_id = ?
+                 AND (name LIKE ? OR summary LIKE ?)
+               ORDER BY LENGTH(name)
+               LIMIT ?""",
+            (project_id, f"%{name_pattern}%", f"%{name_pattern}%", limit),
+        )
+        return [self._row_to_module(r) for r in cur.fetchall()]
+
+    def _row_to_module(self, row: sqlite3.Row) -> "ModuleRecord":
+        return ModuleRecord(
+            id=row["id"],
+            project_id=row["project_id"],
+            name=row["name"],
+            summary=row["summary"],
+            entry_points=row["entry_points"],
+            depends_on=row["depends_on"],
+            related_docs=row["related_docs"],
+            rationale=row["rationale"],
+            signals=row["signals"],
+            member_hash=row["member_hash"],
+            updated_at=row["updated_at"],
         )
