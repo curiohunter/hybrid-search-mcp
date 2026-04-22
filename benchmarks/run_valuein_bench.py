@@ -65,15 +65,38 @@ def rank_of(results: list[str], expected: str) -> int | None:
 
 def score_query(
     result_paths: list[str],
+    result_module_names: list[str | None],
     query: dict,
     snippet_bytes: int,
     project_root: Path,
     limit: int,
 ) -> dict:
-    """Retrieval quality + agent-cost proxies (Phase 5 Step 1)."""
+    """Retrieval quality + agent-cost proxies (Phase 5 Step 1, Step B).
+
+    Step B: ``acceptable_module_names`` on the gold query lets a module-card
+    hit count as the primary target — fixing the structure-category top-1=0
+    symptom where the right answer was a subsystem card rather than a file.
+    """
     expected = query.get("expected_files", [])
     primary = query.get("primary_target")
-    primary_rank = rank_of(result_paths, primary) if primary else None
+    acceptable_modules = set(query.get("acceptable_module_names", []))
+
+    # File-based primary rank (pre-Step-B behavior)
+    file_primary_rank = rank_of(result_paths, primary) if primary else None
+
+    # Module-name primary rank: first result whose module_name is in the
+    # acceptable set. Grep track has all-None module names → always miss here.
+    module_primary_rank: int | None = None
+    if acceptable_modules:
+        for i, mname in enumerate(result_module_names, start=1):
+            if mname and mname in acceptable_modules:
+                module_primary_rank = i
+                break
+
+    # Take whichever lands first — file or module.
+    candidates = [r for r in (file_primary_rank, module_primary_rank) if r is not None]
+    primary_rank = min(candidates) if candidates else None
+
     any_rank = None
     hits = 0
     for exp in expected:
@@ -110,6 +133,10 @@ def score_query(
 
     return {
         "primary_hit_rank": primary_rank,
+        "primary_hit_via_module": (
+            module_primary_rank is not None
+            and (file_primary_rank is None or module_primary_rank <= file_primary_rank)
+        ),
         "any_hit_rank": any_rank,
         "recall_at_10": recall,
         "mrr": mrr,
@@ -167,15 +194,18 @@ def scan_project_files(project_root: Path) -> list[Path]:
     return out
 
 
-def grep_baseline(query: str, project_root: Path, files: list[Path], limit: int = 10) -> tuple[list[str], float, int]:
-    """Returns (top-N paths, elapsed_ms, snippet_bytes).
+def grep_baseline(
+    query: str, project_root: Path, files: list[Path], limit: int = 10
+) -> tuple[list[str], list[str | None], float, int]:
+    """Returns (top-N paths, parallel module_names (all None), elapsed_ms, snippet_bytes).
 
     Grep's "snippet bytes" = 0: it returns paths only (no content).
     Agent would follow up with Read(primary) → accounted for in read_cost_bytes.
+    Module-name track is always None for grep (grep can't know about modules).
     """
     tokens = tokenize(query)
     if not tokens:
-        return [], 0.0, 0
+        return [], [], 0.0, 0
     patterns = [re.compile(re.escape(t), re.IGNORECASE) for t in tokens]
     scores: dict[str, int] = {}
     t0 = time.perf_counter()
@@ -192,25 +222,35 @@ def grep_baseline(query: str, project_root: Path, files: list[Path], limit: int 
             scores[rel] = score
     ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
     elapsed = (time.perf_counter() - t0) * 1000.0
-    return [path for path, _ in ranked[:limit]], elapsed, 0
+    top = [path for path, _ in ranked[:limit]]
+    return top, [None] * len(top), elapsed, 0
 
 
-def hybrid_track(query: str, project_name: str, orch: SearchOrchestrator, limit: int = 10) -> tuple[list[str], float, int]:
-    """Returns (top-N paths dedup by file, elapsed_ms, snippet_bytes).
+def hybrid_track(
+    query: str, project_name: str, orch: SearchOrchestrator, limit: int = 10
+) -> tuple[list[str], list[str | None], float, int]:
+    """Returns (top-N paths, parallel module_names, elapsed_ms, snippet_bytes).
 
     snippet_bytes = sum of all hit.snippet lengths — the content the agent
     receives directly in the MCP response, without having to Read follow-up files.
+    module_names: same length as paths, entry is the module name (from
+    ``hit.name`` when ``hit.node_type == "module"``), else None. Lets the
+    scorer accept module-card hits as primary_target when the gold query
+    declares acceptable_module_names (Step B).
     """
     t0 = time.perf_counter()
     resp = orch.hybrid_search(query=query, project=project_name, limit=limit)
     elapsed = (time.perf_counter() - t0) * 1000.0
-    seen = []
+    seen: list[str] = []
+    module_names: list[str | None] = []
     snippet_bytes = 0
     for hit in resp.results:
         snippet_bytes += len(hit.snippet or "")
-        if hit.file_path not in seen:
-            seen.append(hit.file_path)
-    return seen, elapsed, snippet_bytes
+        if hit.file_path in seen:
+            continue
+        seen.append(hit.file_path)
+        module_names.append(hit.name if hit.node_type == "module" else None)
+    return seen, module_names, elapsed, snippet_bytes
 
 
 def aggregate(per_query: list[dict]) -> dict:
@@ -229,6 +269,9 @@ def aggregate(per_query: list[dict]) -> dict:
             "time_ms_mean": mean(s["time_ms"] for s in scores),
             "primary_top1": sum(1 for s in scores if s["primary_hit_rank"] == 1) / len(rows),
             "primary_top5": sum(1 for s in scores if s["primary_hit_rank"] is not None and s["primary_hit_rank"] <= 5) / len(rows),
+            "primary_via_module_rate": (
+                sum(1 for s in scores if s.get("primary_hit_via_module")) / len(rows)
+            ),
             "snippet_bytes_mean": mean(s["snippet_bytes"] for s in scores),
             "read_count_estimate_mean": mean(s["read_count_estimate"] for s in scores),
             "read_cost_bytes_mean": mean(s["read_cost_bytes"] for s in scores),
@@ -273,10 +316,10 @@ def main():
         qid = q["id"]
         cat = q["category"]
         print(f"[{qid} {cat}] {q['query']}", flush=True)
-        hres, htime, hsnip = hybrid_track(q["query"], project_name, orch, limit=args.limit)
-        gres, gtime, gsnip = grep_baseline(q["query"], project_root, files, limit=args.limit)
-        hscore = score_query(hres, q, hsnip, project_root, args.limit)
-        gscore = score_query(gres, q, gsnip, project_root, args.limit)
+        hres, hmods, htime, hsnip = hybrid_track(q["query"], project_name, orch, limit=args.limit)
+        gres, gmods, gtime, gsnip = grep_baseline(q["query"], project_root, files, limit=args.limit)
+        hscore = score_query(hres, hmods, q, hsnip, project_root, args.limit)
+        gscore = score_query(gres, gmods, q, gsnip, project_root, args.limit)
         per_query.append({
             "id": qid,
             "category": cat,
