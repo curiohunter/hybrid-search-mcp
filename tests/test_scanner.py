@@ -540,37 +540,38 @@ class TestIndexQALogsOptIn:
         (project_root / "main.py").write_text("x = 1\n")
         return project_root, db
 
-    def test_qa_logs_skipped_by_default(self, tmp_path: Path) -> None:
+    def test_qa_logs_walked_by_default(self, tmp_path: Path) -> None:
+        # Memory Layer default-on — qa logs are indexed out of the box.
         project_root, db = self._seed(tmp_path)
         result = scan_project(project_root, "p1", db, IndexingConfig())
         names = [p.name for p in result.added]
         assert "main.py" in names
-        assert "21-000000-deadbeef.md" not in names
+        assert "21-000000-deadbeef.md" in names
 
-    def test_qa_logs_walked_when_opt_in(self, tmp_path: Path) -> None:
+    def test_qa_logs_skipped_when_opted_out(self, tmp_path: Path) -> None:
         project_root, db = self._seed(tmp_path)
         result = scan_project(
-            project_root, "p1", db, IndexingConfig(index_qa_logs=True)
+            project_root, "p1", db, IndexingConfig(index_qa_logs=False)
         )
         names = [p.name for p in result.added]
         assert "main.py" in names
-        assert "21-000000-deadbeef.md" in names
+        assert "21-000000-deadbeef.md" not in names
 
-    def test_subset_scan_respects_opt_in(self, tmp_path: Path) -> None:
+    def test_subset_scan_respects_opt_out(self, tmp_path: Path) -> None:
         # Post-commit fast-path goes through scan_project_subset — same toggle.
         project_root, db = self._seed(tmp_path)
         rel = ".hybrid-search/qa/2026/04/21-000000-deadbeef.md"
 
-        off = scan_project_subset(
+        on = scan_project_subset(
             project_root, "p1", db, IndexingConfig(), changed_paths=[rel]
         )
-        assert [p.name for p in off.added] == []
+        assert "21-000000-deadbeef.md" in [p.name for p in on.added]
 
-        on = scan_project_subset(
+        off = scan_project_subset(
             project_root,
             "p1",
             db,
-            IndexingConfig(index_qa_logs=True),
+            IndexingConfig(index_qa_logs=False),
             changed_paths=[rel],
         )
-        assert "21-000000-deadbeef.md" in [p.name for p in on.added]
+        assert [p.name for p in off.added] == []

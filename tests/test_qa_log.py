@@ -64,16 +64,17 @@ def enabled(monkeypatch):
 # --- Toggle -----------------------------------------------------------------
 
 class TestToggle:
-    def test_disabled_by_default(self):
-        assert qa_log.is_enabled() is False
+    def test_enabled_by_default(self):
+        # Memory Layer is on out-of-the-box; users opt out explicitly.
+        assert qa_log.is_enabled() is True
 
-    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on"])
-    def test_enabled_truthy(self, monkeypatch, val):
+    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on", ""])
+    def test_enabled_when_not_opted_out(self, monkeypatch, val):
         monkeypatch.setenv(qa_log.ENV_TOGGLE, val)
         assert qa_log.is_enabled() is True
 
-    @pytest.mark.parametrize("val", ["0", "false", "no", "", "off"])
-    def test_disabled_falsy(self, monkeypatch, val):
+    @pytest.mark.parametrize("val", ["0", "false", "FALSE", "no", "off"])
+    def test_disabled_on_opt_out(self, monkeypatch, val):
         monkeypatch.setenv(qa_log.ENV_TOGGLE, val)
         assert qa_log.is_enabled() is False
 
@@ -115,7 +116,8 @@ class TestPathLayout:
 # --- record() end-to-end ----------------------------------------------------
 
 class TestRecord:
-    def test_off_by_default_creates_nothing(self, tmp_path):
+    def test_opt_out_creates_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(qa_log.ENV_TOGGLE, "0")
         response = _FakeResponse(results=[_FakeResult()])
         path = qa_log.record(
             query="foo",
@@ -125,6 +127,18 @@ class TestRecord:
         )
         assert path is None
         assert not (tmp_path / ".hybrid-search" / "qa").exists()
+
+    def test_sensitive_query_not_persisted(self, tmp_path):
+        # Default-on, but secret-shaped queries never hit disk.
+        response = _FakeResponse(results=[_FakeResult()])
+        for secret in ("my github token is ghp_" + "A" * 40, "api_key=sk-proj-abcdef12345", "password: hunter2"):
+            path = qa_log.record(
+                query=secret,
+                response=response,
+                cwd=str(tmp_path),
+                async_write=False,
+            )
+            assert path is None, f"leaked: {secret!r}"
 
     def test_on_writes_file(self, tmp_path, enabled):
         response = _FakeResponse(results=[_FakeResult()])

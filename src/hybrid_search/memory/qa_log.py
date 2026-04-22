@@ -40,12 +40,35 @@ logger = logging.getLogger(__name__)
 
 
 ENV_TOGGLE = "HYBRID_SEARCH_QA_LOG"
-"""Env var name. Truthy values: ``1``, ``true``, ``yes`` (case-insensitive)."""
+"""Env var name. Opt-OUT via ``HYBRID_SEARCH_QA_LOG=0/false/no/off``.
+
+Memory Layer is on by default so the compounding-quality loop works out of
+the box: every answered query becomes searchable context for the next
+query. Privacy-sensitive users and CI environments opt out explicitly.
+"""
 
 # Cap snippets in frontmatter to keep files small and human-readable.
 _SNIPPET_MAX_CHARS = 240
 # Cap number of results persisted per log entry (top-k).
 _MAX_RESULTS = 10
+
+# Queries matching these fragments never hit disk. Covers the most common
+# shapes of "please look up the password/token for X" so that a secret
+# pasted into a query doesn't get immortalized as a markdown file.
+import re as _re
+_SENSITIVE_QUERY_RE = _re.compile(
+    r"(?i)("
+    r"password|passwd|passphrase|"
+    r"secret[_\-\s]?key|api[_\-\s]?key|access[_\-\s]?key|"
+    r"bearer|private[_\-\s]?key|"
+    r"credential|token|"
+    r"authorization:|"
+    r"AKIA[0-9A-Z]{16}|"      # AWS access key id shape
+    r"sk-[A-Za-z0-9]{20,}|"   # openai-style keys
+    r"ghp_[A-Za-z0-9]{30,}|"  # github PAT
+    r"xoxb-|xoxp-"            # slack
+    r")"
+)
 
 
 @dataclass(frozen=True)
@@ -62,9 +85,27 @@ class QARecord:
 
 
 def is_enabled() -> bool:
-    """Return True when the qa log is toggled on via env var."""
+    """Return True unless the user explicitly opted out.
+
+    Default-on keeps the Memory Layer's compounding-quality loop alive for
+    new users without configuration. The opt-out values below are the
+    same ones accepted by every CLI flag in this codebase.
+    """
     val = os.environ.get(ENV_TOGGLE, "").strip().lower()
-    return val in {"1", "true", "yes", "on"}
+    if val in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def is_sensitive_query(query: str) -> bool:
+    """True when the query looks like it carries a secret.
+
+    False positives here are harmless (the query just isn't logged); false
+    negatives leak a secret into a markdown file that may land in git.
+    Bias the regex toward over-matching — password-adjacent language is
+    not worth memorializing anyway.
+    """
+    return bool(query and _SENSITIVE_QUERY_RE.search(query))
 
 
 def _hash_query(query: str) -> str:
@@ -215,6 +256,10 @@ def record(
     - When ``async_write`` is False (used by tests), returns the file path.
     """
     if not is_enabled():
+        return None
+    if is_sensitive_query(query):
+        # Never persist secrets to disk. The search still runs and returns
+        # normally to the caller; we just don't immortalize the query.
         return None
 
     try:
