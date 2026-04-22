@@ -164,6 +164,25 @@ Copy skills from `skills/` directory to `~/.claude/skills/`:
 | Accuracy | 90%+ | Noisy |
 | Token usage | Low | High |
 
+### Real-world benchmark (valuein_homepage, 1,307 files, 2026-04-22)
+
+20 gold queries across 4 categories (structure / exploration / precision / rationale),
+evaluated with M9 two-pass callgraph + M10 rationale extraction enabled.
+Gold set + runner + full report under [`benchmarks/`](benchmarks/):
+
+| Metric (top-10) | hybrid | grep (token-bag) | ratio |
+|-----------------|--------|------------------|-------|
+| primary top-1 | **0.35** | 0.10 | 3.5× |
+| primary top-5 | **0.65** | 0.35 | 1.9× |
+| any-hit rate | **0.90** | 0.45 | 2.0× |
+| recall@10 (mean) | **0.67** | 0.37 | 1.8× |
+| MRR (mean) | **0.532** | 0.228 | 2.3× |
+
+- **Precision + rationale categories hit 1.00 recall@10** (vs. 0.20 / 0.60 for grep) — hybrid tolerates Korean+English mixed queries where naive token search drowns in stopword-like context tokens.
+- **Structure category**: hybrid primary top-5 0.80, but recall@10 only 0.22 — expected *related* directories aren't all surfacing. Chunking granularity is the next improvement target.
+- Full write-up with per-query rank, misses, and honest caveats:
+  [`benchmarks/valuein_report_2026-04-22.md`](benchmarks/valuein_report_2026-04-22.md).
+
 ### Memory Layer
 
 Persist hybrid_search responses as markdown and use them as first-class search
