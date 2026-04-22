@@ -1,0 +1,1035 @@
+{
+  "gold": "valuein_gold.json",
+  "project": "valuein_homepage",
+  "project_path": "/Users/ian/project/claude_project/valuein_homepage",
+  "limit": 10,
+  "summary": {
+    "per_category": {
+      "exploration": {
+        "hybrid": {
+          "queries": 5,
+          "primary_hit_rate": 0.8,
+          "any_hit_rate": 0.8,
+          "recall_at_10_mean": 0.4666666666666667,
+          "mrr_mean": 0.29523809523809524,
+          "time_ms_mean": 256.5872081788257,
+          "primary_top1": 0.2,
+          "primary_top5": 0.2
+        },
+        "grep": {
+          "queries": 5,
+          "primary_hit_rate": 0.6,
+          "any_hit_rate": 0.6,
+          "recall_at_10_mean": 0.4666666666666667,
+          "mrr_mean": 0.22857142857142856,
+          "time_ms_mean": 98.34220819175243,
+          "primary_top1": 0.0,
+          "primary_top5": 0.4
+        }
+      },
+      "precision": {
+        "hybrid": {
+          "queries": 5,
+          "primary_hit_rate": 1.0,
+          "any_hit_rate": 1.0,
+          "recall_at_10_mean": 1.0,
+          "mrr_mean": 0.6333333333333333,
+          "time_ms_mean": 268.17031679674983,
+          "primary_top1": 0.4,
+          "primary_top5": 0.8
+        },
+        "grep": {
+          "queries": 5,
+          "primary_hit_rate": 0.2,
+          "any_hit_rate": 0.2,
+          "recall_at_10_mean": 0.2,
+          "mrr_mean": 0.03333333333333333,
+          "time_ms_mean": 139.78930818848312,
+          "primary_top1": 0.0,
+          "primary_top5": 0.0
+        }
+      },
+      "rationale": {
+        "hybrid": {
+          "queries": 5,
+          "primary_hit_rate": 1.0,
+          "any_hit_rate": 1.0,
+          "recall_at_10_mean": 1.0,
+          "mrr_mean": 0.6333333333333333,
+          "time_ms_mean": 315.03941661212593,
+          "primary_top1": 0.4,
+          "primary_top5": 0.8
+        },
+        "grep": {
+          "queries": 5,
+          "primary_hit_rate": 0.6,
+          "any_hit_rate": 0.6,
+          "recall_at_10_mean": 0.6,
+          "mrr_mean": 0.4,
+          "time_ms_mean": 216.65105861611664,
+          "primary_top1": 0.2,
+          "primary_top5": 0.6
+        }
+      },
+      "structure": {
+        "hybrid": {
+          "queries": 5,
+          "primary_hit_rate": 0.8,
+          "any_hit_rate": 0.8,
+          "recall_at_10_mean": 0.22333333333333333,
+          "mrr_mean": 0.5666666666666667,
+          "time_ms_mean": 416.1822331836447,
+          "primary_top1": 0.4,
+          "primary_top5": 0.8
+        },
+        "grep": {
+          "queries": 5,
+          "primary_hit_rate": 0.4,
+          "any_hit_rate": 0.4,
+          "recall_at_10_mean": 0.19999999999999998,
+          "mrr_mean": 0.25,
+          "time_ms_mean": 135.01353338360786,
+          "primary_top1": 0.2,
+          "primary_top5": 0.4
+        }
+      }
+    },
+    "overall": {
+      "hybrid": {
+        "queries": 20,
+        "primary_hit_rate": 0.9,
+        "any_hit_rate": 0.9,
+        "recall_at_10_mean": 0.6725,
+        "mrr_mean": 0.5321428571428571,
+        "time_ms_mean": 313.99479369283654,
+        "primary_top1": 0.35,
+        "primary_top5": 0.65
+      },
+      "grep": {
+        "queries": 20,
+        "primary_hit_rate": 0.45,
+        "any_hit_rate": 0.45,
+        "recall_at_10_mean": 0.36666666666666664,
+        "mrr_mean": 0.22797619047619047,
+        "time_ms_mean": 147.44902709499002,
+        "primary_top1": 0.1,
+        "primary_top5": 0.35
+      }
+    }
+  },
+  "per_query": [
+    {
+      "id": "S1",
+      "category": "structure",
+      "query": "수강료 정산 시스템은 어떻게 구성되어 있나",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 4,
+          "time_ms": 1051.6706249909475,
+          "top_results": [
+            "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+            "docs/archive/session-edit-add-delete-plan.md",
+            "docs/archive/withdrawal-operations-agent.md",
+            "docs/archive/student-monthly-session-plan.md",
+            "docs/plans/agent-system-plan.md",
+            "docs/archive/payment-system-implementation-guide.md",
+            "services/withdrawal/send-invoice.ts"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 4,
+          "time_ms": 224.70733406953514,
+          "top_results": [
+            "docs/archive/withdrawal-operations-agent.md",
+            "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+            "components/withdrawal/step-student-select.tsx",
+            "components/withdrawal/step-settlement-review.tsx",
+            "docs/plans/2026-04-20-tuition-hub.md",
+            "docs/archive/student-monthly-session-plan.md",
+            "docs/superpowers/plans/2026-03-20-withdrawal-payment-flow.md",
+            "docs/features/2026-04-08-tuition-session-edit.md",
+            "services/withdrawal/send-invoice.ts",
+            "docs/archive/payment-system-implementation-guide.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "S2",
+      "category": "structure",
+      "query": "학부모 학생 포털 인증 및 레이아웃 흐름",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 1,
+          "any_hit_rank": 1,
+          "recall_at_10": 0.25,
+          "mrr": 1.0,
+          "hits": 1,
+          "total_expected": 4,
+          "time_ms": 201.5632080147043,
+          "top_results": [
+            "docs/features/2026-04-08-portal-parent-student.md",
+            "docs/archive/authentication-session-management.md",
+            "docs/plans/2026-04-08-student-diagnosis-loop.md",
+            "docs/features/2026-04-08-auth-registration.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-상담전-체크리스트.md",
+            "docs/plans/2026-04-17-entrance-test-management.md",
+            "docs/features/2026-04-08-learning-remote-room.md",
+            "docs/archive/remote-finish-room.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 4,
+          "time_ms": 76.09391596633941,
+          "top_results": [
+            "docs/archive/valueinmath-후기.md",
+            "docs/valueinmath_docs/마케팅/260325_마케팅_프로덕트-마케팅-컨텍스트.md",
+            "docs/plans/2026-04-20-tuition-hub.md",
+            "docs/valueinmath_docs/인사/260410_인사_인사평가-2026-Q1.md",
+            "docs/plans/2026-04-15-portal-v3-refactoring.md",
+            "docs/plans/agent-system-plan.md",
+            "docs/valueinmath_docs/운영/260107_운영_상담-마스터피스-가이드.md",
+            "docs/superpowers/plans/2026-03-31-session-planner-redesign.md",
+            "docs/valueinmath_docs/인사/인사평가-기준서.md",
+            "docs/dbdocs/database-functions.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "S3",
+      "category": "structure",
+      "query": "AI 에이전트 아키텍처 전체 그림",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 1,
+          "any_hit_rank": 1,
+          "recall_at_10": 0.2,
+          "mrr": 1.0,
+          "hits": 1,
+          "total_expected": 5,
+          "time_ms": 210.5143329827115,
+          "top_results": [
+            "docs/plans/agent-system-plan.md",
+            "docs/archive/withdrawal-operations-agent.md",
+            "docs/features/2026-04-08-ops-meeting.md",
+            "docs/plans/2026-04-08-ai-content-factory-plan.md",
+            "docs/archive/typedb-ontology-design.md",
+            "docs/archive/business-vision-2026.md",
+            "docs/archive/payment-system-implementation-guide.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 5,
+          "time_ms": 152.51995902508497,
+          "top_results": [
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_해설_parsed.json",
+            "prints/심화편_parsed.json",
+            "docs/valueinmath_docs/assets/중3화목원장반숙제수집및현황.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_parsed.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/02_부교재/부교재_parsed.json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/02_교과서/천재교육_대수_삼각함수_3_parsed.json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2025_중간고사_parsed.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/01_기출/2025_중간고사_parsed.json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2023_중간고사_parsed.json",
+            "docs/archive/숙제수집자동화.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "S4",
+      "category": "structure",
+      "query": "원격 수업방 remote-room 모듈은 어떻게 구성되나",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 3,
+          "any_hit_rank": 3,
+          "recall_at_10": 0.3333333333333333,
+          "mrr": 0.3333333333333333,
+          "hits": 1,
+          "total_expected": 3,
+          "time_ms": 428.9848329499364,
+          "top_results": [
+            "hooks/use-remote-room.ts",
+            "services/remote-room-teacher-service.ts",
+            "docs/features/2026-04-08-learning-remote-room.md",
+            "docs/dbdocs/tables/18-remote-room/remote_rooms.md",
+            "services/remote-room-student-service.ts"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": 1,
+          "any_hit_rank": 1,
+          "recall_at_10": 0.6666666666666666,
+          "mrr": 1.0,
+          "hits": 2,
+          "total_expected": 3,
+          "time_ms": 143.8232499640435,
+          "top_results": [
+            "docs/features/2026-04-08-learning-remote-room.md",
+            "app/(dashboard)/dashboard/remote-rooms/[id]/page.tsx",
+            "app/(dashboard)/dashboard/remote-rooms/page.tsx",
+            "services/remote-room-teacher-service.ts",
+            "app/api/remote-room/rooms/route.ts",
+            "components/remote-room/room-controls.tsx",
+            "hooks/use-remote-room.ts",
+            "services/remote-room-student-service.ts",
+            "app/api/remote-room/rooms/[id]/route.ts",
+            "app/api/remote-room/rooms/[id]/tasks/route.ts"
+          ]
+        }
+      }
+    },
+    {
+      "id": "S5",
+      "category": "structure",
+      "query": "입학 시험 결과 관리 모듈 구조",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 2,
+          "any_hit_rank": 2,
+          "recall_at_10": 0.3333333333333333,
+          "mrr": 0.5,
+          "hits": 1,
+          "total_expected": 3,
+          "time_ms": 188.17816697992384,
+          "top_results": [
+            "docs/features/2026-04-14-calendar-exam-schedule.md",
+            "docs/plans/2026-04-17-entrance-test-management.md",
+            "harness/app/dashboard/pages/students.md",
+            "app/(dashboard)/students/entrance-tests/page.tsx",
+            "harness/app/dashboard/pages/learning.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_광진구-수학학원-추천-비교.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": 4,
+          "any_hit_rank": 4,
+          "recall_at_10": 0.3333333333333333,
+          "mrr": 0.25,
+          "hits": 1,
+          "total_expected": 3,
+          "time_ms": 77.9232078930363,
+          "top_results": [
+            "docs/archive/PROJECT_STATUS.md",
+            "docs/superpowers/plans/2026-03-31-session-planner-redesign.md",
+            "docs/valueinmath_docs/마케팅/260325_마케팅_프로덕트-마케팅-컨텍스트.md",
+            "docs/plans/2026-04-17-entrance-test-management.md",
+            "services/exam-schedule-service.ts",
+            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/04_예상분석/2026_재출제_예상_분석.html",
+            "components/calendar/ExamStrips.tsx",
+            "docs/features/2026-04-14-calendar-exam-schedule.md",
+            "components/dashboard/TestModal.tsx",
+            "docs/plans/completed/2026-04-13-calendar-exam-badge-redesign.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F1",
+      "category": "exploration",
+      "query": "학생이 숙제 제출하면 어디서 분석되나",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 7,
+          "any_hit_rank": 7,
+          "recall_at_10": 0.5,
+          "mrr": 0.14285714285714285,
+          "hits": 1,
+          "total_expected": 2,
+          "time_ms": 301.2278749374673,
+          "top_results": [
+            "docs/guides/learning-system-guide.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-상담전-체크리스트.md",
+            "harness/app/dashboard/pages/learning.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_소수정예-vs-대형학원.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학-숙제-안하는-아이-관리법.md",
+            "docs/features/2026-04-08-learning-student-analysis.md",
+            "docs/features/2026-04-08-learning-homework-analysis.md",
+            "docs/archive/2026-03-31-portal-preview-phase2.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": 2,
+          "any_hit_rank": 2,
+          "recall_at_10": 1.0,
+          "mrr": 0.5,
+          "hits": 2,
+          "total_expected": 2,
+          "time_ms": 69.60454198997468,
+          "top_results": [
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학-숙제-안하는-아이-관리법.md",
+            "docs/features/2026-04-08-learning-homework-analysis.md",
+            "docs/valueinmath_docs/마케팅/260325_마케팅_프로덕트-마케팅-컨텍스트.md",
+            "docs/valueinmath_docs/assets/중3화목원장반숙제수집및현황.json",
+            "components/learning/homework-analysis/ManualHomeworkCollector.tsx",
+            "docs/archive/portal-ux-redesign-plan.md",
+            "supabase/functions/mathflat-homework/index.ts",
+            "docs/archive/2026-03-31-portal-preview-phase2.md",
+            "docs/features/2026-04-08-learning-student-analysis.md",
+            "lib/mathflat/homework-collector.ts"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F2",
+      "category": "exploration",
+      "query": "월별 학원 통계는 어떻게 집계되나",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 3,
+          "time_ms": 215.7842080341652,
+          "top_results": [
+            "docs/valueinmath_docs/운영/260108_운영_2026년_연간계획서작성_기초분석.md",
+            "docs/valueinmath_docs/인사/260107_인사_엄해미-인사평가-2025.md",
+            "docs/valueinmath_docs/운영/260109_운영_퇴원분석_2025-2026.md",
+            "docs/valueinmath_docs/운영/260313_운영_초등부_개별진도반_운영계획.md",
+            "docs/dbdocs/database-functions.md",
+            "docs/features/2026-04-08-student-class-lifecycle.md",
+            "docs/archive/student-monthly-session-plan.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 3,
+          "time_ms": 66.75204203929752,
+          "top_results": [
+            "docs/plans/2026-04-20-tuition-hub.md",
+            "docs/archive/business-vision-2026.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_광진구-수학학원-추천-비교.md",
+            "docs/valueinmath_docs/마케팅/260325_마케팅_프로덕트-마케팅-컨텍스트.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-바꿔도-달라질까.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_소수정예-vs-대형학원.md",
+            "landing-audit-report.html",
+            "docs/valueinmath_docs/운영/260107_운영_상담-마스터피스-가이드.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-상담전-체크리스트.md",
+            "services/tuition-service.ts"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F3",
+      "category": "exploration",
+      "query": "출결 관리 기능은 어디에 있나",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 6,
+          "any_hit_rank": 6,
+          "recall_at_10": 0.5,
+          "mrr": 0.16666666666666666,
+          "hits": 1,
+          "total_expected": 2,
+          "time_ms": 251.83866592124104,
+          "top_results": [
+            "docs/archive/student-monthly-session-plan.md",
+            "services/attendance-bulk-service.ts",
+            "docs/archive/business-vision-2026.md",
+            "docs/features/2026-04-08-ops-meeting.md",
+            "services/attendance-service.ts",
+            "docs/features/2026-04-08-learning-attendance.md",
+            "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+            "docs/archive/saas_migration.md",
+            "docs/archive/withdrawal-operations-agent.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 2,
+          "time_ms": 62.41620797663927,
+          "top_results": [
+            "docs/valueinmath_docs/마케팅/260325_마케팅_프로덕트-마케팅-컨텍스트.md",
+            "docs/archive/PROJECT_STATUS.md",
+            "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+            "docs/archive/valueinmath-후기.md",
+            "docs/valueinmath_docs/인사/260410_인사_인사평가-2026-Q1.md",
+            "docs/guides/learning-system-guide.md",
+            "components/layout/sidebar.tsx",
+            "docs/archive/business-vision-2026.md",
+            "docs/archive/student-monthly-session-plan.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_광진구-수학학원-추천-비교.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F4",
+      "category": "exploration",
+      "query": "상담 예약과 관리 시스템은 어떻게 동작하나",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 6,
+          "any_hit_rank": 6,
+          "recall_at_10": 0.3333333333333333,
+          "mrr": 0.16666666666666666,
+          "hits": 1,
+          "total_expected": 3,
+          "time_ms": 192.55087501369417,
+          "top_results": [
+            "docs/features/2026-04-08-ops-meeting.md",
+            "docs/valueinmath_docs/마케팅/블로그/260327_블로그_광진구-수학학원-추천-비교.md",
+            "docs/archive/withdrawal-operations-agent.md",
+            "docs/plans/agent-system-plan.md",
+            "docs/archive/payment-system-implementation-guide.md",
+            "components/consultations/ConsultationModal.tsx",
+            "docs/archive/student-monthly-session-plan.md",
+            "docs/archive/withdrawal-risk-detection-system.md",
+            "docs/archive/PAYSSAM_DEBUG_CONTEXT.md",
+            "docs/archive/business-vision-2026.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": 7,
+          "any_hit_rank": 7,
+          "recall_at_10": 0.3333333333333333,
+          "mrr": 0.14285714285714285,
+          "hits": 1,
+          "total_expected": 3,
+          "time_ms": 70.73854096233845,
+          "top_results": [
+            "docs/valueinmath_docs/인사/260410_인사_인사평가-2026-Q1.md",
+            "docs/valueinmath_docs/인사/260107_인사_인사평가-상담분석-2025.md",
+            "docs/valueinmath_docs/운영/260107_운영_상담-마스터피스-가이드.md",
+            "docs/valueinmath_docs/인사/260107_인사_엄해미-인사평가-2025.md",
+            "docs/valueinmath_docs/마케팅/260325_마케팅_프로덕트-마케팅-컨텍스트.md",
+            "docs/valueinmath_docs/인사/인사평가-기준서.md",
+            "components/consultations/ConsultationModal.tsx",
+            "docs/valueinmath_docs/분석/260121_분석_퇴원예방-종합분석.md",
+            "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+            "docs/dbdocs/database-functions.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F5",
+      "category": "exploration",
+      "query": "변형 문제 variant problems 생성 로직",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 1,
+          "any_hit_rank": 1,
+          "recall_at_10": 1.0,
+          "mrr": 1.0,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 321.5344169875607,
+          "top_results": [
+            "docs/plans/2026-04-15-variant-problems-plan.md",
+            "docs/archive/MATHFLAT_IMPLEMENTATION_PLAN.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": 2,
+          "any_hit_rank": 2,
+          "recall_at_10": 1.0,
+          "mrr": 0.5,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 222.19970799051225,
+          "top_results": [
+            "docs/archive/mathontologydocs/problem-parsing-system.md",
+            "docs/plans/2026-04-15-variant-problems-plan.md",
+            "docs/valueinmath_docs/assets/교육과정단원분류/중2-1(22개정).json",
+            "docs/plans/2026-04-20-tuition-hub.md",
+            "docs/valueinmath_docs/assets/중3화목원장반숙제수집및현황.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/README.md",
+            "docs/archive/mathontologydocs/math-ai-agent-product.md",
+            "docs/valueinmath_docs/assets/교육과정단원분류/초6-2(15과정).json",
+            "docs/valueinmath_docs/assets/교육과정단원분류/초6-2(22개정).json",
+            "components/learning/homework-analysis/student-analysis/useStudentAnalysis.ts"
+          ]
+        }
+      }
+    },
+    {
+      "id": "P1",
+      "category": "precision",
+      "query": "TuitionChargeSection 컴포넌트",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 6,
+          "any_hit_rank": 6,
+          "recall_at_10": 1.0,
+          "mrr": 0.16666666666666666,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 375.84920797962695,
+          "top_results": [
+            "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+            "harness/app/dashboard/pages/students.md",
+            "services/tuition-service.ts",
+            "hooks/use-tuition.ts",
+            "app/tuition-fees/page.tsx",
+            "components/tuition/tuition-charge-section.tsx",
+            "services/tuition-session/session-edit.ts"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 1,
+          "time_ms": 128.86712502222508,
+          "top_results": [
+            "docs/archive/shrimp-rules.md",
+            "harness/app/dashboard/pages/students.md",
+            "docs/superpowers/plans/2026-03-31-session-planner-redesign.md",
+            "harness/app/dashboard/pages/analytics.md",
+            "docs/plans/2026-04-15-portal-v3-refactoring.md",
+            "harness/app/dashboard/pages/learning.md",
+            "docs/archive/PROJECT_STATUS.md",
+            "docs/archive/split-large-files.md",
+            "docs/archive/LEARNED_FROM_ERRORS.md",
+            "docs/archive/saas확장위한변경이력추적마이그레이션.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "P2",
+      "category": "precision",
+      "query": "admission_results 테이블 스키마",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 2,
+          "any_hit_rank": 2,
+          "recall_at_10": 1.0,
+          "mrr": 0.5,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 219.4465840002522,
+          "top_results": [
+            "docs/plans/2026-04-20-tuition-hub.md",
+            "database/migrations/20260327_create_admission_results.sql",
+            "docs/features/2026-04-08-learning-attendance.md",
+            "docs/features/2026-04-08-learning-test-logs.md",
+            "harness/app/dashboard/pages/students.md",
+            "docs/plans/2026-04-17-entrance-test-management.md",
+            "app/(dashboard)/students/admissions/page.tsx",
+            "components/admissions/admission-table.tsx",
+            "types/admission.ts"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": 6,
+          "any_hit_rank": 6,
+          "recall_at_10": 1.0,
+          "mrr": 0.16666666666666666,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 130.56108297314495,
+          "top_results": [
+            "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+            "docs/dbdocs/relationships.md",
+            "docs/archive/PROJECT_STATUS.md",
+            "docs/dbdocs/README.md",
+            "docs/archive/typedb-ontology-design.md",
+            "database/migrations/20260327_create_admission_results.sql",
+            "docs/plans/2026-04-20-tuition-hub.md",
+            "docs/plans/agent-system-plan.md",
+            "docs/superpowers/plans/2026-03-31-session-planner-redesign.md",
+            "docs/dbdocs/code-mapping.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "P3",
+      "category": "precision",
+      "query": "pending-approval 페이지",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 2,
+          "any_hit_rank": 2,
+          "recall_at_10": 1.0,
+          "mrr": 0.5,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 231.26095801126212,
+          "top_results": [
+            "harness/app/auth/rules.md",
+            "app/(auth)/pending-approval/pending-approval-client.tsx",
+            "components/employees/parent-student-approval-section.tsx",
+            "components/employees/parent-student-approval-modal.tsx",
+            "actions/test-pending-users.ts",
+            "components/layout/notification-button.tsx",
+            "app/(dashboard)/employees/pending-approval-section.tsx"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 1,
+          "time_ms": 123.44749993644655,
+          "top_results": [
+            "docs/archive/PROJECT_STATUS.md",
+            "scripts/extract-textbook-pages.py",
+            "docs/plans/2026-04-20-tuition-hub.md",
+            "docs/superpowers/plans/2026-03-30-portal-v2-phase1.md",
+            "docs/archive/withdrawal-operations-agent.md",
+            "docs/superpowers/plans/2026-03-31-session-planner-redesign.md",
+            "docs/superpowers/plans/2026-04-01-tuition-planner-completion.md",
+            "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+            "docs/archive/realtime-debug-guide.md",
+            "docs/archive/shrimp-rules.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "P4",
+      "category": "precision",
+      "query": "create_academy_monthly_stats 함수",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 1,
+          "any_hit_rank": 1,
+          "recall_at_10": 1.0,
+          "mrr": 1.0,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 180.8428339427337,
+          "top_results": [
+            "database/migrations/create_academy_monthly_stats.sql",
+            "app/actions/analytics-snapshot.ts",
+            "services/analytics/monthly-analytics.ts",
+            "components/analytics/_hooks/use-operation-stats.ts",
+            "services/analytics/mappers.ts",
+            "docs/dbdocs/tables/06-analytics/academy_monthly_stats.md",
+            "lib/student-metrics.ts"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 1,
+          "time_ms": 122.23833298776299,
+          "top_results": [
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_해설_parsed.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_parsed.json",
+            "prints/심화편_parsed.json",
+            "docs/valueinmath_docs/assets/교육과정단원분류/미적분.json",
+            "docs/valueinmath_docs/assets/교육과정단원분류/공통수학2.json",
+            "docs/valueinmath_docs/assets/교육과정단원분류/대수.json",
+            "docs/valueinmath_docs/assets/교육과정단원분류/중3-1(15과정).json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/04_예상분석/2026_재출제_예상_분석.html",
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/problem_index.json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/02_교과서/천재교육_대수_삼각함수_1_parsed.json"
+          ]
+        }
+      }
+    },
+    {
+      "id": "P5",
+      "category": "precision",
+      "query": "standardize_rls_policies 마이그레이션",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 1,
+          "any_hit_rank": 1,
+          "recall_at_10": 1.0,
+          "mrr": 1.0,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 333.4520000498742,
+          "top_results": [
+            "database/migrations/20251022_standardize_rls_policies.sql",
+            "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+            "database/README.md",
+            "docs/archive/withdrawal-risk-detection-system.md",
+            "docs/dbdocs/tables/01-core/profiles.md",
+            "docs/archive/superclaude-valuein-optimization-guide.md",
+            "docs/dbdocs/tables/03-consultation/consultation_requests.md",
+            "docs/dbdocs/tables/02-learning/makeup_classes.md",
+            "docs/dbdocs/tables/01-core/classes.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 1,
+          "time_ms": 193.83250002283603,
+          "top_results": [
+            "docs/plans/2026-04-21-ledger-writepath-abc.md",
+            "docs/archive/shrimp-rules.md",
+            "docs/archive/saas_migration.md",
+            "scripts/migrate-google-calendar.ts",
+            "CLAUDE.md",
+            "docs/archive/PROJECT_STATUS.md",
+            "docs/plans/entrance-test-fee-integration-plan.md",
+            "docs/superpowers/plans/2026-03-31-session-planner-redesign.md",
+            "harness/handoff/archive/T-010/eval-feedback-v6.json",
+            "docs/archive/학원비생성_자동화-plan.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "R1",
+      "category": "rationale",
+      "query": "portal v3로 리팩토링하는 이유는 무엇인가",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 1,
+          "any_hit_rank": 1,
+          "recall_at_10": 1.0,
+          "mrr": 1.0,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 242.615208029747,
+          "top_results": [
+            "docs/plans/2026-04-15-portal-v3-refactoring.md",
+            "docs/dbdocs/README.md",
+            "harness/app/portal/rules.md",
+            "lib/portal-client.ts",
+            "harness/learnings/2026-03-30-T-009.md",
+            "docs/archive/payment-system-implementation-guide.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": 2,
+          "any_hit_rank": 2,
+          "recall_at_10": 1.0,
+          "mrr": 0.5,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 201.33241696748883,
+          "top_results": [
+            "prints/심화편_parsed.json",
+            "docs/plans/2026-04-15-portal-v3-refactoring.md",
+            "docs/superpowers/plans/2026-03-30-portal-v2-phase1.md",
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_해설_parsed.json",
+            "docs/superpowers/plans/2026-03-30-portal-v2-phase2.md",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/02_교과서/천재교육_대수_삼각함수_3_parsed.json",
+            "package-lock.json",
+            "archive/portal-v1/portal-view.tsx",
+            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/02_부교재/부교재_parsed.json",
+            "docs/archive/2026-03-31-portal-preview-phase2.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "R2",
+      "category": "rationale",
+      "query": "ledger writepath ABC 설계를 택한 배경은",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 1,
+          "any_hit_rank": 1,
+          "recall_at_10": 1.0,
+          "mrr": 1.0,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 363.90666698571295,
+          "top_results": [
+            "docs/plans/2026-04-21-ledger-writepath-abc.md",
+            "services/ledger/__tests__/writepath-c-history.test.ts",
+            "services/ledger/__tests__/writepath-helpers.test.ts"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": 2,
+          "any_hit_rank": 2,
+          "recall_at_10": 1.0,
+          "mrr": 0.5,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 287.06758306361735,
+          "top_results": [
+            "docs/plans/2026-04-20-tuition-hub.md",
+            "docs/plans/2026-04-21-ledger-writepath-abc.md",
+            "prints/심화편_parsed.json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/02_교과서/천재교육_대수_삼각함수_2_parsed.json",
+            "services/ledger/__tests__/validation.test.ts",
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_해설_parsed.json",
+            "harness/handoff/impl-summary.json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/02_교과서/천재교육_대수_삼각함수_3_parsed.json",
+            "services/ledger/__tests__/scenarios.sql",
+            "supabase/migrations/20260421120042_ledger_phase_l1_core.sql"
+          ]
+        }
+      }
+    },
+    {
+      "id": "R3",
+      "category": "rationale",
+      "query": "tuition hub를 새로 만드는 이유",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 6,
+          "any_hit_rank": 6,
+          "recall_at_10": 1.0,
+          "mrr": 0.16666666666666666,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 225.46141606289893,
+          "top_results": [
+            "docs/superpowers/plans/2026-04-01-tuition-create-page.md",
+            "services/tuition-session/session-generation.ts",
+            "services/tuition-service.ts",
+            "app/(dashboard)/students/tuition-history/[id]/_hooks/use-fee-detail.ts",
+            "services/tuition-session/session-edit.ts",
+            "docs/plans/2026-04-20-tuition-hub.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": 1,
+          "any_hit_rank": 1,
+          "recall_at_10": 1.0,
+          "mrr": 1.0,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 216.7090839939192,
+          "top_results": [
+            "docs/plans/2026-04-20-tuition-hub.md",
+            "package-lock.json",
+            "docs/plans/2026-04-21-ledger-writepath-abc.md",
+            "docs/archive/학원비생성_자동화-plan.md",
+            "services/tuition-service.ts",
+            "types/database.ts",
+            "services/payssam-service.ts",
+            "services/tuition-session/session-edit.ts",
+            "hooks/use-tuition.ts",
+            "services/tuition-session/session-crud.ts"
+          ]
+        }
+      }
+    },
+    {
+      "id": "R4",
+      "category": "rationale",
+      "query": "AI 콘텐츠 팩토리를 만드는 목적",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 2,
+          "any_hit_rank": 2,
+          "recall_at_10": 1.0,
+          "mrr": 0.5,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 333.12591700814664,
+          "top_results": [
+            "harness/app/dashboard/pages/marketing.md",
+            "docs/plans/2026-04-08-ai-content-factory-plan.md",
+            "components/marketing/content-studio/hooks/use-content-posts.ts",
+            "marketing/briefs/2026-04-07-pre-stitch-dryrun-arch-l-01.md",
+            "marketing/briefs/2026-04-07-pre-stitch-dryrun-arch-t-01.md"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 1,
+          "time_ms": 154.70691700465977,
+          "top_results": [
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_해설_parsed.json",
+            "prints/심화편_parsed.json",
+            "docs/valueinmath_docs/assets/중3화목원장반숙제수집및현황.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_parsed.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/02_부교재/부교재_parsed.json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/02_교과서/천재교육_대수_삼각함수_3_parsed.json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2025_중간고사_parsed.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/01_기출/2025_중간고사_parsed.json",
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2023_중간고사_parsed.json",
+            "docs/archive/숙제수집자동화.md"
+          ]
+        }
+      }
+    },
+    {
+      "id": "R5",
+      "category": "rationale",
+      "query": "entrance test 관리 플랜은 왜 세워졌나",
+      "tracks": {
+        "hybrid": {
+          "primary_hit_rank": 2,
+          "any_hit_rank": 2,
+          "recall_at_10": 1.0,
+          "mrr": 0.5,
+          "hits": 1,
+          "total_expected": 1,
+          "time_ms": 410.08787497412413,
+          "top_results": [
+            "docs/handoff/entrance-test-management.md",
+            "docs/plans/2026-04-17-entrance-test-management.md",
+            "hooks/use-entrance-tests.ts",
+            "harness/app/dashboard/pages/students.md",
+            "services/entrance-test-service.ts"
+          ]
+        },
+        "grep": {
+          "primary_hit_rank": null,
+          "any_hit_rank": null,
+          "recall_at_10": 0.0,
+          "mrr": 0.0,
+          "hits": 0,
+          "total_expected": 1,
+          "time_ms": 223.43929205089808,
+          "top_results": [
+            "types/database.ts",
+            "docs/superpowers/plans/2026-03-31-session-planner-redesign.md",
+            "docs/plans/entrance-test-fee-integration-plan.md",
+            "components/dashboard/TestModal.tsx",
+            "app/(dashboard)/dashboard/page.tsx",
+            "app/(dashboard)/students/entrance-tests/page.tsx",
+            "components/students/entrance-tests/entrance-tests-table.tsx",
+            "hooks/use-entrance-tests.ts",
+            "app/(dashboard)/learning/test-logs/page.tsx",
+            "components/dashboard/EntranceTestCard.tsx"
+          ]
+        }
+      }
+    }
+  ]
+}
