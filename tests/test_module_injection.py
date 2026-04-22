@@ -5,6 +5,7 @@ from __future__ import annotations
 from hybrid_search.search.orchestrator import (
     HybridResult,
     QueryType,
+    _filename_token_set,
     _has_rationale_signal,
     _has_symbol_signal,
     _interleave_modules,
@@ -265,3 +266,36 @@ def test_interleave_chunk_stays_at_position_2():
     # Position 1 = module (one slot), position 2 = top chunk
     assert out[0].node_type == "module"
     assert out[1].file_path == top_chunk_file
+
+
+# ---------- Step J: _filename_token_set ----------
+
+def test_filename_tokens_split_camel_and_hyphen():
+    """Step J needs camelCase-aware filename tokens so .tsx members can
+    match English query terms. Without this, `HomeworkTab.tsx` collapses
+    to one token and loses to hyphenated docs on query-aware rep pick."""
+    toks = _filename_token_set("components/learning/homework-analysis/HomeworkTab.tsx")
+    assert toks == {"homework", "tab"}
+
+
+def test_filename_tokens_split_underscore():
+    toks = _filename_token_set("database/migrations/create_academy_monthly_stats.sql")
+    assert toks == {"create", "academy", "monthly", "stats"}
+
+
+def test_filename_tokens_strip_date_prefix():
+    toks = _filename_token_set("database/migrations/20260327_create_admission_results.sql")
+    assert "20260327" not in toks
+    assert "admission" in toks
+    assert "results" in toks
+
+
+def test_filename_tokens_drop_short_pieces():
+    # "a" is < 3 chars and should be dropped; "index" alone stays.
+    assert _filename_token_set("foo/a.ts") == set()
+    assert _filename_token_set("foo/index.ts") == {"index"}
+
+
+def test_filename_tokens_mixed_camel_and_hyphen():
+    toks = _filename_token_set("components/ConceptWeaknessCard.tsx")
+    assert toks == {"concept", "weakness", "card"}
