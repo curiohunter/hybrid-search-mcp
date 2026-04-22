@@ -41,6 +41,22 @@ _DOC_EXTS = frozenset({".md", ".mdx", ".rst", ".txt"})
 # Minimum files for a module to survive singleton filter. Docs can stay alone.
 _MIN_MODULE_SIZE = 2
 
+# File-module weights. Kept as constants so discover_modules + tests
+# share the same scale.
+_WEIGHT_CODE = 1.0
+_WEIGHT_DOC_PRIMARY = 0.5
+# Step F1: docs that mention files across >1 module stay with their own
+# docs-directory module (the strict-merge rule still holds) but are *also*
+# attached as low-weight cross-ref members to each mentioned module. This is
+# how a feature doc like docs/features/portal-parent-student.md ends up
+# visible to the portal-v3 module card during synthesis — so "학부모" lands
+# on the card text alongside "shell rendering". Weight stays well below
+# primary doc weight (0.5) so chunk-search ranking isn't swayed.
+_WEIGHT_DOC_CROSSREF = 0.2
+# Per-module cap for cross-ref docs so a cross-cutting HANDOFF that mentions
+# 20 paths doesn't bloat every affected module.
+_MAX_CROSSREFS_PER_MODULE = 3
+
 
 def _module_key_for(relative_path: str) -> str:
     """Map a file path → initial module grouping key.
@@ -88,10 +104,47 @@ _PATH_MENTION_RE = re.compile(
     r"(?:[\s`'\")\].,;:]|$)"
 )
 
+# Tokens for the F3 "named subsystem" check: words that could plausibly be
+# a module name (alnum + hyphen + underscore, length ≥ 3). Conservative
+# lower bound avoids matching 2-letter English stopwords.
+_NAME_TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{2,}")
+
 
 def _extract_path_mentions(text: str) -> set[str]:
     """Find plausible file-path references in a doc body."""
     return set(m.group(1) for m in _PATH_MENTION_RE.finditer(text))
+
+
+def _extract_name_tokens(text: str) -> set[str]:
+    """Lowercase alnum/hyphen tokens — used to detect subsystem names that
+    appear in prose (not just as file paths). Used by F3 sub-threshold
+    promotion to answer "does any doc actually talk about this dir?"."""
+    return {m.group(0).lower() for m in _NAME_TOKEN_RE.finditer(text)}
+
+
+def _count_name_tokens(text: str) -> dict[str, int]:
+    """Per-token occurrence count — F5 cross-ref needs to distinguish
+    docs that *topically* describe a module ("portal-v3" mentioned 10
+    times) from docs that merely name-drop ("admissions" once in a route
+    listing). Thresholded occurrence keeps generic DESIGN.md / CLAUDE.md
+    style manifests from hitching to every module whose name appears
+    anywhere in them."""
+    counts: dict[str, int] = {}
+    for m in _NAME_TOKEN_RE.finditer(text):
+        tok = m.group(0).lower()
+        counts[tok] = counts.get(tok, 0) + 1
+    return counts
+
+
+# Docs that legitimately list every subsystem by name — they'd otherwise
+# light up F5 cross-refs for every module. We skip them entirely.
+_GENERIC_META_DOCS = frozenset({
+    "claude.md", "design.md", "handoff.md", "readme.md",
+    "contributing.md", "changelog.md",
+})
+# Minimum per-doc occurrence of a module's leaf name before we treat it as
+# a topical mention (F5). Below this it's usually name-drop noise.
+_MIN_NAME_MENTIONS = 2
 
 
 def discover_modules(
@@ -121,7 +174,19 @@ def discover_modules(
     # (D1:{A,B}, D2:{B,C}) transitively fuse A+B+C into one giant module.
     # Cross-cutting docs (HANDOFFs/roadmaps) touch 5+ subsystems and would
     # collapse everything; we let them stay with their own directory group.
+    #
+    # Step F1 addendum: when a doc's mentions resolve to >1 module keys, we
+    # don't merge — but we *do* record cross-refs so the doc is still
+    # attached (as a low-weight member) to each target module later, giving
+    # synthesis access to the doc's content across subsystems.
     docs_with_mentions: list[tuple[str, set[str]]] = []
+    # target_key → ordered list of doc paths pointing at it (cross-ref only).
+    cross_refs: dict[str, list[str]] = defaultdict(list)
+    # Per-doc token counts. F3 uses the token set ("is this name spoken
+    # anywhere?"); F5 uses per-doc counts ("does this doc *topically*
+    # talk about that module, or just name-drop it once in a route
+    # listing?"). Stored once to avoid re-reading files.
+    doc_token_counts: dict[str, dict[str, int]] = {}
     for rel, f in path_to_file.items():
         if Path(rel).suffix.lower() not in _DOC_EXTS:
             continue
@@ -130,6 +195,7 @@ def discover_modules(
             text = abs_path.read_text(errors="ignore")
         except OSError:
             continue
+        doc_token_counts[rel] = _count_name_tokens(text)
         mentions = _extract_path_mentions(text)
         resolved = {m for m in mentions if m in path_to_file}
         if not resolved:
@@ -137,10 +203,35 @@ def discover_modules(
         docs_with_mentions.append((rel, resolved))
 
         target_keys = {key_by_path[target] for target in resolved}
-        if len(target_keys) != 1:
+        if len(target_keys) == 1:
+            (only_key,) = target_keys
+            # Merge with code key as the root so the subsystem name is
+            # preserved (e.g., "portal-v3" / "analytics") rather than
+            # inheriting the doc's directory ("features"). Without this,
+            # a feature doc path-mentioning a code file steals the module
+            # name and search-by-subsystem-name breaks.
+            uf.union(only_key, key_by_path[rel])
             continue
-        (only_key,) = target_keys
-        uf.union(key_by_path[rel], only_key)
+        # Multi-target doc: record a cross-ref for each distinct target that
+        # isn't the doc's own module.
+        doc_key = key_by_path[rel]
+        for tk in target_keys:
+            if tk == doc_key:
+                continue
+            if rel not in cross_refs[tk]:
+                cross_refs[tk].append(rel)
+
+    # Files mentioned anywhere (any doc). Used by F3 promotion alongside
+    # the doc-token set.
+    mentioned_files: set[str] = set()
+    for _doc, resolved in docs_with_mentions:
+        mentioned_files |= resolved
+
+    # Union of all doc tokens — cheap "name spoken somewhere?" lookup for F3
+    # sub-threshold promotion.
+    doc_token_set: set[str] = set()
+    for counts in doc_token_counts.values():
+        doc_token_set |= counts.keys()
 
     # -- Step 3: materialize modules from union-find roots --
     members_by_root: dict[str, list[str]] = defaultdict(list)
@@ -154,18 +245,95 @@ def discover_modules(
     file_module_rows: list[tuple[str, str, float]] = []
     file_path_to_id = {f.relative_path: f.id for f in all_files}
 
+    # Resolve union-find roots for cross-ref target keys once up-front so
+    # cross-refs follow any merges that happened in step 2's doc pass.
+    resolved_crossrefs: dict[str, list[str]] = defaultdict(list)
+    for tk, docs in cross_refs.items():
+        root = uf.find(tk)
+        for d in docs:
+            if d not in resolved_crossrefs[root]:
+                resolved_crossrefs[root].append(d)
+
+    # F5 — "named subsystem" cross-ref: when a doc's body names a module by
+    # its leaf segment (e.g. prose mentions "portal-v3") but uses parenthesized
+    # paths like ``app/(portal)/layout.tsx`` that the path-mention regex
+    # doesn't capture, we still want that doc to enrich the module's card.
+    # This is the S2 fix: the parent-portal feature doc talks about
+    # "portal-v3" in prose alongside non-regex-friendly paths, and without
+    # this rule it never reaches the portal-v3 module's summary.
+    root_leafs: dict[str, str] = {}
+    for root in members_by_root:
+        if root.startswith("root:"):
+            continue
+        leaf = root.rsplit("/", 1)[-1].lower()
+        if len(leaf) >= 3:
+            root_leafs[root] = leaf
+    for doc_rel, counts in doc_token_counts.items():
+        # Skip generic meta docs that describe the whole project; they'd
+        # otherwise light up cross-refs for every module they list.
+        if Path(doc_rel).name.lower() in _GENERIC_META_DOCS:
+            continue
+        doc_root = uf.find(key_by_path.get(doc_rel, ""))
+        for root, leaf in root_leafs.items():
+            if root == doc_root:
+                continue
+            if counts.get(leaf, 0) >= _MIN_NAME_MENTIONS:
+                if doc_rel not in resolved_crossrefs[root]:
+                    resolved_crossrefs[root].append(doc_rel)
+
+    # Cap per module (applies after path-mention + name-prose collection).
+    for root in list(resolved_crossrefs):
+        resolved_crossrefs[root] = resolved_crossrefs[root][:_MAX_CROSSREFS_PER_MODULE]
+
     for root, members in members_by_root.items():
         members = sorted(members)
+        promoted_via_doc = False
         if len(members) < _MIN_MODULE_SIZE:
             single = members[0]
-            if Path(single).suffix.lower() not in _DOC_EXTS:
-                continue
+            is_doc = Path(single).suffix.lower() in _DOC_EXTS
+            # F3 sub-threshold promotion: a size-1 code dir is kept as a
+            # module if *some* doc talks about it — either (a) the file is
+            # mentioned directly by path, or (b) the dir's leaf name
+            # appears in any doc body as a distinct token. That's enough
+            # signal to promote components/analytics/ into a subsystem
+            # card when a feature doc says "analytics" in prose, which
+            # otherwise gets dropped by the ≥ 2 files rule.
+            if not is_doc:
+                leaf = root.rsplit("/", 1)[-1].lower()
+                file_mentioned = any(
+                    m in mentioned_files for m in members
+                )
+                name_in_docs = (
+                    leaf
+                    and not leaf.startswith("root:")
+                    and leaf in doc_token_set
+                )
+                if not (file_mentioned or name_in_docs):
+                    continue
+                promoted_via_doc = True
         module_id = _module_id(project_id, members)
         name = _derive_name(root, members)
-        signals = sorted({"directory"} | _signal_flags(root, members, docs_with_mentions))
-        related_docs = [m for m in members if Path(m).suffix.lower() in _DOC_EXTS]
+        signals_base = {"directory"} | _signal_flags(root, members, docs_with_mentions)
+        crossrefs_for_mod = [
+            d for d in resolved_crossrefs.get(root, []) if d not in members
+        ]
+        if crossrefs_for_mod:
+            signals_base.add("crossref_doc")
+        if promoted_via_doc:
+            signals_base.add("doc_promoted")
+        signals = sorted(signals_base)
+        # related_docs advertises both primary members and cross-ref docs so
+        # downstream readers (wiki links, search result footers) see the full
+        # set of documentation that speaks about this module.
+        related_docs = [
+            m for m in members if Path(m).suffix.lower() in _DOC_EXTS
+        ] + crossrefs_for_mod
+        # member_hash folds cross-refs in so synth re-runs when the set
+        # changes — otherwise Step F2's doc-excerpt pass would skip a module
+        # whose primary members didn't change.
+        hash_input = "\n".join(members) + "\n##crossref##\n" + "\n".join(crossrefs_for_mod)
         member_hash = hashlib.sha256(
-            "\n".join(members).encode("utf-8")
+            hash_input.encode("utf-8")
         ).hexdigest()[:16]
         modules_out.append(
             ModuleRecord(
@@ -187,8 +355,13 @@ def discover_modules(
             if fid is None:
                 continue
             # Docs get lower weight than code since they describe rather than implement.
-            weight = 0.5 if Path(path).suffix.lower() in _DOC_EXTS else 1.0
+            weight = _WEIGHT_DOC_PRIMARY if Path(path).suffix.lower() in _DOC_EXTS else _WEIGHT_CODE
             file_module_rows.append((fid, module_id, weight))
+        for doc_path in crossrefs_for_mod:
+            fid = file_path_to_id.get(doc_path)
+            if fid is None:
+                continue
+            file_module_rows.append((fid, module_id, _WEIGHT_DOC_CROSSREF))
 
     # -- Step 4: write to DB (idempotent replacement) --
     with db.transaction() as conn:
