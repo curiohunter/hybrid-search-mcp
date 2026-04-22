@@ -819,6 +819,64 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("\nNo indexed projects yet.")
 
 
+def cmd_drift(args: argparse.Namespace) -> None:
+    """Check filesystem drift vs. index (Phase 6 L4 watchdog).
+
+    Read-only: diffs disk against the DB's recorded files and prints an
+    actionable summary. Low-frequency operation — intentionally kept as a
+    CLI command rather than an MCP tool so it doesn't consume agent
+    context on every session.
+    """
+    from hybrid_search.index.drift import detect_drift
+
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if not match:
+        print(f"No registered project found for: {cwd}")
+        return
+    name, _ = match
+    pinfo = registry.get_by_name(name)
+    if not pinfo:
+        return
+
+    project_dir = get_project_dir(config.projects_dir, pinfo.id)
+    idx_paths = IndexPaths(project_dir)
+    if not idx_paths.store_db.exists():
+        print("No index found — run `hybrid-search index` first.")
+        return
+
+    db = StoreDB(idx_paths.store_db)
+    try:
+        report = detect_drift(pinfo.id, Path(pinfo.path), db, config.indexing)
+        print(f"[{name}] {report.summary_line()}")
+        if args.verbose and report.is_drifted:
+            if report.added:
+                print(f"  added ({len(report.added)}):")
+                for p in report.added[:20]:
+                    print(f"    + {p}")
+                if len(report.added) > 20:
+                    print(f"    ... +{len(report.added) - 20} more")
+            if report.changed:
+                print(f"  changed ({len(report.changed)}):")
+                for p in report.changed[:20]:
+                    print(f"    ~ {p}")
+                if len(report.changed) > 20:
+                    print(f"    ... +{len(report.changed) - 20} more")
+            if report.deleted:
+                print(f"  deleted ({len(report.deleted)}):")
+                for p in report.deleted[:20]:
+                    print(f"    - {p}")
+                if len(report.deleted) > 20:
+                    print(f"    ... +{len(report.deleted) - 20} more")
+        if report.is_drifted:
+            print("Run `hybrid-search reindex` to bring the index in sync.")
+    finally:
+        db.close()
+
+
 def cmd_stale(args: argparse.Namespace) -> None:
     """Check wiki staleness for a project."""
     config = load_config()
@@ -3190,6 +3248,14 @@ def main() -> None:
     p_stale = sub.add_parser("stale", help="Check wiki staleness")
     p_stale.add_argument("--cwd", default=".", help="Project directory")
 
+    p_drift = sub.add_parser(
+        "drift",
+        help="Check filesystem drift vs. index (Phase 6 L4 watchdog)",
+    )
+    p_drift.add_argument("--cwd", default=".", help="Project directory")
+    p_drift.add_argument("-v", "--verbose", action="store_true",
+                          help="List the drifted files")
+
     p_hook = sub.add_parser(
         "install-hook",
         help="Install post-commit + post-checkout hooks in a project",
@@ -3358,6 +3424,8 @@ def main() -> None:
         cmd_status(args)
     elif args.command == "stale":
         cmd_stale(args)
+    elif args.command == "drift":
+        cmd_drift(args)
     elif args.command == "install-hook":
         cmd_install_hook(args)
     elif args.command == "sync-wiki":

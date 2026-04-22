@@ -12,7 +12,7 @@
           "any_hit_rate": 0.8,
           "recall_at_10_mean": 0.6666666666666666,
           "mrr_mean": 0.5666666666666667,
-          "time_ms_mean": 229.4398914091289,
+          "time_ms_mean": 527.3599998094141,
           "primary_top1": 0.6,
           "primary_top5": 0.8,
           "primary_via_module_rate": 0.6,
@@ -27,7 +27,7 @@
           "any_hit_rate": 0.6,
           "recall_at_10_mean": 0.4666666666666667,
           "mrr_mean": 0.22857142857142856,
-          "time_ms_mean": 96.60181640647352,
+          "time_ms_mean": 103.71060818433762,
           "primary_top1": 0.0,
           "primary_top5": 0.4,
           "primary_via_module_rate": 0.0,
@@ -44,7 +44,7 @@
           "any_hit_rate": 1.0,
           "recall_at_10_mean": 1.0,
           "mrr_mean": 0.7333333333333333,
-          "time_ms_mean": 292.34180841594934,
+          "time_ms_mean": 308.2084245979786,
           "primary_top1": 0.6,
           "primary_top5": 0.8,
           "primary_via_module_rate": 0.0,
@@ -59,7 +59,7 @@
           "any_hit_rate": 0.2,
           "recall_at_10_mean": 0.2,
           "mrr_mean": 0.03333333333333333,
-          "time_ms_mean": 141.09412499237806,
+          "time_ms_mean": 147.28047500830144,
           "primary_top1": 0.0,
           "primary_top5": 0.0,
           "primary_via_module_rate": 0.0,
@@ -76,7 +76,7 @@
           "any_hit_rate": 1.0,
           "recall_at_10_mean": 1.0,
           "mrr_mean": 0.6333333333333333,
-          "time_ms_mean": 281.6470333840698,
+          "time_ms_mean": 523.7374250078574,
           "primary_top1": 0.4,
           "primary_top5": 0.8,
           "primary_via_module_rate": 0.0,
@@ -91,7 +91,7 @@
           "any_hit_rate": 0.6,
           "recall_at_10_mean": 0.6,
           "mrr_mean": 0.4,
-          "time_ms_mean": 216.4290666114539,
+          "time_ms_mean": 225.4369498230517,
           "primary_top1": 0.2,
           "primary_top5": 0.6,
           "primary_via_module_rate": 0.0,
@@ -108,7 +108,7 @@
           "any_hit_rate": 1.0,
           "recall_at_10_mean": 0.4066666666666667,
           "mrr_mean": 0.5166666666666666,
-          "time_ms_mean": 649.0582749946043,
+          "time_ms_mean": 367.6853585988283,
           "primary_top1": 0.2,
           "primary_top5": 1.0,
           "primary_via_module_rate": 0.4,
@@ -123,7 +123,7 @@
           "any_hit_rate": 0.4,
           "recall_at_10_mean": 0.19999999999999998,
           "mrr_mean": 0.25,
-          "time_ms_mean": 138.38190019596368,
+          "time_ms_mean": 149.95494161266834,
           "primary_top1": 0.2,
           "primary_top5": 0.4,
           "primary_via_module_rate": 0.0,
@@ -141,7 +141,7 @@
         "any_hit_rate": 0.95,
         "recall_at_10_mean": 0.7683333333333333,
         "mrr_mean": 0.6125,
-        "time_ms_mean": 363.1217520509381,
+        "time_ms_mean": 431.7478020035196,
         "primary_top1": 0.45,
         "primary_top5": 0.85,
         "primary_via_module_rate": 0.25,
@@ -156,7 +156,7 @@
         "any_hit_rate": 0.45,
         "recall_at_10_mean": 0.36666666666666664,
         "mrr_mean": 0.22797619047619047,
-        "time_ms_mean": 148.1267270515673,
+        "time_ms_mean": 156.59574365708977,
         "primary_top1": 0.1,
         "primary_top5": 0.35,
         "primary_via_module_rate": 0.0,
@@ -185,7 +185,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 30276,
           "context_pack_bytes": 31828,
-          "time_ms": 851.7712909961119,
+          "time_ms": 600.4898749524727,
           "top_results": [
             "components/tuition/tuition-row.tsx",
             "docs/features/2026-04-08-tuition-withdrawal-refund.md",
@@ -209,7 +209,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 224.06050004065037,
+          "time_ms": 275.76154202688485,
           "top_results": [
             "docs/archive/withdrawal-operations-agent.md",
             "docs/features/2026-04-08-tuition-withdrawal-refund.md",
@@ -242,7 +242,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 5240,
           "context_pack_bytes": 6383,
-          "time_ms": 1090.0316250044852,
+          "time_ms": 353.1742920167744,
           "top_results": [
             "components/student-hub/empty-state.tsx",
             "docs/features/2026-04-08-portal-parent-student.md",
@@ -267,7 +267,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 80.85791696794331,
+          "time_ms": 83.23479199316353,
           "top_results": [
             "docs/archive/valueinmath-후기.md",
             "docs/valueinmath_docs/마케팅/260325_마케팅_프로덕트-마케팅-컨텍스트.md",
@@ -300,7 +300,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 29605,
           "context_pack_bytes": 31044,
-          "time_ms": 693.7412089901045,
+          "time_ms": 357.95125004369766,
           "top_results": [
             "docs/dbdocs/tables/10-ai/ai_global_limits.md",
             "docs/plans/agent-system-plan.md",
@@ -324,18 +324,18 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 159.2154169920832,
+          "time_ms": 163.41737506445497,
           "top_results": [
             "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_해설_parsed.json",
             "prints/심화편_parsed.json",
             "docs/valueinmath_docs/assets/중3화목원장반숙제수집및현황.json",
             "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_parsed.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/01_기출/2026_중간고사_본시험_parsed.json",
             "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/02_부교재/부교재_parsed.json",
             "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/02_교과서/천재교육_대수_삼각함수_3_parsed.json",
             "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2025_중간고사_parsed.json",
             "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/01_기출/2025_중간고사_parsed.json",
-            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2023_중간고사_parsed.json",
-            "docs/archive/숙제수집자동화.md"
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2023_중간고사_parsed.json"
           ]
         }
       }
@@ -357,7 +357,7 @@
           "read_count_estimate": 3,
           "read_cost_bytes": 23740,
           "context_pack_bytes": 25573,
-          "time_ms": 292.91745799127966,
+          "time_ms": 306.0080419527367,
           "top_results": [
             "docs/dbdocs/tables/18-remote-room/daily_summaries.md",
             "hooks/use-remote-room.ts",
@@ -380,7 +380,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 6256,
           "context_pack_bytes": 6256,
-          "time_ms": 141.6628749575466,
+          "time_ms": 146.79533301386982,
           "top_results": [
             "docs/features/2026-04-08-learning-remote-room.md",
             "app/(dashboard)/dashboard/remote-rooms/[id]/page.tsx",
@@ -413,7 +413,7 @@
           "read_count_estimate": 4,
           "read_cost_bytes": 11398,
           "context_pack_bytes": 13005,
-          "time_ms": 316.8297919910401,
+          "time_ms": 220.80333402846009,
           "top_results": [
             "components/learning/school-exam-scores/school-exam-score-filters.tsx",
             "docs/features/2026-04-14-calendar-exam-schedule.md",
@@ -436,7 +436,7 @@
           "read_count_estimate": 4,
           "read_cost_bytes": 11398,
           "context_pack_bytes": 11398,
-          "time_ms": 86.11279202159494,
+          "time_ms": 80.5656659649685,
           "top_results": [
             "docs/archive/PROJECT_STATUS.md",
             "docs/superpowers/plans/2026-03-31-session-planner-redesign.md",
@@ -469,7 +469,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 23049,
           "context_pack_bytes": 24805,
-          "time_ms": 304.24612504430115,
+          "time_ms": 692.9022499825805,
           "top_results": [
             "components/learning/homework-analysis/HomeworkTab.tsx",
             "docs/guides/learning-system-guide.md",
@@ -495,7 +495,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 14164,
           "context_pack_bytes": 14164,
-          "time_ms": 69.92087501566857,
+          "time_ms": 74.71945800352842,
           "top_results": [
             "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학-숙제-안하는-아이-관리법.md",
             "docs/features/2026-04-08-learning-homework-analysis.md",
@@ -528,7 +528,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 1462,
-          "time_ms": 259.1625830391422,
+          "time_ms": 490.99541595205665,
           "top_results": [
             "docs/valueinmath_docs/마케팅/블로그/260327_블로그_2026-대입실적-학원선택.md",
             "docs/valueinmath_docs/운영/260108_운영_2026년_연간계획서작성_기초분석.md",
@@ -553,7 +553,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 66.78133294917643,
+          "time_ms": 75.95500000752509,
           "top_results": [
             "docs/plans/2026-04-20-tuition-hub.md",
             "docs/archive/business-vision-2026.md",
@@ -586,7 +586,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 23705,
           "context_pack_bytes": 25624,
-          "time_ms": 189.45466598961502,
+          "time_ms": 319.0100830979645,
           "top_results": [
             "components/dashboard/attendance-overview/class-attendance-card.tsx",
             "docs/archive/student-monthly-session-plan.md",
@@ -612,7 +612,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 59.29554102476686,
+          "time_ms": 65.54383295588195,
           "top_results": [
             "docs/valueinmath_docs/마케팅/260325_마케팅_프로덕트-마케팅-컨텍스트.md",
             "docs/archive/PROJECT_STATUS.md",
@@ -645,7 +645,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 6585,
           "context_pack_bytes": 8957,
-          "time_ms": 200.98445797339082,
+          "time_ms": 762.468250002712,
           "top_results": [
             "components/consultations/ConsultationAITags.tsx",
             "docs/features/2026-04-08-ops-meeting.md",
@@ -671,7 +671,7 @@
           "read_count_estimate": 7,
           "read_cost_bytes": 28284,
           "context_pack_bytes": 28284,
-          "time_ms": 70.19295799545944,
+          "time_ms": 75.08287497330457,
           "top_results": [
             "docs/valueinmath_docs/인사/260410_인사_인사평가-2026-Q1.md",
             "docs/valueinmath_docs/인사/260107_인사_인사평가-상담분석-2025.md",
@@ -704,7 +704,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 8592,
           "context_pack_bytes": 10285,
-          "time_ms": 193.35162499919534,
+          "time_ms": 371.424000011757,
           "top_results": [
             "docs/plans/2026-04-08-ai-content-factory-plan.md",
             "docs/plans/2026-04-15-variant-problems-plan.md",
@@ -723,7 +723,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 8592,
           "context_pack_bytes": 8592,
-          "time_ms": 216.81837504729629,
+          "time_ms": 227.25187498144805,
           "top_results": [
             "docs/archive/mathontologydocs/problem-parsing-system.md",
             "docs/plans/2026-04-15-variant-problems-plan.md",
@@ -756,7 +756,7 @@
           "read_count_estimate": 6,
           "read_cost_bytes": 3512,
           "context_pack_bytes": 6532,
-          "time_ms": 233.31320809666067,
+          "time_ms": 406.40716603957117,
           "top_results": [
             "docs/features/2026-04-08-tuition-withdrawal-refund.md",
             "harness/app/dashboard/pages/students.md",
@@ -779,7 +779,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 129.99308295547962,
+          "time_ms": 132.88383302278817,
           "top_results": [
             "docs/archive/shrimp-rules.md",
             "harness/app/dashboard/pages/students.md",
@@ -812,7 +812,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 3987,
           "context_pack_bytes": 6735,
-          "time_ms": 384.07383393496275,
+          "time_ms": 199.52183298300952,
           "top_results": [
             "docs/plans/2026-04-20-tuition-hub.md",
             "database/migrations/20260327_create_admission_results.sql",
@@ -837,7 +837,7 @@
           "read_count_estimate": 6,
           "read_cost_bytes": 3987,
           "context_pack_bytes": 3987,
-          "time_ms": 134.88933397457004,
+          "time_ms": 139.53345804475248,
           "top_results": [
             "docs/archive/saas확장위한변경이력추적마이그레이션.md",
             "docs/dbdocs/relationships.md",
@@ -870,7 +870,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 1338,
           "context_pack_bytes": 3290,
-          "time_ms": 248.23841592296958,
+          "time_ms": 430.2878329763189,
           "top_results": [
             "app/(auth)/pending-approval/logout-button.tsx",
             "harness/app/auth/rules.md",
@@ -895,7 +895,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 123.22649999987334,
+          "time_ms": 130.81916701048613,
           "top_results": [
             "docs/archive/PROJECT_STATUS.md",
             "scripts/extract-textbook-pages.py",
@@ -928,7 +928,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 3077,
           "context_pack_bytes": 5944,
-          "time_ms": 201.92833407782018,
+          "time_ms": 208.63629097584635,
           "top_results": [
             "database/migrations/create_academy_monthly_stats.sql",
             "app/actions/analytics-snapshot.ts",
@@ -951,7 +951,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 123.78279096446931,
+          "time_ms": 129.8864169511944,
           "top_results": [
             "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_해설_parsed.json",
             "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_parsed.json",
@@ -984,7 +984,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 9484,
           "context_pack_bytes": 10640,
-          "time_ms": 394.15525004733354,
+          "time_ms": 296.18900001514703,
           "top_results": [
             "database/migrations/20251022_standardize_rls_policies.sql",
             "docs/archive/saas확장위한변경이력추적마이그레이션.md",
@@ -1009,7 +1009,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 193.57891706749797,
+          "time_ms": 203.279500012286,
           "top_results": [
             "docs/plans/2026-04-21-ledger-writepath-abc.md",
             "docs/archive/shrimp-rules.md",
@@ -1042,7 +1042,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 27853,
           "context_pack_bytes": 29889,
-          "time_ms": 348.89012505300343,
+          "time_ms": 761.8074170313776,
           "top_results": [
             "docs/plans/2026-04-15-portal-v3-refactoring.md",
             "docs/dbdocs/README.md",
@@ -1064,7 +1064,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 27853,
           "context_pack_bytes": 27853,
-          "time_ms": 203.89216591138393,
+          "time_ms": 211.74041600897908,
           "top_results": [
             "prints/심화편_parsed.json",
             "docs/plans/2026-04-15-portal-v3-refactoring.md",
@@ -1072,10 +1072,10 @@
             "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_해설_parsed.json",
             "docs/superpowers/plans/2026-03-30-portal-v2-phase2.md",
             "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/02_교과서/천재교육_대수_삼각함수_3_parsed.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/01_기출/2026_중간고사_본시험_parsed.json",
             "package-lock.json",
             "archive/portal-v1/portal-view.tsx",
-            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/02_부교재/부교재_parsed.json",
-            "docs/archive/2026-03-31-portal-preview-phase2.md"
+            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/02_부교재/부교재_parsed.json"
           ]
         }
       }
@@ -1097,7 +1097,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 69903,
           "context_pack_bytes": 72386,
-          "time_ms": 180.41020794771612,
+          "time_ms": 309.080749982968,
           "top_results": [
             "docs/plans/2026-04-21-ledger-writepath-abc.md",
             "services/ledger/__tests__/writepath-c-history.test.ts",
@@ -1116,7 +1116,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 69903,
           "context_pack_bytes": 69903,
-          "time_ms": 286.57687501981854,
+          "time_ms": 298.81054209545255,
           "top_results": [
             "docs/plans/2026-04-20-tuition-hub.md",
             "docs/plans/2026-04-21-ledger-writepath-abc.md",
@@ -1149,7 +1149,7 @@
           "read_count_estimate": 6,
           "read_cost_bytes": 84378,
           "context_pack_bytes": 86375,
-          "time_ms": 169.80583395343274,
+          "time_ms": 674.2418750654906,
           "top_results": [
             "docs/superpowers/plans/2026-04-01-tuition-create-page.md",
             "services/tuition-session/session-generation.ts",
@@ -1171,7 +1171,7 @@
           "read_count_estimate": 1,
           "read_cost_bytes": 84378,
           "context_pack_bytes": 84378,
-          "time_ms": 209.21404205728322,
+          "time_ms": 220.20408301614225,
           "top_results": [
             "docs/plans/2026-04-20-tuition-hub.md",
             "package-lock.json",
@@ -1204,7 +1204,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 23660,
           "context_pack_bytes": 24933,
-          "time_ms": 353.99437497835606,
+          "time_ms": 646.8612919561565,
           "top_results": [
             "harness/app/dashboard/pages/marketing.md",
             "docs/plans/2026-04-08-ai-content-factory-plan.md",
@@ -1225,18 +1225,18 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 156.0124580282718,
+          "time_ms": 160.92020797077566,
           "top_results": [
             "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_해설_parsed.json",
             "prints/심화편_parsed.json",
             "docs/valueinmath_docs/assets/중3화목원장반숙제수집및현황.json",
             "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/02_부교재/EBS수능특강_미적분_parsed.json",
+            "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/01_기출/2026_중간고사_본시험_parsed.json",
             "docs/valueinmath_docs/학습/광남고/2026_고1-1_중간/02_부교재/부교재_parsed.json",
             "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/02_교과서/천재교육_대수_삼각함수_3_parsed.json",
             "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2025_중간고사_parsed.json",
             "docs/valueinmath_docs/학습/광남고/2026_고3-1_중간/01_기출/2025_중간고사_parsed.json",
-            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2023_중간고사_parsed.json",
-            "docs/archive/숙제수집자동화.md"
+            "docs/valueinmath_docs/학습/대원여고/2026_고2-1_중간/01_기출/2023_중간고사_parsed.json"
           ]
         }
       }
@@ -1258,7 +1258,7 @@
           "read_count_estimate": 2,
           "read_cost_bytes": 11398,
           "context_pack_bytes": 12875,
-          "time_ms": 355.13462498784065,
+          "time_ms": 226.6957910032943,
           "top_results": [
             "docs/handoff/entrance-test-management.md",
             "docs/plans/2026-04-17-entrance-test-management.md",
@@ -1279,7 +1279,7 @@
           "read_count_estimate": 11,
           "read_cost_bytes": 0,
           "context_pack_bytes": 0,
-          "time_ms": 226.44979204051197,
+          "time_ms": 235.5095000239089,
           "top_results": [
             "types/database.ts",
             "docs/superpowers/plans/2026-03-31-session-planner-redesign.md",

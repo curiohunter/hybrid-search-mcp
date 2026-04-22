@@ -141,6 +141,45 @@ def test_slots_pure_korean_unaffected_by_symbol_check():
     assert _module_slots_for(QueryType.KOREAN_NL, "수강료 시스템 구성") == 3
 
 
+# ---------- L5 two-tier cap ----------
+
+def test_interleave_cap_at_limit_10():
+    """Default benchmark limit — cap is a no-op."""
+    chunks = [_mk_chunk(f"c{i}.ts") for i in range(10)]
+    modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
+    out = _interleave_modules(chunks, modules, slots=3, limit=10)
+    assert sum(1 for r in out if r.node_type == "module") == 3
+
+
+def test_interleave_cap_low_limit_preserves_chunks():
+    """limit=3 with slots=3: L5 caps to 1 module so chunks stay the majority."""
+    chunks = [_mk_chunk(f"c{i}.ts") for i in range(10)]
+    modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
+    out = _interleave_modules(chunks, modules, slots=3, limit=3)
+    assert len(out) == 3
+    n_mod = sum(1 for r in out if r.node_type == "module")
+    n_chunk = sum(1 for r in out if r.node_type == "function")
+    assert n_mod == 1
+    assert n_chunk == 2
+
+
+def test_interleave_cap_limit_2_minimum_one_module():
+    """limit=2: cap floor is 1 (max(1, 2//2) = 1) — still get a module for
+    structural queries, but chunk stays available."""
+    chunks = [_mk_chunk(f"c{i}.ts") for i in range(5)]
+    modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
+    out = _interleave_modules(chunks, modules, slots=3, limit=2)
+    assert len(out) == 2
+    assert sum(1 for r in out if r.node_type == "module") == 1
+    assert sum(1 for r in out if r.node_type == "function") == 1
+
+
+def test_interleave_cap_limit_zero_returns_empty():
+    chunks = [_mk_chunk(f"c{i}.ts") for i in range(3)]
+    modules = [_mk_module("m.ts", "M")]
+    assert _interleave_modules(chunks, modules, slots=3, limit=0) == []
+
+
 # ---------- _interleave_modules ----------
 
 def test_interleave_places_module_at_top_then_alternates():
@@ -164,8 +203,11 @@ def test_interleave_respects_limit():
     modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
     out = _interleave_modules(chunks, modules, slots=3, limit=5)
     assert len(out) == 5
-    # Positions 0,2,4 → 3 modules in a limit-5 result
-    assert sum(1 for r in out if r.node_type == "module") == 3
+    # L5 two-tier cap: modules never exceed limit // 2. With limit=5 and
+    # slots=3, cap is 2 — two modules, three chunks. Keeps chunks in the
+    # majority for small result windows.
+    assert sum(1 for r in out if r.node_type == "module") == 2
+    assert sum(1 for r in out if r.node_type == "function") == 3
 
 
 def test_interleave_slots_zero_returns_chunks_only():
