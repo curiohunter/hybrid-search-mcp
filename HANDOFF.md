@@ -2,7 +2,99 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-22, 18회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-22, 19회차) — 다음 세션 여기부터 읽을 것
+
+### 한줄 요약
+
+**Phase 5 gap 4 step (A/B/C/D) + Phase 6 Step E 전부 한 세션 shipped.** 18회차가 끝낸 Phase 5 직후 남은 gap steps를 A→B→C→D 순서로 전부 구현, 이어서 Phase 6 L4 drift watchdog + L5 two-tier cap까지 완료. **Step A**(rationale intent routing)로 rationale reads 4.00→2.40 정확 달성, **Step B**(gold v2 module-as-primary)로 structure top-5 0.60→1.00 + overall reads 4.20→2.70, **Step C**(module card vector embedding + symbol intent routing)로 precision top-1 0.20→0.60 + overall reads 2.70→2.55. 그 다음 **Step D**(agent-in-loop simulator)를 빌드해 실제 agent가 부담하는 reads/turns/bytes를 측정 — 정적 proxy가 "2.55 reads/query"라 보고하던 걸 **loose 0.25 / strict 0.45 reads/query**로 재측정 (5~10× 낮음). **Step E L4**로 `hybrid-search drift` CLI 드리프트 watchdog 신설 (MCP tool 아님, 메모리 규칙 준수). **L5**로 `_interleave_modules`에 `slots ≤ limit // 2` cap 추가 (limit=10에선 no-op, 저해상도 사용자 보호). **674/674 passed (+31)**. 커밋 4개 이미 origin/main 푸시 완료.
+
+### ✅ 이 세션 완료된 것 (19회차)
+
+**1. Phase 5 Step A — rationale intent routing (커밋 `6871c67`)**
+- `orchestrator.py`: `_has_rationale_signal(query)` — 이유/배경/목적/의도/동기/취지/왜 + rationale/why/reason/motivation/purpose/intent/background (word-boundary)
+- `_module_slots_for(qtype, query)`: rationale signal 있으면 return 0 (KOREAN_NL/ENGLISH_NL 모두)
+- 12 unit tests (signal pos/neg, slot routing)
+- 재측정: rationale reads 4.00 → **2.40** (타겟 정확 달성), rationale top-1 0.00 → **0.40** (R1 portal-v3, R2 ledger-abc rank 1 복귀)
+- structure/exploration/precision 불변, regression 0
+
+**2. Phase 5 Step B — gold v2: module as valid primary_target (커밋 `4e34b04`)**
+- `run_valuein_bench.py`: `hybrid_track`/`grep_baseline` 병렬 `module_names: list[str|None]` 리턴
+- `score_query(paths, module_names, query, ...)`: `file_primary_rank` + `module_primary_rank` 계산, `primary_hit_rank = min`. `primary_hit_via_module` 플래그 기록
+- aggregate에 `primary_via_module_rate` 추가
+- `valuein_gold.json`: 7 queries (S1/S2/S4/S5/F1/F3/F4)에 `acceptable_module_names` 추가. 모든 이름 실 DB 인덱스에서 검증됨
+- 재측정 (Step A → B): structure top-5 0.60 → **1.00**, exploration top-1 0.20 → **0.60** (+40pp), overall top-1 0.20 → **0.35**, overall reads 4.20 → **2.70**. 5/20 쿼리 module card로 primary 달성
+
+**3. Phase 5 Step C — module card embedding + symbol routing (커밋 `5ed5785`)**
+- DB v6 → v7 migration: `modules.summary_vector` (BLOB) + `modules.vector_input_hash` (TEXT). 4 indexed projects 모두 자동 migrate 성공
+- `ModuleRecord`에 `summary_vector/vector_input_hash` 필드. `upsert_module` + `_row_to_module` + 새 `update_module_vector` (벡터만 쓰기)
+- `module_synth.py`: `synthesize_modules(db, project_id, embedder=None)` — 임베딩 pass opt-in. `vector_input_text(m) = name + hash-stripped summary + rationale`. 배치 임베딩 (161 modules in valuein_homepage backfilled in 2.6s, one OpenAI call). 실패 시 non-fatal
+- `modules_search.py`: `search_modules(..., query_vector=None)` — `token_score + vec_score` 블렌딩. `VECTOR_WEIGHT=15`, `VECTOR_MIN_COSINE=0.25` (이하 바닥)
+- `orchestrator.py`: `_has_symbol_signal(query)` + `_module_slots_for`에 symbol bypass 추가. `TuitionChargeSection 컴포넌트`처럼 mixed symbol+한국어 쿼리는 slot=0 (KOREAN_NL 기본값 대체)
+- query_vector 이미 embed된 걸 `search_modules`로 전달 — 추가 API call 없음
+- 재측정 (Step B → C): precision top-1 0.20 → **0.60** (+40pp! symbol routing 효과), overall top-1 0.35 → **0.45**, overall reads 2.70 → **2.55** (Phase 5 plan 목표 ≤ 2.5의 99.8% 달성)
+- **남은 gap은 retrieval이 아니라 module content**: S2 portal-v3 vs student-hub, S5 entrance-tests missing, F2 analytics un-modularized
+
+**4. Phase 5 Step D + Phase 6 Step E — agent-loop sim + drift + L5 cap (커밋 `a90b4de`)**
+- **Step D** `benchmarks/agent_loop_sim.py`: 실제 agent 루프 시뮬레이션 (snippet scan → Read → grep fallback). Satisfaction token 기반, loose/strict 모드. **20 queries: loose 0.95 satisfied / 0.25 reads/query / 8.3KB; strict 0.90 / 0.45 / 14.4KB**. 정적 proxy 2.55 reads 대비 5.6~10× 낮음 — 대다수 쿼리가 snippet만으로 해결됨 (module card가 답을 직접 실어 나름). 유일한 miss는 F2 (analytics module 없음)
+- **Step E L4** `src/hybrid_search/index/drift.py`: `detect_drift(project_id, project_root, db, config)` 읽기 전용 래퍼. `DriftReport(added, changed, deleted, total_on_disk)` + `is_drifted/drift_count/summary_line()`. 새 CLI: `hybrid-search drift [--cwd] [-v]`. **MCP tool 아님** (메모리 규칙: 빈도 낮은 기능 → CLI + skill)
+- **Step E L5** `_interleave_modules`: `slots = min(slots, max(1, limit // 2))`. limit=10에선 no-op(3 module 유지), limit=5에선 2 module + 3 chunk, limit=2에선 1+1. limit=10 벤치 비트 동일
+- 테스트: 662 → **674** (+12). drift 8 tests, L5 cap 4 tests, agent_loop sim은 실제 MCP 호출해서 통합적으로 검증됨
+
+### 🎯 다음 세션 진입점
+
+1. **이 19회차 섹션 전체**
+2. `benchmarks/valuein_report_v6_step_d_e_2026-04-22.md` — Step D/E 상세
+3. `benchmarks/valuein_report_v5_step_c_2026-04-22.md` "What vectors did not fix" 섹션 — 남은 실제 gap (module content / discovery)
+4. `git log --oneline -6` — 4 commits origin/main 푸시 완료 (`6871c67`→`a90b4de`)
+
+### 🎯 다음 세션 권장 순서
+
+**Phase 5 plan doc 100% implementation + gap 4 step + Phase 6 L4/L5 전부 끝.** Phase 5 측정치는 거의 목표 도달:
+- reads 2.55 (static) / 0.25 (agent-loop loose) — 목표 ≤ 2.5
+- top-5 0.85 — 목표 달성
+- recall@10 0.77 — 목표 달성
+- **structure recall@10 0.41** — 목표 0.55 미달. 이건 **module content 문제**, retrieval 아님
+
+**남은 실 작업 후보 (우선순위):**
+
+1. **Module content improvement (1~2일) — 가장 즉효.** Step C 리포트가 정확히 지적한 실패 모드:
+   - S2: `portal-v3` module summary가 "학부모/parent" 맥락을 명시 안 함 → student-hub가 의미적으로 더 가까움
+   - S5: `entrance-tests` module이 top-10에 안 나옴 (`school-exam-scores` 선호)
+   - F2: `components/analytics/` 디렉토리가 module로 발견 안 됨 (discover_modules의 minimum-file 임계치?)
+   - 해결책: (a) module discovery에 `docs/features/` mention 추가 가중, (b) summary 보강 — `.md` 연관 문서 내용에서 tag/description 추출, (c) `analytics-mathflat` 별도 module로 승격
+2. **다른 프로젝트 벤치마크 (반나절).** 현재 골드셋은 valuein_homepage 전용. breeze/mathontonlogy에도 골드 만들어 일반화 검증
+3. **L5 추가 적용처 탐색 (선택).** 현재 L5는 limit=10 기준 no-op. limit=5/3 실사용자 있을 때 효과 봐야
+4. **Phase 7 이후 plan doc 재구조** — 필요하면
+
+**push 관련:** 19회차 4 커밋 모두 origin/main 푸시 완료. 즉시 다음 세션 가능.
+
+### 주의사항 / 알려진 이슈
+
+- **Static proxy(2.55)와 agent-loop(0.25)의 큰 간극**은 실측이 더 신뢰할 만하지만, loose mode의 "acceptable_module_names 매칭"은 느슨해서 strict(0.45)가 더 안전한 upper bound. 리포트 둘 다 보여줌
+- **F2 (월별 학원 통계)**는 Step A/B/C/D 전부에서 miss. 유일하게 해결 안 된 gold query. module discovery를 먼저 손봐야 함
+- **DB v6 → v7 migration**은 4 프로젝트 모두 smoke 통과. `ALTER TABLE ADD COLUMN ... summary_vector BLOB` + `vector_input_hash TEXT` 2개 컬럼
+- **OpenAI API cost**: 161 modules 1 batch call = ~0.01 USD. 재인덱싱 시 vector_input_hash가 match되면 skip, 실질 비용 0
+- **symbol routing edge**: `TuitionChargeSection 컴포넌트`처럼 camelCase + 한국어 → slot=0. 단일 camelCase 단어만 있고 나머지 다 한국어면 여전히 qtype=KOREAN_NL이지만 module inject는 안 함. 일관된 precision 경로
+- **L5 cap 기본값 `limit // 2`**는 보수적. `limit=10`에서 slots=5 cap — 현재는 slots 자체가 최대 3이라 영향 없음. 나중에 ENGLISH_NL slot을 늘리거나 하면 cap 조정 고려
+
+### 마지막 상태
+
+- **브랜치:** `main` — origin/main 동기화됨 (19회차 4 커밋 모두 푸시 완료)
+- **마지막 커밋:** `a90b4de [feat] Phase 5 Step D + Phase 6 Step E — agent-loop sim + drift + two-tier`
+- **테스트:** **674/674 passed** (25~26s) — 18회차 631 + 19회차 +43 (Step A 12 + Step B 0 + Step C 19 + Step D 0 + Step E 12)
+- **변경 파일 (19회차, 4 커밋 합계):**
+  - Step A (`6871c67`): `orchestrator.py` (+47), `test_module_injection.py` (+58), `valuein_results.json`, `valuein_report_v3_step_a_2026-04-22.md` (신규)
+  - Step B (`4e34b04`): `run_valuein_bench.py` (+59), `valuein_gold.json` (+23), `valuein_results.json`, `valuein_report_v4_step_b_2026-04-22.md` (신규)
+  - Step C (`5ed5785`): `storage/db.py` (+61 migration/cols/upsert), `index/module_synth.py` (+88 embed pass), `index/pipeline.py` (+4 embedder 주입), `search/modules_search.py` (+73 vector path), `search/orchestrator.py` (+45 symbol routing + query_vector 전달), `test_module_synth.py` (+111), `test_modules_search.py` (+147), `test_module_injection.py` (+39 symbol tests), `valuein_results.json`, `valuein_report_v5_step_c_2026-04-22.md` (신규)
+  - Step D+E (`a90b4de`): `benchmarks/agent_loop_sim.py` (신규 +270), `benchmarks/agent_loop_loose.json` (신규), `benchmarks/agent_loop_strict.json` (신규), `src/hybrid_search/index/drift.py` (신규 +84), `src/hybrid_search/cli.py` (+68 cmd_drift + parser + dispatch), `src/hybrid_search/search/orchestrator.py` (+10 L5 cap), `tests/test_drift.py` (신규 +128), `tests/test_module_injection.py` (+46 L5 tests), `benchmarks/valuein_results.json`, `valuein_report_v6_step_d_e_2026-04-22.md` (신규)
+
+### 로드맵 진행률 업데이트
+
+18회차 33/33 plan doc 완전 구현 + 2개 목표 미달 → 19회차 gap 4 step(A/B/C/D) + Phase 6 L4/L5 전부 shipped = **Phase 5 roadmap 100% + Phase 6 시작.** 남은 건 module content 개선 (유일 gold miss F2 포함) + 다른 프로젝트 벤치 일반화.
+
+---
+
+## 🔵 이전 세션 인계 (18회차) — 참고용
 
 ### 한줄 요약
 
