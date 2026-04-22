@@ -1,7 +1,51 @@
 # Hybrid Search MCP
 
-Hybrid BM25 + Vector search for codebases.
-Cross-language search (Korean ↔ English) across code and docs.
+**A code search that learns from your questions.**
+The more you use it, the better it gets — at *your* codebase specifically.
+
+Hybrid BM25 + Vector + Memory Layer. Cross-language (Korean ↔ English)
+across code, docs, and your own past exchanges.
+
+```
+Turn 1:  "how does portal-v3 work?"            → answer from code
+Turn 2:  "지난번에 portal-v3 뭐 물어봤지?"       → surfaces Turn 1's exchange
+Turn 3:  "portal 인증 흐름"                    → uses Turn 1 as context
+```
+
+That third turn didn't search the code fresh — it found the *conversation*
+you had earlier, and used your own prior question as context. Every
+answered query becomes a first-class search result for every future query.
+**Search quality compounds with usage.**
+
+---
+
+## Why this is different
+
+Every other code-search tool indexes once and searches forever:
+
+- Sourcegraph / Cody: static embeddings of source files.
+- Cursor / Aider: ephemeral context, forgotten next session.
+- Graphify: knowledge graph, rebuilt on commit.
+- ChatGPT Memory: personal preferences, no code context.
+
+This tool is the **first** to close the loop: the answer to your last
+question becomes indexed context for the next question. No configuration,
+no "memory" dashboard — it just happens. Your `.hybrid-search/qa/`
+directory is the log of every exchange, in plain markdown, grep-able
+and git-able.
+
+### The Memory Layer at a glance
+
+| When you… | What happens |
+|-----------|--------------|
+| Run `hybrid_search` | Query + top-10 results saved to `.hybrid-search/qa/YYYY/MM/*.md` |
+| Run `git commit` | post-commit hook reindexes, including new qa logs |
+| Ask a related question later | Past qa logs compete for top-10 like any chunk |
+| Say "지난번에…" or "previously…" | Memory-intent detection → 2× boost on qa logs |
+| Let time pass | 30-day half-life decay — stale answers quietly fade |
+| Paste a secret by accident | Regex filter drops sensitive queries before they touch disk |
+
+**Turn it off anytime:** `export HYBRID_SEARCH_QA_LOG=0`.
 
 ---
 
