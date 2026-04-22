@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from hybrid_search.index.module_synth import (
+    _collect_doc_excerpts,
     _extract_rationale,
     _pick_entry_points,
     synthesize_modules,
@@ -115,6 +116,54 @@ def test_pick_entry_points_caps_at_five():
     assert len(_pick_entry_points(chunks)) == 5
 
 
+# ---------- _collect_doc_excerpts (Step F) ----------
+
+def test_collect_doc_excerpts_picks_longest_section():
+    chunks = [
+        _chunk("c1", node_type="section", name="Intro",
+               content="Short one."),
+        _chunk("c2", node_type="section", name="Deep",
+               content="This section is substantially longer and should be "
+                       "surfaced first by the length-based sort."),
+    ]
+    ex = _collect_doc_excerpts(chunks)
+    assert ex
+    assert "substantially longer" in ex[0]
+
+
+def test_collect_doc_excerpts_skips_non_doc_nodes():
+    chunks = [
+        _chunk("c1", node_type="function", content="def f(): pass"),
+        _chunk("c2", node_type="class", content="class C: pass"),
+    ]
+    assert _collect_doc_excerpts(chunks) == []
+
+
+def test_collect_doc_excerpts_dedups_identical_heads():
+    dup = "Module describes the portal-v3 shell used by parent accounts."
+    chunks = [
+        _chunk("c1", node_type="section", content=dup),
+        _chunk("c2", node_type="section", content=dup),
+    ]
+    ex = _collect_doc_excerpts(chunks)
+    assert len(ex) == 1
+
+
+def test_collect_doc_excerpts_caps_length():
+    body = "가" * 10000
+    chunks = [_chunk("c1", node_type="section", content=body)]
+    ex = _collect_doc_excerpts(chunks)
+    assert ex
+    assert len(ex[0]) <= 320
+
+
+def test_collect_doc_excerpts_ignores_qa_log():
+    # qa_log chunks are Q&A search artifacts, not module feature docs.
+    chunks = [_chunk("c1", node_type="qa_log",
+                     content="search result for 'foo'")]
+    assert _collect_doc_excerpts(chunks) == []
+
+
 # ---------- synthesize_modules (integration with discover) ----------
 
 def test_synthesize_populates_summary_and_entry_points(tmp_path):
@@ -174,6 +223,54 @@ def test_synthesize_rationale_extracted(tmp_path):
     m = db.get_modules(PROJECT_ID)[0]
     assert "WHY: we chose X" in (m.rationale or "")
     assert "NOTE: async boundary" in (m.rationale or "")
+
+
+def test_synthesize_summary_absorbs_related_doc_section(tmp_path):
+    """Step F: when a module has a related markdown doc, the summary
+    surfaces the leading doc paragraph so domain vocab (e.g. Korean feature
+    names) ends up on the card alongside code identifiers."""
+    db = _make_db(tmp_path)
+    _seed_file_with_chunks(db, "a/x.py", [
+        _chunk("c1", name="login", docstring="Authenticate user.",
+               node_type="function"),
+    ])
+    _seed_file_with_chunks(db, "a/y.py", [
+        _chunk("c2", name="session", docstring="Session token.",
+               node_type="function"),
+    ])
+    _seed_file_with_chunks(db, "docs/features/portal.md", [
+        _chunk("c3", node_type="section", name="Portal",
+               content=(
+                   "학부모 학생 포털 — parents and students use this shell "
+                   "to access homework, tuition, and remote sessions."
+               )),
+    ])
+    discover_modules(db, PROJECT_ID, tmp_path)
+    # Place the doc under the same module so related_docs picks it up.
+    # discover_modules above groups by dir, so we reach into file_modules.
+    mods = db.get_modules(PROJECT_ID)
+    # Force the doc file into every module so the test exercises the path.
+    # We grab the `a` module and add the doc file to it.
+    a_mod = next(m for m in mods if m.name == "a")
+    doc_file = db.get_file_by_path(PROJECT_ID, "docs/features/portal.md")
+    assert doc_file is not None
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO file_modules (file_id, module_id, weight, project_id) VALUES (?, ?, ?, ?)",
+            (doc_file.id, a_mod.id, 0.5, PROJECT_ID),
+        )
+        # Rewrite member_hash so synth picks the change up.
+        conn.execute(
+            "UPDATE modules SET member_hash = ? WHERE id = ?",
+            (a_mod.member_hash + "_f", a_mod.id),
+        )
+
+    synthesize_modules(db, PROJECT_ID)
+    refreshed = db.get_module(a_mod.id)
+    assert refreshed and refreshed.summary
+    assert "학부모" in refreshed.summary
+    # Code docstring still present under its own section.
+    assert "Authenticate" in refreshed.summary
 
 
 def test_synthesize_fallback_summary_when_no_docstrings(tmp_path):
