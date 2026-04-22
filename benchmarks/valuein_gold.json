@@ -3,7 +3,7 @@
   "created": "2026-04-22",
   "project": "valuein_homepage",
   "project_path": "/Users/ian/project/claude_project/valuein_homepage",
-  "description": "Phase 4 gold set for real-world benchmark. 20 queries across 4 categories matching CLAUDE.md routing table. Paths are relative to project_path; trailing slash = directory (any file under it counts as relevant).",
+  "description": "Phase 4 gold set for real-world benchmark. 20 queries across 4 categories matching CLAUDE.md routing table. Paths are relative to project_path; trailing slash = directory (any file under it counts as relevant). Step B (2026-04-22): structure/exploration queries may carry acceptable_module_names — a list of subsystem module names that, if returned as a module-card hit, count as the primary_target. Reflects the fact that a module card is often a better answer than any single file for 'how is X organized' queries.",
   "categories": {
     "structure": "구조/관계 — Wiki 우선, hybrid fallback",
     "exploration": "기능 탐색 (한국어 자연어) — hybrid 우선, Wiki fallback",
@@ -21,7 +21,8 @@
         "components/tuition-wizard/",
         "docs/features/2026-04-08-tuition-billing.md"
       ],
-      "primary_target": "docs/features/2026-04-08-tuition-billing.md"
+      "primary_target": "docs/features/2026-04-08-tuition-billing.md",
+      "acceptable_module_names": ["tuition", "tuition-fees", "tuition-session", "tuition-sessions", "tuition-wizard"]
     },
     {
       "id": "S2",
@@ -33,7 +34,8 @@
         "components/portal-v3/",
         "docs/features/2026-04-08-portal-parent-student.md"
       ],
-      "primary_target": "docs/features/2026-04-08-portal-parent-student.md"
+      "primary_target": "docs/features/2026-04-08-portal-parent-student.md",
+      "acceptable_module_names": ["portal-v3", "portal"]
     },
     {
       "id": "S3",
@@ -57,7 +59,8 @@
         "components/remote-room/",
         "docs/features/2026-04-08-learning-remote-room.md"
       ],
-      "primary_target": "docs/features/2026-04-08-learning-remote-room.md"
+      "primary_target": "docs/features/2026-04-08-learning-remote-room.md",
+      "acceptable_module_names": ["remote-room"]
     },
     {
       "id": "S5",
@@ -68,7 +71,8 @@
         "database/migrations/20260327_create_admission_results.sql",
         "docs/plans/2026-04-17-entrance-test-management.md"
       ],
-      "primary_target": "docs/plans/2026-04-17-entrance-test-management.md"
+      "primary_target": "docs/plans/2026-04-17-entrance-test-management.md",
+      "acceptable_module_names": ["admissions", "entrance-tests"]
     },
 
     {
@@ -79,7 +83,8 @@
         "docs/features/2026-04-08-learning-homework-analysis.md",
         "components/learning/homework-analysis/"
       ],
-      "primary_target": "docs/features/2026-04-08-learning-homework-analysis.md"
+      "primary_target": "docs/features/2026-04-08-learning-homework-analysis.md",
+      "acceptable_module_names": ["homework-analysis"]
     },
     {
       "id": "F2",
@@ -100,7 +105,8 @@
         "docs/features/2026-04-08-learning-attendance.md",
         "components/learning/attendance/"
       ],
-      "primary_target": "docs/features/2026-04-08-learning-attendance.md"
+      "primary_target": "docs/features/2026-04-08-learning-attendance.md",
+      "acceptable_module_names": ["attendance", "attendance-overview"]
     },
     {
       "id": "F4",
@@ -111,7 +117,8 @@
         "components/consultations/",
         "database/migrations/create_consultations_table.sql"
       ],
-      "primary_target": "components/consultations/"
+      "primary_target": "components/consultations/",
+      "acceptable_module_names": ["consultations"]
     },
     {
       "id": "F5",
