@@ -221,7 +221,9 @@ class SearchOrchestrator:
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
         # have to Read 5 files to piece together "how is X organized".
-        module_results = self._module_results_for_query(qtype, query, project_infos)
+        module_results = self._module_results_for_query(
+            qtype, query, project_infos, query_vector
+        )
         module_slots = _module_slots_for(qtype, query)
         results = _interleave_modules(chunk_results, module_results, module_slots, limit)
 
@@ -241,8 +243,14 @@ class SearchOrchestrator:
         qtype: str,
         query: str,
         project_infos: list[ProjectInfo],
+        query_vector=None,
     ) -> list[HybridResult]:
-        """Score modules across the project scope; return as HybridResult list."""
+        """Score modules across the project scope; return as HybridResult list.
+
+        ``query_vector`` is the already-embedded query from the chunk search
+        path — passing it through lets Step C's semantic fusion fire without
+        spending another API call.
+        """
         if _module_slots_for(qtype, query) == 0:
             return []
 
@@ -255,7 +263,11 @@ class SearchOrchestrator:
                 continue
             db = StoreDB(idx_paths.store_db)
             try:
-                scored = search_modules(db, pinfo.id, query, limit=per_project_limit)
+                scored = search_modules(
+                    db, pinfo.id, query,
+                    limit=per_project_limit,
+                    query_vector=query_vector,
+                )
                 for m, s in scored:
                     hits.append((pinfo, m, s))
             finally:
@@ -530,14 +542,35 @@ def _has_rationale_signal(query: str) -> bool:
     return False
 
 
+def _has_symbol_signal(query: str) -> bool:
+    """True when the query contains a code identifier (camelCase, snake_case,
+    SCREAMING_SNAKE, or dot-qualified). Mirror of the EXACT_SYMBOL stage of
+    classify_query — kept as a separate helper because ``classify_query`` maps
+    mixed (symbol + Korean) queries to KOREAN_NL, but for module-injection
+    purposes we still want symbol-bearing queries to behave like EXACT_SYMBOL
+    (chunk-only, no subsystem cards)."""
+    for w in query.strip().split():
+        if _SYMBOL_RE.match(w):
+            return True
+    return False
+
+
 def _module_slots_for(qtype: str, query: str = "") -> int:
     """How many module cards to reserve at the top of results per query type.
 
-    Rationale queries ("왜", "이유", "배경", "why", "purpose"…) skip module
-    injection entirely: the right answer is a single plan/design doc, and
-    prepending subsystem cards just forces the agent to Read more files.
+    Two intent-based bypasses override the qtype default:
+
+    - **Rationale** signal ("왜", "이유", "배경", "why", "purpose"…): the
+      real answer is a single plan/design doc; subsystem cards only inflate
+      read_count.
+    - **Symbol** signal (camelCase / snake_case token present anywhere): the
+      agent wants the file that *defines* that symbol, not a sibling module
+      card. A mixed query like "TuitionChargeSection 컴포넌트" classifies as
+      KOREAN_NL but its intent is precision lookup.
     """
     if query and _has_rationale_signal(query):
+        return 0
+    if query and _has_symbol_signal(query):
         return 0
     if qtype == QueryType.KOREAN_NL:
         return 3
