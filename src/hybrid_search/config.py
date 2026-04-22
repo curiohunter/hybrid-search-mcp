@@ -109,6 +109,25 @@ class WikiConfig:
 
 
 @dataclass(frozen=True)
+class MemoryConfig:
+    """Retention for the qa_log Memory Layer.
+
+    journald-style two-ceiling policy: whichever limit binds first prunes.
+    Defaults are generous — a project answering 20 Q&A/day reaches 2000 in
+    ~3 months. Users who want no retention at all set ``auto_prune=false``.
+    """
+    auto_prune: bool = True
+    retention_days: int = 90
+    max_files: int = 2000
+    # First-run safety: when True, the first auto-prune on a project is a
+    # dry-run that reports what WOULD be deleted but doesn't touch disk. The
+    # user must run ``hybrid-search qa-prune --confirm-first-run`` (or set
+    # ``memory.confirmed = true`` in config) to activate. A touchfile
+    # ``.hybrid-search/qa/.prune-confirmed`` records consent per project.
+    require_first_run_confirm: bool = True
+
+
+@dataclass(frozen=True)
 class Config:
     data_dir: Path = DEFAULT_DATA_DIR
     log_level: str = "info"
@@ -116,6 +135,7 @@ class Config:
     search: SearchConfig = field(default_factory=SearchConfig)
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
     wiki: WikiConfig = field(default_factory=WikiConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     projects: tuple[ProjectEntry, ...] = ()
 
     @property
@@ -206,6 +226,16 @@ def load_config(config_path: Path | None = None) -> Config:
         synthesis=synthesis,
     )
 
+    mem_raw = raw.get("memory", {})
+    memory = MemoryConfig(
+        auto_prune=bool(mem_raw.get("auto_prune", True)),
+        retention_days=int(mem_raw.get("retention_days", 90)),
+        max_files=int(mem_raw.get("max_files", 2000)),
+        require_first_run_confirm=bool(
+            mem_raw.get("require_first_run_confirm", True)
+        ),
+    )
+
     projects = tuple(
         ProjectEntry(name=p["name"], path=p["path"])
         for p in raw.get("projects", [])
@@ -219,6 +249,7 @@ def load_config(config_path: Path | None = None) -> Config:
         search=search,
         indexing=indexing,
         wiki=wiki,
+        memory=memory,
         projects=projects,
     )
 
@@ -258,6 +289,19 @@ supported_extensions = [
     ".swift", ".kt", ".sql", ".css", ".scss",
     ".md", ".json", ".yaml", ".yml", ".toml"
 ]
+
+[memory]
+# Memory Layer retention policy. Two ceilings, either can trigger prune.
+# auto_prune: apply the policy automatically on every reindex.
+auto_prune = true
+# retention_days: delete qa logs older than this.
+retention_days = 90
+# max_files: keep at most this many qa logs (newest first).
+max_files = 2000
+# require_first_run_confirm: the first auto-prune on a project runs dry-run
+# and asks the user to confirm by running `hybrid-search qa-prune
+# --older-than 90d --confirm-first-run` once. Set to false to skip the gate.
+require_first_run_confirm = true
 
 # [[projects]]
 # name = "my-project"

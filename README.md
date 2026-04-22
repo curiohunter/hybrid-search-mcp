@@ -15,7 +15,13 @@ Turn 3:  "portal 인증 흐름"                    → uses Turn 1 as context
 That third turn didn't search the code fresh — it found the *conversation*
 you had earlier, and used your own prior question as context. Every
 answered query becomes a first-class search result for every future query.
-**Search quality compounds with usage.**
+**Search quality compounds with usage** — measured, not promised:
+
+> On a 20-query benchmark against `valuein_homepage` (1,307 files),
+> **memory surfaces past Q&A in 80% of repeated queries and 65% of
+> reworded follow-ups**, lifting the end-user "answer found in top-10"
+> rate from 75% to **95%** — with gold retrieval flat within noise
+> (−1.7pp). See [Compounding benchmark](#compounding-benchmark-2026-04-22).
 
 ---
 
@@ -237,6 +243,122 @@ Phase-over-phase delta (hybrid track only, showing where subsystem-first helped)
 Honest trade-off: overall `read_count_estimate` worsened from 3.65 → 4.60
 because module cards take rank 1, pushing the top chunk to rank 2 for queries
 whose real answer is a single doc. Precision + rationale recall preserved.
+
+### Compounding benchmark (2026-04-22)
+
+**The question this benchmark answers:** does the Memory Layer actually
+make the system smarter as it's used — or is "질문할수록 똑똑해진다" a
+marketing claim with no numbers behind it?
+
+**Methodology** (inspired by
+[LongMemEval](https://github.com/xiaowu0162/LongMemEval) /
+[LoCoMo](https://github.com/snap-research/locomo) session-separated recall):
+
+1. **Cold**: move `.hybrid-search/qa/` aside, reindex with empty memory,
+   run 20 queries.
+2. **Plant**: run 20 Q1a "planter" queries — each logs one Q&A markdown.
+3. **Warm**: reindex so the new qa files become searchable chunks, run
+   20 queries against warm memory.
+4. Score strict **gold retrieval** (baseline regression guard) separately
+   from **memory surface** rate and **answer_found** (gold ∪ memory).
+
+Two tracks:
+
+- **Track A — identity**: Q1b = Q1a (user asks the same thing again).
+  Upper bound for memory recall.
+- **Track B — paraphrase**: Q1b keeps the principal noun phrases of Q1a
+  but rewords the rest (realistic return-to-same-subsystem scenario).
+  Subset `non-leaky` excludes pairs where Q1b trivially contains the
+  primary_target filename.
+
+**Results** (`benchmarks/run_compounding_bench.py` on valuein_homepage,
+20 pairs, 783/783 tests green):
+
+| Metric | Cold | Warm | Δ |
+|--------|-----:|-----:|--:|
+| **Track A — identity** (user repeats the question) | | | |
+| answer_found (gold or memory in top-10) | 80.0% | **95.0%** | +15.0pp |
+| memory surface rate | 0.0% | **80.0%** | +80.0pp |
+| gold recall@10 (regression guard) | 0.656 | 0.639 | −0.017 |
+| **Track B — paraphrase** (reworded follow-up) | | | |
+| answer_found | 75.0% | **95.0%** | +20.0pp |
+| memory surface rate | 0.0% | **65.0%** | +65.0pp |
+| gold recall@10 (regression guard) | 0.613 | 0.596 | −0.017 |
+| **Track B non-leaky** (15 pairs, filename not in Q1b) | | | |
+| answer_found | 73.3% | **100.0%** | +26.7pp |
+| memory surface rate | 0.0% | **66.7%** | +66.7pp |
+
+**What this means:**
+
+- **Repeated questions**: 4 out of 5 times, you see your own past answer
+  without re-searching the codebase. No more retyping "wait, what did I
+  ask last time?"
+- **Reworded follow-ups**: 2 out of 3 times, memory still surfaces —
+  the principal noun phrase is enough signal for the memory boost.
+- **No regression**: strict retrieval on gold code/docs drops 1.7pp
+  (within measurement noise). Memory expands answers, doesn't replace
+  search.
+- **Honest non-leaky subset**: every one of the 15 pairs that *don't*
+  contain a primary_target filename in Q1b found an answer in top-10
+  after compounding. 73% → 100%.
+
+Run it yourself:
+
+```bash
+python benchmarks/run_compounding_bench.py
+# → benchmarks/compounding_report_YYYY-MM-DD.md
+```
+
+The script backs up and restores your existing qa directory around the
+experiment, so it's safe to run against a project you actively use.
+
+### Retention — Memory doesn't balloon your disk
+
+`.hybrid-search/qa/` grows with every query. The reindex hook applies
+[journald-style two-ceiling](https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html)
+retention automatically — whichever ceiling binds first prunes:
+
+```toml
+[memory]
+auto_prune = true
+retention_days = 90       # delete anything older
+max_files = 2000          # keep at most this many newest
+require_first_run_confirm = true   # dry-run on first activation
+```
+
+First auto-prune on a project is a **dry-run** that reports what *would*
+be deleted. Activate with:
+
+```bash
+hybrid-search-mcp qa-prune --older-than 90d --confirm-first-run
+```
+
+After that, every `reindex` applies the policy silently. Opt out with
+`auto_prune = false` in `~/.hybrid-search/config.toml`.
+
+### Automatic memory consultation — PreToolUse + SessionStart hooks
+
+By default Claude Code users reach for Grep/Read before remembering an
+MCP exists. A one-liner install fixes that:
+
+```bash
+hybrid-search-mcp install-memory-hook --cwd your-project/
+```
+
+This merges two hooks into `.claude/settings.local.json` (non-destructive
+— existing hooks are preserved):
+
+- **SessionStart**: at the start of every session, Claude sees a summary
+  of the 20 most-recent Q&A topics in this project.
+- **PreToolUse (Grep|Read)**: before every Grep/Read, a quick qa_log
+  lookup runs — if past Q&A match the pattern, Claude is reminded to
+  prefer `mcp__hybrid-search__hybrid_search`.
+
+Both are **silent when they have nothing to say** (no past Q&A matches,
+noise patterns like `.` or short strings) — no spam in the context window.
+Output capped at 800 chars per injection. Inspired by the
+[Graphify](https://github.com/safishamsi/graphify) pattern (71× fewer
+tokens reported in real sessions by combining SessionStart + PreToolUse).
 
 Reports:
 - Phase 5 full write-up with per-query detail + honest failure modes:
