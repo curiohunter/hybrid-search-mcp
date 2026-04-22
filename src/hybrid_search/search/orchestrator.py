@@ -592,10 +592,18 @@ def _interleave_modules(
     2 and 4, so a query whose real answer is a single doc (rationale category)
     is not buried by module cards, while structure/exploration queries still
     get a subsystem pointer at the very top.
+
+    Two-tier cap (Phase 6 L5): effective slots are capped at ``limit // 2``
+    so a call with small ``limit`` still guarantees at least half the
+    results are chunks. At the default ``limit=10`` with ``slots=3`` this
+    is a no-op; at ``limit=5`` it drops to 2 modules, ensuring 3 chunk
+    slots survive.
     """
-    if not modules or slots <= 0:
+    if not modules or slots <= 0 or limit <= 0:
         return chunks[:limit]
 
+    # L5 two-tier: never let modules occupy more than half the result slots.
+    slots = min(slots, max(1, limit // 2))
     head_modules = modules[:slots]
     module_files = {m.file_path for m in head_modules}
     deduped_chunks = [c for c in chunks if c.file_path not in module_files]
