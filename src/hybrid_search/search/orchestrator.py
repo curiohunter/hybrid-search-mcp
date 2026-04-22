@@ -5,6 +5,7 @@ Implements §11 query classification and cross-project search (§13).
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import logging
@@ -17,9 +18,10 @@ from hybrid_search.index.embedder import Embedder
 from hybrid_search.project import ProjectRegistry, ProjectInfo
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.fusion import FusedResult, reciprocal_rank_fusion
+from hybrid_search.search.modules_search import search_modules
 from hybrid_search.search.snippet import make_snippet
 from hybrid_search.search.vector import VectorEngine
-from hybrid_search.storage.db import StoreDB
+from hybrid_search.storage.db import ModuleRecord, StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,7 @@ class HybridResult:
     end_line: int | None
     content: str | None
     snippet: str
+    module_id: str | None = None
 
 
 @dataclass
@@ -212,8 +215,15 @@ class SearchOrchestrator:
         reranking_cfg = self._config.search.reranking
         effective_limit = reranking_cfg.max_candidates if reranking_cfg.enabled else limit
 
-        # Enrich results with chunk metadata
-        results = self._enrich_results(fused[:effective_limit], project_infos, query)
+        # Enrich chunk results with metadata
+        chunk_results = self._enrich_results(fused[:effective_limit], project_infos, query)
+
+        # Phase 5: inject module cards when the query is likely structural.
+        # Module cards give agents a subsystem-level answer unit so they don't
+        # have to Read 5 files to piece together "how is X organized".
+        module_results = self._module_results_for_query(qtype, query, project_infos)
+        module_slots = _module_slots_for(qtype)
+        results = _interleave_modules(chunk_results, module_results, module_slots, limit)
 
         elapsed_ms = (time.monotonic() - start) * 1000
         return HybridSearchResponse(
@@ -225,6 +235,59 @@ class SearchOrchestrator:
             skipped_projects=skipped,
             reranked=reranking_cfg.enabled,
         )
+
+    def _module_results_for_query(
+        self,
+        qtype: str,
+        query: str,
+        project_infos: list[ProjectInfo],
+    ) -> list[HybridResult]:
+        """Score modules across the project scope; return as HybridResult list."""
+        if _module_slots_for(qtype) == 0:
+            return []
+
+        per_project_limit = 5
+        hits: list[tuple[ProjectInfo, ModuleRecord, float]] = []
+        for pinfo in project_infos:
+            project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
+            idx_paths = IndexPaths(project_dir)
+            if not idx_paths.store_db.exists():
+                continue
+            db = StoreDB(idx_paths.store_db)
+            try:
+                scored = search_modules(db, pinfo.id, query, limit=per_project_limit)
+                for m, s in scored:
+                    hits.append((pinfo, m, s))
+            finally:
+                db.close()
+
+        hits.sort(key=lambda x: -x[2])
+        results: list[HybridResult] = []
+        for pinfo, m, _score in hits:
+            project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
+            idx_paths = IndexPaths(project_dir)
+            db = StoreDB(idx_paths.store_db)
+            try:
+                file_path = _module_representative_path(db, m)
+                results.append(HybridResult(
+                    chunk_id=f"module:{m.id}",
+                    rrf_score=0.0,
+                    bm25_rank=None,
+                    vector_rank=None,
+                    file_path=file_path,
+                    project=pinfo.name,
+                    name=m.name,
+                    qualified_name=f"module:{m.name}",
+                    node_type="module",
+                    start_line=None,
+                    end_line=None,
+                    content=_module_content_for_result(m),
+                    snippet=_module_snippet_for_result(m),
+                    module_id=m.id,
+                ))
+            finally:
+                db.close()
+        return results
 
     def _search_single(
         self,
@@ -433,6 +496,104 @@ class SearchOrchestrator:
                 db.close()
 
         return results
+
+
+def _module_slots_for(qtype: str) -> int:
+    """How many module cards to reserve at the top of results per query type."""
+    if qtype == QueryType.KOREAN_NL:
+        return 3
+    if qtype == QueryType.ENGLISH_NL:
+        return 2
+    return 0  # EXACT_SYMBOL: chunks only — precision queries want exact matches
+
+
+def _interleave_modules(
+    chunks: list[HybridResult],
+    modules: list[HybridResult],
+    slots: int,
+    limit: int,
+) -> list[HybridResult]:
+    """Interleave up to ``slots`` modules with chunks.
+
+    Placement: module at position 1, then chunk, module, chunk, module, then
+    chunks fill the rest. This preserves the top-2 chunk slots at positions
+    2 and 4, so a query whose real answer is a single doc (rationale category)
+    is not buried by module cards, while structure/exploration queries still
+    get a subsystem pointer at the very top.
+    """
+    if not modules or slots <= 0:
+        return chunks[:limit]
+
+    head_modules = modules[:slots]
+    module_files = {m.file_path for m in head_modules}
+    deduped_chunks = [c for c in chunks if c.file_path not in module_files]
+
+    result: list[HybridResult] = []
+    mi = ci = 0
+    # Positions 1,3,5,... get a module (zero-indexed: 0,2,4). After module slot
+    # budget is exhausted we just stream chunks.
+    for pos in range(limit):
+        want_module = (pos % 2 == 0) and (mi < len(head_modules))
+        if want_module:
+            result.append(head_modules[mi])
+            mi += 1
+        elif ci < len(deduped_chunks):
+            result.append(deduped_chunks[ci])
+            ci += 1
+        elif mi < len(head_modules):
+            result.append(head_modules[mi])
+            mi += 1
+        else:
+            break
+    return result
+
+
+def _module_representative_path(db: StoreDB, m: ModuleRecord) -> str:
+    """Pick a single file_path that best 'locates' this module for clients.
+
+    Priority: first entry_point's file → first related_doc → first member file.
+    """
+    if m.entry_points:
+        try:
+            ep = json.loads(m.entry_points)
+            if ep:
+                chunk = db.get_chunk(ep[0])
+                if chunk:
+                    fr = db.get_file(chunk.file_id)
+                    if fr:
+                        return fr.relative_path
+        except (ValueError, TypeError):
+            pass
+    if m.related_docs:
+        try:
+            docs = json.loads(m.related_docs)
+            if docs:
+                return docs[0]
+        except (ValueError, TypeError):
+            pass
+    files = db.get_files_by_module(m.id)
+    if files:
+        fr = db.get_file(files[0])
+        if fr:
+            return fr.relative_path
+    return m.name or "module"
+
+
+def _module_snippet_for_result(m: ModuleRecord) -> str:
+    summ = m.summary or ""
+    if summ.startswith("[hash:"):
+        end = summ.find("]")
+        if end != -1:
+            summ = summ[end + 1:].strip()
+    # Cap snippet to keep response lean for agents.
+    return summ[:500]
+
+
+def _module_content_for_result(m: ModuleRecord) -> str:
+    parts = [_module_snippet_for_result(m)]
+    if m.rationale:
+        parts.append("Rationale:\n" + m.rationale)
+    return "\n\n".join(p for p in parts if p)
 
 
 def _weighted_interleave(
