@@ -33,6 +33,19 @@ def _mk_module(file_path: str, name: str = "m") -> HybridResult:
     )
 
 
+def _mk_member(file_path: str, parent_module: str) -> HybridResult:
+    """Step K module_member helper."""
+    return HybridResult(
+        chunk_id=f"member:{parent_module}:{file_path}", rrf_score=0.0,
+        bm25_rank=None, vector_rank=None,
+        file_path=file_path, project="p", name=parent_module,
+        qualified_name=f"module:{parent_module}",
+        node_type="module_member", start_line=None, end_line=None,
+        content=None, snippet="module summary",
+        module_id=f"mod-{parent_module}",
+    )
+
+
 # ---------- _module_slots_for ----------
 
 def test_slots_korean_nl_three():
@@ -299,3 +312,109 @@ def test_filename_tokens_drop_short_pieces():
 def test_filename_tokens_mixed_camel_and_hyphen():
     toks = _filename_token_set("components/ConceptWeaknessCard.tsx")
     assert toks == {"concept", "weakness", "card"}
+
+
+# ---------- Step K: module_member placement ----------
+
+def test_members_placed_at_tail_positions():
+    """Members surface at trailing ranks — ranks 1/3/5 stay module cards,
+    ranks 2/4/6/7 stay chunks (primary-target docs for S2/S3 queries
+    would otherwise get pushed out by aggressive member insertion)."""
+    chunks = [_mk_chunk(f"c{i}.ts") for i in range(10)]
+    modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
+    members = [
+        _mk_member("mem/a1.tsx", "nonA"),
+        _mk_member("mem/a2.tsx", "nonA"),
+    ]
+    out = _interleave_modules(chunks, modules, slots=3, limit=10, members=members)
+    assert len(out) == 10
+    types = [r.node_type for r in out]
+    # Modules at 0, 2, 4
+    assert types[0] == "module"
+    assert types[2] == "module"
+    assert types[4] == "module"
+    # First chunk survives at rank 2 (position 1)
+    assert types[1] == "function"
+    # Members at the tail (last two positions)
+    assert types[-1] == "module_member"
+    assert types[-2] == "module_member"
+
+
+def test_members_respect_chunks_at_primary_positions():
+    """Regression: S2 primary target is a chunk at rank 2. Members must
+    not displace it."""
+    top_chunk = "docs/features/2026-04-08-portal-parent-student.md"
+    chunks = [_mk_chunk(top_chunk, "portal")] + [
+        _mk_chunk(f"c{i}.ts") for i in range(5)
+    ]
+    modules = [_mk_module("auth.md", "auth"), _mk_module("students.ts", "students")]
+    members = [_mk_member("mem/x.tsx", "other")]
+    out = _interleave_modules(chunks, modules, slots=2, limit=10, members=members)
+    # Rank 2 (position 1) should still be the top chunk.
+    assert out[1].file_path == top_chunk
+    assert out[1].node_type == "function"
+
+
+def test_members_dedup_against_module_cards():
+    """A member that points at a path already held by a module card
+    must be dropped — otherwise the same file appears twice in
+    results, wasting a slot."""
+    shared = "components/portal-v3/PortalShell.tsx"
+    chunks = [_mk_chunk(f"c{i}.ts") for i in range(5)]
+    modules = [_mk_module(shared, "portal-v3")]
+    members = [_mk_member(shared, "portal-v3-alt")]
+    out = _interleave_modules(chunks, modules, slots=1, limit=10, members=members)
+    paths = [r.file_path for r in out]
+    # Only one entry with the shared path (the module card).
+    assert paths.count(shared) == 1
+    # The shared-path entry is the module card (rank 1).
+    assert out[0].node_type == "module" and out[0].file_path == shared
+
+
+def test_members_budget_caps_at_limit_third():
+    """At limit=10, at most 3 members reach the result to keep chunks
+    at a numeric majority (7 slots for cards+chunks)."""
+    chunks = [_mk_chunk(f"c{i}.ts") for i in range(10)]
+    modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
+    members = [_mk_member(f"mem/m{i}.tsx", f"non{i}") for i in range(8)]
+    out = _interleave_modules(chunks, modules, slots=3, limit=10, members=members)
+    member_count = sum(1 for r in out if r.node_type == "module_member")
+    # limit=10 // 3 = 3 members max.
+    assert member_count == 3
+
+
+def test_members_absorb_slack_when_chunks_short():
+    """If chunks run out, members can still fill the non-module slots
+    up to the member budget."""
+    chunks = [_mk_chunk("c0.ts"), _mk_chunk("c1.ts")]
+    modules = [_mk_module("m0.ts", "M0")]
+    members = [_mk_member(f"mem/m{i}.tsx", f"non{i}") for i in range(5)]
+    out = _interleave_modules(chunks, modules, slots=1, limit=10, members=members)
+    # 1 card + 2 chunks + up to 3 members = 6; rest positions empty & dropped.
+    chunk_count = sum(1 for r in out if r.node_type == "function")
+    member_count = sum(1 for r in out if r.node_type == "module_member")
+    assert chunk_count == 2
+    assert member_count == 3
+
+
+def test_members_none_preserves_old_behavior():
+    """Passing ``members=None`` (or empty) keeps the pre-K behaviour —
+    callers that don't opt in see exactly the old layout."""
+    chunks = [_mk_chunk(f"c{i}.ts") for i in range(5)]
+    modules = [_mk_module("m0.ts", "M0"), _mk_module("m1.ts", "M1")]
+    out_no_members = _interleave_modules(chunks, modules, slots=2, limit=5)
+    out_empty_members = _interleave_modules(
+        chunks, modules, slots=2, limit=5, members=[],
+    )
+    assert [r.file_path for r in out_no_members] == [r.file_path for r in out_empty_members]
+
+
+def test_members_slots_zero_returns_chunks_only():
+    """Rationale/precision queries get ``slots=0`` from ``_module_slots_for``;
+    members must not leak through in that case."""
+    chunks = [_mk_chunk(f"c{i}.ts") for i in range(5)]
+    modules = [_mk_module("m.ts", "M")]
+    members = [_mk_member("mem.tsx", "non")]
+    out = _interleave_modules(chunks, modules, slots=0, limit=5, members=members)
+    assert all(r.node_type == "function" for r in out)
+    assert len(out) == 5

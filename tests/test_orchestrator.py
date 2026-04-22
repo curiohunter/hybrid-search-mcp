@@ -35,7 +35,7 @@ def _make_orchestrator(authority_map: dict[str, float]) -> SearchOrchestrator:
     )
     orch._enrich_results = MagicMock(return_value=[])
     # Module injection would try to open a StoreDB with a mock path — stub it.
-    orch._module_results_for_query = MagicMock(return_value=[])
+    orch._module_results_for_query = MagicMock(return_value=([], []))
     return orch
 
 
