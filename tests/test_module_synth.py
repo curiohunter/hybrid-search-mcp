@@ -5,13 +5,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 from hybrid_search.index.module_synth import (
     _extract_rationale,
     _pick_entry_points,
     synthesize_modules,
+    vector_input_text,
 )
 from hybrid_search.index.modules import discover_modules
-from hybrid_search.storage.db import ChunkRecord, FileRecord, StoreDB
+from hybrid_search.storage.db import ChunkRecord, FileRecord, ModuleRecord, StoreDB
 
 
 PROJECT_ID = "test-project"
@@ -181,3 +184,109 @@ def test_synthesize_fallback_summary_when_no_docstrings(tmp_path):
     synthesize_modules(db, PROJECT_ID)
     m = db.get_modules(PROJECT_ID)[0]
     assert m.summary and "a.py" in m.summary and "b.py" in m.summary
+
+
+# ---------- Step C: embedding pass ----------
+
+class _FakeEmbedder:
+    """Returns a deterministic vector per text for test isolation."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.last_batch: list[str] = []
+
+    def embed_texts(self, texts):
+        self.call_count += 1
+        self.last_batch = list(texts)
+        # One-hot style: first char codepoint determines the axis in a tiny space.
+        out = []
+        for t in texts:
+            v = np.zeros(8, dtype=np.float32)
+            v[ord(t[0]) % 8] = 1.0
+            out.append(v)
+        return np.stack(out)
+
+
+def test_vector_input_text_drops_hash_prefix():
+    m = ModuleRecord(
+        id="m1", project_id=PROJECT_ID, name="portal",
+        summary="[hash:v1:aaaa] Portal shell for parents.",
+        entry_points=None, depends_on=None, related_docs=None,
+        rationale="NOTE: keep state local.", signals=None,
+        member_hash="h", updated_at="x",
+    )
+    text = vector_input_text(m)
+    assert "[hash:" not in text
+    assert "Portal shell" in text
+    assert "NOTE: keep state local." in text
+    assert text.startswith("portal")
+
+
+def _seed_two_files_module(db: StoreDB, tmp_path: Path) -> None:
+    """Helper: module discovery requires ≥ 2 files per directory."""
+    _seed_file_with_chunks(db, "a/x.py", [
+        _chunk("c1", name="login", docstring="Authenticate user.",
+               node_type="function"),
+    ])
+    _seed_file_with_chunks(db, "a/y.py", [
+        _chunk("c2", name="session", docstring="Session token.",
+               node_type="function"),
+    ])
+    discover_modules(db, PROJECT_ID, tmp_path)
+
+
+def test_synthesize_embeds_when_embedder_provided(tmp_path):
+    db = _make_db(tmp_path)
+    _seed_two_files_module(db, tmp_path)
+    emb = _FakeEmbedder()
+    stats = synthesize_modules(db, PROJECT_ID, embedder=emb)
+    assert stats["embedded"] == 1
+    assert emb.call_count == 1
+
+    m = db.get_modules(PROJECT_ID)[0]
+    assert m.summary_vector is not None
+    vec = np.frombuffer(m.summary_vector, dtype=np.float32)
+    assert vec.size == 8
+    assert m.vector_input_hash and len(m.vector_input_hash) == 16
+
+
+def test_embedding_skipped_on_rerun_when_text_unchanged(tmp_path):
+    db = _make_db(tmp_path)
+    _seed_two_files_module(db, tmp_path)
+    emb = _FakeEmbedder()
+
+    s1 = synthesize_modules(db, PROJECT_ID, embedder=emb)
+    s2 = synthesize_modules(db, PROJECT_ID, embedder=emb)
+    # First run embeds, second run short-circuits on vector_input_hash match.
+    assert s1["embedded"] >= 1
+    assert s2["embedded"] == 0
+    # _FakeEmbedder only called on the first run.
+    assert emb.call_count == 1
+
+
+def test_embedding_noop_when_embedder_is_none(tmp_path):
+    """Backward compatibility: existing callers that don't pass an embedder
+    still get text synthesis and never see the new 'embedded' path crash."""
+    db = _make_db(tmp_path)
+    _seed_two_files_module(db, tmp_path)
+    stats = synthesize_modules(db, PROJECT_ID)
+    assert stats["embedded"] == 0
+    m = db.get_modules(PROJECT_ID)[0]
+    assert m.summary_vector is None
+
+
+def test_embedder_failure_does_not_abort_synthesis(tmp_path):
+    """Embedding failures are non-fatal — synthesis text is still written so
+    future runs can retry the vector pass."""
+    class _FailingEmbedder:
+        def embed_texts(self, texts):
+            raise RuntimeError("simulated API outage")
+
+    db = _make_db(tmp_path)
+    _seed_two_files_module(db, tmp_path)
+    stats = synthesize_modules(db, PROJECT_ID, embedder=_FailingEmbedder())
+    assert stats["synthesized"] >= 1
+    assert stats["embedded"] == 0
+    m = db.get_modules(PROJECT_ID)[0]
+    assert m.summary  # text still present
+    assert m.summary_vector is None  # no vector after outage

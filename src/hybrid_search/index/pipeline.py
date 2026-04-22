@@ -263,7 +263,9 @@ class IndexingPipeline:
                     result.errors.append(f"module_discovery: {e}")
 
                 try:
-                    synth_stats = synthesize_modules(db, project_id)
+                    synth_stats = synthesize_modules(
+                        db, project_id, embedder=self._embedder
+                    )
                     logger.info("Module synthesis: %s", synth_stats)
                 except Exception as e:
                     logger.warning("Module synthesis failed (non-fatal): %s", e)

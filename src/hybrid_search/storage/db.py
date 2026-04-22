@@ -11,7 +11,7 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 
 # Semantic labels for call-edge confidence (M1.1).
 # Order: weakest → strongest; _confidence_filter relies on this ordering.
@@ -152,7 +152,9 @@ CREATE TABLE IF NOT EXISTS modules (
     rationale TEXT,
     signals TEXT,
     member_hash TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    summary_vector BLOB,
+    vector_input_hash TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_modules_project ON modules(project_id);
@@ -216,6 +218,13 @@ class ModuleRecord:
     signals: str | None = None
     member_hash: str = ""
     updated_at: str = ""
+    # Phase 5 Step C: semantic embedding of the card text (name + summary +
+    # rationale). Raw float32 bytes of a unit-normalized vector; length is
+    # (embedding_dim * 4). ``vector_input_hash`` fingerprints the text the
+    # vector was computed over, so re-embedding is skipped when the card
+    # text has not changed.
+    summary_vector: bytes | None = None
+    vector_input_hash: str | None = None
 
 
 class StoreDB:
@@ -344,6 +353,25 @@ class StoreDB:
                 """
             )
             logger.info("Migrated schema v5 → v6 (modules + file_modules tables)")
+
+        if cur_ver < 7:
+            # v6 → v7: module card embedding columns. Lets modules_search blend
+            # token overlap with semantic cosine so Korean NL queries can match
+            # English module names without the hand-curated alias list carrying
+            # all the weight.
+            existing_module_cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(modules)").fetchall()
+            }
+            if "summary_vector" not in existing_module_cols:
+                self._conn.execute(
+                    "ALTER TABLE modules ADD COLUMN summary_vector BLOB"
+                )
+            if "vector_input_hash" not in existing_module_cols:
+                self._conn.execute(
+                    "ALTER TABLE modules ADD COLUMN vector_input_hash TEXT"
+                )
+            logger.info("Migrated schema v6 → v7 (modules.summary_vector + vector_input_hash)")
 
         self._conn.execute(
             "UPDATE index_meta SET value = ? WHERE key = 'schema_version'",
@@ -840,8 +868,9 @@ class StoreDB:
     def upsert_module(self, conn: sqlite3.Connection, record: "ModuleRecord") -> None:
         conn.execute(
             """INSERT INTO modules (id, project_id, name, summary, entry_points,
-                depends_on, related_docs, rationale, signals, member_hash, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                depends_on, related_docs, rationale, signals, member_hash, updated_at,
+                summary_vector, vector_input_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  name=excluded.name,
                  summary=excluded.summary,
@@ -851,12 +880,29 @@ class StoreDB:
                  rationale=excluded.rationale,
                  signals=excluded.signals,
                  member_hash=excluded.member_hash,
-                 updated_at=excluded.updated_at""",
+                 updated_at=excluded.updated_at,
+                 summary_vector=excluded.summary_vector,
+                 vector_input_hash=excluded.vector_input_hash""",
             (
                 record.id, record.project_id, record.name, record.summary,
                 record.entry_points, record.depends_on, record.related_docs,
                 record.rationale, record.signals, record.member_hash, record.updated_at,
+                record.summary_vector, record.vector_input_hash,
             ),
+        )
+
+    def update_module_vector(
+        self,
+        conn: sqlite3.Connection,
+        module_id: str,
+        summary_vector: bytes,
+        vector_input_hash: str,
+    ) -> None:
+        """Write only the embedding fields — avoids rewriting text columns
+        when synthesis hasn't otherwise changed the card."""
+        conn.execute(
+            "UPDATE modules SET summary_vector = ?, vector_input_hash = ? WHERE id = ?",
+            (summary_vector, vector_input_hash, module_id),
         )
 
     def set_file_modules(
@@ -924,6 +970,9 @@ class StoreDB:
         return [self._row_to_module(r) for r in cur.fetchall()]
 
     def _row_to_module(self, row: sqlite3.Row) -> "ModuleRecord":
+        # v7 columns may not exist on older rows that predate the migration
+        # check — tolerate missing keys rather than failing reads.
+        keys = set(row.keys())
         return ModuleRecord(
             id=row["id"],
             project_id=row["project_id"],
@@ -936,4 +985,6 @@ class StoreDB:
             signals=row["signals"],
             member_hash=row["member_hash"],
             updated_at=row["updated_at"],
+            summary_vector=row["summary_vector"] if "summary_vector" in keys else None,
+            vector_input_hash=row["vector_input_hash"] if "vector_input_hash" in keys else None,
         )
