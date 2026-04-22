@@ -80,12 +80,14 @@ class IndexingConfig:
     exclude_patterns: tuple[str, ...] = tuple(DEFAULT_EXCLUDE_PATTERNS)
     max_file_size_kb: int = 512
     supported_extensions: tuple[str, ...] = tuple(DEFAULT_SUPPORTED_EXTENSIONS)
-    # Sprint 3: opt-in self-reference for the Memory Layer. When True, the
+    # Sprint 3: self-reference for the Memory Layer. When True, the
     # scanner walks into ``.hybrid-search/qa/`` and the resulting chunks are
     # tagged ``node_type="qa_log"`` so hybrid_search can surface past queries
-    # alongside code. Default off — qa logs may contain user data that
-    # shouldn't leak into general-purpose search results without consent.
-    index_qa_logs: bool = False
+    # alongside code. Default **on** so the compounding-quality loop works
+    # out of the box — sensitive queries are pre-filtered by
+    # ``qa_log.is_sensitive_query`` before they ever hit disk, and users
+    # who want their Q&A off-disk set ``HYBRID_SEARCH_QA_LOG=0``.
+    index_qa_logs: bool = True
 
 
 @dataclass(frozen=True)
@@ -182,11 +184,14 @@ def load_config(config_path: Path | None = None) -> Config:
         supported_extensions=tuple(
             idx_raw.get("supported_extensions", DEFAULT_SUPPORTED_EXTENSIONS)
         ),
-        # Env var wins over config when set, so users can toggle per-shell.
+        # Memory Layer default-on: qa_log chunks participate in search by
+        # default. Env var wins over config file (``HYBRID_SEARCH_INDEX_QA=0``
+        # opts out for a single shell); config file ``index_qa_logs: false``
+        # opts out persistently for a project.
         index_qa_logs=(
-            env_index_qa in {"1", "true", "yes", "on"}
+            env_index_qa not in {"0", "false", "no", "off"}
             if env_index_qa
-            else bool(idx_raw.get("index_qa_logs", False))
+            else bool(idx_raw.get("index_qa_logs", True))
         ),
     )
 

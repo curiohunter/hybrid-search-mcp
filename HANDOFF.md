@@ -2,9 +2,144 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-22, 21회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-22, 22회차) — 다음 세션 여기부터 읽을 것
 
 ### 한줄 요약
+
+**Memory Layer를 default-on 제품 기능으로 활성화하여 "질문할수록 똑똑해지는 코드 검색" 포지셔닝 완성.** 21회차 Step K(구조 recall 0.41→0.52)를 끝낸 후, Phase 5의 남은 0.03은 모듈 content rewrite가 아니면 못 닿는다고 판단(portal-v3 summary에 parent/auth 토큰 0회). Graphify 분석팀이 "가장 임팩트 큰 단 하나"로 지목한 Pattern D(Q&A feedback loop)를 오늘의 목표로 전환. 기존 Sprint 1/2 인프라(qa_log write + reader) 위에 **Sprint 3 (indexing + ranking)** 를 완성: default-on, sensitive-query filter, time-decay boost, memory-intent detection ("지난번에"/"previously"). 실제 end-to-end 루프가 닫히는 것을 테스트로 증명 (`test_memory_layer_e2e.py` 2 tests). **748/748 passed (+34)**. README 재작성 — "A code search that learns from your questions" 상단 배치.
+
+### ✅ 이 세션 완료된 것 (22회차)
+
+**1. Phase 5 0.03 gap 분석 후 scope 축소 결정**
+- S2 portal-v3 rank 14 → 8-source 창 밖. content 검토 결과: `summary`에 `parent`/`학부모`/`auth`/`인증`/`layout` 0회 등장. Name-match boost로는 score differentiation 불가능.
+- Structure recall 0.52 accept, Step L-A 스킵. Phase 5는 "95% 완성 + S2/S3는 module-content 프로젝트" 상태로 동결.
+- 그 시간을 Memory Layer productization에 투자.
+
+**2. Memory Layer default-on (`qa_log.is_enabled` 로직 반전)**
+- `HYBRID_SEARCH_QA_LOG` 해석 변경: **unset → enabled**, `0/false/no/off` → disabled.
+- `IndexingConfig.index_qa_logs` default `False → True` + config loader 동일 적용.
+- 새 기능 `is_sensitive_query` — password/api key/token/AWS AKIA/openai sk-/github ghp_/slack xoxb- 정규식으로 시크릿 혐의 쿼리는 절대 디스크에 안 씀.
+- `record()` 진입점에 `is_sensitive_query` 가드 추가.
+
+**3. Time-decay ranking (새 `_apply_memory_boost` in `orchestrator.py`)**
+- 공식: `new_score = rrf * (1 + boost * 2^(-age_days / 30))`
+- `_MEMORY_HALF_LIFE_DAYS = 30`, `_MEMORY_AMBIENT_BOOST = 0.20`, `_MEMORY_INTENT_BOOST = 1.00`
+- `HybridResult`에 `file_mtime: str | None` 필드 추가 — qa_log chunk에만 채움 (hot path 오염 최소화).
+- `_enrich_results`에서 qa_log node_type일 때만 mtime 전파.
+- 적용 지점: `hybrid_search` 메서드의 `chunk_results` 생성 직후, `_interleave_modules` 직전. Non-qa chunks는 pass-through.
+
+**4. Memory-intent 감지 (`_has_memory_intent`)**
+- Korean 트리거: `지난번`, `이전에`, `아까`, `방금`, `전에`, `저번에`, `그때`
+- English 트리거 (word-boundary): `previously`, `earlier`, `before`, `last time`, `the other day`, `what did (i|we|you) (ask|say)`
+- Intent 감지되면 `_MEMORY_INTENT_BOOST`(1.00) 사용 → fresh qa 부스트 2×. Ambient(0.20)는 부드러운 상시 부스트.
+
+**5. End-to-end test (`test_memory_layer_e2e.py`)**
+- Killer product 루프의 정석 증명: index project → search → qa_log write → reindex → search with recall intent → qa_log chunk가 top-10에 실제로 등장.
+- `_DetEmbedder`: 결정론적 토큰 해시 임베더로 OpenAI 의존성 제거.
+- Opt-out 경로도 검증 (`index_qa_logs=False` 시 qa_log는 node_type으로 surface 안 됨).
+
+**6. Boost 수학/intent 단위 테스트 (`test_memory_boost.py`, 19 tests)**
+- `_has_memory_intent` Korean/English positive/negative cases
+- `_parse_mtime_days_ago` (ISO parsing, naive UTC 취급, 미래시각 clamp, invalid→None)
+- `_apply_memory_boost` (short-circuit no-qa, empty input, fresh boost, stale decay, intent amplification, missing mtime, non-qa pass-through, ordering 플립/유지)
+
+**7. `qa_log`/scanner 테스트 업데이트 (default 전환 반영)**
+- `test_qa_log.py`: `test_disabled_by_default` → `test_enabled_by_default`, new `test_sensitive_query_not_persisted` (ghp_/sk-/password)
+- `test_scanner.py`: `test_qa_logs_skipped_by_default` → `test_qa_logs_walked_by_default` + opt-out 대응
+
+**8. README 재포지셔닝**
+- 상단: "A code search that learns from your questions. The more you use it, the better it gets — at *your* codebase specifically."
+- 3-turn demo 박스 (코드 질문 → 리콜 질문 → 관련 질문)
+- "Why this is different" 섹션 — Sourcegraph/Cursor/Graphify/ChatGPT Memory 비교, "first to close the loop" 주장
+- Memory Layer 운영 요약 표
+
+### 📊 영향 측정
+
+**테스트:** 714 → **748** (+34)
+- `test_memory_boost.py`: +19 (new)
+- `test_memory_layer_e2e.py`: +2 (new)
+- `test_qa_log.py`: +4 (revised + sensitive query)
+- `test_scanner.py`: ±0 (rename + inverse assertions)
+- 기존 회귀 없음
+
+**벤치마크 변화:** 없음 (qa_log는 현재 valuein_homepage에 존재하지 않아 search 결과에 영향 없음. 사용이 쌓이기 시작하면 자연스럽게 structure/exploration recall 개선 기대).
+
+**Phase 5 상태:** structure recall 0.52 (목표 0.55, 0.03 미달) — accept 상태. Top-5/recall/reads 3개 exit 기준은 모두 green 유지.
+
+### 🎯 다음 세션 진입점
+
+1. **이 22회차 섹션 전체**
+2. `README.md` — 새 "Why this is different" / Memory Layer 표
+3. `tests/test_memory_layer_e2e.py` — 루프가 어떻게 닫히는지 증명 예시
+4. `src/hybrid_search/search/orchestrator.py:159-260` — `_has_memory_intent`, `_apply_memory_boost`, `_parse_mtime_days_ago`
+5. 아래 "🎯 다음 세션 완성 목표"
+
+### 🎯 다음 세션 완성 목표 — Memory Layer v2 (compounding 증명)
+
+**현재 상태**: 루프는 닫혀 있음 (unit+e2e 모두 green). 사용자가 여러 번 질문하면 qa_log가 쌓이고, 나중 질문이 자연스럽게 이를 활용. 하지만 **"compounding quality"가 숫자로 증명되지 않음** — 벤치마크에서 qa_log 유무에 따른 recall 변화 미측정.
+
+**Option A — Compounding 벤치 (반나절)**
+- `benchmarks/compounding_bench.py` 신설
+- 20개 valuein gold 쿼리를 2회 연속 실행
+- 1회차: baseline (qa_log 비어있음)
+- 중간에 모든 1회차 쿼리를 `qa_log.record`로 저장 + reindex
+- 2회차: same queries with memory intent prefix ("지난번에 …")
+- 지표: 2회차가 1회차 대비 recall@10/reads/query_time_ms 어떻게 변하는지
+- 기대: "20개 같은 질문을 다시 하면 recall X%, reads Y% 개선" 숫자화 가능
+
+**Option B — Staleness auto-pruning (반나절)**
+- `reader.py`의 `prune_older_than` CLI 진입점 추가
+- `/maintain` skill에 weekly 자동 실행 훅
+- `.hybrid-search/qa/` 크기가 MB 단위로 늘어도 관리 가능
+
+**Option C — PreToolUse hook (반나절)**
+- Graphify Pattern Q1: Claude가 Grep/Glob 치기 직전 "memory/index 먼저 확인" 시스템 메시지 주입
+- `hybrid-search-mcp install-hook --pretool` 서브커맨드
+- 자율 루프 3축 중 마지막 piece
+
+**권장 순서:**
+1. **Option A** 먼저 — compounding 숫자가 있어야 README의 "learns from you" 주장이 증거로 뒷받침됨. 없으면 marketing claim 상태.
+2. **Option B** — 첫 릴리스 품질 필수 조건 (디스크 관리)
+3. **Option C** — Claude 사용 빈도 즉효. 하지만 compounding 증명 없이 hook만 깔면 빈 wiki 주입.
+
+### 주의사항 / 알려진 이슈
+
+- **Valuein_homepage 인덱스 상태**: 이 세션 중에 `reindex --force` 여러 번 동시 실행으로 tantivy 잠금 파일 충돌 → "Failed to acquire Lockfile" 에러. CLI에 동시 실행 가드가 없음. 다음 세션에서 해당 인덱스 rebuild 필요할 수 있음. 또는 concurrent-reindex 방어를 flock으로 추가.
+- **`_apply_memory_boost`는 orchestrator 레벨**: MCP tool이 아닌 다른 호출 경로(예: CLI `search`)에도 orchestrator.hybrid_search를 경유하면 동일하게 적용됨 — 확인됨.
+- **Sensitive-query regex는 보수적**: false positive 허용 (쿼리를 안 씀만큼 어차피 invisible). False negative(secret 누출)만 위험. 현재 regex로 잡히지 않는 custom secret 패턴은 사용자 책임.
+- **Intent 트리거 "전에"는 넓은 단어**: "~전에" 형태로 흔히 사용됨 → false positive 가능. 현재는 수용 (full 부스트 적용되어도 qa가 매칭 안 되면 영향 0).
+- **Time-decay는 chunk level이 아니라 result level**: 동일 파일에서 여러 chunk가 매칭되면 모두 동일 mtime을 씀. 보통 문제 없음 (qa file 자체가 단일 chunk로 처리됨).
+- **Phase 5 structure recall 0.52**: 이 세션에서 건드리지 않음. Step L-A 스킵 결정 명시.
+
+### 마지막 상태
+
+- **브랜치:** `main` — 이 세션 커밋 예정 (아래 push)
+- **마지막 커밋 (push 전):** `573e4d7 [feat] Phase 5 Step K — module-member emission for structure recall`
+- **테스트:** **748/748 passed** (~26s) — 21회차 714 + 22회차 +34
+- **변경 파일 (22회차):**
+  - `src/hybrid_search/memory/qa_log.py` (+25 lines): default-on 로직 반전, `is_sensitive_query` 신설, `record()` 가드
+  - `src/hybrid_search/config.py` (±8 lines): `IndexingConfig.index_qa_logs` default True + loader 대응
+  - `src/hybrid_search/search/orchestrator.py` (+115 lines): `_has_memory_intent`/`_parse_mtime_days_ago`/`_apply_memory_boost`, `HybridResult.file_mtime` 필드, `_enrich_results`에서 mtime 전파, `hybrid_search`에 boost 호출
+  - `tests/test_memory_boost.py` (+190 lines, 신규): 19 tests
+  - `tests/test_memory_layer_e2e.py` (+180 lines, 신규): 2 tests, `_DetEmbedder`
+  - `tests/test_qa_log.py` (±15 lines): default-on 반영 + sensitive query test
+  - `tests/test_scanner.py` (±20 lines): QA opt-in → opt-out 대응
+  - `README.md` (+45 lines): "A code search that learns" positioning, Memory Layer 표, 3-turn demo
+
+### 로드맵 진행률 업데이트
+
+전략 메모리의 3축 중:
+1. **Memory Layer** — 이번 세션에 **v1 완성** (write + index + boost + intent + sensitive filter). 다음은 v2 compounding 증명.
+2. **자율 루프** — Pattern Q1 (PreToolUse hook) 미착수. post-commit hook 이미 있음.
+3. **벤치마크** — valuein_gold 20 존재. compounding 숫자 아직 없음.
+
+Phase 5는 0.52로 동결. Phase 5 완성 선언 없이 다음 단계(Memory Layer v2 = compounding 벤치 또는 PreToolUse hook)로 진행. 제품 포지셔닝상 Phase 5 exit 숫자보다 Memory Layer 증명이 더 큰 레버리지.
+
+---
+
+## 🔵 이전 세션 인계 (2026-04-22, 21회차) — 참고용
+
+### 한줄 요약 (21회차)
 
 **Phase 5 Step K (module-member emission) 구현 + gold S3 acceptable_module_names 추가.** 구조 쿼리에서 한 모듈 안의 여러 파일을 리콜로 잡기 위해 비(非)카드 모듈의 대표 member 파일을 별도 `module_member` HybridResult로 emit. **구조 recall 0.41 → 0.52 (+0.11)**, top-5/reads 불변, overall recall 0.80 → 0.82. Phase 5 exit 4기준 중 3개 그린 유지, **structure recall만 0.52 < 0.55 목표에 0.03 미달**. S2/S3는 module-content 문제 (올바른 모듈이 search_modules 8-source 창 밖) — 이번 step으로 해결 불가, 다음 "Step L" 후보.
 
