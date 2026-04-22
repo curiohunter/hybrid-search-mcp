@@ -1,12 +1,19 @@
-"""Module-level search — Phase 5 Step 4.
+"""Module-level search — Phase 5 Step 4 + Step C vector fusion.
 
-Scores modules against a query using token overlap on a composed "module text"
-(name + summary + rationale + related doc paths + member filenames). Cheap
-enough to scan all project modules in-memory because there are typically only
-a few hundred.
+Scores modules against a query by blending two signals:
 
-Returns top-N ``ModuleRecord`` with a score > 0. Callers blend these into the
-hybrid response ahead of or alongside chunk results depending on query type.
+  - **token overlap** on a composed "module text" (name + summary + rationale
+    + related doc paths). The name column gets a strong boost so a module
+    whose name contains a query token beats any number of body mentions.
+  - **semantic cosine** between the query embedding and the module's
+    ``summary_vector`` (text-embedding-3-small, unit-normalized). Step C
+    rolled this in to bridge Korean NL ↔ English module names without
+    relying solely on the hand-curated alias list.
+
+Both signals are computed in-memory across all project modules — typically
+a few hundred, so this stays sub-millisecond.
+
+Returns top-N ``(ModuleRecord, score)`` with score > 0.
 """
 
 from __future__ import annotations
@@ -14,6 +21,8 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+
+import numpy as np
 
 from hybrid_search.storage.db import ModuleRecord, StoreDB
 
@@ -123,26 +132,53 @@ def module_text(m: ModuleRecord) -> str:
     return "\n".join(p for p in parts if p)
 
 
+# Cosine signal must outrank a bare body-overlap (1-3) but not a name-hit
+# (≥ 10). A unit cosine of 0.6 × VECTOR_WEIGHT ≈ 9 keeps a strongly-semantic
+# module ahead of mere token matches while still losing to the name match —
+# which is desirable because a module whose *name* already contains a query
+# token is an exceptionally reliable answer.
+VECTOR_WEIGHT = 15.0
+# Cosine floor — below this the semantic score contributes nothing. Avoids
+# noise from cross-language chatter pushing unrelated modules up.
+VECTOR_MIN_COSINE = 0.25
+
+
 def search_modules(
     db: StoreDB,
     project_id: str,
     query: str,
     limit: int = 3,
+    query_vector: np.ndarray | None = None,
 ) -> list[tuple[ModuleRecord, float]]:
+    """Score modules by token overlap; if a query vector is provided, blend in
+    semantic cosine so Korean NL ↔ English module-name gaps close without
+    requiring the alias map to know every pair."""
     tokens = tokenize(query)
-    if not tokens:
+    if not tokens and query_vector is None:
         return []
-    expanded = expand_with_aliases(tokens)
+    expanded = expand_with_aliases(tokens) if tokens else []
 
     modules = db.get_modules(project_id)
     if not modules:
         return []
 
+    use_vector = query_vector is not None
+    q = None
+    if use_vector:
+        q = np.asarray(query_vector, dtype=np.float32).reshape(-1)
+        # Guard: embeddings are unit-normalized by Embedder, but re-normalize
+        # defensively so tests can pass any vector shape.
+        norm = float(np.linalg.norm(q))
+        if norm > 0:
+            q = q / norm
+        else:
+            use_vector = False
+
     scored: list[tuple[ModuleRecord, float]] = []
     for m in modules:
         text = module_text(m).lower()
         name_low = (m.name or "").lower()
-        score = 0.0
+        token_score = 0.0
         for t in expanded:
             tl = t.lower()
             occ = text.count(tl)
@@ -151,9 +187,22 @@ def search_modules(
             # Name hit is the strongest signal that this module is the answer;
             # we want a single name-contained-token to beat several body mentions.
             if tl in name_low:
-                score += 10.0 + occ
+                token_score += 10.0 + occ
             else:
-                score += occ
+                token_score += occ
+
+        vec_score = 0.0
+        if use_vector and m.summary_vector:
+            try:
+                mv = np.frombuffer(m.summary_vector, dtype=np.float32)
+                if mv.size == q.size:
+                    cosine = float(np.dot(q, mv))
+                    if cosine >= VECTOR_MIN_COSINE:
+                        vec_score = cosine * VECTOR_WEIGHT
+            except (ValueError, TypeError):
+                pass
+
+        score = token_score + vec_score
         if score > 0:
             scored.append((m, score))
 

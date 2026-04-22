@@ -25,8 +25,14 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+import numpy as np
 
 from hybrid_search.storage.db import ModuleRecord, StoreDB
+
+if TYPE_CHECKING:
+    from hybrid_search.index.embedder import Embedder
 
 logger = logging.getLogger(__name__)
 
@@ -82,26 +88,104 @@ def synthesize_module(db: StoreDB, module: ModuleRecord) -> tuple[ModuleRecord, 
     return updated, True
 
 
-def synthesize_modules(db: StoreDB, project_id: str) -> dict:
+def synthesize_modules(
+    db: StoreDB,
+    project_id: str,
+    embedder: "Embedder | None" = None,
+) -> dict:
+    """Synthesize text cards, then optionally embed them (Phase 5 Step C).
+
+    The embedding pass is separate from the text-synth pass and uses its own
+    per-module hash (``vector_input_hash``) so an existing card whose text
+    didn't change this run still gets a vector on first Step-C rollout.
+    ``embedder=None`` preserves the old behavior for tests/offline callers.
+    """
     mods = db.get_modules(project_id)
     if not mods:
-        return {"modules": 0, "synthesized": 0, "skipped": 0}
+        return {"modules": 0, "synthesized": 0, "skipped": 0, "embedded": 0}
 
     synthesized = 0
     skipped = 0
+    post: dict[str, ModuleRecord] = {}
     with db.transaction() as conn:
         for m in mods:
             updated, changed = synthesize_module(db, m)
             if changed:
                 db.upsert_module(conn, updated)
                 synthesized += 1
+                post[m.id] = updated
             else:
                 skipped += 1
+                post[m.id] = m
+
+    embedded = _embed_modules(db, post, embedder) if embedder is not None else 0
     return {
         "modules": len(mods),
         "synthesized": synthesized,
         "skipped": skipped,
+        "embedded": embedded,
     }
+
+
+def _embed_modules(
+    db: StoreDB,
+    records: dict[str, ModuleRecord],
+    embedder: "Embedder",
+) -> int:
+    """Batch-embed cards whose text differs from the stored vector fingerprint.
+
+    Returns the count of modules (re-)embedded this pass. Non-fatal on
+    embedder errors — synthesis already succeeded; vectors are additive.
+    """
+    pending: list[tuple[str, str, str]] = []  # (module_id, text, input_hash)
+    for mid, m in records.items():
+        text = vector_input_text(m)
+        if not text:
+            continue
+        inp_hash = _vector_input_hash(text)
+        if m.vector_input_hash == inp_hash and m.summary_vector:
+            continue
+        pending.append((mid, text, inp_hash))
+
+    if not pending:
+        return 0
+
+    try:
+        vectors = embedder.embed_texts([t for _, t, _ in pending])
+    except Exception as e:  # noqa: BLE001 — embedding is non-fatal
+        logger.warning("Module embedding failed (non-fatal): %s", e)
+        return 0
+
+    written = 0
+    with db.transaction() as conn:
+        for (mid, _text, inp_hash), vec in zip(pending, vectors):
+            blob = np.asarray(vec, dtype=np.float32).tobytes()
+            db.update_module_vector(conn, mid, blob, inp_hash)
+            written += 1
+    return written
+
+
+def vector_input_text(m: ModuleRecord) -> str:
+    """Canonical text the embedding is computed over. Drops the [hash:…]
+    summary prefix so embedding input is stable across synth re-runs."""
+    parts: list[str] = []
+    if m.name:
+        parts.append(m.name)
+    if m.summary:
+        summ = m.summary
+        if summ.startswith("[hash:"):
+            end = summ.find("]")
+            if end != -1:
+                summ = summ[end + 1:].strip()
+        if summ:
+            parts.append(summ)
+    if m.rationale:
+        parts.append(m.rationale)
+    return "\n".join(parts)
+
+
+def _vector_input_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _input_hash(member_hash: str, chunks: list) -> str:
