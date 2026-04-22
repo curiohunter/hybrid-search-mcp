@@ -10,6 +10,9 @@ import numpy as np
 from hybrid_search.search.modules_search import (
     VECTOR_MIN_COSINE,
     VECTOR_WEIGHT,
+    _strip_korean_particle,
+    compute_alias_specificity,
+    expand_with_aliases,
     module_text,
     search_modules,
     tokenize,
@@ -42,6 +45,76 @@ def _upsert_module(db: StoreDB, **overrides) -> ModuleRecord:
     with db.transaction() as conn:
         db.upsert_module(conn, m)
     return m
+
+
+# ---------- Step H: selective particle strip ----------
+
+def test_strip_korean_particle_common_endings():
+    assert _strip_korean_particle("통계는") == "통계"
+    assert _strip_korean_particle("학원에서") == "학원"
+    assert _strip_korean_particle("학생이") == "학생"
+
+
+def test_strip_korean_particle_english_passes_through():
+    assert _strip_korean_particle("portal") is None
+    assert _strip_korean_particle("portal-v3") is None
+
+
+def test_expand_injects_alias_when_stem_is_specific(tmp_path):
+    """통계는 → 통계 (alias lookup finds stats, specificity = 1 on a
+    catalog with only a `stats` module) → `stats` gets injected."""
+    db = _make_db(tmp_path)
+    _upsert_module(db, name="stats")
+    _upsert_module(db, name="briefs")
+    spec = compute_alias_specificity(db.get_modules(PROJECT_ID))
+    out = expand_with_aliases(["월별", "통계는"], alias_specificity=spec)
+    assert "stats" in out
+    assert "통계" in out
+    assert "monthly" in out
+
+
+def test_expand_blocks_alias_when_target_is_generic(tmp_path):
+    """학생이 → 학생 stem has alias `student`. If `student` appears in
+    many module names, the gate blocks the cross-language injection to
+    avoid polluting queries where 학생 is just a generic subject noun."""
+    db = _make_db(tmp_path)
+    for nm in (
+        "students", "student-hub", "student-detail", "student-list",
+    ):
+        _upsert_module(db, name=nm)
+    spec = compute_alias_specificity(db.get_modules(PROJECT_ID))
+    out = expand_with_aliases(["학생이", "숙제"], alias_specificity=spec)
+    # Stem still added (Korean-on-Korean body match is safe).
+    assert "학생" in out
+    # But the cross-language alias is gated out.
+    assert "student" not in out
+    # Direct (non-strip) alias on 숙제 → homework is unaffected.
+    assert "homework" in out
+
+
+def test_expand_skips_stem_without_alias(tmp_path):
+    """Step H refinement: a particle-stripped stem that has no alias
+    (e.g., 시스템) adds nothing. Previously this injected noise —
+    generic Korean stems matched unrelated Korean prose docs."""
+    db = _make_db(tmp_path)
+    _upsert_module(db, name="consultations")
+    spec = compute_alias_specificity(db.get_modules(PROJECT_ID))
+    out = expand_with_aliases(["시스템은", "상담"], alias_specificity=spec)
+    # 시스템 has no alias → stem not added.
+    assert "시스템" not in out
+    # Direct alias on 상담 → consultation still fires.
+    assert "consultation" in out
+
+
+def test_compute_alias_specificity_counts_substring_matches(tmp_path):
+    db = _make_db(tmp_path)
+    _upsert_module(db, name="stats")
+    _upsert_module(db, name="students")
+    _upsert_module(db, name="student-hub")
+    spec = compute_alias_specificity(db.get_modules(PROJECT_ID))
+    assert spec["stats"] == 1
+    # "student" appears in both "students" and "student-hub".
+    assert spec["student"] == 2
 
 
 # ---------- tokenize ----------
