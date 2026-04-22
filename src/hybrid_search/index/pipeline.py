@@ -22,6 +22,7 @@ from hybrid_search.index.ast_chunker import CodeChunk, chunk_code_file
 from hybrid_search.index.callgraph import resolve_call_edges
 from hybrid_search.index.doc_chunker import chunk_doc_file
 from hybrid_search.index.embedder import Embedder
+from hybrid_search.index.modules import discover_modules
 from hybrid_search.index.scanner import (
     ScanResult,
     compute_file_hash,
@@ -252,6 +253,13 @@ class IndexingPipeline:
                 except Exception as e:
                     logger.warning("Call graph resolution failed (non-fatal): %s", e)
                     result.errors.append(f"call_graph_resolution: {e}")
+
+                try:
+                    mod_stats = discover_modules(db, project_id, abs_path)
+                    logger.info("Module discovery: %s", mod_stats)
+                except Exception as e:
+                    logger.warning("Module discovery failed (non-fatal): %s", e)
+                    result.errors.append(f"module_discovery: {e}")
 
             file_count = db.get_file_count(project_id)
             chunk_count = db.get_chunk_count(project_id)
