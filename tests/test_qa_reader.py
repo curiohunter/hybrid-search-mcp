@@ -286,3 +286,104 @@ class TestPruneOlderThan:
         result = reader.prune_older_than(project_root, cutoff)
         assert result.deleted == []
         assert result.dirs_removed == []
+
+
+class TestPruneKeepLatest:
+    def _age(self, path: Path, seconds_ago: float) -> None:
+        target = datetime.now(timezone.utc).timestamp() - seconds_ago
+        os.utime(path, (target, target))
+
+    def test_keep_all_when_under_ceiling(self, project_root: Path) -> None:
+        for i in range(3):
+            _write_log(project_root, f"q{i}")
+        result = reader.prune_keep_latest(project_root, keep_n=5)
+        assert result.deleted == []
+
+    def test_drops_oldest_beyond_ceiling(self, project_root: Path) -> None:
+        paths = []
+        for i in range(4):
+            p = _write_log(project_root, f"q{i}-unique-{i}")
+            # Age each progressively older so ordering is deterministic
+            self._age(p, 3600 * (4 - i))
+            paths.append(p)
+        # Newest is index 3 (age=3600s), oldest is index 0 (age=14400s)
+        result = reader.prune_keep_latest(project_root, keep_n=2)
+        surviving = {p.name for p in project_root.rglob("*.md")}
+        assert len(surviving) == 2
+        # The two newest (indices 2 and 3) should survive
+        assert paths[2].name in surviving
+        assert paths[3].name in surviving
+        # Exactly 2 deletions; dry_run=False
+        assert len(result.deleted) == 2
+
+    def test_dry_run(self, project_root: Path) -> None:
+        for i in range(3):
+            p = _write_log(project_root, f"q{i}-x{i}")
+            self._age(p, 3600 * (3 - i))
+        result = reader.prune_keep_latest(project_root, keep_n=1, dry_run=True)
+        assert len(result.deleted) == 2
+        # Files still on disk
+        assert len(list(project_root.rglob("*.md"))) == 3
+
+
+class TestAutoPrune:
+    def _age(self, path: Path, seconds_ago: float) -> None:
+        target = datetime.now(timezone.utc).timestamp() - seconds_ago
+        os.utime(path, (target, target))
+
+    def test_age_ceiling_alone(self, project_root: Path) -> None:
+        old = _write_log(project_root, "old-one")
+        self._age(old, 3600 * 24 * 100)  # 100d
+        recent = _write_log(project_root, "recent-one")
+        result = reader.auto_prune(project_root, retention_days=90, max_files=None)
+        assert old not in list(project_root.rglob("*.md"))
+        assert recent.exists()
+        assert len(result.deleted) == 1
+
+    def test_count_ceiling_alone(self, project_root: Path) -> None:
+        paths = []
+        for i in range(5):
+            p = _write_log(project_root, f"q{i}-tag{i}")
+            self._age(p, 100 * (5 - i))
+            paths.append(p)
+        result = reader.auto_prune(project_root, retention_days=None, max_files=2)
+        assert len(result.deleted) == 3
+        remaining = {p.name for p in project_root.rglob("*.md")}
+        assert len(remaining) == 2
+
+    def test_both_ceilings_no_double_count(self, project_root: Path) -> None:
+        # One very old, one recent. Age-prune removes the old one; count ceiling
+        # would also select it — but dedupe keeps result.deleted at length 1.
+        old = _write_log(project_root, "old-a")
+        self._age(old, 3600 * 24 * 100)
+        recent = _write_log(project_root, "recent-a")
+        result = reader.auto_prune(project_root, retention_days=90, max_files=5)
+        assert len(result.deleted) == 1
+        assert old not in list(project_root.rglob("*.md"))
+        assert recent.exists()
+
+    def test_both_ceilings_apply_independently(self, project_root: Path) -> None:
+        # 1 old beyond retention, 4 recent above count ceiling of 2.
+        old = _write_log(project_root, "very-old")
+        self._age(old, 3600 * 24 * 100)
+        recent_paths = []
+        for i in range(4):
+            p = _write_log(project_root, f"fresh-{i}")
+            self._age(p, 100 * (4 - i))
+            recent_paths.append(p)
+        result = reader.auto_prune(project_root, retention_days=90, max_files=2)
+        # old deleted by age; then count drops 2 more of the recents.
+        assert len(result.deleted) == 3
+        remaining = {p.name for p in project_root.rglob("*.md")}
+        assert len(remaining) == 2
+        # The 2 freshest survive (indices 2, 3 of recent_paths)
+        assert recent_paths[3].name in remaining
+        assert recent_paths[2].name in remaining
+
+    def test_dry_run_keeps_all_files(self, project_root: Path) -> None:
+        for i in range(3):
+            p = _write_log(project_root, f"q{i}-dry-{i}")
+            self._age(p, 3600 * 24 * 200)  # all old
+        result = reader.auto_prune(project_root, retention_days=90, max_files=1, dry_run=True)
+        assert len(result.deleted) == 3
+        assert len(list(project_root.rglob("*.md"))) == 3

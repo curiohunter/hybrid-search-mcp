@@ -363,11 +363,101 @@ def prune_older_than(
     if dry_run:
         return PruneResult(deleted=list(expired), skipped=[], dirs_removed=[])
 
+    return _delete_files(project_root, expired)
+
+
+def select_over_count(project_root: Path, keep_n: int) -> list[Path]:
+    """Return qa files beyond the ``keep_n`` newest by mtime (oldest-first).
+
+    Pair with ``prune_keep_latest`` for count-ceiling eviction — keeps the
+    fresh tail, drops the long-tail. Returns an empty list when total ≤ keep_n.
+    """
+    if keep_n < 0:
+        keep_n = 0
+    ranked: list[tuple[float, Path]] = []
+    for path in iter_qa_files(project_root):  # already newest-first
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        ranked.append((mtime, path))
+    if len(ranked) <= keep_n:
+        return []
+    # Keep the top keep_n (newest); the rest are candidates for eviction.
+    # iter_qa_files already returned newest-first, so slice after keep_n.
+    evict = [p for _, p in ranked[keep_n:]]
+    return evict
+
+
+def prune_keep_latest(
+    project_root: Path,
+    keep_n: int,
+    *,
+    dry_run: bool = False,
+) -> PruneResult:
+    """Keep only the ``keep_n`` newest qa files; delete the rest.
+
+    This is the count ceiling half of the journald-style retention policy:
+    pair with ``prune_older_than`` to enforce both age and count limits on
+    the same pass (whichever triggers first).
+    """
+    victims = select_over_count(project_root, keep_n)
+    if dry_run:
+        return PruneResult(deleted=list(victims), skipped=[], dirs_removed=[])
+    return _delete_files(project_root, victims)
+
+
+def auto_prune(
+    project_root: Path,
+    *,
+    retention_days: int | None = None,
+    max_files: int | None = None,
+    dry_run: bool = False,
+) -> PruneResult:
+    """Combined age-and-count prune. Either ceiling binds independently.
+
+    - ``retention_days`` — delete anything older than this many days.
+    - ``max_files`` — after age-prune, keep at most this many of the newest.
+
+    Passing ``None`` for either disables that ceiling. Returns a merged
+    ``PruneResult`` listing every file that would be (or was) removed.
+    """
+    merged_deleted: list[Path] = []
+    merged_skipped: list[Path] = []
+    merged_dirs: list[Path] = []
+
+    if retention_days is not None and retention_days > 0:
+        cutoff = resolve_cutoff(older_than=f"{retention_days}d")
+        age_result = prune_older_than(project_root, cutoff, dry_run=dry_run)
+        merged_deleted.extend(age_result.deleted)
+        merged_skipped.extend(age_result.skipped)
+        merged_dirs.extend(age_result.dirs_removed)
+
+    if max_files is not None and max_files >= 0:
+        count_result = prune_keep_latest(project_root, max_files, dry_run=dry_run)
+        # Avoid double-counting: filter out files already removed in the age pass.
+        already = set(merged_deleted)
+        for p in count_result.deleted:
+            if p in already:
+                continue
+            merged_deleted.append(p)
+        merged_skipped.extend(p for p in count_result.skipped if p not in already)
+        merged_dirs.extend(count_result.dirs_removed)
+
+    return PruneResult(
+        deleted=merged_deleted,
+        skipped=merged_skipped,
+        dirs_removed=merged_dirs,
+    )
+
+
+def _delete_files(project_root: Path, victims: list[Path]) -> PruneResult:
+    """Shared deletion path: unlink, rmdir empty YYYY/MM, preserve qa root."""
     deleted: list[Path] = []
     skipped: list[Path] = []
     dirs_removed: list[Path] = []
     qa_root = qa_dir(project_root)
-    for path in expired:
+    for path in victims:
         try:
             path.unlink()
             deleted.append(path)
