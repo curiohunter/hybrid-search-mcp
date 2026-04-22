@@ -2,7 +2,138 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-21, 17회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-04-22, 18회차) — 다음 세션 여기부터 읽을 것
+
+### 한줄 요약
+
+**Phase 4 (실전 벤치마크) + Phase 5 전체 5 step (Subsystem-first Retrieval) 한 세션 shipped.** Plan doc(`docs/plan/2026-04-21-memory-layer-10x.md`)대로 Phase 1~5 모두 완전 구현 완료. Phase 4에서 valuein_homepage 1307 files 대상 골드셋 20개 + 자동 벤치마크 러너 작성, hybrid 대 naive grep 2.0× primary top-5·1.8× recall@10 확보. Phase 4 리포트에서 **structure recall@10 = 0.22** 근본 문제 발견 → 원인 "검색 리턴 단위가 chunk인데 사용자 답변 단위는 subsystem" 진단 → plan doc에 Phase 5 "Subsystem-first Retrieval" 5 step 구조로 재작성하고 그대로 shipped. Step 2 module discovery (heuristic: directory + doc-mention strict merge, 161 modules 발견), Step 3 deterministic module card synthesis (no LLM, hash-skip), Step 4 SearchOrchestrator에 module injection + 25 Korean↔English alias + interleave placement, Step 5 benchmark v2 리포트 + README 갱신. **631/631 passed (+51)**. 재측정 결과 structure recall 0.22→0.41 (≈2×), exploration 0.47→0.67, precision/rationale 1.00 유지. 단 module 주입으로 read_count 3.65→4.60 회귀 (근본 원인 identification honest). 커밋 6개 origin/main 대비 로컬 only(`ae41de2` Step1 → `ba71d80` Step5).
+
+### ✅ 이 세션 완료된 것 (18회차)
+
+**1. Phase 4 — valuein_homepage 실전 벤치마크 (커밋 `2dcc198`)**
+- `benchmarks/valuein_gold.json` — 20 쿼리 (structure/exploration/precision/rationale × 5)
+- `benchmarks/run_valuein_bench.py` — hybrid vs naive token-bag grep 자동 러너
+- `benchmarks/valuein_report_2026-04-22.md` — 전체 리포트 + caveats
+- README "Real-world benchmark" 섹션 신설
+- 핵심 숫자 (20 gold queries, top-10): hybrid primary top-5 0.65 vs grep 0.35, recall@10 0.67 vs 0.37
+- **structure 카테고리 recall@10 = 0.22**라는 근본 문제 명시
+
+**2. Phase 5 Step 1 — Agent-cost proxy 지표 + plan doc 재구조 (커밋 `ae41de2`)**
+- `run_valuein_bench.py`에 `snippet_bytes` / `read_count_estimate` / `context_pack_bytes` 추가
+- Plan doc 완전 재구조: Phase 1-4 status stamp + 새 Phase 5 "Subsystem-first Retrieval" 5 step 상세 + 옛 Phase 5 → Phase 6 deferred
+- 10× 경쟁 축 재정의: "agent turn/token 효율"이며 그래프 정교함 아님
+
+**3. Phase 5 Step 2 — Module discovery + DB v6 (커밋 `8c33b9b`, +19 tests)**
+- `src/hybrid_search/index/modules.py` 신설. Heuristic signals:
+  - Directory prefix (container dirs `src/app/components/lib` strip, leaf dir가 module key)
+  - Doc-code mentions (strict rule: 모든 mention이 한 module key로 resolve될 때만 merge. Plurality/N-way는 chain-merge로 super-module 생성해서 reject)
+- DB v6 migration: `modules(id,project_id,name,summary,entry_points,depends_on,related_docs,rationale,signals,member_hash,updated_at)` + `file_modules(file_id,module_id,weight,project_id)` (code 1.0, doc 0.5)
+- `ModuleRecord` dataclass + 10여 개 DB method (upsert/get/search/delete)
+- `pipeline.py`에서 `resolve_call_edges` 뒤에 `discover_modules` 호출 (non-fatal)
+- 실측: valuein_homepage 161 modules, key subsystems(portal-v3 6/tuition 8/tuition-session 8/tuition-wizard 6/remote-room 13/homework-analysis 11/consultations 6/entrance-tests 6/admissions 2) 모두 별도 모듈
+
+**4. Phase 5 Step 3 — Module card synthesis (커밋 `5a74df6`, +11 tests)**
+- `src/hybrid_search/index/module_synth.py` 신설. LLM-free 결정론:
+  - `summary`: 가장 긴 chunk docstring head + member filenames, fallback = name + file list
+  - `entry_points`: top-5 chunks by docstring length + node_type preference (function/class/method/export > statement/block)
+  - `depends_on`: call_edges로 다른 module_id 도달
+  - `rationale`: Phase 3 M10 docstring에서 NOTE/WHY/TODO/FIXME/HACK/XXX dedup
+- Hash-based skip: summary 앞에 `[hash:v1:xxx]` prefix. 재합성은 delta pass
+- 실측: 161/161 synthesized, 2개 module rationale 있음
+
+**5. Phase 5 Step 4 — Module-first retrieval (커밋 `ca9ccbd`, +21 tests)**
+- `src/hybrid_search/search/modules_search.py` 신설:
+  - `search_modules(db, project_id, query, limit)` — 토큰 overlap 스코어, name 포함 시 +10 부스트 + occ tie-break
+  - `module_text()` — summary의 `[hash:]` prefix strip
+  - 25쌍 Korean↔English alias (`포털↔portal`, `수강료↔tuition`, `학생↔student` 등) — 한국어 NL 쿼리와 영어 module name 브리지
+- `SearchOrchestrator`:
+  - `HybridResult.module_id` optional 필드
+  - `_module_results_for_query(qtype, query, projects)` — query_type별 slot (`KOREAN_NL=3`, `ENGLISH_NL=2`, `EXACT_SYMBOL=0`)
+  - `_interleave_modules()` — 위치 1/3/5에 module, top chunk는 위치 2 보존 (rationale 쿼리에서 plan doc이 밀리지 않게)
+  - `_module_representative_path()` — entry_points[0].file → related_docs[0] → first member
+- `test_orchestrator.py`에 `_module_results_for_query` stub (mock path로 실제 파일 생성 방지)
+
+**6. Phase 5 Step 5 — Report v2 + README (커밋 `ba71d80`)**
+- `benchmarks/valuein_report_v2_2026-04-22.md`: Phase 4 vs Phase 5 delta + per-category + target readback (2/4 그린, 2/4 미달) + 정직한 failure mode 분석
+- README "Real-world benchmark" 섹션 Phase 5 숫자로 갱신 (recall@10 0.77 vs grep 0.37 → 2.1×)
+
+**7. 테스트 상태**
+- 580 (17회차) → 599 (Step 2) → 610 (Step 3) → 630 (Step 4) → 631 (+interleave 테스트 추가) = **+51 cases**
+- 회귀 0
+- Step 4 구현 중 mock test가 실제 filesystem에 `<MagicMock ...>` 이름의 junk 파일 16개 생성 → 제거 + orchestrator 테스트에 stub 추가로 재발 방지
+
+### 🎯 다음 세션 진입점
+
+1. **이 18회차 섹션 전체**
+2. `docs/plan/2026-04-21-memory-layer-10x.md` Phase 5 섹션 — "What's next after Phase 5" 4개 항목이 구현 백로그
+3. `benchmarks/valuein_report_v2_2026-04-22.md` "What didn't work" 섹션 — 각 failure mode가 업그레이드 target
+4. `git log --oneline -7` + `git status` — 로컬 +6 커밋, **push 여부 사용자 확인 필요**
+5. 아래 "다음 세션 권장 순서"
+
+### 🎯 다음 세션 권장 순서
+
+**사용자 지시:** "완전 구현 후 부족한걸 테스트 해가면서 업그레이드할거야" → Phase 1-5 구현은 끝. 이제 **측정된 gap을 좁히는 반복 사이클**.
+
+**Phase 5 gap 채우기 (우선순위 순):**
+
+**Step A (1일) — Per-category intent routing.** rationale 쿼리가 module 주입으로 read_count 1.6→4.0 회귀. `search/orchestrator.py`의 `_module_slots_for(qtype)`에 "rationale" 감지 분기 추가. Korean NL 쿼리 중 "이유/왜/배경/설계/목적" 토큰 있으면 0 slot. 기대: read_count 4.60 → ~3.5.
+- 대상: `_module_slots_for` + 새 `_has_rationale_signal(query)` helper
+- 테스트: 왜/이유 포함 KOREAN_NL 쿼리 slot=0 검증
+- 재측정 기대: rationale 카테고리 reads 4.00 → ~2.40 복원
+
+**Step B (반나절) — Gold-set v2: module as valid primary_target.** structure 카테고리 top-1 0.00 문제. 모듈 카드가 맞는 답인데 gold가 단일 파일을 요구. `valuein_gold.json`에 `acceptable_module_names` 옵션 필드 추가 → `run_valuein_bench.py` score_query가 module 히트도 primary로 인정.
+- 대상: `benchmarks/valuein_gold.json` + `run_valuein_bench.py`
+- 기대: structure top-1 0.00 → 0.40+, top-5 0.60 → 0.80+
+
+**Step C (3~5일) — Module card vector embedding.** alias 25개 하드코딩 제거. module synthesis 시점에 card 텍스트 embed → `modules.summary_vector` 컬럼 (BLOB) 추가. `search_modules`가 vector 코사인도 사용. 다른 프로젝트에도 자동 적용 가능.
+- 대상: DB v7 migration + `module_synth.py` 임베딩 저장 + `modules_search.py` vector path
+- 의존: 기존 embedder 재사용 (외부 API 키 불필요하면 OK)
+- 기대: exploration recall 0.67 → 0.75+, structure recall 0.41 → 0.55+ (목표치 달성)
+
+**Step D (반나절) — Agent-in-loop 파일럿 5쿼리.** 자동 proxy만 있고 실측 턴/토큰 없음. Claude Code 세션에서 structure/exploration 각 2~3개 수동 실행, 대화 로그 캡처, 실제 Read 호출 수 집계. 리포트 "Agent-in-loop measurement" 섹션 신설.
+- 파일럿 샘플: S2 (학부모 포털) / F2 (월별 통계) / R4 (AI 콘텐츠 팩토리) 포함
+
+**Step E (선택) — Phase 6 L4 watchdog / L5 two-tier.** Phase 5 gap 다 채운 후 실사용 피드백 보고.
+
+**순서:** A (즉효, 1일) → B (즉효, 반나절) → 재측정 → C (큰 잠재력, 3~5일) → 재측정 → D (파일럿) → E (선택). 총 1~2주.
+
+**push 관련:** 18회차 6 커밋 로컬만. 다음 세션 시작 시 `git push origin main` 먼저 할지, Step A/B 마친 후 묶어 push 할지 사용자 확인.
+
+### 주의사항 / 알려진 이슈
+
+- **Phase 5 module 주입은 rationale 카테고리에 read_count 회귀 동반 (3.65→4.60).** 의도된 trade-off는 아님 — rationale intent 라우팅(Step A)으로 복원 가능. 현재는 interleave (1/3/5 position)로 완화했지만 근본 해결은 아님.
+- **Structure top-1 0.00 드롭**은 gold set 정의 issue (module이 맞는 답인데 file을 가리킴). Step B로 해결.
+- **Alias 25개 하드코딩**은 다른 코드베이스엔 각자 사전 필요. Step C (vector embedding)이 근본. 현재 alias는 valuein_homepage 도메인 한정.
+- **DB v5 → v6 migration은 실 DB에서 smoke 통과했지만** 다른 프로젝트(breeze/mathontonlogy/hybrid-search-mcp)는 재인덱싱 안 해봄. 세 프로젝트 중 하나에서 Step A 재측정 시 자동 migration 확인 권장.
+- **Module discovery는 idempotent**지만 member_hash가 파일 rel_path 집합만 반영. 파일 내용 변경은 synthesis의 `inp_hash`가 잡음. 두 hash의 역할 분리 기억.
+- **Junk file 재발 방지:** orchestrator mock 테스트에서 `_module_results_for_query`를 stub 안 하면 `<MagicMock ...>` 이름으로 repo root에 파일 생성됨. `tests/test_orchestrator.py` `_make_orchestrator`에 stub 있음 확인.
+- **17회차 잔존 이슈:** v4 → v5 미검증 프로젝트 3개 (지금 v6까지 있으니 더 민감).
+
+### 마지막 상태
+
+- **브랜치:** `main` — origin/main 기준 로컬 +6 (18회차 커밋 전부 미푸시)
+- **마지막 커밋:** `ba71d80 [docs] Phase 5 Step 5 — benchmark report v2 + README update`
+- **테스트:** **631/631 passed** (25s) — 17회차 580 + 18회차 +51 (Phase 4 0 + Step2 19 + Step3 11 + Step4 21)
+- **변경 파일 (18회차, 6 커밋 합계):**
+  - Phase 4 (`2dcc198`): `benchmarks/valuein_gold.json` (신규), `benchmarks/run_valuein_bench.py` (신규), `benchmarks/valuein_report_2026-04-22.md` (신규), `benchmarks/valuein_results.json`, `README.md`
+  - Phase 5 Step 1 (`ae41de2`): `benchmarks/run_valuein_bench.py` (지표 추가), `benchmarks/valuein_report_2026-04-22.md` (baseline 섹션), `docs/plan/2026-04-21-memory-layer-10x.md` (전면 재구조), `benchmarks/valuein_results.json`
+  - Phase 5 Step 2 (`8c33b9b`): `src/hybrid_search/index/modules.py` (신규 +246), `src/hybrid_search/index/pipeline.py` (+8), `src/hybrid_search/storage/db.py` (v6 migration + ModuleRecord + 10 methods), `tests/test_modules.py` (신규 19 cases)
+  - Phase 5 Step 3 (`5a74df6`): `src/hybrid_search/index/module_synth.py` (신규 +181), `src/hybrid_search/index/pipeline.py` (+8), `tests/test_module_synth.py` (신규 11 cases)
+  - Phase 5 Step 4 (`ca9ccbd`): `src/hybrid_search/search/modules_search.py` (신규 +130), `src/hybrid_search/search/orchestrator.py` (+190 module injection), `tests/test_modules_search.py` (신규 10 cases), `tests/test_module_injection.py` (신규 8 cases), `tests/test_orchestrator.py` (+1 stub)
+  - Phase 5 Step 5 (`ba71d80`): `benchmarks/valuein_report_v2_2026-04-22.md` (신규), `README.md` (Real-world benchmark 섹션 갱신)
+
+### 로드맵 진행률 업데이트
+
+17회차 31/33 (94%). 18회차 +2 (Phase 4 + Phase 5) = **33/33 (100%) plan doc 완전 구현**. 다만 Phase 5 목표치 4개 중 2개 미달이므로 **실효 완성은 gap 4 step (A/B/C/D) 소화 후**. 남은 것:
+- Step A: rationale routing (1일, read_count 회복)
+- Step B: gold v2 (반나절, structure top-1 회복)
+- Step C: module card embedding (3~5일, 근본적으로 alias 제거 + target 달성)
+- Step D: agent-in-loop 파일럿 (반나절, 진짜 10× 증거)
+- Phase 6 L4/L5 (선택)
+
+---
+
+## 🔵 이전 세션 인계 (17회차) — 참고용
 
 ### 한줄 요약
 
