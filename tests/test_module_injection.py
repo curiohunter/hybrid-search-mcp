@@ -5,6 +5,7 @@ from __future__ import annotations
 from hybrid_search.search.orchestrator import (
     HybridResult,
     QueryType,
+    _has_rationale_signal,
     _interleave_modules,
     _module_slots_for,
 )
@@ -42,6 +43,63 @@ def test_slots_english_nl_two():
 
 def test_slots_exact_symbol_zero():
     assert _module_slots_for(QueryType.EXACT_SYMBOL) == 0
+
+
+# ---------- _has_rationale_signal / rationale routing ----------
+
+def test_rationale_signal_korean_iyu():
+    assert _has_rationale_signal("portal v3로 리팩토링하는 이유는 무엇인가")
+
+
+def test_rationale_signal_korean_bae_gyeong():
+    assert _has_rationale_signal("ledger writepath ABC 설계를 택한 배경은")
+
+
+def test_rationale_signal_korean_mokjeok():
+    assert _has_rationale_signal("AI 콘텐츠 팩토리를 만드는 목적")
+
+
+def test_rationale_signal_korean_wae_token():
+    assert _has_rationale_signal("entrance test 관리 플랜은 왜 세워졌나")
+
+
+def test_rationale_signal_english_why():
+    assert _has_rationale_signal("why we chose portal v3")
+
+
+def test_rationale_signal_english_rationale_word_boundary():
+    assert _has_rationale_signal("rationale for the write-path refactor")
+
+
+def test_rationale_signal_english_not_inside_word():
+    # "multipurpose" must not fire — word-boundary required
+    assert not _has_rationale_signal("multipurpose sorter component")
+
+
+def test_rationale_signal_negative_structure_query():
+    assert not _has_rationale_signal("수강료 정산 시스템은 어떻게 구성되어 있나")
+    assert not _has_rationale_signal("월별 학원 통계는 어떻게 집계되나")
+    assert not _has_rationale_signal("학부모 학생 포털 인증 및 레이아웃 흐름")
+
+
+def test_rationale_signal_negative_exploration_query():
+    assert not _has_rationale_signal("변형 문제 variant problems 생성 로직")
+    assert not _has_rationale_signal("출결 관리 기능은 어디에 있나")
+
+
+def test_slots_korean_nl_rationale_returns_zero():
+    # With rationale signal, a Korean NL query should skip module injection.
+    assert _module_slots_for(QueryType.KOREAN_NL, "portal v3 리팩토링 이유") == 0
+    assert _module_slots_for(QueryType.KOREAN_NL, "왜 tuition hub를 만드는가") == 0
+
+
+def test_slots_english_nl_rationale_returns_zero():
+    assert _module_slots_for(QueryType.ENGLISH_NL, "why did we pick portal v3") == 0
+
+
+def test_slots_korean_nl_non_rationale_unchanged():
+    # Structure/exploration queries keep the Korean NL default of 3 slots.
+    assert _module_slots_for(QueryType.KOREAN_NL, "수강료 정산 시스템 구조") == 3
 
 
 # ---------- _interleave_modules ----------
