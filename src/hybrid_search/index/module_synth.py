@@ -38,9 +38,17 @@ logger = logging.getLogger(__name__)
 
 _TOP_ENTRY_POINTS = 5
 _SUMMARY_MAX_CHARS = 480
+# Per-doc excerpt cap. Two-ish short doc excerpts + a docstring should fit in
+# ~1.2 KB of card text — still well under what a single chunk snippet would
+# cost the agent to read.
+_DOC_EXCERPT_MAX_CHARS = 320
+_DOC_EXCERPT_TOP_N = 2
 _RATIONALE_TAG_RE = re.compile(
     r"(?mi)^\s*(?:#|//|/\*|\*)?\s*(NOTE|WHY|TODO|FIXME|HACK|XXX)\s*[:\-]\s*(.+?)\s*$"
 )
+# Markdown node_types produced by doc_chunker. Kept as a module-level constant
+# so _compose_summary and tests share the definition.
+_DOC_NODE_TYPES = frozenset({"section", "block", "qa_log"})
 
 
 def synthesize_module(db: StoreDB, module: ModuleRecord) -> tuple[ModuleRecord, bool]:
@@ -202,9 +210,24 @@ def _input_hash(member_hash: str, chunks: list) -> str:
 
 
 def _compose_summary(name: str, file_ids: list[str], chunks: list, db: StoreDB) -> str:
-    """Pick best docstring; fallback to name + filenames."""
+    """Compose a module summary from two independent sources:
+
+    1. **Related-doc excerpts** — the leading paragraph of the top-N largest
+       markdown section chunks that belong to this module. This is what
+       Step F adds: S2/S5 failure modes traced back to module cards that
+       talked only about code identifiers ("portal shell rendering") while
+       the feature doc said "학부모/parent" — now both live in the card.
+    2. **Best code docstring** — longest non-doc docstring among member
+       chunks, the previous sole summary source.
+
+    Both streams are trimmed and joined so downstream search (token overlap
+    *and* vector cosine) sees domain language alongside implementation terms.
+    """
+    doc_excerpts = _collect_doc_excerpts(chunks)
     best_doc = ""
     for c in chunks:
+        if c.node_type in _DOC_NODE_TYPES:
+            continue
         if c.docstring and len(c.docstring) > len(best_doc):
             best_doc = c.docstring
     file_names = []
@@ -213,10 +236,49 @@ def _compose_summary(name: str, file_ids: list[str], chunks: list, db: StoreDB) 
         if fr:
             file_names.append(fr.relative_path.rsplit("/", 1)[-1])
     files_blurb = ", ".join(file_names)
+
+    body_parts: list[str] = []
+    if doc_excerpts:
+        body_parts.append("Docs:\n" + "\n---\n".join(doc_excerpts))
     if best_doc:
         head = best_doc.strip().split("\n\n", 1)[0][:_SUMMARY_MAX_CHARS]
-        return f"Module `{name}` — {head}\n\nMembers: {files_blurb}"
+        body_parts.append(f"Code: {head}")
+
+    if body_parts:
+        body = "\n\n".join(body_parts)
+        return f"Module `{name}` — {body}\n\nMembers: {files_blurb}"
     return f"Module `{name}` with {len(file_ids)} files: {files_blurb}"
+
+
+def _collect_doc_excerpts(chunks: list) -> list[str]:
+    """Pull the leading paragraph from up to ``_DOC_EXCERPT_TOP_N`` doc
+    sections, picked by content length as a proxy for "substantive section".
+
+    Strips trailing whitespace and caps each excerpt at
+    ``_DOC_EXCERPT_MAX_CHARS`` so the composite card stays compact. Skips
+    qa_log chunks — those are search artifacts, not feature documentation.
+    """
+    doc_chunks = [
+        c for c in chunks
+        if c.node_type in _DOC_NODE_TYPES
+        and c.node_type != "qa_log"
+        and (c.content or "").strip()
+    ]
+    if not doc_chunks:
+        return []
+    doc_chunks.sort(key=lambda c: -len(c.content or ""))
+    excerpts: list[str] = []
+    seen_heads: set[str] = set()
+    for c in doc_chunks[: _DOC_EXCERPT_TOP_N * 3]:  # scan a small window
+        head = (c.content or "").strip().split("\n\n", 1)[0]
+        head = head[:_DOC_EXCERPT_MAX_CHARS].strip()
+        if not head or head in seen_heads:
+            continue
+        seen_heads.add(head)
+        excerpts.append(head)
+        if len(excerpts) >= _DOC_EXCERPT_TOP_N:
+            break
+    return excerpts
 
 
 def _pick_entry_points(chunks: list) -> list[str]:
