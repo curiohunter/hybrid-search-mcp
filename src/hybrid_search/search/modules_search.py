@@ -79,6 +79,58 @@ for k, v in _ALIAS_PAIRS:
     _ALIAS_MAP.setdefault(k, []).append(v)
     _ALIAS_MAP.setdefault(v, []).append(k)
 
+# Step H: Korean particles (조사). Stripped stems give the alias map a
+# chance to fire on NL queries like "통계는" → "통계" → "stats".
+_KOREAN_PARTICLES = (
+    "는", "은", "이", "가", "을", "를", "의", "에", "도", "만",
+    "로", "랑", "과", "와", "까지", "부터", "에서", "에게",
+)
+
+# When a particle-stripped token pulls in a cross-language alias, we
+# inject the alias only if that alias is *specific* — i.e. it appears
+# as a substring in at most this many module names. "stats" (1 match)
+# passes; "student" (matches student-hub / students / …) is blocked.
+# Found empirically on valuein_homepage: ≤ 3 preserves every specific
+# domain noun the gold set cares about without re-introducing the
+# generic-noun regression the naive strip triggered.
+_MAX_ALIAS_MODULE_MATCHES = 3
+
+
+def _is_korean(tok: str) -> bool:
+    return bool(tok) and all("가" <= ch <= "힣" for ch in tok)
+
+
+def _strip_korean_particle(tok: str) -> str | None:
+    """Return a shorter form if the token ends in a common particle and
+    the stripped stem is still ≥ 2 Hangul chars; else None. Only applies
+    to pure-Hangul tokens — English/code tokens stay as-is."""
+    if not _is_korean(tok):
+        return None
+    for p in _KOREAN_PARTICLES:
+        if len(tok) > len(p) + 1 and tok.endswith(p):
+            stem = tok[: -len(p)]
+            if len(stem) >= 2:
+                return stem
+    return None
+
+
+def compute_alias_specificity(modules) -> dict[str, int]:
+    """Count, per alias form, how many module names contain it as a
+    substring. Feeds ``expand_with_aliases`` so particle-stripped
+    cross-language aliases only fire when the target alias is narrow
+    enough to actually disambiguate (e.g. ``stats`` but not ``student``).
+    Computed once per ``search_modules`` call — negligible cost at
+    a few hundred modules."""
+    names = [((m.name or "").lower()) for m in modules]
+    counts: dict[str, int] = {}
+    all_forms: set[str] = set()
+    for k, v in _ALIAS_PAIRS:
+        all_forms.add(k.lower())
+        all_forms.add(v.lower())
+    for form in all_forms:
+        counts[form] = sum(1 for n in names if form and form in n)
+    return counts
+
 
 def tokenize(query: str) -> list[str]:
     out = []
@@ -92,16 +144,55 @@ def tokenize(query: str) -> list[str]:
     return out
 
 
-def expand_with_aliases(tokens: list[str]) -> list[str]:
-    """Add bilingual aliases so Korean NL queries can match English module names."""
+def expand_with_aliases(
+    tokens: list[str],
+    alias_specificity: dict[str, int] | None = None,
+) -> list[str]:
+    """Add bilingual aliases so Korean NL queries can match English module
+    names.
+
+    Step H: Korean tokens also contribute their particle-stripped stems
+    (통계는 → 통계) so the alias lookup catches base nouns that would
+    otherwise miss due to trailing particles on NL phrasing. The
+    *cross-language alias* produced by stripping is only injected when
+    ``alias_specificity`` tells us it's narrow (≤
+    ``_MAX_ALIAS_MODULE_MATCHES`` module-name substring matches).
+    Generic-noun aliases like "student" — which would promote
+    student-adjacent modules for every query that happens to contain
+    "학생이" — are thereby blocked. The stem itself is always added so
+    Korean direct-match on module content still improves.
+    """
     seen: list[str] = []
+
+    def _add(val: str) -> None:
+        if val and val not in seen:
+            seen.append(val)
+
     for t in tokens:
         key = t.lower()
-        if key not in seen:
-            seen.append(key)
+        _add(key)
         for alias in _ALIAS_MAP.get(key, ()):
-            if alias not in seen:
-                seen.append(alias)
+            _add(alias)
+
+        stripped = _strip_korean_particle(t)
+        if not stripped:
+            continue
+        sk = stripped.lower()
+        aliases = _ALIAS_MAP.get(sk, ())
+        # Only act on the stem when it actually reaches the alias map —
+        # otherwise adding it just injects a generic Korean body-match
+        # ("시스템", "예약") that promotes unrelated Korean prose docs.
+        # The stem itself and any cross-language alias only contribute
+        # signal in tandem with the alias map.
+        if not aliases:
+            continue
+        _add(sk)
+        for alias in aliases:
+            if alias_specificity is not None:
+                matches = alias_specificity.get(alias.lower(), 0)
+                if matches > _MAX_ALIAS_MODULE_MATCHES:
+                    continue
+            _add(alias)
     return seen
 
 
@@ -156,11 +247,19 @@ def search_modules(
     tokens = tokenize(query)
     if not tokens and query_vector is None:
         return []
-    expanded = expand_with_aliases(tokens) if tokens else []
 
     modules = db.get_modules(project_id)
     if not modules:
         return []
+
+    # Specificity gate data for alias expansion — computed once per
+    # search so particle-stripped aliases only inject when they're
+    # actually narrow.
+    specificity = compute_alias_specificity(modules) if tokens else None
+    expanded = (
+        expand_with_aliases(tokens, alias_specificity=specificity)
+        if tokens else []
+    )
 
     use_vector = query_vector is not None
     q = None
