@@ -274,13 +274,37 @@ class SearchOrchestrator:
                 db.close()
 
         hits.sort(key=lambda x: -x[2])
+        # Step J: derive query tokens per-project so each module's rep
+        # path is picked to align with the query — SQL migration wins
+        # over API route when the query says "monthly stats", not vice
+        # versa. The specificity gate (Step H) runs over each project's
+        # own catalog so generic-noun aliases don't pull member files
+        # with tangential matches (learned from F1: query 학생이 was
+        # dragging student-analysis.md to rep when the real module is
+        # homework-analysis).
+        from hybrid_search.search.modules_search import compute_alias_specificity
+        query_tokens_by_project: dict[str, set[str]] = {}
+        for pinfo in project_infos:
+            project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
+            idx_paths = IndexPaths(project_dir)
+            if not idx_paths.store_db.exists():
+                continue
+            db = StoreDB(idx_paths.store_db)
+            try:
+                spec = compute_alias_specificity(db.get_modules(pinfo.id))
+            finally:
+                db.close()
+            query_tokens_by_project[pinfo.id] = _derive_query_tokens(
+                query, alias_specificity=spec,
+            )
         results: list[HybridResult] = []
         for pinfo, m, _score in hits:
             project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
             idx_paths = IndexPaths(project_dir)
             db = StoreDB(idx_paths.store_db)
             try:
-                file_path = _module_representative_path(db, m)
+                qtoks = query_tokens_by_project.get(pinfo.id, set())
+                file_path = _module_representative_path(db, m, qtoks)
                 results.append(HybridResult(
                     chunk_id=f"module:{m.id}",
                     rrf_score=0.0,
@@ -628,11 +652,28 @@ def _interleave_modules(
     return result
 
 
-def _module_representative_path(db: StoreDB, m: ModuleRecord) -> str:
+def _module_representative_path(
+    db: StoreDB,
+    m: ModuleRecord,
+    query_tokens: set[str] | None = None,
+) -> str:
     """Pick a single file_path that best 'locates' this module for clients.
 
-    Priority: first entry_point's file → first related_doc → first member file.
+    When ``query_tokens`` is provided (Step J), prefer the member file whose
+    filename tokens overlap the query tokens most. This is how the ``stats``
+    module, when surfaced for the F2 query "월별 학원 통계", points at
+    ``create_academy_monthly_stats.sql`` (3-way token overlap) rather than
+    the documentationally-richer but topically-unrelated
+    ``app/api/brand-settings/stats/route.ts``.
+
+    Fallback priority (no query tokens or zero overlap):
+      first entry_point's file → first related_doc → first member file.
     """
+    if query_tokens:
+        best = _query_aware_rep_member(db, m, query_tokens)
+        if best is not None:
+            return best
+
     if m.entry_points:
         try:
             ep = json.loads(m.entry_points)
@@ -657,6 +698,111 @@ def _module_representative_path(db: StoreDB, m: ModuleRecord) -> str:
         if fr:
             return fr.relative_path
     return m.name or "module"
+
+
+_DOC_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".txt"})
+
+
+def _query_aware_rep_member(
+    db: StoreDB,
+    m: ModuleRecord,
+    query_tokens: set[str],
+) -> str | None:
+    """Among this module's member files, pick the one whose filename
+    tokens overlap the query tokens best.
+
+    Tie-break order:
+      1. Higher overlap wins (primary).
+      2. Code member wins over doc member. Agents that surface a
+         subsystem card want the implementation location; the doc is
+         already discoverable via the chunk results (recall@10) and
+         the related_docs field, so a tied doc would only steal the
+         representative slot from a code file that belongs there.
+         This recovers F1/F3 recall — the attendance card points at
+         ``attendance/makeup-checkin-dialog.tsx``, not the feature
+         markdown — while still letting F2 point at
+         ``create_academy_monthly_stats.sql`` (the SQL is code).
+      3. Shorter path wins (more specific member, fewer ancestor dirs).
+
+    Returns None when no member scores ≥ 1 — caller falls back to the
+    fixed-priority rule.
+    """
+    file_ids = db.get_files_by_module(m.id)
+    if not file_ids:
+        return None
+    candidates: list[tuple[int, int, int, str]] = []  # (score, is_code, -len, path)
+    for fid in file_ids:
+        fr = db.get_file(fid)
+        if fr is None:
+            continue
+        ftoks = _filename_token_set(fr.relative_path)
+        if not ftoks:
+            continue
+        score = len(ftoks & query_tokens)
+        if score == 0:
+            continue
+        is_code = 0 if Path(fr.relative_path).suffix.lower() in _DOC_SUFFIXES else 1
+        candidates.append((score, is_code, -len(fr.relative_path), fr.relative_path))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][3]
+
+
+_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _filename_token_set(rel_path: str) -> set[str]:
+    """Lowercase alnum tokens from filename stem, split on hyphen /
+    underscore / camelCase boundaries, length ≥ 3. Used to score
+    member-vs-query overlap for the query-aware representative-path
+    pick (Step J).
+
+    camelCase split matters: ``HomeworkTab.tsx`` → {homework, tab}. Without
+    this, a .tsx code member never produced matching tokens and the
+    query-aware rep path defaulted to markdown siblings whose hyphenated
+    names happened to tokenize — F1's homework-analysis rep drifted to
+    a feature .md because ``HomeworkTab`` collapsed to one blob.
+    """
+    stem = Path(rel_path).stem
+    # Drop leading date (e.g., 20260327_).
+    stem = re.sub(r"^\d{6,14}_?", "", stem)
+    # Split on hyphen / underscore first.
+    hyphen_parts = re.split(r"[-_]+", stem)
+    out: set[str] = set()
+    for hp in hyphen_parts:
+        # Then split each piece on camelCase boundaries.
+        for cp in _CAMEL_SPLIT_RE.split(hp):
+            cp = cp.lower()
+            if len(cp) >= 3 and cp.isalnum():
+                out.add(cp)
+    return out
+
+
+def _derive_query_tokens(
+    query: str,
+    alias_specificity: dict[str, int] | None = None,
+) -> set[str]:
+    """Expand the query into a set of lowercase tokens used for
+    query-aware rep-path selection.
+
+    Pass ``alias_specificity`` to gate cross-language aliases: a stem
+    whose alias substring-matches many module names (학생 → student on
+    a 10+-module catalog) shouldn't pull its English form into the
+    filename-match set. Without that gate, F1's homework-analysis rep
+    path drifted to ``student-analysis.md`` because "student" scored
+    the member on a generic stem mention.
+    """
+    from hybrid_search.search.modules_search import (
+        expand_with_aliases,
+        tokenize as ms_tokenize,
+    )
+    raw = ms_tokenize(query)
+    return {
+        t.lower() for t in expand_with_aliases(
+            raw, alias_specificity=alias_specificity,
+        )
+    }
 
 
 def _module_snippet_for_result(m: ModuleRecord) -> str:
