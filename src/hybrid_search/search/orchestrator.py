@@ -9,8 +9,9 @@ import json
 import re
 import time
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hybrid_search.config import Config
@@ -138,6 +139,10 @@ class HybridResult:
     content: str | None
     snippet: str
     module_id: str | None = None
+    # File mtime in ISO 8601 — only populated for qa_log chunks where
+    # the Memory-Layer boost needs age information. Everything else
+    # leaves this None and pays no attention to it.
+    file_mtime: str | None = None
 
 
 @dataclass
@@ -149,6 +154,105 @@ class HybridSearchResponse:
     total_chunks_searched: int
     skipped_projects: list[str] = field(default_factory=list)
     reranked: bool = False
+
+
+# --- Memory Layer boost ------------------------------------------------
+# Half-life in days for the recency decay applied to qa_log chunks.
+# At 30d a past Q&A keeps half its boost; at 90d it's at 12.5%. Picked
+# to roughly match the tempo of a feature branch — answers from within
+# the current sprint stay relevant, older ones fade.
+_MEMORY_HALF_LIFE_DAYS = 30.0
+
+# Multiplier applied on top of rrf_score for qa_log chunks when the
+# query is a plain topical search (no memory-intent signal). Small — a
+# fresh Q&A should gently lift above a comparable chunk, not dominate
+# actual code or docs.
+_MEMORY_AMBIENT_BOOST = 0.20
+
+# Multiplier when the query explicitly recalls ("지난번에", "previously").
+# Strong — the user is asking for the past exchange itself, so a close
+# qa_log match should outrank most code chunks.
+_MEMORY_INTENT_BOOST = 1.00
+
+# Korean/English triggers for "I'm recalling something I asked before".
+# Prefix match works because these phrases are typically sentence-
+# initial or standalone. Korean particles are covered by substring
+# match since we check with ``in`` rather than regex word boundary.
+_MEMORY_INTENT_KO = (
+    "지난번", "이전에", "아까", "방금", "전에", "저번에", "그때",
+)
+_MEMORY_INTENT_EN_RE = re.compile(
+    r"\b(previously|earlier|before|last\s+time|the\s+other\s+day|what\s+did\s+(?:i|we|you)\s+(?:ask|say))\b",
+    re.IGNORECASE,
+)
+
+
+def _has_memory_intent(query: str) -> bool:
+    """True when the query asks for a past exchange.
+
+    Memory-intent queries skip the ambient 20% boost and pay the full
+    100% boost so that a recent close-matching qa_log rises above code
+    chunks. False positives are survivable (qa_log still needs to
+    token-match for the boost to apply at all).
+    """
+    q = (query or "").strip()
+    if not q:
+        return False
+    if any(tok in q for tok in _MEMORY_INTENT_KO):
+        return True
+    return bool(_MEMORY_INTENT_EN_RE.search(q))
+
+
+def _parse_mtime_days_ago(mtime: str | None, now: datetime | None = None) -> float | None:
+    """Return age in days from an ISO-formatted mtime; None when unparseable."""
+    if not mtime:
+        return None
+    try:
+        dt = datetime.fromisoformat(mtime)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    delta = (now - dt).total_seconds() / 86400.0
+    return max(0.0, delta)
+
+
+def _apply_memory_boost(
+    results: list[HybridResult],
+    memory_intent: bool,
+    now: datetime | None = None,
+) -> list[HybridResult]:
+    """Re-rank ``results`` with a half-life decay on qa_log chunks.
+
+    For qa_log chunks only:
+        new_score = rrf_score * (1 + boost * 2^(-age_days / half_life))
+    Other node types pass through unchanged. Results are re-sorted by
+    the adjusted score. No-op when no qa_log chunks are present.
+    """
+    if not results:
+        return results
+    has_qa = any(r.node_type == "qa_log" for r in results)
+    if not has_qa:
+        return results
+    boost = _MEMORY_INTENT_BOOST if memory_intent else _MEMORY_AMBIENT_BOOST
+    now = now or datetime.now(timezone.utc)
+    adjusted: list[HybridResult] = []
+    for r in results:
+        if r.node_type != "qa_log":
+            adjusted.append(r)
+            continue
+        age = _parse_mtime_days_ago(r.file_mtime, now)
+        if age is None:
+            # No mtime → treat as fresh (age=0) so newly-written Q&A
+            # still benefits from the boost before its file_mtime is
+            # indexed. Conservative side: we don't penalise.
+            age = 0.0
+        decay = 0.5 ** (age / _MEMORY_HALF_LIFE_DAYS)
+        new_score = r.rrf_score * (1.0 + boost * decay)
+        adjusted.append(_dc_replace(r, rrf_score=round(new_score, 6)))
+    adjusted.sort(key=lambda r: -r.rrf_score)
+    return adjusted
 
 
 class SearchOrchestrator:
@@ -242,6 +346,16 @@ class SearchOrchestrator:
 
         # Enrich chunk results with metadata
         chunk_results = self._enrich_results(fused[:effective_limit], project_infos, query)
+
+        # Memory Layer — time-decay & intent boost for qa_log chunks.
+        # A past Q&A should surface in future searches (that's the whole
+        # compounding-quality point), but its weight must fade with age
+        # (stale answers drift from current code) and amplify when the
+        # user is explicitly recalling ("지난번에 뭐라고 했지"). The boost
+        # runs on the already-enriched list so file_mtime is available
+        # to compute age; the list is re-sorted by the adjusted score.
+        memory_intent = _has_memory_intent(query)
+        chunk_results = _apply_memory_boost(chunk_results, memory_intent)
 
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
@@ -654,6 +768,15 @@ class SearchOrchestrator:
                     file_rec = db.get_file(chunk.file_id)
                     file_path = file_rec.relative_path if file_rec else chunk.file_id
 
+                    # Memory Layer: only qa_log chunks carry file_mtime
+                    # through to the boost layer. Paying the attribute
+                    # access for every chunk would bloat the hot path
+                    # for the 99% of chunks that don't need it.
+                    mtime = (
+                        file_rec.file_mtime
+                        if (file_rec and chunk.node_type == "qa_log")
+                        else None
+                    )
                     results.append(HybridResult(
                         chunk_id=fr.chunk_id,
                         rrf_score=round(fr.rrf_score, 6),
@@ -668,6 +791,7 @@ class SearchOrchestrator:
                         end_line=chunk.end_line,
                         content=chunk.content,
                         snippet=make_snippet(chunk.docstring, chunk.content, query),
+                        file_mtime=mtime,
                     ))
                     break  # Found the chunk, no need to check other projects
         finally:
