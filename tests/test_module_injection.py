@@ -6,6 +6,7 @@ from hybrid_search.search.orchestrator import (
     HybridResult,
     QueryType,
     _has_rationale_signal,
+    _has_symbol_signal,
     _interleave_modules,
     _module_slots_for,
 )
@@ -100,6 +101,44 @@ def test_slots_english_nl_rationale_returns_zero():
 def test_slots_korean_nl_non_rationale_unchanged():
     # Structure/exploration queries keep the Korean NL default of 3 slots.
     assert _module_slots_for(QueryType.KOREAN_NL, "수강료 정산 시스템 구조") == 3
+
+
+# ---------- Step C: symbol signal routing ----------
+
+def test_symbol_signal_detects_camel_case():
+    assert _has_symbol_signal("TuitionChargeSection 컴포넌트")
+
+
+def test_symbol_signal_detects_snake_case():
+    assert _has_symbol_signal("admission_results 테이블 스키마")
+
+
+def test_symbol_signal_detects_screaming_snake():
+    assert _has_symbol_signal("MAX_RETRIES 상수")
+
+
+def test_symbol_signal_detects_dot_qualified():
+    assert _has_symbol_signal("AuthService.signIn 찾아줘")
+
+
+def test_symbol_signal_negative_plain_korean_nl():
+    assert not _has_symbol_signal("수강료 정산 시스템은 어떻게 구성되어 있나")
+
+
+def test_symbol_signal_negative_english_nl():
+    assert not _has_symbol_signal("how is the attendance module organized")
+
+
+def test_slots_mixed_symbol_korean_returns_zero():
+    # Mixed symbol + Korean query — classify_query maps this to KOREAN_NL,
+    # but the intent is precision lookup, not subsystem exploration.
+    assert _module_slots_for(QueryType.KOREAN_NL, "TuitionChargeSection 컴포넌트") == 0
+    assert _module_slots_for(QueryType.KOREAN_NL, "admission_results 테이블 스키마") == 0
+
+
+def test_slots_pure_korean_unaffected_by_symbol_check():
+    # Real Korean NL query still gets module slots.
+    assert _module_slots_for(QueryType.KOREAN_NL, "수강료 시스템 구성") == 3
 
 
 # ---------- _interleave_modules ----------
