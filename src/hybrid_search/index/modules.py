@@ -146,6 +146,66 @@ _GENERIC_META_DOCS = frozenset({
 # a topical mention (F5). Below this it's usually name-drop noise.
 _MIN_NAME_MENTIONS = 2
 
+# Step G: "bucket" directories — generic containers that group
+# heterogeneous files by kind, not by subsystem. Files here should be
+# cross-attached to whichever feature module their filename tokens name,
+# so e.g. ``create_academy_monthly_stats.sql`` reaches the ``stats``
+# module and not just the catch-all ``migrations`` one.
+_BUCKET_DIR_LEAVES = frozenset({"migrations", "seed", "seeds", "schema"})
+# SQL/ops verbs that carry zero subsystem signal — they'd otherwise
+# match every module named "update", "drop" etc. if such existed.
+_CROSSTREE_STOPWORDS = frozenset({
+    "create", "update", "delete", "alter", "drop", "add", "remove",
+    "insert", "select", "rename", "enable", "disable", "grant", "revoke",
+    "init", "setup", "cleanup", "backfill", "migration", "migrations",
+    "fix", "temp", "tmp", "test", "tests", "old", "new", "main",
+})
+# Minimum token length for cross-tree matching — keeps "ai", "id", etc.
+# from producing spurious attachments.
+_CROSSTREE_MIN_TOKEN_LEN = 3
+# Cross-tree member weight. Below primary doc (0.5) and prose-crossref
+# (0.2), so ranking still favors direct ownership but the file is
+# discoverable via the feature module.
+_WEIGHT_CROSSTREE = 0.3
+# Per-module cap for cross-tree attachments.
+_MAX_CROSSTREE_PER_MODULE = 4
+
+_DATE_PREFIX_RE = re.compile(r"^\d{6,14}_?")
+
+
+def _crosstree_filename_tokens(rel_path: str) -> set[str]:
+    """Tokenize a filename for cross-tree matching.
+
+    Strips the directory prefix, extension, leading date prefix, then
+    splits on hyphen/underscore. Drops ``_CROSSTREE_STOPWORDS`` (verbs
+    like "create") and tokens below ``_CROSSTREE_MIN_TOKEN_LEN``.
+    """
+    stem = Path(rel_path).stem
+    stem = _DATE_PREFIX_RE.sub("", stem)
+    tokens = {
+        part.lower()
+        for part in re.split(r"[-_]+", stem)
+        if part
+    }
+    return {
+        t for t in tokens
+        if len(t) >= _CROSSTREE_MIN_TOKEN_LEN
+        and t not in _CROSSTREE_STOPWORDS
+    }
+
+
+def _module_name_tokens(name: str) -> set[str]:
+    """Leaf-name tokens for cross-tree matching. Produces both the
+    original form and a naive singular ("stats" → {"stats", "stat"};
+    "admissions" → {"admissions", "admission"}) so ``admission_results.sql``
+    reaches the ``admissions`` module."""
+    parts = {p.lower() for p in re.split(r"[-_]+", name) if p}
+    singulars: set[str] = set()
+    for p in parts:
+        if len(p) > 4 and p.endswith("s"):
+            singulars.add(p[:-1])
+    return (parts | singulars) - _CROSSTREE_STOPWORDS
+
 
 def discover_modules(
     db: StoreDB,
@@ -362,6 +422,79 @@ def discover_modules(
             if fid is None:
                 continue
             file_module_rows.append((fid, module_id, _WEIGHT_DOC_CROSSREF))
+
+    # -- Step G: cross-tree attachment --
+    #
+    # Bucket dirs (database/migrations, supabase/migrations, …) group
+    # heterogeneous files by kind, not by feature. Re-project each file's
+    # filename tokens onto the module catalog so a query like
+    # ``월별 학원 통계`` can reach ``create_academy_monthly_stats.sql`` via
+    # the ``stats`` module, not just via the catch-all ``migrations``
+    # module whose summary mixes admission/RLS/workspace/etc. content.
+    module_tokens_by_id: dict[str, set[str]] = {
+        m.id: _module_name_tokens(m.name) for m in modules_out
+    }
+    # Attach map: module_id → list[file_rel]
+    crosstree_attach: dict[str, list[str]] = defaultdict(list)
+    for rel, f in path_to_file.items():
+        parent_leaf = Path(rel).parent.name.lower()
+        if parent_leaf not in _BUCKET_DIR_LEAVES:
+            continue
+        file_toks = _crosstree_filename_tokens(rel)
+        if not file_toks:
+            continue
+        scored: list[tuple[str, int, int]] = []  # (module_id, overlap, name_len)
+        for mid, mtoks in module_tokens_by_id.items():
+            overlap = len(file_toks & mtoks)
+            if overlap == 0:
+                continue
+            # Prefer more-specific matches (longer module name wins ties).
+            name_len = len(next((m for m in modules_out if m.id == mid)).name)
+            scored.append((mid, overlap, name_len))
+        if not scored:
+            continue
+        scored.sort(key=lambda x: (-x[1], -x[2]))
+        # Attach to top-1 only to avoid a file advertising in every module
+        # that happens to share a generic token.
+        target_mid = scored[0][0]
+        if rel not in crosstree_attach[target_mid]:
+            crosstree_attach[target_mid].append(rel)
+
+    # Fold attachments into file_module_rows + signal flag + member_hash.
+    if crosstree_attach:
+        # Rebuild hash_input per touched module so synth re-runs pick the
+        # new member set up.
+        touched = set(crosstree_attach.keys())
+        # Rewrite the corresponding module records with attachment signals
+        # and an updated member_hash.
+        updated_modules: list[ModuleRecord] = []
+        for m in modules_out:
+            if m.id in touched:
+                attachments = crosstree_attach[m.id][:_MAX_CROSSTREE_PER_MODULE]
+                sig = set(json.loads(m.signals or "[]"))
+                sig.add("crosstree_attached")
+                new_hash = hashlib.sha256(
+                    (m.member_hash + "\n##crosstree##\n" + "\n".join(attachments))
+                    .encode("utf-8")
+                ).hexdigest()[:16]
+                updated_modules.append(
+                    ModuleRecord(
+                        id=m.id, project_id=m.project_id, name=m.name,
+                        summary=m.summary, entry_points=m.entry_points,
+                        depends_on=m.depends_on, related_docs=m.related_docs,
+                        rationale=m.rationale,
+                        signals=json.dumps(sorted(sig)),
+                        member_hash=new_hash, updated_at=m.updated_at,
+                    )
+                )
+                for rel in attachments:
+                    fid = file_path_to_id.get(rel)
+                    if fid is None:
+                        continue
+                    file_module_rows.append((fid, m.id, _WEIGHT_CROSSTREE))
+            else:
+                updated_modules.append(m)
+        modules_out = updated_modules
 
     # -- Step 4: write to DB (idempotent replacement) --
     with db.transaction() as conn:

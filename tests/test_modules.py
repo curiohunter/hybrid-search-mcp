@@ -467,6 +467,92 @@ def test_discover_crossref_cap_per_module(tmp_path):
     assert len(target_docs) <= 3
 
 
+def test_crosstree_sql_attaches_to_feature_module(tmp_path):
+    """Step G: a SQL migration in database/migrations/ should attach to
+    the existing feature module whose name tokens match the filename —
+    so create_academy_monthly_stats.sql reaches the ``stats`` module
+    instead of hiding behind the catch-all ``migrations`` card."""
+    db = _make_db(tmp_path)
+    _seed_file(db, "app/api/stats/route.ts")
+    _seed_file(db, "app/api/stats/handler.ts")
+    # Five migration files — enough to make the migrations dir a real module.
+    _seed_file(db, "database/migrations/20260327_create_admission_results.sql")
+    _seed_file(db, "database/migrations/create_academy_monthly_stats.sql")
+    _seed_file(db, "database/migrations/create_monthly_snapshot_cron.sql")
+    _seed_file(db, "database/migrations/20250827_create_workspace_tables.sql")
+    _seed_file(db, "database/migrations/add_google_calendar_id.sql")
+
+    discover_modules(db, PROJECT_ID, tmp_path)
+    mods = {m.name: m for m in db.get_modules(PROJECT_ID)}
+    assert "stats" in mods
+    stats_files = set(db.get_files_by_module(mods["stats"].id))
+    # The monthly-stats migration should have cross-tree-attached to stats.
+    monthly = db.get_file_by_path(
+        PROJECT_ID, "database/migrations/create_academy_monthly_stats.sql",
+    )
+    assert monthly.id in stats_files
+    assert "crosstree_attached" in json.loads(mods["stats"].signals)
+
+
+def test_crosstree_attach_respects_singular_plural(tmp_path):
+    """Module named with a plural (``admissions``) should still pick up a
+    singular token in a filename (``...create_admission_results.sql``)."""
+    db = _make_db(tmp_path)
+    _seed_file(db, "components/admissions/form.tsx")
+    _seed_file(db, "components/admissions/table.tsx")
+    _seed_file(db, "database/migrations/20260327_create_admission_results.sql")
+    _seed_file(db, "database/migrations/other_file_one.sql")
+    _seed_file(db, "database/migrations/other_file_two.sql")
+    discover_modules(db, PROJECT_ID, tmp_path)
+    mods = {m.name: m for m in db.get_modules(PROJECT_ID)}
+    assert "admissions" in mods
+    adm_files = set(db.get_files_by_module(mods["admissions"].id))
+    mig = db.get_file_by_path(
+        PROJECT_ID, "database/migrations/20260327_create_admission_results.sql",
+    )
+    assert mig.id in adm_files
+
+
+def test_crosstree_attach_skips_stopword_only_filenames(tmp_path):
+    """A migration whose non-stopword tokens are empty should attach to
+    nothing (no "update_main_old.sql" → drop-all-stopwords noise)."""
+    db = _make_db(tmp_path)
+    _seed_file(db, "components/stats/card.tsx")
+    _seed_file(db, "components/stats/chart.tsx")
+    _seed_file(db, "database/migrations/create_update_test.sql")
+    _seed_file(db, "database/migrations/create_setup.sql")
+    _seed_file(db, "database/migrations/init_temp.sql")
+    discover_modules(db, PROJECT_ID, tmp_path)
+    mods = {m.name: m for m in db.get_modules(PROJECT_ID)}
+    stats_files = set(db.get_files_by_module(mods["stats"].id))
+    for rel in (
+        "database/migrations/create_update_test.sql",
+        "database/migrations/init_temp.sql",
+    ):
+        f = db.get_file_by_path(PROJECT_ID, rel)
+        assert f.id not in stats_files
+
+
+def test_crosstree_attach_caps_per_module(tmp_path):
+    """A single module shouldn't accumulate unbounded cross-tree attachments
+    — bucket files beyond the cap stay with just the bucket module."""
+    db = _make_db(tmp_path)
+    _seed_file(db, "components/stats/a.tsx")
+    _seed_file(db, "components/stats/b.tsx")
+    # Six migration files all matching stats.
+    for i in range(6):
+        _seed_file(db, f"database/migrations/create_stats_v{i}.sql")
+    discover_modules(db, PROJECT_ID, tmp_path)
+    mods = {m.name: m for m in db.get_modules(PROJECT_ID)}
+    # Cap = 4.
+    cur = db._conn.execute(
+        "SELECT COUNT(*) FROM file_modules WHERE module_id = ? AND weight = 0.3",
+        (mods["stats"].id,),
+    )
+    count = cur.fetchone()[0]
+    assert count == 4
+
+
 def test_search_modules_by_name(tmp_path):
     db = _make_db(tmp_path)
     _seed_file(db, "components/portal-v3/a.tsx")
