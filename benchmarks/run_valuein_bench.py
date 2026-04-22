@@ -63,7 +63,14 @@ def rank_of(results: list[str], expected: str) -> int | None:
     return None
 
 
-def score_query(result_paths: list[str], query: dict) -> dict:
+def score_query(
+    result_paths: list[str],
+    query: dict,
+    snippet_bytes: int,
+    project_root: Path,
+    limit: int,
+) -> dict:
+    """Retrieval quality + agent-cost proxies (Phase 5 Step 1)."""
     expected = query.get("expected_files", [])
     primary = query.get("primary_target")
     primary_rank = rank_of(result_paths, primary) if primary else None
@@ -77,6 +84,30 @@ def score_query(result_paths: list[str], query: dict) -> dict:
                 any_rank = r
     recall = hits / max(1, len(expected))
     mrr = (1.0 / any_rank) if any_rank else 0.0
+
+    # Agent cost proxy:
+    # - read_count_estimate: how many files agent must open to reach primary.
+    #   If primary is in top-K, cost = rank (agent opens rank-th file).
+    #   If missed, penalty = limit + 1 (agent exhausts top-K, switches tool).
+    read_count_estimate = primary_rank if primary_rank is not None else (limit + 1)
+
+    # - read_to_primary_cost_bytes: actual size of the file at primary_rank.
+    #   What agent pays in tokens for the Read that surfaces primary.
+    read_cost_bytes = 0
+    if primary_rank is not None and primary_rank <= len(result_paths):
+        rp = result_paths[primary_rank - 1]
+        candidate = project_root / rp.rstrip("/")
+        try:
+            if candidate.is_file():
+                read_cost_bytes = candidate.stat().st_size
+            elif candidate.is_dir():
+                # Directory primary: approximate as sum of top-level code/doc files (upper bound).
+                for f in candidate.iterdir():
+                    if f.is_file() and f.suffix.lower() in (".ts", ".tsx", ".md", ".sql", ".py", ".js"):
+                        read_cost_bytes += f.stat().st_size
+        except OSError:
+            pass
+
     return {
         "primary_hit_rank": primary_rank,
         "any_hit_rank": any_rank,
@@ -84,6 +115,10 @@ def score_query(result_paths: list[str], query: dict) -> dict:
         "mrr": mrr,
         "hits": hits,
         "total_expected": len(expected),
+        "snippet_bytes": snippet_bytes,
+        "read_count_estimate": read_count_estimate,
+        "read_cost_bytes": read_cost_bytes,
+        "context_pack_bytes": snippet_bytes + read_cost_bytes,
     }
 
 
@@ -132,10 +167,15 @@ def scan_project_files(project_root: Path) -> list[Path]:
     return out
 
 
-def grep_baseline(query: str, project_root: Path, files: list[Path], limit: int = 10) -> tuple[list[str], float]:
+def grep_baseline(query: str, project_root: Path, files: list[Path], limit: int = 10) -> tuple[list[str], float, int]:
+    """Returns (top-N paths, elapsed_ms, snippet_bytes).
+
+    Grep's "snippet bytes" = 0: it returns paths only (no content).
+    Agent would follow up with Read(primary) → accounted for in read_cost_bytes.
+    """
     tokens = tokenize(query)
     if not tokens:
-        return [], 0.0
+        return [], 0.0, 0
     patterns = [re.compile(re.escape(t), re.IGNORECASE) for t in tokens]
     scores: dict[str, int] = {}
     t0 = time.perf_counter()
@@ -152,18 +192,25 @@ def grep_baseline(query: str, project_root: Path, files: list[Path], limit: int 
             scores[rel] = score
     ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
     elapsed = (time.perf_counter() - t0) * 1000.0
-    return [path for path, _ in ranked[:limit]], elapsed
+    return [path for path, _ in ranked[:limit]], elapsed, 0
 
 
-def hybrid_track(query: str, project_name: str, orch: SearchOrchestrator, limit: int = 10) -> tuple[list[str], float]:
+def hybrid_track(query: str, project_name: str, orch: SearchOrchestrator, limit: int = 10) -> tuple[list[str], float, int]:
+    """Returns (top-N paths dedup by file, elapsed_ms, snippet_bytes).
+
+    snippet_bytes = sum of all hit.snippet lengths — the content the agent
+    receives directly in the MCP response, without having to Read follow-up files.
+    """
     t0 = time.perf_counter()
     resp = orch.hybrid_search(query=query, project=project_name, limit=limit)
     elapsed = (time.perf_counter() - t0) * 1000.0
     seen = []
+    snippet_bytes = 0
     for hit in resp.results:
+        snippet_bytes += len(hit.snippet or "")
         if hit.file_path not in seen:
             seen.append(hit.file_path)
-    return seen, elapsed
+    return seen, elapsed, snippet_bytes
 
 
 def aggregate(per_query: list[dict]) -> dict:
@@ -182,6 +229,10 @@ def aggregate(per_query: list[dict]) -> dict:
             "time_ms_mean": mean(s["time_ms"] for s in scores),
             "primary_top1": sum(1 for s in scores if s["primary_hit_rank"] == 1) / len(rows),
             "primary_top5": sum(1 for s in scores if s["primary_hit_rank"] is not None and s["primary_hit_rank"] <= 5) / len(rows),
+            "snippet_bytes_mean": mean(s["snippet_bytes"] for s in scores),
+            "read_count_estimate_mean": mean(s["read_count_estimate"] for s in scores),
+            "read_cost_bytes_mean": mean(s["read_cost_bytes"] for s in scores),
+            "context_pack_bytes_mean": mean(s["context_pack_bytes"] for s in scores),
         }
 
     summary = {"per_category": {}, "overall": {}}
@@ -222,10 +273,10 @@ def main():
         qid = q["id"]
         cat = q["category"]
         print(f"[{qid} {cat}] {q['query']}", flush=True)
-        hres, htime = hybrid_track(q["query"], project_name, orch, limit=args.limit)
-        gres, gtime = grep_baseline(q["query"], project_root, files, limit=args.limit)
-        hscore = score_query(hres, q)
-        gscore = score_query(gres, q)
+        hres, htime, hsnip = hybrid_track(q["query"], project_name, orch, limit=args.limit)
+        gres, gtime, gsnip = grep_baseline(q["query"], project_root, files, limit=args.limit)
+        hscore = score_query(hres, q, hsnip, project_root, args.limit)
+        gscore = score_query(gres, q, gsnip, project_root, args.limit)
         per_query.append({
             "id": qid,
             "category": cat,
@@ -235,8 +286,16 @@ def main():
                 "grep":   {**gscore, "time_ms": gtime, "top_results": gres},
             },
         })
-        print(f"    hybrid primary_rank={hscore['primary_hit_rank']}  recall={hscore['recall_at_10']:.2f}  {htime:.0f}ms", flush=True)
-        print(f"    grep   primary_rank={gscore['primary_hit_rank']}  recall={gscore['recall_at_10']:.2f}  {gtime:.0f}ms", flush=True)
+        print(
+            f"    hybrid rank={hscore['primary_hit_rank']} recall={hscore['recall_at_10']:.2f} "
+            f"reads={hscore['read_count_estimate']} pack={hscore['context_pack_bytes']/1024:.1f}KB {htime:.0f}ms",
+            flush=True,
+        )
+        print(
+            f"    grep   rank={gscore['primary_hit_rank']} recall={gscore['recall_at_10']:.2f} "
+            f"reads={gscore['read_count_estimate']} pack={gscore['context_pack_bytes']/1024:.1f}KB {gtime:.0f}ms",
+            flush=True,
+        )
 
     summary = aggregate(per_query)
     report = {
@@ -250,8 +309,12 @@ def main():
     out_path = Path(args.out)
     out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(f"\nReport written to {out_path}", flush=True)
-    print(f"Overall primary-top5 — hybrid: {summary['overall']['hybrid']['primary_top5']:.2f}  grep: {summary['overall']['grep']['primary_top5']:.2f}", flush=True)
-    print(f"Overall recall@10    — hybrid: {summary['overall']['hybrid']['recall_at_10_mean']:.2f}  grep: {summary['overall']['grep']['recall_at_10_mean']:.2f}", flush=True)
+    h = summary["overall"]["hybrid"]
+    g = summary["overall"]["grep"]
+    print(f"Overall primary-top5  — hybrid: {h['primary_top5']:.2f}  grep: {g['primary_top5']:.2f}", flush=True)
+    print(f"Overall recall@10     — hybrid: {h['recall_at_10_mean']:.2f}  grep: {g['recall_at_10_mean']:.2f}", flush=True)
+    print(f"Overall read_count    — hybrid: {h['read_count_estimate_mean']:.2f}  grep: {g['read_count_estimate_mean']:.2f}", flush=True)
+    print(f"Overall context_pack  — hybrid: {h['context_pack_bytes_mean']/1024:.1f}KB  grep: {g['context_pack_bytes_mean']/1024:.1f}KB", flush=True)
 
 
 if __name__ == "__main__":
