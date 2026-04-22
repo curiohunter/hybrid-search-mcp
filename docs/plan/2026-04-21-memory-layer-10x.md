@@ -1,8 +1,37 @@
 # Memory Layer 완성 + 검색 10배 로드맵
 
-**Status:** ACTIVE — 2026-04-21 기획
-**목표:** hybrid-search-mcp를 "쓸수록 똑똑해지는 기억+검색 장치"로 완성.
-**증거 기준:** valuein_homepage(1306 files, 8332 chunks)에서 Grep/DeepWiki 류 대비 retrieval 품질·속도 우위 측정.
+**Status:** ACTIVE — 2026-04-21 기획, 2026-04-22 Phase 1-4 shipped + Phase 5 근본 재설계 추가
+**목표:** hybrid-search-mcp를 "Claude Code가 쓸수록 똑똑해지는 Memory Layer"로 완성. Graphify 대비 우위는 **agent turn/token 효율**이며 그래프 정교함이 아님.
+**증거 기준:** valuein_homepage(1307 files, 8335 chunks)에서 Grep/Graphify 대비 retrieval 품질 + turn/token 효율 측정.
+
+## 진행 상태 (2026-04-22 기준)
+
+| Phase | 상태 | 근거 커밋 |
+|-------|------|----------|
+| Phase 1 — Memory Layer 완성 | ✅ shipped (16회차) | `59a53ec` 외 4커밋 |
+| Phase 2 — Wiki 파편화 해소 | ✅ shipped (17회차) | `295c07d` |
+| Phase 3 — M9 pass2 + M10 rationale | ✅ shipped (17회차) | `a4dc5c2` |
+| Phase 4 — valuein_homepage 골드셋 + 자동 벤치마크 | ⚠️ 절반 (retrieval-only, agent-in-loop 미측정) | `2dcc198` |
+| **Phase 5 — Subsystem-first Retrieval** | 🔴 **next — 근본 해결** | — |
+| Phase 6 — L4 watch / L5 two-tier (옛 Phase 5) | 📦 deferred | — |
+
+### Phase 4에서 드러난 근본 결함
+
+`benchmarks/valuein_report_2026-04-22.md` 실측:
+
+- **structure 카테고리 recall@10 = 0.22** (primary top-5는 0.80). 한 쿼리당 피처 doc 1장만 집고 관련 **코드 디렉토리(`components/portal-v3/`, `harness/core/` 등)는 top-10 전체에 등장 0회**.
+- 원인 조사 (2026-04-22):
+  - 디스크 `.hybrid-search/wiki/*.md` = **2220쪽** (valuein)
+  - DB `wiki_pages` 테이블 = 100쪽 (accessed-only cache)
+  - DB `chunks` 테이블 중 wiki 청크 = **0개**
+  - `scanner.py:351-353` — `.hybrid-search/qa/`만 opt-in 허용, **`wiki/`는 명시적으로 제외**
+- 표면 증상은 "wiki가 chunk로 인덱싱 안 됨"이지만, 근본 진단은:
+
+  > **검색 리턴 단위가 "chunk"인데, 사용자가 원하는 단위는 "subsystem"이다.**
+
+  chunk는 함수/문단 수준의 텍스트. 구조/탐색 질문의 답은 **경계가 있는 파일군 + 요약 + 진입점 + 의존 + rationale**의 묶음. 현 스키마엔 그 자료구조가 없음. wiki를 chunk로 집어넣는 패치(A안)는 recall 수치만 올리는 밴드에이드.
+
+---
 
 ---
 
@@ -217,36 +246,140 @@ graphify 패턴: intra-file AST pass → global name-map pass → cross-file res
 
 ---
 
-## Phase 5 (선택) — L4/L5 Watch & Two-tier
+## Phase 5 — Subsystem-first Retrieval (2~3주, 근본 해결)
 
-Phase 1-4가 "완성"의 뼈대. 5는 사용자 DX 향상용.
+**전제 전환**: 경쟁 축은 "코드 그래프 정교함"이 아니라 **"agent turn/token 효율"**. Graphify는 사람이 브라우저로 탐색하는 그래프, 우리는 agent가 1턴에 흡수하는 답변 카드.
 
-- L4: `watchdog` 기반 실시간 reindex. post-commit 훅 없이도 동작
-- L5: Two-tier merge — 코드 AST는 매번 재빌드, LLM synthesis 결과는 보존
+검색 1차 반환 단위를 `chunk`에서 **`module card`** 로 전환:
 
-Phase 4 후 실사용 피드백 보고 결정.
+```
+이전:  query → chunks[10], dedupe by file → Claude가 9번 Read
+이후:  query → module_cards[1~3] + chunks[3~7]
+          module_card = 요약 + 진입점 N개 + depends + links + rationale
+```
+
+### Step 1 — Agent-in-loop 측정 추가 (2일)
+
+**이유:** Phase 5 개선 효과는 turn/token 숫자에서만 증명됨. 현 벤치마크는 retrieval-only라 "10×"를 측정하지 못함. 먼저 기준선을 박고 시작.
+
+**작업:**
+- `benchmarks/run_valuein_bench.py`에 proxy 지표 추가:
+  - `context_pack_bytes`: 각 track이 top-10으로 전달하는 content 총 바이트
+  - `read_count_estimate`: `primary_hit_rank` 합 (Claude가 primary 도달까지 열어봐야 할 파일 수)
+  - `chunk_count`: top-10의 고유 파일 수
+- Agent-in-loop 파일럿: `benchmarks/agent_loop_pilot.md` — 3~5개 샘플 쿼리에 대해 수동으로 Claude Code 세션 로그 캡처, 턴/토큰 수치 확보
+- 리포트 v2: `benchmarks/valuein_report_2026-04-22.md` 업데이트 (재작성 아님, 섹션 추가)
+
+**완료 조건:**
+- 자동 벤치마크가 context_pack_bytes / read_count_estimate 출력
+- 파일럿 5쿼리 수동 측정치 존재
+- "Phase 5 기준선" 표 리포트에 박힘
+
+### Step 2 — Module discovery (3~5일)
+
+heuristic 기반 (Leiden은 Phase 5 성공 후 재평가):
+
+**신호 융합:**
+1. 디렉토리 prefix (`components/portal-v3/*` → 같은 모듈 후보)
+2. Import/require 그래프 (이미 AST 파서 있음, edge 추출만 추가)
+3. Callgraph 공유 (M9 결과 재사용)
+4. Feature/plan doc mentions — `docs/features/*.md`와 `docs/plans/*.md` 본문에서 파일 경로 regex 추출 → doc이 모듈의 "표지"
+5. Co-change (git log --name-only 최근 90일 co-occurrence)
+
+**출력 스키마:**
+```sql
+CREATE TABLE modules (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  summary TEXT,
+  entry_points TEXT,  -- JSON list of chunk_id
+  depends_on TEXT,    -- JSON list of module_id
+  related_docs TEXT,  -- JSON list of file paths
+  rationale TEXT,
+  signals TEXT,       -- JSON: which signals defined this module
+  updated_at TEXT
+);
+CREATE TABLE file_modules (
+  file_id TEXT NOT NULL,
+  module_id TEXT NOT NULL,
+  weight REAL,        -- 이 파일이 모듈에 속하는 정도
+  PRIMARY KEY (file_id, module_id)
+);
+```
+
+**구현:**
+- 신규 `src/hybrid_search/index/modules.py` — discovery 알고리즘
+- `pipeline.py` 후단에 module build 단계 추가
+- 테스트: 합성 그래프 + 실 프로젝트 일부로 모듈 수/멤버 검증
+
+**완료 조건:**
+- valuein_homepage reindex 후 modules 테이블 ≥50개 레코드
+- 각 구조 gold 쿼리 expected_files가 동일 module에 묶임 (수동 확인)
+
+### Step 3 — Module synthesis (3일)
+
+각 module당 LLM 1회로 card 생성:
+
+- Input: 멤버 파일 docstring + 관련 doc 본문 + rationale 태그
+- Output: 2~3문장 summary + entry points (top-5 chunks) + depends-on + related docs + rationale 1줄
+- 저장: 기존 `wiki_pages`에 `query_key = "module:<module_id>"`, tags에 `"module_card"` 추가. 스키마 변경 없음
+
+**업데이트 전략:** 모듈 멤버/신호 delta만 재합성. 전체 재생성 X.
+
+**완료 조건:**
+- `modules` 각 row에 synthesized card 존재
+- 재인덱스 후 변경 없는 모듈은 synthesis 재실행 안 함 (hash 검증)
+
+### Step 4 — Module-first retrieval (2일)
+
+**SearchOrchestrator 변경:**
+- 신규 `_module_search(query, limit)` — BM25 FTS + vector on module card content
+- `hybrid_search()`에 query_type 분기:
+  - `structure` / `exploration` → module top-3 + chunk top-7
+  - `precision` → chunk top-10 (현재 유지)
+  - `rationale` → chunk top-10 (rationale 인덱싱됨) + 관련 module 1개
+- HybridResult에 `module_id` 필드 추가 (optional)
+- Response shape: `results` 리스트 안에 module/chunk 섞되 `node_type`으로 구분
+
+**완료 조건:**
+- S1~S5 5쿼리 모두 module 카드가 top-3에 등장
+- precision/rationale 카테고리 성능 비회귀 (recall@10 1.00 유지)
+
+### Step 5 — 재측정 + 리포트 v2 (2일)
+
+같은 gold set에 재실행. 비교 축:
+- retrieval: primary_top5 / recall@10 / MRR (기존)
+- context pack: bytes delivered / read_count_estimate (Step 1 추가)
+- agent-in-loop 파일럿 재측정 5쿼리: 실제 턴/토큰
+
+**완료 조건:**
+- structure recall@10: 0.22 → ≥0.55
+- 전체 read_count_estimate: ≥30% 감소
+- 리포트 v2 `benchmarks/valuein_report_v2.md`
+- README "Real-world benchmark" 섹션 갱신
+
+---
+
+## Phase 6 (deferred, 옛 Phase 5) — L4 Watch / L5 Two-tier
+
+Phase 5 결과 보고 재평가.
+
+- L4: `watchdog` 기반 실시간 reindex
+- L5: Two-tier merge — 코드 AST는 매번 재빌드, LLM synthesis 결과 보존
 
 ---
 
 ## 실행 순서 (구현 착수부터)
 
-### Week 1 — Memory Layer 완성
-- Day 1: Sprint 2 (qa list/show/grep)
-- Day 2: Sprint 3 (qa 자기 인덱싱)
-- Day 3: Sprint 4 (rotation) + README 섹션 승격
+### Week 1-3: Phase 1-4 (✅ 2026-04-22까지 완료)
 
-### Week 2 — Wiki 파편화
-- Day 4-5: 원인 파악 + 소극적 패치
-- Day 6: drift 청소 + 테스트
+### Week 4-6 — Phase 5 Subsystem-first
+- Week 4: Step 1 (agent-in-loop 측정) + Step 2 착수 (module discovery)
+- Week 5: Step 2 완료 + Step 3 (synthesis)
+- Week 6: Step 4 (module-first retrieval) + Step 5 (재측정 + 리포트 v2)
 
-### Week 3 — 검색 정확도
-- Day 7-10: M9 two-pass callgraph
-- Day 11-12: M10 rationale
-
-### Week 4 — valuein 검증
-- Day 13-14: gold set 작성 + 측정 + 리포트
-
-### Total: 4주, 각 Phase 끝에 사용자 리뷰.
+### 이후 Phase 6는 실사용 피드백 보고 결정.
 
 ---
 
@@ -276,15 +409,16 @@ Phase 4 후 실사용 피드백 보고 결정.
 
 ## 완료 조건 (전체)
 
-- [ ] Phase 1: Memory Layer write+read+self-ref 완성
-- [ ] Phase 2: Wiki 파편화 해소, drift 0
-- [ ] Phase 3: cross-file resolve ≥85%, rationale 인덱싱
-- [ ] Phase 4: valuein_homepage baseline 대비 10× token 효율, 2× 속도 증거
-- [ ] README "Memory Layer for Claude Code" 재포지셔닝 최종본
-- [ ] 전체 테스트 그린, 600+ cases
+- [x] Phase 1: Memory Layer write+read+self-ref 완성
+- [x] Phase 2: Wiki 파편화 해소, drift 0
+- [x] Phase 3: rationale 인덱싱 + M9 pass2 (cross-file ≥85%는 valuein_homepage에서 재측정 필요)
+- [~] Phase 4: 자동 벤치마크 shipped, 10× token 효율 증거는 Phase 5 이후
+- [ ] Phase 5: structure recall@10 ≥0.55, read_count_estimate ≥30% 감소, agent-in-loop 파일럿 5쿼리
+- [ ] README "Memory Layer for Claude Code" 최종본 (Phase 5 후)
+- [ ] 전체 테스트 그린, 600+ cases (현재 580)
 
 ---
 
 ## 다음 단계 (지금)
 
-**Sprint 2 착수 — qa list/show/grep/stats CLI + reader.py.**
+**Phase 5 Step 1 착수 — agent-in-loop 측정 proxy를 `run_valuein_bench.py`에 추가 + 5쿼리 수동 파일럿.**
