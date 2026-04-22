@@ -1,0 +1,260 @@
+{
+  "version": 2,
+  "created": "2026-04-22",
+  "project": "valuein_homepage",
+  "project_path": "/Users/ian/project/claude_project/valuein_homepage",
+  "description": "Compounding benchmark pairs v2. Q1a = original user question (populates qa_log). Q1b = the SAME user asking a related thing later, with natural variation in phrasing but retaining the principal noun phrases (the realistic memory-reuse scenario, not 'completely unrelated rewording'). This is the LoCoMo / LongMemEval 'follow-up in a later session' pattern — not a lexical paraphrase test, but the same user returning to the same subsystem. leakage_risk=high marks pairs where Q1b contains the primary_target filename/symbol verbatim (trivial identity match possible); leakage_risk=low is the honest compounding slice.",
+  "pairs": [
+    {
+      "id": "S1",
+      "category": "structure",
+      "q1a": "수강료 정산 시스템은 어떻게 구성되어 있나",
+      "q1b": "수강료 정산 시스템 구조 다시 설명해줘",
+      "expected_files": [
+        "components/tuition/",
+        "components/tuition-sessions/",
+        "components/tuition-wizard/",
+        "docs/features/2026-04-08-tuition-billing.md"
+      ],
+      "primary_target": "docs/features/2026-04-08-tuition-billing.md",
+      "acceptable_module_names": ["tuition", "tuition-fees", "tuition-session", "tuition-sessions", "tuition-wizard"],
+      "leakage_risk": "low"
+    },
+    {
+      "id": "S2",
+      "category": "structure",
+      "q1a": "학부모 학생 포털 인증 및 레이아웃 흐름",
+      "q1b": "학부모 학생 포털 인증 플로우 다시 보여줘",
+      "expected_files": [
+        "app/(auth)/",
+        "app/(portal)/layout.tsx",
+        "components/portal-v3/",
+        "docs/features/2026-04-08-portal-parent-student.md"
+      ],
+      "primary_target": "docs/features/2026-04-08-portal-parent-student.md",
+      "acceptable_module_names": ["portal-v3", "portal"],
+      "leakage_risk": "low"
+    },
+    {
+      "id": "S3",
+      "category": "structure",
+      "q1a": "AI 에이전트 아키텍처 전체 그림",
+      "q1b": "AI 에이전트 아키텍처 요약",
+      "expected_files": [
+        "harness/core/",
+        "harness/app/",
+        "harness/plans/",
+        "agent-architecture.html",
+        "docs/plans/agent-system-plan.md"
+      ],
+      "primary_target": "docs/plans/agent-system-plan.md",
+      "acceptable_module_names": ["agent"],
+      "leakage_risk": "low"
+    },
+    {
+      "id": "S4",
+      "category": "structure",
+      "q1a": "원격 수업방 remote-room 모듈은 어떻게 구성되나",
+      "q1b": "remote-room 모듈 구성 알려줘",
+      "expected_files": [
+        "app/remote-room/",
+        "components/remote-room/",
+        "docs/features/2026-04-08-learning-remote-room.md"
+      ],
+      "primary_target": "docs/features/2026-04-08-learning-remote-room.md",
+      "acceptable_module_names": ["remote-room"],
+      "leakage_risk": "low"
+    },
+    {
+      "id": "S5",
+      "category": "structure",
+      "q1a": "입학 시험 결과 관리 모듈 구조",
+      "q1b": "입학 시험 결과 관리 어디에 뭐 있나",
+      "expected_files": [
+        "components/admissions/",
+        "database/migrations/20260327_create_admission_results.sql",
+        "docs/plans/2026-04-17-entrance-test-management.md"
+      ],
+      "primary_target": "docs/plans/2026-04-17-entrance-test-management.md",
+      "acceptable_module_names": ["admissions", "entrance-tests"],
+      "leakage_risk": "low"
+    },
+    {
+      "id": "F1",
+      "category": "exploration",
+      "q1a": "학생이 숙제 제출하면 어디서 분석되나",
+      "q1b": "숙제 제출 분석 다시 알려줘",
+      "expected_files": [
+        "docs/features/2026-04-08-learning-homework-analysis.md",
+        "components/learning/homework-analysis/"
+      ],
+      "primary_target": "docs/features/2026-04-08-learning-homework-analysis.md",
+      "acceptable_module_names": ["homework-analysis"],
+      "leakage_risk": "low"
+    },
+    {
+      "id": "F2",
+      "category": "exploration",
+      "q1a": "월별 학원 통계는 어떻게 집계되나",
+      "q1b": "월별 학원 통계 집계 로직 요약",
+      "expected_files": [
+        "database/migrations/create_academy_monthly_stats.sql",
+        "database/migrations/create_monthly_snapshot_cron.sql",
+        "components/analytics/"
+      ],
+      "primary_target": "database/migrations/create_academy_monthly_stats.sql",
+      "leakage_risk": "low"
+    },
+    {
+      "id": "F3",
+      "category": "exploration",
+      "q1a": "출결 관리 기능은 어디에 있나",
+      "q1b": "출결 관리 기능 위치 다시 말해줘",
+      "expected_files": [
+        "docs/features/2026-04-08-learning-attendance.md",
+        "components/learning/attendance/"
+      ],
+      "primary_target": "docs/features/2026-04-08-learning-attendance.md",
+      "acceptable_module_names": ["attendance", "attendance-overview"],
+      "leakage_risk": "low"
+    },
+    {
+      "id": "F4",
+      "category": "exploration",
+      "q1a": "상담 예약과 관리 시스템은 어떻게 동작하나",
+      "q1b": "상담 예약 관리 시스템 동작 다시",
+      "expected_files": [
+        "app/(dashboard)/consultations/",
+        "components/consultations/",
+        "database/migrations/create_consultations_table.sql"
+      ],
+      "primary_target": "components/consultations/",
+      "acceptable_module_names": ["consultations"],
+      "leakage_risk": "low"
+    },
+    {
+      "id": "F5",
+      "category": "exploration",
+      "q1a": "변형 문제 variant problems 생성 로직",
+      "q1b": "variant problems 생성 로직 정리",
+      "expected_files": [
+        "docs/plans/2026-04-15-variant-problems-plan.md"
+      ],
+      "primary_target": "docs/plans/2026-04-15-variant-problems-plan.md",
+      "leakage_risk": "low"
+    },
+    {
+      "id": "P1",
+      "category": "precision",
+      "q1a": "TuitionChargeSection 컴포넌트",
+      "q1b": "TuitionChargeSection 위치 다시",
+      "expected_files": [
+        "components/tuition/tuition-charge-section.tsx"
+      ],
+      "expected_symbols": ["TuitionChargeSection"],
+      "primary_target": "components/tuition/tuition-charge-section.tsx",
+      "leakage_risk": "high"
+    },
+    {
+      "id": "P2",
+      "category": "precision",
+      "q1a": "admission_results 테이블 스키마",
+      "q1b": "admission_results 스키마 다시",
+      "expected_files": [
+        "database/migrations/20260327_create_admission_results.sql"
+      ],
+      "expected_symbols": ["admission_results"],
+      "primary_target": "database/migrations/20260327_create_admission_results.sql",
+      "leakage_risk": "high"
+    },
+    {
+      "id": "P3",
+      "category": "precision",
+      "q1a": "pending-approval 페이지",
+      "q1b": "pending-approval 경로 알려줘",
+      "expected_files": [
+        "app/(auth)/pending-approval/"
+      ],
+      "primary_target": "app/(auth)/pending-approval/",
+      "leakage_risk": "high"
+    },
+    {
+      "id": "P4",
+      "category": "precision",
+      "q1a": "create_academy_monthly_stats 함수",
+      "q1b": "create_academy_monthly_stats 정의 다시",
+      "expected_files": [
+        "database/migrations/create_academy_monthly_stats.sql"
+      ],
+      "expected_symbols": ["create_academy_monthly_stats"],
+      "primary_target": "database/migrations/create_academy_monthly_stats.sql",
+      "leakage_risk": "high"
+    },
+    {
+      "id": "P5",
+      "category": "precision",
+      "q1a": "standardize_rls_policies 마이그레이션",
+      "q1b": "standardize_rls_policies 마이그레이션 다시",
+      "expected_files": [
+        "database/migrations/20251022_standardize_rls_policies.sql"
+      ],
+      "primary_target": "database/migrations/20251022_standardize_rls_policies.sql",
+      "leakage_risk": "high"
+    },
+    {
+      "id": "R1",
+      "category": "rationale",
+      "q1a": "portal v3로 리팩토링하는 이유는 무엇인가",
+      "q1b": "portal v3 리팩토링 이유 다시",
+      "expected_files": [
+        "docs/plans/2026-04-15-portal-v3-refactoring.md"
+      ],
+      "primary_target": "docs/plans/2026-04-15-portal-v3-refactoring.md",
+      "leakage_risk": "low"
+    },
+    {
+      "id": "R2",
+      "category": "rationale",
+      "q1a": "ledger writepath ABC 설계를 택한 배경은",
+      "q1b": "ledger writepath ABC 배경 요약",
+      "expected_files": [
+        "docs/plans/2026-04-21-ledger-writepath-abc.md"
+      ],
+      "primary_target": "docs/plans/2026-04-21-ledger-writepath-abc.md",
+      "leakage_risk": "low"
+    },
+    {
+      "id": "R3",
+      "category": "rationale",
+      "q1a": "tuition hub를 새로 만드는 이유",
+      "q1b": "tuition hub 도입 이유 다시",
+      "expected_files": [
+        "docs/plans/2026-04-20-tuition-hub.md"
+      ],
+      "primary_target": "docs/plans/2026-04-20-tuition-hub.md",
+      "leakage_risk": "low"
+    },
+    {
+      "id": "R4",
+      "category": "rationale",
+      "q1a": "AI 콘텐츠 팩토리를 만드는 목적",
+      "q1b": "AI 콘텐츠 팩토리 목적 다시 설명",
+      "expected_files": [
+        "docs/plans/2026-04-08-ai-content-factory-plan.md"
+      ],
+      "primary_target": "docs/plans/2026-04-08-ai-content-factory-plan.md",
+      "leakage_risk": "low"
+    },
+    {
+      "id": "R5",
+      "category": "rationale",
+      "q1a": "entrance test 관리 플랜은 왜 세워졌나",
+      "q1b": "entrance test 관리 플랜 배경 다시",
+      "expected_files": [
+        "docs/plans/2026-04-17-entrance-test-management.md"
+      ],
+      "primary_target": "docs/plans/2026-04-17-entrance-test-management.md",
+      "leakage_risk": "low"
+    }
+  ]
+}

@@ -334,10 +334,71 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # Gap detection for new files
     _write_gap_flag(cwd, result.files_added)
 
+    # Memory Layer auto-prune — journald-style two-ceiling policy.
+    _run_auto_prune(config, Path(project_path))
+
     if result.errors:
         print(f"Errors: {len(result.errors)}")
         for err in result.errors[:5]:
             print(f"  {err}")
+
+
+def _run_auto_prune(config: Config, project_path: Path) -> None:
+    """Apply ``config.memory`` retention rules to the project's qa_log dir.
+
+    First run on a project is a dry-run unless the user has acknowledged the
+    policy via ``.hybrid-search/qa/.prune-confirmed`` or the config flag
+    ``memory.require_first_run_confirm = false``. This prevents accidental
+    deletion of accumulated Q&A when a user installs a newer version that
+    defaults on.
+    """
+    from hybrid_search.memory import reader
+
+    mem = config.memory
+    if not mem.auto_prune:
+        return
+
+    qa_root = reader.qa_dir(project_path)
+    if not qa_root.is_dir():
+        return
+
+    confirm_marker = qa_root / ".prune-confirmed"
+    is_first_run = mem.require_first_run_confirm and not confirm_marker.exists()
+
+    result = reader.auto_prune(
+        project_path,
+        retention_days=mem.retention_days,
+        max_files=mem.max_files,
+        dry_run=is_first_run,
+    )
+    if not result.deleted and not result.skipped:
+        # Mark as confirmed even when nothing to prune — subsequent runs can
+        # act immediately without another dry-run gate.
+        if is_first_run:
+            try:
+                confirm_marker.write_text("")
+            except OSError:
+                pass
+        return
+
+    if is_first_run:
+        print(
+            f"Memory Layer auto-prune (dry-run): would remove {len(result.deleted)} qa log(s) "
+            f"older than {mem.retention_days}d or beyond the {mem.max_files}-file ceiling."
+        )
+        print(
+            "  Run `hybrid-search qa-prune --older-than "
+            f"{mem.retention_days}d --confirm-first-run` to activate auto-prune on future reindexes, "
+            "or set `memory.require_first_run_confirm = false` in config.toml."
+        )
+        return
+
+    print(
+        f"Memory Layer auto-prune: removed {len(result.deleted)} qa log(s) "
+        f"(retention: {mem.retention_days}d, max: {mem.max_files})."
+    )
+    if result.skipped:
+        print(f"  skipped {len(result.skipped)} (unlink failed)")
 
 
 def _write_needs_synthesis_flag(project_path: Path, stale_items: list[dict]) -> None:
@@ -2523,6 +2584,48 @@ def cmd_qa_prune(args: argparse.Namespace) -> None:
     if result.dirs_removed:
         print(f"  also removed {len(result.dirs_removed)} empty directory/ies")
 
+    # Drop the reindex dry-run gate: the user has explicitly pruned once and
+    # understands the policy, so subsequent auto-prunes can act directly.
+    if not args.dry_run and getattr(args, "confirm_first_run", False):
+        marker = reader.qa_dir(root) / ".prune-confirmed"
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("")
+            print("  auto-prune activated for future reindexes.")
+        except OSError as exc:
+            print(f"  warning: could not write confirm marker ({exc})", file=sys.stderr)
+
+
+def cmd_qa_hook(args: argparse.Namespace) -> None:
+    """Hook entry — read JSON from stdin, emit context JSON on stdout, exit 0."""
+    from hybrid_search import hooks
+    rc = hooks.cli_main()
+    sys.exit(rc)
+
+
+def cmd_install_memory_hook(args: argparse.Namespace) -> None:
+    """Merge memory hook config into .claude/settings(.local).json atomically."""
+    from hybrid_search import hooks
+
+    if getattr(args, "global_scope", False):
+        settings_path = Path.home() / ".claude" / "settings.json"
+    else:
+        base = Path(args.cwd).resolve() / ".claude"
+        fname = "settings.local.json" if args.settings == "local" else "settings.json"
+        settings_path = base / fname
+
+    result = hooks.install_memory_hook(settings_path, dry_run=args.dry_run)
+    status = result["status"]
+    added = result["added"]
+    if status == "exists":
+        print(f"Memory hook already present in {settings_path} — nothing to do.")
+        return
+    if status == "dry-run":
+        print(f"Would add {added} hook block(s) to {settings_path}.")
+        return
+    print(f"Installed {added} hook block(s) → {settings_path}")
+    print("  Restart any running Claude Code sessions to pick up the change.")
+
 
 def cmd_qa_stats(args: argparse.Namespace) -> None:
     """Summary stats over a project's qa logs."""
@@ -3394,6 +3497,39 @@ def main() -> None:
     )
     p_qa_prune.add_argument("--dry-run", action="store_true", help="Print, don't delete")
     p_qa_prune.add_argument("--verbose", action="store_true", help="Print every path")
+    p_qa_prune.add_argument(
+        "--confirm-first-run",
+        action="store_true",
+        help="Drop the first-run dry-run gate on future reindex auto-prunes",
+    )
+
+    sub.add_parser(
+        "qa-hook",
+        help="Claude Code PreToolUse/SessionStart hook entry (reads stdin JSON)",
+    )
+
+    p_install_hook = sub.add_parser(
+        "install-memory-hook",
+        help="Merge the memory PreToolUse+SessionStart hook into .claude/settings.json",
+    )
+    p_install_hook.add_argument(
+        "--cwd", default=".",
+        help="Project directory whose .claude/settings.json to patch (default: cwd)",
+    )
+    p_install_hook.add_argument(
+        "--global",
+        dest="global_scope",
+        action="store_true",
+        help="Install into ~/.claude/settings.json (user scope) instead of project",
+    )
+    p_install_hook.add_argument(
+        "--settings",
+        choices=("shared", "local"),
+        default="local",
+        help="Target file: 'shared' = .claude/settings.json (check in to git), "
+             "'local' = .claude/settings.local.json (default, gitignored)",
+    )
+    p_install_hook.add_argument("--dry-run", action="store_true")
 
     p_sub = sub.add_parser("subgraph", help="N-hop forward+reverse call graph around a chunk/symbol")
     p_sub.add_argument("symbol", help="Chunk_id, qualified_name, or symbol name")
@@ -3468,6 +3604,10 @@ def main() -> None:
         cmd_qa_stats(args)
     elif args.command == "qa-prune":
         cmd_qa_prune(args)
+    elif args.command == "qa-hook":
+        cmd_qa_hook(args)
+    elif args.command == "install-memory-hook":
+        cmd_install_memory_hook(args)
     else:
         parser.print_help()
         sys.exit(1)
