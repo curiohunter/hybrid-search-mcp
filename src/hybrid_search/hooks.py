@@ -255,55 +255,81 @@ def cli_main(argv: list[str] | None = None) -> int:
 
 _HOOK_MARKER = "hybrid_search.cli qa-hook"  # so we can detect & skip re-install
 
-DEFAULT_HOOK_CONFIG: dict = {
-    "PreToolUse": [
-        {
-            "matcher": "Grep|Read",
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": (
-                        "python -m hybrid_search.cli qa-hook 2>/dev/null || true"
-                    ),
-                    "timeout": 5,
-                }
-            ],
-        }
-    ],
-    "SessionStart": [
-        {
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": (
-                        "python -m hybrid_search.cli qa-hook 2>/dev/null || true"
-                    ),
-                    "timeout": 5,
-                }
-            ],
-        }
-    ],
-}
+
+def _hook_command() -> str:
+    """Build the hook shell command using the *current* interpreter.
+
+    Users often install hybrid-search-mcp in a virtualenv whose ``bin/`` dir
+    is not on the system PATH. Hooks run with the user's login shell, so
+    ``python -m hybrid_search.cli`` would silently fail when the default
+    ``python`` can't see the package. Embedding ``sys.executable`` pins the
+    hook to the interpreter that installed the package — the same trick the
+    MCP server registration uses.
+    """
+    return f"{sys.executable} -m hybrid_search.cli qa-hook 2>/dev/null || true"
 
 
-def _merge_hooks(existing: dict, incoming: dict) -> tuple[dict, int]:
+def _build_default_hook_config() -> dict:
+    cmd = _hook_command()
+    return {
+        "PreToolUse": [
+            {
+                "matcher": "Grep|Read",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": cmd,
+                        "timeout": 5,
+                    }
+                ],
+            }
+        ],
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": cmd,
+                        "timeout": 5,
+                    }
+                ],
+            }
+        ],
+    }
+
+
+# Kept for backwards-compat; callers should prefer ``_build_default_hook_config``.
+DEFAULT_HOOK_CONFIG: dict = _build_default_hook_config()
+
+
+def _merge_hooks(existing: dict, incoming: dict) -> tuple[dict, int, int]:
     """Merge ``incoming`` hook config into ``existing`` without clobbering.
 
-    Returns ``(merged, added_count)``. Hooks whose command line already
-    mentions ``_HOOK_MARKER`` are treated as already-installed and skipped.
+    Returns ``(merged, added_count, updated_count)``.
+
+    - ``added`` counts newly-inserted hook entries under a given event.
+    - ``updated`` counts existing entries whose command line carries our
+      marker but points at a stale Python interpreter (different from the
+      one that's running right now). Those are rewritten in place so the
+      user doesn't have to hand-edit ``settings.local.json`` after moving
+      the venv or upgrading the package.
     """
+    current_cmd = _hook_command()
     merged_hooks = dict(existing.get("hooks") or {})
     added = 0
+    updated = 0
     for event_name, entries in incoming.items():
         bucket = list(merged_hooks.get(event_name) or [])
         for entry in entries:
-            # Does any existing entry under this event already contain our marker?
             already = False
             for existing_entry in bucket:
                 for h in existing_entry.get("hooks") or []:
-                    cmd = (h.get("command") or "")
+                    cmd = h.get("command") or ""
                     if _HOOK_MARKER in cmd:
                         already = True
+                        if cmd != current_cmd:
+                            h["command"] = current_cmd
+                            updated += 1
                         break
                 if already:
                     break
@@ -313,11 +339,14 @@ def _merge_hooks(existing: dict, incoming: dict) -> tuple[dict, int]:
         merged_hooks[event_name] = bucket
     out = dict(existing)
     out["hooks"] = merged_hooks
-    return out, added
+    return out, added, updated
 
 
 def install_memory_hook(settings_path: Path, *, dry_run: bool = False) -> dict:
     """Merge the memory hook into ``settings_path`` (creating it when absent).
+
+    The hook command embeds the current Python interpreter path so it works
+    regardless of whether ``python`` is on the user's login-shell PATH.
 
     Returns ``{'added': int, 'path': Path, 'status': 'ok' | 'exists' | 'wrote'}``.
     """
@@ -328,15 +357,25 @@ def install_memory_hook(settings_path: Path, *, dry_run: bool = False) -> dict:
         except (ValueError, OSError):
             existing = {}
 
-    merged, added = _merge_hooks(existing, DEFAULT_HOOK_CONFIG)
-    if added == 0:
-        return {"added": 0, "path": settings_path, "status": "exists"}
+    merged, added, updated = _merge_hooks(existing, _build_default_hook_config())
+    if added == 0 and updated == 0:
+        return {"added": 0, "updated": 0, "path": settings_path, "status": "exists"}
 
     if dry_run:
-        return {"added": added, "path": settings_path, "status": "dry-run"}
+        return {
+            "added": added,
+            "updated": updated,
+            "path": settings_path,
+            "status": "dry-run",
+        }
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = settings_path.with_suffix(settings_path.suffix + ".tmp")
     tmp.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(settings_path)
-    return {"added": added, "path": settings_path, "status": "wrote"}
+    return {
+        "added": added,
+        "updated": updated,
+        "path": settings_path,
+        "status": "wrote",
+    }
