@@ -34,7 +34,12 @@ FRONTMATTER_DELIM = "---"
 
 @dataclass(frozen=True)
 class QAIndex:
-    """Metadata-only view of a qa log entry. Body is loaded on demand."""
+    """Metadata-only view of a qa log entry. Body is loaded on demand.
+
+    v2 fields (``trigger``, ``tools_used``, ``answer_chars``) are optional
+    and default empty when reading legacy MCP-only frontmatter produced by
+    v0.2.x.
+    """
 
     path: Path
     query: str
@@ -44,6 +49,9 @@ class QAIndex:
     total_chunks_searched: int
     timestamp: datetime | None
     result_count: int
+    trigger: str | None = None
+    tools_used: tuple[str, ...] = ()
+    answer_chars: int | None = None
 
     @property
     def id(self) -> str:
@@ -156,6 +164,27 @@ def _safe_int(raw: str, default: int = 0) -> int:
         return default
 
 
+def _parse_tools_used(raw: str) -> tuple[str, ...]:
+    """Decode the v2 ``tools_used`` frontmatter value.
+
+    Writer emits a JSON-ish list of double-quoted scalars,
+    e.g. ``[\"Grep\", \"Read\"]``. Cheap hand-roll parse to avoid a YAML dep.
+    """
+    if not raw:
+        return ()
+    val = raw.strip()
+    if val.startswith("[") and val.endswith("]"):
+        val = val[1:-1]
+    out: list[str] = []
+    for tok in val.split(","):
+        tok = tok.strip()
+        if len(tok) >= 2 and tok[0] == '"' and tok[-1] == '"':
+            tok = tok[1:-1]
+        if tok:
+            out.append(_yaml_unquote(f'"{tok}"'))
+    return tuple(out)
+
+
 def parse_qa_index(path: Path) -> QAIndex | None:
     """Return a QAIndex for ``path``, or None if frontmatter is missing/invalid."""
     try:
@@ -168,6 +197,7 @@ def parse_qa_index(path: Path) -> QAIndex | None:
     fm = _parse_frontmatter(block)
     if "query" not in fm:
         return None
+    answer_chars_raw = fm.get("answer_chars", "")
     return QAIndex(
         path=path,
         query=fm.get("query", ""),
@@ -177,6 +207,9 @@ def parse_qa_index(path: Path) -> QAIndex | None:
         total_chunks_searched=_safe_int(fm.get("total_chunks_searched", "")),
         timestamp=_parse_timestamp(fm.get("timestamp", "")),
         result_count=_safe_int(fm.get("result_count", "")),
+        trigger=fm.get("trigger") or None,
+        tools_used=_parse_tools_used(fm.get("tools_used", "")),
+        answer_chars=_safe_int(answer_chars_raw) if answer_chars_raw else None,
     )
 
 

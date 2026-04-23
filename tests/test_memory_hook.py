@@ -221,9 +221,9 @@ class TestInstallMemoryHook:
         assert result["added"] > 0
         assert settings.exists()
         written = json.loads(settings.read_text())
-        assert "hooks" in written
-        assert "PreToolUse" in written["hooks"]
-        assert "SessionStart" in written["hooks"]
+        # v0.3.0: all four hook types ship together.
+        for name in ("PreToolUse", "SessionStart", "UserPromptSubmit", "Stop"):
+            assert name in written["hooks"], f"missing hook entry: {name}"
 
     def test_merges_without_clobbering_existing_hooks(self, tmp_path: Path) -> None:
         settings = tmp_path / ".claude" / "settings.json"
@@ -307,8 +307,9 @@ class TestInstallMemoryHook:
         settings.write_text(json.dumps(stale))
         result = hooks.install_memory_hook(settings)
         assert result["status"] == "wrote"
-        assert result["added"] == 0
-        assert result["updated"] == 2
+        # v0.3.0 adds UserPromptSubmit + Stop on top of the refreshed pair.
+        assert result["updated"] == 2  # PreToolUse + SessionStart stale paths refreshed
+        assert result["added"] == 2    # UserPromptSubmit + Stop freshly installed
 
         import sys
         rewritten = json.loads(settings.read_text())
@@ -319,3 +320,276 @@ class TestInstallMemoryHook:
         # Second run is a no-op once the paths are already current.
         result2 = hooks.install_memory_hook(settings)
         assert result2["status"] == "exists"
+
+
+class TestExploratoryClassifier:
+    """Unit coverage for the UserPromptSubmit exploratory heuristic."""
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "학원비 정산 어떻게 되나",
+            "입학테스트 관련해서 어떤 기능들이 있는지 설명해줘",
+            "explain the billing architecture",
+            "how does portal-v3 work",
+            "지난번에 뭐 물어봤지",
+            "ledger writepath 전체 구조",
+        ],
+    )
+    def test_classifies_exploratory_prompts(self, prompt: str) -> None:
+        assert hooks._is_exploratory_prompt(prompt)
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "",
+            "   ",
+            "ok",
+            "thanks",
+            "next",
+            "/help",
+            "/clear",
+            "!ls -la",
+            "@file.py",
+            "fix this typo",
+        ],
+    )
+    def test_classifies_non_exploratory_prompts(self, prompt: str) -> None:
+        assert not hooks._is_exploratory_prompt(prompt)
+
+
+class TestUserPromptSubmitHook:
+    """G2 coverage — pre-fetch hybrid_search on exploratory prompts."""
+
+    def test_injects_context_on_exploratory_prompt(
+        self, project_root: Path, monkeypatch
+    ) -> None:
+        """When the prompt looks exploratory, hook calls search and injects top-K."""
+        # Stub the programmatic search so the test stays offline.
+        class _FakeHit:
+            def __init__(self, path, name, start=1, end=5):
+                self.file_path = path
+                self.name = name
+                self.start_line = start
+                self.end_line = end
+                self.qualified_name = name
+
+        class _FakeResp:
+            results = [
+                _FakeHit("docs/features/ledger.md", "ledger"),
+                _FakeHit("services/ledger/write.ts", "writeLedger"),
+            ]
+
+        def fake_search(prompt, cwd):
+            return _FakeResp()
+
+        monkeypatch.setattr(hooks, "_run_programmatic_search", fake_search)
+
+        payload = json.dumps({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "ledger 전체 구조 설명해줘",
+            "cwd": str(project_root),
+        })
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hooks.run_hook(payload)
+        assert rc == 0
+        parsed = json.loads(buf.getvalue())
+        assert parsed["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "ledger" in ctx
+        assert "docs/features/ledger.md" in ctx
+
+    def test_silent_on_non_exploratory(self, project_root: Path, monkeypatch) -> None:
+        called = {"n": 0}
+
+        def fake_search(prompt, cwd):
+            called["n"] += 1
+            return None
+
+        monkeypatch.setattr(hooks, "_run_programmatic_search", fake_search)
+        payload = json.dumps({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "/clear",
+            "cwd": str(project_root),
+        })
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hooks.run_hook(payload)
+        assert buf.getvalue() == ""
+        assert called["n"] == 0, "classifier should short-circuit before search"
+
+    def test_silent_on_search_failure(self, project_root: Path, monkeypatch) -> None:
+        def boom(prompt, cwd):
+            return None
+
+        monkeypatch.setattr(hooks, "_run_programmatic_search", boom)
+        payload = json.dumps({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "tuition 어떻게 구성돼 있나",
+            "cwd": str(project_root),
+        })
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hooks.run_hook(payload)
+        assert rc == 0
+        assert buf.getvalue() == ""
+
+    def test_empty_results_is_silent(self, project_root: Path, monkeypatch) -> None:
+        class _Empty:
+            results = []
+
+        monkeypatch.setattr(hooks, "_run_programmatic_search", lambda p, c: _Empty())
+        payload = json.dumps({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "어떻게 구성 되어 있나",
+            "cwd": str(project_root),
+        })
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hooks.run_hook(payload)
+        assert buf.getvalue() == ""
+
+
+class TestStopHook:
+    """G1 coverage — Stop hook guarantees qa_log save on every turn."""
+
+    def test_saves_turn_from_transcript(self, project_root: Path, tmp_path: Path) -> None:
+        """Stop hook parses JSONL transcript and writes a qa_log entry.
+
+        G1 check: a turn that used only Grep/Read (no MCP) still ends up
+        in qa_log after Stop fires.
+        """
+        transcript = tmp_path / "session.jsonl"
+        # Minimal realistic transcript — system setup, user turn, assistant
+        # with a couple tool_use blocks and final text.
+        transcript.write_text(
+            "\n".join([
+                json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": "tuition_fees update 어디서 하나"},
+                }),
+                json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "tool_use", "name": "Grep", "input": {}},
+                            {"type": "tool_use", "name": "Read", "input": {}},
+                            {"type": "text", "text": "9 places under services/..."},
+                        ]
+                    },
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        event = {
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "transcript_path": str(transcript),
+            "cwd": str(project_root),
+        }
+        hooks.run_hook(json.dumps(event))
+
+        # Assert a qa_log was written under the project root.
+        written = list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
+        assert written, "Stop hook should persist a qa_log entry"
+        body = written[0].read_text(encoding="utf-8")
+        assert "tuition_fees update 어디서 하나" in body
+        assert "trigger: stop_hook" in body
+        assert "tools_used:" in body
+        assert "Grep" in body
+        assert "Read" in body
+
+    def test_respects_stop_hook_active(self, project_root: Path, tmp_path: Path) -> None:
+        """Guard against infinite continuation loops — exit silently when flag set."""
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "test prompt"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        event = {
+            "hook_event_name": "Stop",
+            "stop_hook_active": True,
+            "transcript_path": str(transcript),
+            "cwd": str(project_root),
+        }
+        hooks.run_hook(json.dumps(event))
+        written = list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
+        assert not written
+
+    def test_skips_local_command_stdout(self, project_root: Path, tmp_path: Path) -> None:
+        """User messages that are local-command echoes aren't real prompts."""
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(
+            "\n".join([
+                json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": "<local-command-stdout>ok</local-command-stdout>"},
+                }),
+                json.dumps({
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "Bye"}]},
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        event = {
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "transcript_path": str(transcript),
+            "cwd": str(project_root),
+        }
+        hooks.run_hook(json.dumps(event))
+        written = list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
+        assert not written
+
+    def test_missing_transcript_is_silent(self, project_root: Path) -> None:
+        event = {
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "transcript_path": "/nonexistent/path.jsonl",
+            "cwd": str(project_root),
+        }
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hooks.run_hook(json.dumps(event))
+        assert rc == 0
+        assert buf.getvalue() == ""
+
+    def test_dedups_against_recent_mcp_save(self, project_root: Path, tmp_path: Path) -> None:
+        """When MCP tool already saved this query < 5s ago, Stop skips."""
+        # Simulate the MCP tool having already written a qa file for this query.
+        _write_log(project_root, "tuition ledger architecture")
+
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(
+            "\n".join([
+                json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": "tuition ledger architecture"},
+                }),
+                json.dumps({
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "done"}]},
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        event = {
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "transcript_path": str(transcript),
+            "cwd": str(project_root),
+        }
+        before = list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
+        hooks.run_hook(json.dumps(event))
+        after = list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
+        assert len(after) == len(before), "dedup should prevent double-save"
