@@ -351,10 +351,114 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # in the DB (gitignore drift or real removal).
     _run_wiki_cleanup(Path(project_path))
 
+    # v0.4.0 — Memory integrity pass: stale qa, semantic dedup, archive TTL.
+    _run_memory_integrity(config, registry, project_name, Path(project_path))
+
     if result.errors:
         print(f"Errors: {len(result.errors)}")
         for err in result.errors[:5]:
             print(f"  {err}")
+
+
+def _run_memory_integrity(
+    config: Config,
+    registry: ProjectRegistry,
+    project_name: str,
+    project_path: Path,
+) -> None:
+    """Run v0.4.0 integrity pass — stale qa, semantic dedup, archive TTL.
+
+    Silent no-op when disabled in config or when the project isn't
+    registered / the store DB is missing. Reports summary counts on
+    stdout when the pass actually moves files.
+    """
+    from hybrid_search.memory import integrity
+
+    cfg = getattr(config.memory, "integrity", None)
+    if cfg is None or not cfg.enabled:
+        return
+
+    qa_root = integrity.project_root_qa_dir = project_path / integrity.QA_DIRNAME
+    archive_root = project_path / integrity.QA_ARCHIVE_DIRNAME
+    if not qa_root.is_dir() and not archive_root.is_dir():
+        return
+
+    pinfo = registry.get_by_name(project_name)
+    indexed_paths: set[str] | None = None
+    qa_log_chunks: list[tuple[str, str, float]] | None = None
+    get_vector = None
+
+    if pinfo is not None:
+        try:
+            import sqlite3
+            pdir = get_project_dir(config.projects_dir, pinfo.id)
+            idx = IndexPaths(pdir)
+            if idx.store_db.exists():
+                conn = sqlite3.connect(str(idx.store_db))
+                try:
+                    cur = conn.execute("SELECT relative_path FROM files")
+                    indexed_paths = {row[0] for row in cur}
+                    # Fetch qa_log chunks: chunk_id, absolute qa path, mtime.
+                    cur = conn.execute(
+                        """
+                        SELECT c.id, f.relative_path
+                        FROM chunks c JOIN files f ON c.file_id = f.id
+                        WHERE c.node_type = 'qa_log'
+                        """
+                    )
+                    rows = cur.fetchall()
+                finally:
+                    conn.close()
+                qa_log_chunks = []
+                for chunk_id, rel in rows:
+                    abs_path = project_path / rel
+                    try:
+                        mtime = abs_path.stat().st_mtime
+                    except OSError:
+                        continue
+                    qa_log_chunks.append((chunk_id, str(abs_path), mtime))
+
+                # Vector-engine hook — only needed when we actually have
+                # qa_log chunks to compare. Loading it is cheap; the HNSW
+                # index is already on disk from the indexing pipeline.
+                if qa_log_chunks:
+                    try:
+                        from hybrid_search.search.vector import VectorEngine
+                        # Embedder carries the dim the indexer wrote with,
+                        # so the engine loads cleanly against the existing
+                        # usearch file.
+                        probe = Embedder(config.embedding, config.models_dir)
+                        vector_engine = VectorEngine(
+                            idx.vectors_dir,
+                            embedding_dim=probe.embedding_dim,
+                        )
+                        get_vector = vector_engine.get_vector
+                    except Exception:
+                        get_vector = None
+        except Exception:
+            pass
+
+    report = integrity.run_integrity_pass(
+        project_path,
+        indexed_paths=indexed_paths,
+        qa_log_chunks=qa_log_chunks,
+        get_vector=get_vector,
+        config=integrity.IntegrityConfig(
+            enabled=cfg.enabled,
+            dedup_threshold=cfg.dedup_threshold,
+            archive_ttl_days=cfg.archive_ttl_days,
+        ),
+    )
+
+    parts = []
+    if report.stale_archived:
+        parts.append(f"{len(report.stale_archived)} stale qa archived")
+    if report.dedup_pairs:
+        parts.append(f"{len(report.dedup_pairs)} dedup pair(s)")
+    if report.archive_purged:
+        parts.append(f"{len(report.archive_purged)} archive entr(ies) purged")
+    if parts:
+        print("Memory integrity: " + "; ".join(parts) + ".")
 
 
 def _run_wiki_cleanup(project_path: Path) -> None:
@@ -2717,9 +2821,15 @@ def cmd_install_memory_hook(args: argparse.Namespace) -> None:
 
 
 def cmd_qa_stats(args: argparse.Namespace) -> None:
-    """Summary stats over a project's qa logs."""
+    """Summary stats over a project's qa logs.
+
+    v0.4.0 surfaces active / archived / recent-churn counts alongside the
+    by-type / by-month breakdown so users can see the integrity pass
+    actually doing something (archive tier keeps the deletes visible
+    until TTL expires).
+    """
     from collections import Counter
-    from hybrid_search.memory import reader
+    from hybrid_search.memory import integrity, reader
 
     root = _resolve_qa_root(args)
     if root is None:
@@ -2727,25 +2837,103 @@ def cmd_qa_stats(args: argparse.Namespace) -> None:
 
     indexes = list(reader.iter_qa_indexes(root))
     total = len(indexes)
+
+    active = integrity.count_active(root)
+    archived = integrity.count_archived(root)
+    recent_archive = integrity.count_recent_archive_additions(root, window_days=7)
+
+    print(f"qa logs under {root / reader.QA_DIRNAME}")
+    print(f"  active:          {active}")
+    print(f"  archived:        {archived}")
+    print(f"  recent archive   {recent_archive}  (last 7d)")
+    print(f"  total ever:      {active + archived}")
+
     if total == 0:
-        print(f"No qa logs under {root / reader.QA_DIRNAME}")
         return
 
     by_month: Counter[str] = Counter()
     by_type: Counter[str] = Counter()
+    by_trigger: Counter[str] = Counter()
     for idx in indexes:
         by_type[idx.query_type] += 1
         if idx.timestamp is not None:
             by_month[idx.timestamp.strftime("%Y-%m")] += 1
+        if idx.trigger:
+            by_trigger[idx.trigger] += 1
 
-    print(f"qa logs under {root / reader.QA_DIRNAME}")
-    print(f"  total:        {total}")
     print("  by query_type:")
     for k, v in sorted(by_type.items(), key=lambda kv: -kv[1]):
         print(f"    {k:<16} {v}")
     print("  by month:")
     for k, v in sorted(by_month.items()):
         print(f"    {k}            {v}")
+    if by_trigger:
+        print("  by trigger:")
+        for k, v in sorted(by_trigger.items(), key=lambda kv: -kv[1]):
+            print(f"    {k:<16} {v}")
+
+
+def cmd_integrity(args: argparse.Namespace) -> None:
+    """Run the Memory integrity pass on-demand (same logic as reindex tail)."""
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+    project_path = Path(args.cwd).resolve()
+
+    match = _detect_project(registry, str(project_path))
+    if match is None:
+        print(
+            f"Project at {project_path} isn't registered. "
+            "Run `hybrid-search-mcp index .` first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    project_name = match[0]
+
+    # Override dedup threshold if user asked.
+    if args.dedup_threshold is not None:
+        from hybrid_search.config import MemoryConfig, MemoryIntegrityConfig
+        # Build a one-shot config override — we don't mutate the frozen
+        # dataclass; we swap in a new MemoryConfig that shadows the original.
+        cfg_override = MemoryConfig(
+            auto_prune=config.memory.auto_prune,
+            retention_days=config.memory.retention_days,
+            max_files=config.memory.max_files,
+            require_first_run_confirm=config.memory.require_first_run_confirm,
+            integrity=MemoryIntegrityConfig(
+                enabled=True,
+                dedup_threshold=args.dedup_threshold,
+                archive_ttl_days=config.memory.integrity.archive_ttl_days,
+            ),
+        )
+        config = type(config)(**{**config.__dict__, "memory": cfg_override})
+
+    active_before = _count_qa_files(project_path)
+    _run_memory_integrity(config, registry, project_name, project_path)
+    active_after = _count_qa_files(project_path)
+
+    print(f"qa active: {active_before} → {active_after}  (Δ {active_after - active_before})")
+
+
+def _count_qa_files(project_path: Path) -> int:
+    """Count the .md files currently in ``.hybrid-search/qa/``."""
+    root = project_path / ".hybrid-search" / "qa"
+    if not root.is_dir():
+        return 0
+    return sum(1 for _ in root.rglob("*.md"))
+
+
+def cmd_qa_restore(args: argparse.Namespace) -> None:
+    """Move an archived qa back into the active qa/ tree."""
+    from hybrid_search.memory import integrity
+
+    root = _resolve_qa_root(args)
+    if root is None:
+        sys.exit(1)
+    restored = integrity.restore_archived(root, args.id)
+    if restored is None:
+        print(f"No archived qa found for '{args.id}'", file=sys.stderr)
+        sys.exit(1)
+    print(f"Restored: {restored}")
 
 
 def _bfs_shortest_path(
@@ -3372,6 +3560,7 @@ def _ensure_gitignore_entries(project_root: Path) -> None:
         ".hybrid-search/.gaps-shown",
         ".hybrid-search/needs_synthesis",
         ".hybrid-search/qa/",
+        ".hybrid-search/qa-archive/",  # v0.4.0 — archive tier
     ]
     existing = gi_path.read_text(encoding="utf-8") if gi_path.exists() else ""
     existing_lines = {line.strip() for line in existing.splitlines()}
@@ -3566,9 +3755,30 @@ def main() -> None:
     p_qa_grep.add_argument("--project", help="Project name (overrides --cwd)")
     p_qa_grep.add_argument("--case-sensitive", action="store_true", help="Respect case (default: off)")
 
-    p_qa_stats = sub.add_parser("qa-stats", help="Summary of qa logs (total / by type / by month)")
+    p_qa_stats = sub.add_parser("qa-stats", help="Summary of qa logs (active / archived / by type / by month)")
     p_qa_stats.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
     p_qa_stats.add_argument("--project", help="Project name (overrides --cwd)")
+
+    p_qa_restore = sub.add_parser(
+        "qa-restore",
+        help="Restore an archived qa entry back into qa/",
+    )
+    p_qa_restore.add_argument("id", help="qa stem, hash prefix (≥4), or friendly id")
+    p_qa_restore.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_qa_restore.add_argument("--project", help="Project name (overrides --cwd)")
+
+    p_integrity = sub.add_parser(
+        "integrity",
+        help="Run the Memory integrity pass now (qa stale + dedup + archive TTL)",
+    )
+    p_integrity.add_argument("--cwd", default=".", help="Project directory")
+    p_integrity.add_argument(
+        "--dedup-threshold",
+        type=float,
+        default=None,
+        help="Override cosine similarity threshold (default: config value)",
+    )
+    p_integrity.add_argument("--verbose", action="store_true", help="List every archived path")
 
     p_qa_prune = sub.add_parser(
         "qa-prune",
@@ -3699,6 +3909,10 @@ def main() -> None:
         cmd_qa_grep(args)
     elif args.command == "qa-stats":
         cmd_qa_stats(args)
+    elif args.command == "qa-restore":
+        cmd_qa_restore(args)
+    elif args.command == "integrity":
+        cmd_integrity(args)
     elif args.command == "qa-prune":
         cmd_qa_prune(args)
     elif args.command == "qa-hook":

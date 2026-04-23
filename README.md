@@ -320,6 +320,43 @@ python benchmarks/run_compounding_bench.py
 The script backs up and restores your existing qa directory around the
 experiment, so it's safe to run against a project you actively use.
 
+### Memory integrity (v0.4.0) — consolidation beyond FIFO
+
+Auto-prune (v0.2.0) keeps the disk bounded; orphan cleanup (v0.3.0)
+keeps wiki honest. Neither touches the **content quality** of qa_log
+over time. v0.4.0 adds three deterministic passes that run at the end
+of every reindex:
+
+1. **Staleness** — qa files whose ``## Top results`` references are
+   all gone from the index (typical after a refactor + rename, or a
+   ``.gitignore`` addition that drops a tree from indexing) are moved
+   to archive.
+2. **Semantic dedup** — every pair of qa_log chunks is compared on
+   cosine similarity using the vectors already in the HNSW index (no
+   re-embedding, no LLM). Pairs at or above
+   `memory.integrity.dedup_threshold` (default 0.90) cluster via
+   union-find; the newest of each cluster is kept, rest are archived.
+3. **Archive TTL** — everything archived (by auto-prune, dedup, or
+   staleness) lives in ``.hybrid-search/qa-archive/YYYY/MM/`` for 30
+   days, then permanently unlinks. `qa-restore <id>` brings a
+   regretted prune back.
+
+```toml
+[memory.integrity]
+auto_prune = true              # top-level [memory] — unchanged from v0.2.0
+enabled = true                 # new — v0.4.0 pass toggle
+dedup_threshold = 0.90         # cosine similarity floor for near-duplicates
+archive_ttl_days = 30
+```
+
+Run on demand:
+```bash
+hybrid-search-mcp integrity --cwd .                    # defaults
+hybrid-search-mcp integrity --cwd . --dedup-threshold 0.85   # more aggressive
+hybrid-search-mcp qa-restore abc12345                  # ungarbage-can
+hybrid-search-mcp qa-stats --cwd .                     # active/archived counters
+```
+
 ### Retention — Memory doesn't balloon your disk
 
 `.hybrid-search/qa/` grows with every query. The reindex hook applies
