@@ -15,13 +15,21 @@ Turn 3:  "portal 인증 흐름"                    → uses Turn 1 as context
 That third turn didn't search the code fresh — it found the *conversation*
 you had earlier, and used your own prior question as context. Every
 answered query becomes a first-class search result for every future query.
-**Search quality compounds with usage** — measured, not promised:
 
-> On a 20-query benchmark against `valuein_homepage` (1,307 files),
-> **memory surfaces past Q&A in 80% of repeated queries and 65% of
-> reworded follow-ups**, lifting the end-user "answer found in top-10"
-> rate from 75% to **95%** — with gold retrieval flat within noise
-> (−1.7pp). See [Compounding benchmark](#compounding-benchmark-2026-04-22).
+**v0.3.0 (2026-04-23): deterministic guarantees.** Four Claude Code hooks
+(PreToolUse, SessionStart, UserPromptSubmit, Stop) wire the memory layer
+into every turn — save is independent of Claude's tool choice, retrieval
+fires before Claude sees exploratory prompts. No stochastic "sometimes
+works" behaviour; every turn persists, every exploratory prompt gets
+pre-enriched.
+
+> On a 20-query benchmark against `valuein_homepage`,
+> **memory surfaces past Q&A in 80% of repeated queries and 50% of
+> reworded follow-ups**, lifting end-user "answer found in top-10"
+> from 75% → 90% (paraphrase) / 80% → 90% (identity). Guaranteed-save
+> is unit-test verified (`TestStopHook` suite) since the bench drives
+> the orchestrator directly without hooks in the loop. See
+> [Compounding benchmark](#compounding-benchmark-2026-04-23).
 
 ---
 
