@@ -1,0 +1,61 @@
+{
+  "e1": {
+    "active": 4,
+    "archived": 0,
+    "by_trigger": {
+      "(legacy)": 4
+    },
+    "by_month": {
+      "2026-04": 4
+    }
+  },
+  "e2": {
+    "indexed_files_in_db": 3048,
+    "stale_qa_detected": 0,
+    "stale_paths": []
+  },
+  "e3": {
+    "planted": 9,
+    "dedup_pairs": 4,
+    "qa_active_after": 5,
+    "qa_archived_after": 4,
+    "expected_active": 5,
+    "expected_archived": 4,
+    "pass": true
+  },
+  "e4": {
+    "rows": [
+      {
+        "threshold": 0.85,
+        "archived": 3,
+        "dedup_pairs": 3
+      },
+      {
+        "threshold": 0.9,
+        "archived": 2,
+        "dedup_pairs": 2
+      },
+      {
+        "threshold": 0.95,
+        "archived": 2,
+        "dedup_pairs": 2
+      }
+    ]
+  },
+  "e5": {
+    "initial_active": 1,
+    "archived_by_integrity": 1,
+    "archive_count_peak": 1,
+    "restored_ok": true,
+    "active_after_restore": 1,
+    "archived_after_restore": 0,
+    "pass": true
+  },
+  "e6": {
+    "archived_seeded": 2,
+    "purged_by_ttl": 1,
+    "fresh_still_archived": true,
+    "old_purged": true,
+    "pass": true
+  }
+}
