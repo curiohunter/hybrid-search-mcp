@@ -73,7 +73,13 @@ _SENSITIVE_QUERY_RE = _re.compile(
 
 @dataclass(frozen=True)
 class QARecord:
-    """Immutable snapshot of a single search exchange."""
+    """Immutable snapshot of a single search exchange.
+
+    v2 (2026-04-23): optional trigger / tools_used / answer_chars fields
+    carry non-MCP turn context when the record is produced by the Stop
+    hook instead of the hybrid_search tool handler. Legacy writers that
+    omit them remain valid — all three default to None / empty.
+    """
     query: str
     query_type: str
     effective_bm25_weight: float
@@ -82,6 +88,10 @@ class QARecord:
     results: list[dict[str, Any]]
     timestamp: datetime
     project_root: Path
+    # v2
+    trigger: str | None = None              # "mcp_tool" | "stop_hook" | "user_prompt_submit"
+    tools_used: tuple[str, ...] = ()        # names of tools Claude invoked this turn
+    answer_chars: int | None = None         # length of Claude's final text response
 
 
 def is_enabled() -> bool:
@@ -171,6 +181,15 @@ def _format_record(record: QARecord) -> str:
         f"total_chunks_searched: {record.total_chunks_searched}",
         f"timestamp: {ts_iso}",
         f"result_count: {len(record.results)}",
+    ]
+    if record.trigger:
+        lines.append(f"trigger: {record.trigger}")
+    if record.tools_used:
+        tools_str = ", ".join(f'"{_yaml_escape(t)}"' for t in record.tools_used)
+        lines.append(f"tools_used: [{tools_str}]")
+    if record.answer_chars is not None:
+        lines.append(f"answer_chars: {record.answer_chars}")
+    lines += [
         "---",
         "",
         f"# Q: {record.query}",
@@ -179,6 +198,14 @@ def _format_record(record: QARecord) -> str:
         f"- **bm25_weight**: {record.effective_bm25_weight}",
         f"- **time**: {record.query_time_ms} ms",
         f"- **chunks_searched**: {record.total_chunks_searched}",
+    ]
+    if record.trigger:
+        lines.append(f"- **trigger**: {record.trigger}")
+    if record.tools_used:
+        lines.append(f"- **tools**: {', '.join(record.tools_used)}")
+    if record.answer_chars is not None:
+        lines.append(f"- **answer_chars**: {record.answer_chars}")
+    lines += [
         "",
         "## Top results",
         "",
@@ -245,6 +272,7 @@ def record(
     cwd: str | None,
     project_infos: Iterable[Any] | None = None,
     async_write: bool = True,
+    trigger: str = "mcp_tool",
 ) -> Path | None:
     """Record a hybrid_search response to disk (fire-and-forget).
 
@@ -254,6 +282,9 @@ def record(
     - When ``async_write`` is True (default), disk I/O happens on a daemon
       thread so the hot search path is untouched.
     - When ``async_write`` is False (used by tests), returns the file path.
+    - ``trigger`` is persisted in the frontmatter (``mcp_tool`` /
+      ``user_prompt_submit``) so downstream analytics can tell which
+      code path produced the record.
     """
     if not is_enabled():
         return None
@@ -293,9 +324,105 @@ def record(
             results=results_payload,
             timestamp=datetime.now(timezone.utc),
             project_root=root,
+            trigger=trigger,
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("qa_log prepare failed: %s", exc)
+        return None
+
+    if async_write:
+        threading.Thread(target=_persist, args=(rec,), daemon=True).start()
+        return None
+    return _persist(rec)
+
+
+# Dedup window for Stop-hook writes. When the hybrid_search MCP tool already
+# saved a record ≤ this many seconds ago with the same query hash, Stop hook
+# skips to avoid double-persistence of the same turn.
+_DEDUP_WINDOW_SECONDS = 5
+
+
+def _recent_qa_hash_exists(
+    project_root: Path,
+    query_hash: str,
+    within_seconds: int = _DEDUP_WINDOW_SECONDS,
+) -> bool:
+    """True when a qa file with the given hash was written in the last N seconds.
+
+    Cheap directory scan — qa dirs are small (at most thousands of entries
+    even on very active projects; auto-prune caps at 2000). Skips the scan
+    silently if the qa dir doesn't exist.
+    """
+    qa_root = project_root / ".hybrid-search" / "qa"
+    if not qa_root.is_dir():
+        return False
+    try:
+        now_ts = datetime.now(timezone.utc).timestamp()
+    except Exception:
+        return False
+    threshold = now_ts - within_seconds
+    for year in qa_root.iterdir():
+        if not year.is_dir() or not year.name.isdigit():
+            continue
+        for month in year.iterdir():
+            if not month.is_dir() or not month.name.isdigit():
+                continue
+            for md in month.glob(f"*-{query_hash}.md"):
+                try:
+                    if md.stat().st_mtime >= threshold:
+                        return True
+                except OSError:
+                    continue
+    return False
+
+
+def record_turn(
+    *,
+    query: str,
+    cwd: str | None,
+    tools_used: Iterable[str] = (),
+    answer_chars: int | None = None,
+    trigger: str = "stop_hook",
+    project_infos: Iterable[Any] | None = None,
+    async_write: bool = False,
+    dedup: bool = True,
+) -> Path | None:
+    """Persist a conversation turn that did NOT go through the MCP tool.
+
+    Called by the Claude Code Stop hook so every turn — including those
+    where Claude only used Grep/Read/Bash — ends up in qa_log. Uses a
+    short dedup window against the MCP tool's save path so turns that DID
+    also fire the MCP don't end up double-saved.
+
+    Never raises.
+    """
+    if not is_enabled():
+        return None
+    if is_sensitive_query(query):
+        return None
+    try:
+        root = _resolve_project_root(cwd, project_infos)
+        if root is None:
+            return None
+
+        if dedup and _recent_qa_hash_exists(root, _hash_query(query)):
+            return None
+
+        rec = QARecord(
+            query=query,
+            query_type="TURN",
+            effective_bm25_weight=0.0,
+            query_time_ms=0.0,
+            total_chunks_searched=0,
+            results=[],
+            timestamp=datetime.now(timezone.utc),
+            project_root=root,
+            trigger=trigger,
+            tools_used=tuple(tools_used),
+            answer_chars=answer_chars,
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.debug("qa_log record_turn prepare failed: %s", exc)
         return None
 
     if async_write:
