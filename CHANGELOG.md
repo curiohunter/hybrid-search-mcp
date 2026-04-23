@@ -4,6 +4,79 @@ All notable changes to hybrid-search-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-04-23
+
+**Memory integrity.** v0.3.0 guaranteed every turn persists; v0.4.0 keeps
+those persisted turns *useful* over time. Three deterministic passes run
+at every reindex — staleness, semantic dedup, archive TTL — so qa_log
+stops being an append-only dumpster and becomes actual memory that
+consolidates.
+
+### Added
+
+- **Staleness pruning** (`memory.integrity.detect_stale_qa`). qa_log
+  files whose ``## Top results`` paths are *all* absent from the store
+  DB are archived (not unlinked). Mirrors the v0.3.0 wiki orphan
+  detector.
+- **Semantic dedup** (`memory.integrity.detect_semantic_duplicates`).
+  For every pair of qa_log chunks, compares cosine similarity from the
+  already-indexed vectors. Pairs at or above threshold
+  (default **0.90**) cluster via union-find; the newest member is kept,
+  older members are archived. No re-embedding, no LLM cost.
+- **Archive tier**. Every prune (auto-prune, qa-prune, staleness,
+  dedup) moves files into ``<project>/.hybrid-search/qa-archive/
+  YYYY/MM/*.md`` instead of unlinking. Archive entries older than
+  ``archive_ttl_days`` (default **30**) are permanently removed on
+  subsequent reindexes — cheap insurance against regret.
+- **`qa-restore` CLI**. Brings an archived entry back into qa/. Accepts
+  the stem, hash prefix (≥4 hex chars), or friendly id from
+  ``qa-list``. Path-preserving restore.
+- **`integrity` CLI**. Runs the full pass on demand. `--dedup-threshold`
+  lets users tune sensitivity without editing config.
+- **`qa-stats` v2**. Surfaces ``active`` / ``archived`` / ``recent
+  archive (7d)`` / ``total ever`` counters alongside the existing
+  by-type / by-month breakdown. New ``by trigger`` line shows how many
+  of the active qa files came from each save path (``mcp_tool``,
+  ``stop_hook``, ``user_prompt_submit``).
+- **`[memory.integrity]` config block** — ``enabled`` (default true),
+  ``dedup_threshold`` (0.90), ``archive_ttl_days`` (30).
+- **`VectorEngine.get_vector(chunk_id)`** — surfaces the stored HNSW
+  vector to callers that need pairwise cosine without going through
+  ``search()``. Used by the dedup pass.
+- **Plan doc** `docs/plans/2026-04-23-v0.4.0-memory-integrity.md` with
+  architecture, stages, verification gates, and risk register.
+- Tests: 23 new in `test_memory_integrity.py` covering archive /
+  staleness / dedup / purge / restore / stats. Full suite:
+  **845 passing**.
+
+### Changed
+
+- Reindex tail order: `auto_prune` → `wiki_cleanup` → `integrity_pass`
+  → `archive purge`. Independent passes; each skips silently when
+  applicable sub-state is absent.
+- `_ensure_gitignore_entries` now auto-patches ``.hybrid-search/
+  qa-archive/`` so archived qa files never leak into git.
+
+### Verification
+
+Ran the full G-gate sweep:
+
+- G1 (staleness): unit suite + single-file smoke → archived correctly
+- G2 (dedup): live 3-identical-plants smoke → 1 kept, 2 archived
+- G3 (archive TTL): 45-day-old mtime-forge → purged on next pass
+- G4 (existing tests): 822 → 845 (+23, 100% pass)
+- G5 (new tests): 23 in `test_memory_integrity.py` alone
+- G6 (gitignore): ``.hybrid-search/qa-archive/`` auto-added on setup
+- G_integrity (valuein live): no new stale or dedup pairs on clean
+  run — environment already healthy post-v0.3.0 cleanup
+
+### Non-goals (unchanged from plan)
+
+- No LLM-based summarisation
+- No cross-project qa consolidation
+- Existing qa_log markdown format stays backward-compatible (additive
+  frontmatter only; v0.2.x files still parse cleanly)
+
 ## [0.3.0] — 2026-04-23
 
 **Deterministic Memory Layer.** v0.2.0 left two leaks: qa_log save only

@@ -109,6 +109,23 @@ class WikiConfig:
 
 
 @dataclass(frozen=True)
+class MemoryIntegrityConfig:
+    """v0.4.0 — semantic dedup + staleness + archive tier.
+
+    Every reindex runs an integrity pass after the v0.2.0 auto-prune and
+    v0.3.0 wiki-cleanup passes. The pass is deterministic (no LLM cost):
+    it reuses the existing vector index to find near-duplicate qa_log
+    pairs and scans each qa_log's referenced files against the store DB
+    to catch stale entries. Both failure modes move files into
+    ``.hybrid-search/qa-archive/`` rather than deleting outright, and
+    archive entries are permanently removed after ``archive_ttl_days``.
+    """
+    enabled: bool = True
+    dedup_threshold: float = 0.90
+    archive_ttl_days: int = 30
+
+
+@dataclass(frozen=True)
 class MemoryConfig:
     """Retention for the qa_log Memory Layer.
 
@@ -125,6 +142,7 @@ class MemoryConfig:
     # ``memory.confirmed = true`` in config) to activate. A touchfile
     # ``.hybrid-search/qa/.prune-confirmed`` records consent per project.
     require_first_run_confirm: bool = True
+    integrity: MemoryIntegrityConfig = field(default_factory=MemoryIntegrityConfig)
 
 
 @dataclass(frozen=True)
@@ -227,6 +245,12 @@ def load_config(config_path: Path | None = None) -> Config:
     )
 
     mem_raw = raw.get("memory", {})
+    integ_raw = mem_raw.get("integrity", {})
+    integrity = MemoryIntegrityConfig(
+        enabled=bool(integ_raw.get("enabled", True)),
+        dedup_threshold=float(integ_raw.get("dedup_threshold", 0.90)),
+        archive_ttl_days=int(integ_raw.get("archive_ttl_days", 30)),
+    )
     memory = MemoryConfig(
         auto_prune=bool(mem_raw.get("auto_prune", True)),
         retention_days=int(mem_raw.get("retention_days", 90)),
@@ -234,6 +258,7 @@ def load_config(config_path: Path | None = None) -> Config:
         require_first_run_confirm=bool(
             mem_raw.get("require_first_run_confirm", True)
         ),
+        integrity=integrity,
     )
 
     projects = tuple(

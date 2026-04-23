@@ -115,6 +115,25 @@ class VectorEngine:
     def count(self) -> int:
         return len(self._id_to_key)
 
+    def get_vector(self, chunk_id: str) -> np.ndarray | None:
+        """Return the stored vector for ``chunk_id`` or ``None`` if absent.
+
+        Used by the Memory-Layer integrity pass to compute pairwise
+        cosine similarity between indexed qa_log chunks without
+        re-embedding their contents.
+        """
+        key = self._id_to_key.get(chunk_id)
+        if key is None:
+            return None
+        try:
+            vec = self._index.get(int(key))
+        except Exception:
+            return None
+        if vec is None:
+            return None
+        arr = np.asarray(vec).reshape(-1).astype(np.float32)
+        return arr if arr.size == self._dim else None
+
     def save(self) -> None:
         """Persist index and mappings to disk."""
         if self.count > 0:
