@@ -4,6 +4,95 @@ All notable changes to hybrid-search-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-04-23
+
+**Deterministic Memory Layer.** v0.2.0 left two leaks: qa_log save only
+fires when Claude chooses the MCP tool (stochastic), and wiki pages
+accumulate orphans as source files disappear from the index
+(gitignore drift, deletions). v0.3.0 closes both with two new hooks and
+automated wiki cleanup — every user–Claude turn persists regardless of
+tool choice, and every reindex purges orphan wiki pages.
+
+### Added
+
+- **`Stop` hook** (`hybrid_search.hooks._handle_stop`). Fires at the end
+  of every Claude turn; parses the transcript JSONL to find the last
+  user prompt + assistant activity, writes a qa_log entry tagged
+  ``trigger: stop_hook``. Respects ``stop_hook_active`` to avoid
+  continuation loops. Dedups against recent MCP-tool saves (5-second
+  window + query hash match) so turns that DID call
+  ``hybrid_search`` aren't double-persisted.
+- **`UserPromptSubmit` hook** (`_handle_user_prompt_submit`). Fires when
+  the user submits a prompt; classifies as exploratory via KO/EN
+  keyword heuristics (`어떤`/`어떻게`/`구조`/`how`/`explain`/...) plus
+  memory-intent markers (`지난번`/`previously`/...) that bypass the
+  length gate. Exploratory prompts trigger an on-the-fly
+  ``hybrid_search`` call; top-10 results are injected as
+  ``hookSpecificOutput.additionalContext`` and saved to qa_log with
+  ``trigger: user_prompt_submit``. Slash commands, bash pass-through,
+  `@file` references, and short single-token prompts short-circuit
+  before any search.
+- **Orphan wiki auto-cleanup** (`hybrid_search.wiki_cleanup`). At the
+  end of every reindex, compares each wiki page's ``## Files`` refs
+  against the store DB's ``relative_path`` set; pages whose references
+  are *all* absent from the DB are deleted. Protects against gitignore
+  drift (files excluded from the index but still on disk) and actual
+  file deletion. Available as a standalone CLI via
+  ``hybrid-search-mcp wiki-cleanup [--dry-run] [--verbose]``.
+- **qa_log format v2**: optional frontmatter fields ``trigger``,
+  ``tools_used``, ``answer_chars``. Backward-compatible — v0.2.x
+  records (without these fields) still parse cleanly.
+- **Stronger `CLAUDE.md` routing section**: imperative wording
+  ("반드시 이 순서로", "예외 없이") plus explicit
+  ``mcp__hybrid-search__hybrid_search`` tool name and trigger-word
+  tables per question category. Replaces the descriptive v0.2.x
+  "의도 기반 라우팅" section on re-setup.
+- **`install-memory-hook` upgrade**: now installs all four hook types
+  (PreToolUse, SessionStart, UserPromptSubmit, Stop). Existing
+  installs with stale paths are refreshed in place. Idempotent.
+- **`scripts/wiki_bloat_audit.py`** gains a `--delete` flag with a
+  DB-based orphan detector (previously disk-only, which undercounted
+  gitignore-drift zombies by an order of magnitude).
+- **Plan doc** at `docs/plans/v0.3.0-deterministic-memory.md` with
+  goals, design, stages, verification checklist, risk register.
+- Tests: 32 new (`test_memory_hook.py` +TestStopHook +TestUserPromptSubmitHook
+  +TestExploratoryClassifier, `test_wiki_orphan_cleanup.py`).
+  Full suite: **822 passing**.
+
+### Changed
+
+- `qa_log.record()` accepts a ``trigger`` argument (default
+  ``"mcp_tool"`` preserves prior behaviour). Adds ``record_turn()``
+  for non-MCP saves.
+- `install_memory_hook()` returns ``{added, updated, path, status}``
+  — ``updated`` counts stale-path refreshes that were rewritten in
+  place. CLI output distinguishes installed vs refreshed blocks.
+
+### Fixed
+
+- **valuein_homepage cleanup**: 765 orphan wiki pages removed
+  (2,584 → 1,819 pages, ≈30% reduction). Almost all were
+  ``mindvault-out/*`` or ``docs/valueinmath_docs/학습/*`` pages that
+  had been excluded from the index by `.gitignore` additions but were
+  never pruned.
+- Stop hook's transcript parser skips local-command stdout,
+  command-message envelopes, and system-reminder blocks — only
+  genuine user prompts survive the filter.
+
+### Notes
+
+- The bench (`benchmarks/run_compounding_bench.py`) drives the
+  orchestrator directly, so it does *not* exercise the v0.3.0
+  Stop / UserPromptSubmit guarantees (those only fire inside Claude
+  Code). Re-run numbers post-cleanup show Track A identity memory
+  surface unchanged at 80 %; Track B paraphrase dropped from 65 % to
+  50 % in this environment, attributable to the 30 % fewer wiki
+  chunks now in the index. The guaranteed-save property is verified
+  by unit tests (``TestStopHook`` suite) rather than the compounding
+  bench.
+- Non-goals preserved: no MCP tools added; existing qa_log files
+  remain readable; module_synth page-generation algorithm untouched.
+
 ## [0.2.0] — 2026-04-22
 
 **Memory Layer, evidenced.** v0.1 introduced the qa_log compounding loop

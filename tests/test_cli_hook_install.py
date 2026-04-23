@@ -222,7 +222,7 @@ class TestEnsureClaudeMd:
         assert claude_md.exists()
         content = claude_md.read_text(encoding="utf-8")
         assert _CLAUDE_MD_MARKER in content
-        assert "의도 기반 라우팅" in content
+        assert "반드시 이 순서로" in content
 
     def test_inserts_after_h1_when_present(self, tmp_path: Path) -> None:
         claude_md = tmp_path / "CLAUDE.md"
@@ -257,7 +257,7 @@ class TestEnsureClaudeMd:
         _ensure_claude_md(str(tmp_path))
         content = claude_md.read_text(encoding="utf-8")
         assert "STALE LINE THAT MUST GO" not in content
-        assert "의도 기반 라우팅" in content
+        assert "반드시 이 순서로" in content
         assert "## Keep Me" in content
         assert "User content preserved." in content
 

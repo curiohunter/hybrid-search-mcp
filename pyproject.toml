@@ -1,6 +1,6 @@
 [project]
 name = "hybrid-search-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Memory Layer MCP for Claude Code — hybrid BM25 + vector search that compounds with usage (Korean ↔ English)"
 requires-python = ">=3.11"
 dependencies = [

@@ -1,5 +1,5 @@
 {
-  "date": "2026-04-22",
+  "date": "2026-04-23",
   "project": "valuein_homepage",
   "total_pairs": 20,
   "non_leaky_pairs": 15,
@@ -13,7 +13,7 @@
         "primary_hit_rate": 0.8,
         "primary_top1": 0.35,
         "primary_top5": 0.7,
-        "recall_at_10_mean": 0.6125,
+        "recall_at_10_mean": 0.6541666666666667,
         "mrr_mean": 0.4863095238095238,
         "qa_hit_rate": 0.0,
         "qa_top1_rate": 0.0,
@@ -22,15 +22,15 @@
       },
       "warm": {
         "n": 20,
-        "primary_hit_rate": 0.8,
+        "primary_hit_rate": 0.85,
         "primary_top1": 0.25,
         "primary_top5": 0.75,
         "recall_at_10_mean": 0.5958333333333333,
         "mrr_mean": 0.4338095238095238,
-        "qa_hit_rate": 0.25,
-        "qa_top1_rate": 0.25,
-        "memory_primary_rate": 0.65,
-        "answer_found_rate": 0.95
+        "qa_hit_rate": 0.2,
+        "qa_top1_rate": 0.2,
+        "memory_primary_rate": 0.5,
+        "answer_found_rate": 0.85
       }
     },
     "non_leaky": {
@@ -39,7 +39,7 @@
         "primary_hit_rate": 0.8,
         "primary_top1": 0.26666666666666666,
         "primary_top5": 0.7333333333333333,
-        "recall_at_10_mean": 0.55,
+        "recall_at_10_mean": 0.6055555555555555,
         "mrr_mean": 0.4388888888888889,
         "qa_hit_rate": 0.0,
         "qa_top1_rate": 0.0,
@@ -48,15 +48,15 @@
       },
       "warm": {
         "n": 15,
-        "primary_hit_rate": 0.8,
+        "primary_hit_rate": 0.8666666666666667,
         "primary_top1": 0.26666666666666666,
         "primary_top5": 0.8,
         "recall_at_10_mean": 0.5277777777777778,
         "mrr_mean": 0.43555555555555553,
-        "qa_hit_rate": 0.2,
-        "qa_top1_rate": 0.2,
-        "memory_primary_rate": 0.6666666666666666,
-        "answer_found_rate": 1.0
+        "qa_hit_rate": 0.13333333333333333,
+        "qa_top1_rate": 0.13333333333333333,
+        "memory_primary_rate": 0.4666666666666667,
+        "answer_found_rate": 0.8666666666666667
       }
     },
     "leaky": {
@@ -90,11 +90,11 @@
     "overall": {
       "cold": {
         "n": 20,
-        "primary_hit_rate": 0.9,
+        "primary_hit_rate": 0.95,
         "primary_top1": 0.3,
-        "primary_top5": 0.8,
+        "primary_top5": 0.85,
         "recall_at_10_mean": 0.6558333333333334,
-        "mrr_mean": 0.4563888888888889,
+        "mrr_mean": 0.4588888888888889,
         "qa_hit_rate": 0.0,
         "qa_top1_rate": 0.0,
         "memory_primary_rate": 0.0,
@@ -104,13 +104,13 @@
         "n": 20,
         "primary_hit_rate": 0.95,
         "primary_top1": 0.2,
-        "primary_top5": 0.8,
+        "primary_top5": 0.85,
         "recall_at_10_mean": 0.6391666666666667,
-        "mrr_mean": 0.37297619047619046,
-        "qa_hit_rate": 0.45,
-        "qa_top1_rate": 0.45,
+        "mrr_mean": 0.37464285714285717,
+        "qa_hit_rate": 0.5,
+        "qa_top1_rate": 0.5,
         "memory_primary_rate": 0.8,
-        "answer_found_rate": 0.95
+        "answer_found_rate": 0.9
       }
     }
   },
@@ -138,34 +138,14 @@
           "docs/features/2026-04-08-tuition-withdrawal-refund.md",
           ".hybrid-search/wiki/2026-04-08-tuition-billing-isolated.md",
           "docs/archive/session-edit-add-delete-plan.md",
-          ".hybrid-search/wiki/2026-03-31-tuition-final-adjustment-isolated-isolated.md"
+          "supabase/migrations/20260421130000_l2_1_tuition_fees_ledger_flag_and_soft_delete.sql"
         ]
       },
       "warm": {
         "id": "S1",
         "leakage_risk": "low",
         "category": "structure",
-        "primary_hit_rank": 3,
-        "any_hit_rank": null,
-        "recall_at_10": 0.0,
-        "answer_found": true,
-        "qa_primary_rank": 9,
-        "mrr": 0.0,
-        "qa_hit_count": 0,
-        "qa_top1": false,
-        "top_paths": [
-          "types/tuition.ts",
-          "docs/features/2026-04-08-tuition-withdrawal-refund.md",
-          "supabase/migrations/20260421130000_l2_1_tuition_fees_ledger_flag_and_soft_delete.sql",
-          "docs/archive/session-edit-add-delete-plan.md",
-          ".hybrid-search/wiki/2026-04-08-tuition-billing-isolated.md"
-        ]
-      },
-      "cold_identity": {
-        "id": "S1",
-        "leakage_risk": "low",
-        "category": "structure",
-        "primary_hit_rank": 3,
+        "primary_hit_rank": 5,
         "any_hit_rank": null,
         "recall_at_10": 0.0,
         "answer_found": false,
@@ -176,8 +156,28 @@
         "top_paths": [
           "types/tuition.ts",
           "docs/features/2026-04-08-tuition-withdrawal-refund.md",
-          ".hybrid-search/wiki/2026-03-31-tuition-final-adjustment-isolated-isolated.md",
           ".hybrid-search/wiki/2026-04-08-tuition-billing-isolated.md",
+          "docs/archive/session-edit-add-delete-plan.md",
+          "supabase/migrations/20260421130000_l2_1_tuition_fees_ledger_flag_and_soft_delete.sql"
+        ]
+      },
+      "cold_identity": {
+        "id": "S1",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 4,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "types/tuition.ts",
+          "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+          ".hybrid-search/wiki/2026-04-08-tuition-billing-isolated.md",
+          "supabase/migrations/20260421130000_l2_1_tuition_fees_ledger_flag_and_soft_delete.sql",
           "docs/archive/session-edit-add-delete-plan.md"
         ]
       },
@@ -188,8 +188,8 @@
         "primary_hit_rank": 4,
         "any_hit_rank": null,
         "recall_at_10": 0.0,
-        "answer_found": true,
-        "qa_primary_rank": 8,
+        "answer_found": false,
+        "qa_primary_rank": null,
         "mrr": 0.0,
         "qa_hit_count": 0,
         "qa_top1": false,
@@ -197,7 +197,7 @@
           "types/tuition.ts",
           "docs/features/2026-04-08-tuition-withdrawal-refund.md",
           ".hybrid-search/wiki/2026-04-08-tuition-billing-isolated.md",
-          "supabase/migrations/20260421130000_l2_1_tuition_fees_ledger_flag_and_soft_delete.sql",
+          ".hybrid-search/qa.backup-1776910947/2026/04/23-005411-16cbc90c.md",
           "docs/archive/session-edit-add-delete-plan.md"
         ]
       }
@@ -236,7 +236,7 @@
         "any_hit_rank": 1,
         "recall_at_10": 0.25,
         "answer_found": true,
-        "qa_primary_rank": 7,
+        "qa_primary_rank": null,
         "mrr": 1.0,
         "qa_hit_count": 0,
         "qa_top1": false,
@@ -244,7 +244,7 @@
           "docs/features/2026-04-08-portal-parent-student.md",
           "docs/archive/portal-ux-redesign-plan.md",
           "app/(portal)/portal/portal-client-layout.tsx",
-          "archive/portal-preview/(portal-preview)/dashboard/portal-preview/layout.tsx",
+          "app/api/funnel/student-timeline/route.ts",
           "docs/features/2026-04-08-auth-registration.md"
         ]
       },
@@ -264,7 +264,7 @@
           "docs/features/2026-04-08-portal-parent-student.md",
           ".hybrid-search/wiki/app-portal.md",
           "app/api/funnel/student-timeline/route.ts",
-          ".hybrid-search/wiki/2026-04-15-portal-v3-refactoring-isolated.md",
+          "app/api/student-metrics/route.ts",
           ".hybrid-search/wiki/app-auth.md"
         ]
       },
@@ -283,8 +283,8 @@
         "top_paths": [
           "docs/features/2026-04-08-portal-parent-student.md",
           ".hybrid-search/wiki/app-portal.md",
-          "app/(portal)/portal/portal-client-layout.tsx",
           "app/api/funnel/student-timeline/route.ts",
+          "app/api/student-metrics/route.ts",
           ".hybrid-search/wiki/app-auth.md"
         ]
       }
@@ -312,14 +312,14 @@
           "docs/archive/withdrawal-operations-agent.md",
           ".hybrid-search/wiki/ai-log-table-isolated.md",
           "docs/features/2026-04-08-ops-meeting.md",
-          ".hybrid-search/wiki/page-16.md"
+          ".hybrid-search/wiki/page-15.md"
         ]
       },
       "warm": {
         "id": "S3",
         "leakage_risk": "low",
         "category": "structure",
-        "primary_hit_rank": null,
+        "primary_hit_rank": 8,
         "any_hit_rank": null,
         "recall_at_10": 0.0,
         "answer_found": true,
@@ -330,7 +330,7 @@
         "top_paths": [
           "services/tuition-session/session-edit.ts",
           "docs/archive/withdrawal-operations-agent.md",
-          ".hybrid-search/qa/2026/04/22-122202-6695f1bd.md",
+          ".hybrid-search/qa/2026/04/23-022409-6695f1bd.md",
           "docs/features/2026-04-08-ops-meeting.md",
           "app/api/funnel/cohort/details/route.ts"
         ]
@@ -352,7 +352,7 @@
           ".hybrid-search/wiki/architecture.md",
           ".hybrid-search/wiki/ai-log-table-isolated.md",
           "docs/plans/agent-system-plan.md",
-          ".hybrid-search/wiki/page-16.md"
+          ".hybrid-search/wiki/page-15.md"
         ]
       },
       "warm_identity": {
@@ -370,7 +370,7 @@
         "top_paths": [
           "services/tuition-session/session-edit.ts",
           ".hybrid-search/wiki/architecture.md",
-          ".hybrid-search/qa/2026/04/22-122202-6695f1bd.md",
+          ".hybrid-search/qa/2026/04/23-022409-6695f1bd.md",
           "docs/plans/agent-system-plan.md",
           "app/api/funnel/cohort/details/route.ts"
         ]
@@ -399,7 +399,7 @@
           ".hybrid-search/wiki/components-remote-room-isolated.md",
           ".hybrid-search/wiki/app-dashboard-main-isolated.md",
           ".hybrid-search/wiki/remote-room.md",
-          ".hybrid-search/wiki/remote-room-service-isolated.md"
+          ".hybrid-search/wiki/remote-room-isolated-2.md"
         ]
       },
       "warm": {
@@ -417,9 +417,9 @@
         "top_paths": [
           "services/tuition-session/session-edit.ts",
           ".hybrid-search/wiki/components-remote-room-isolated.md",
-          ".hybrid-search/qa/2026/04/22-122202-252e44a6.md",
+          ".hybrid-search/qa/2026/04/23-022409-252e44a6.md",
           ".hybrid-search/wiki/remote-room.md",
-          ".hybrid-search/wiki/remote-room-service-isolated.md"
+          ".hybrid-search/wiki/remote-room-isolated-2.md"
         ]
       },
       "cold_identity": {
@@ -439,7 +439,7 @@
           "services/remote-room-teacher-service.ts",
           ".hybrid-search/wiki/app-remote-room.md",
           ".hybrid-search/wiki/domain-remote-room.md",
-          ".hybrid-search/wiki/qa-report-remote-finish-room-issues-found-3-isolated.md"
+          ".hybrid-search/wiki/api-remote-room.md"
         ]
       },
       "warm_identity": {
@@ -457,7 +457,7 @@
         "top_paths": [
           "types/remote-room.ts",
           "services/remote-room-teacher-service.ts",
-          ".hybrid-search/qa/2026/04/22-122202-252e44a6.md",
+          ".hybrid-search/qa/2026/04/23-022409-252e44a6.md",
           ".hybrid-search/wiki/domain-remote-room.md",
           ".hybrid-search/wiki/app-remote-room.md"
         ]
@@ -562,7 +562,7 @@
         "category": "exploration",
         "primary_hit_rank": 3,
         "any_hit_rank": 1,
-        "recall_at_10": 0.5,
+        "recall_at_10": 1.0,
         "answer_found": true,
         "qa_primary_rank": null,
         "mrr": 1.0,
@@ -573,7 +573,7 @@
           "harness/app/dashboard/pages/learning.md",
           "app/(dashboard)/learning/homework-analysis/page.tsx",
           "docs/guides/learning-system-guide.md",
-          ".hybrid-search/wiki/2026-04-08-learning-homework-analysis-isolated-isolated.md"
+          "docs/features/2026-04-08-learning-homework-analysis.md"
         ]
       },
       "warm": {
@@ -600,26 +600,6 @@
         "id": "F1",
         "leakage_risk": "low",
         "category": "exploration",
-        "primary_hit_rank": null,
-        "any_hit_rank": null,
-        "recall_at_10": 0.0,
-        "answer_found": false,
-        "qa_primary_rank": null,
-        "mrr": 0.0,
-        "qa_hit_count": 0,
-        "qa_top1": false,
-        "top_paths": [
-          "types/student.ts",
-          "docs/guides/learning-system-guide.md",
-          ".hybrid-search/wiki/2026-04-08-learning-homework-analysis-isolated-isolated.md",
-          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-상담전-체크리스트.md",
-          "app/api/funnel/student-timeline/route.ts"
-        ]
-      },
-      "warm_identity": {
-        "id": "F1",
-        "leakage_risk": "low",
-        "category": "exploration",
         "primary_hit_rank": 5,
         "any_hit_rank": null,
         "recall_at_10": 0.0,
@@ -629,11 +609,31 @@
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
-          "types/student.ts",
+          "hooks/use-homework-alerts.ts",
           "docs/guides/learning-system-guide.md",
-          "app/(dashboard)/students/page.tsx",
+          ".hybrid-search/wiki/2026-04-08-learning-homework-analysis-isolated-isolated.md",
           "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-상담전-체크리스트.md",
           "app/(dashboard)/learning/homework-analysis/page.tsx"
+        ]
+      },
+      "warm_identity": {
+        "id": "F1",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 3,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "hooks/use-homework-alerts.ts",
+          "docs/guides/learning-system-guide.md",
+          "app/(dashboard)/learning/homework-analysis/page.tsx",
+          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-상담전-체크리스트.md",
+          "archive/portal-preview/(portal-preview)/dashboard/portal-preview/[studentId]/homework/page.tsx"
         ]
       }
     },
@@ -649,7 +649,7 @@
         "category": "exploration",
         "primary_hit_rank": 1,
         "any_hit_rank": 1,
-        "recall_at_10": 0.3333333333333333,
+        "recall_at_10": 0.6666666666666666,
         "answer_found": true,
         "qa_primary_rank": null,
         "mrr": 1.0,
@@ -660,7 +660,7 @@
           "docs/features/2026-04-08-learning-homework-analysis.md",
           "app/(dashboard)/students/enrollment-history/page.tsx",
           "docs/valueinmath_docs/운영/260108_운영_2026년_연간계획서작성_기초분석.md",
-          "database/cron/monthly_snapshot_schedule.sql"
+          "docs/dbdocs/tables/06-analytics/monthly_reports.md"
         ]
       },
       "warm": {
@@ -700,7 +700,7 @@
           "docs/valueinmath_docs/운영/260108_운영_2026년_연간계획서작성_기초분석.md",
           "app/(dashboard)/students/enrollment-history/page.tsx",
           "docs/valueinmath_docs/운영/260109_운영_퇴원분석_2025-2026.md",
-          "app/api/funnel/student-timeline/route.ts"
+          "docs/dbdocs/tables/06-analytics/monthly_reports.md"
         ]
       },
       "warm_identity": {
@@ -720,7 +720,7 @@
           "docs/valueinmath_docs/운영/260108_운영_2026년_연간계획서작성_기초분석.md",
           "app/(dashboard)/students/enrollment-history/page.tsx",
           "docs/valueinmath_docs/운영/260109_운영_퇴원분석_2025-2026.md",
-          "docs/valueinmath_docs/assets/교육과정단원분류/공통수학1.json"
+          "app/(dashboard)/students/page.tsx"
         ]
       }
     },
@@ -745,9 +745,9 @@
         "top_paths": [
           "types/attendance.ts",
           "docs/archive/student-monthly-session-plan.md",
-          "app/(portal)/portal/learning/attendance/page.tsx",
+          "app/(dashboard)/learning/attendance/page.tsx",
           "docs/features/2026-04-08-learning-attendance.md",
-          "app/(dashboard)/learning/attendance/page.tsx"
+          "app/(portal)/portal/learning/attendance/page.tsx"
         ]
       },
       "warm": {
@@ -765,9 +765,9 @@
         "top_paths": [
           "types/attendance.ts",
           "docs/archive/student-monthly-session-plan.md",
-          "app/(dashboard)/learning/attendance/page.tsx",
+          "archive/portal-preview/(portal-preview)/dashboard/portal-preview/[studentId]/attendance/page.tsx",
           "docs/features/2026-04-08-learning-attendance.md",
-          "app/(portal)/portal/learning/attendance/page.tsx"
+          "app/(dashboard)/learning/attendance/page.tsx"
         ]
       },
       "cold_identity": {
@@ -785,9 +785,9 @@
         "top_paths": [
           "types/attendance.ts",
           "docs/archive/student-monthly-session-plan.md",
-          "app/(portal)/portal/learning/attendance/page.tsx",
+          "app/(dashboard)/learning/attendance/page.tsx",
           ".hybrid-search/wiki/api-misc.md",
-          "app/(dashboard)/learning/attendance/page.tsx"
+          "app/(portal)/portal/learning/attendance/page.tsx"
         ]
       },
       "warm_identity": {
@@ -919,9 +919,9 @@
         "top_paths": [
           "docs/plans/2026-04-15-variant-problems-plan.md",
           ".hybrid-search/wiki/2026-04-15-variant-problems-plan-isolated.md",
-          "app/api/payssam/destroy/route.ts",
-          ".hybrid-search/wiki/variant-data-isolated-2.md",
-          "database/migrations/20251022_standardize_rls_policies.sql"
+          "app/(portal)/portal/report/page.tsx",
+          "database/migrations/20251022_standardize_rls_policies.sql",
+          "docs/archive/mathontologydocs/math-problem-ontology.md"
         ]
       },
       "warm": {
@@ -939,9 +939,9 @@
         "top_paths": [
           "docs/plans/2026-04-15-variant-problems-plan.md",
           ".hybrid-search/wiki/2026-04-15-variant-problems-plan-isolated.md",
-          ".hybrid-search/qa.backup-1776860478/2026/04/22-104442-b1524b8a.md",
-          ".hybrid-search/wiki/variant-data-isolated-2.md",
-          "database/migrations/20251022_standardize_rls_policies.sql"
+          ".hybrid-search/qa.backup-1776910947/2026/04/22-104442-b1524b8a.md",
+          "database/migrations/20251022_standardize_rls_policies.sql",
+          "docs/archive/mathontologydocs/math-problem-ontology.md"
         ]
       },
       "cold_identity": {
@@ -960,8 +960,8 @@
           "docs/plans/2026-04-15-variant-problems-plan.md",
           ".hybrid-search/wiki/2026-04-15-variant-problems-plan-isolated.md",
           "archive/learning-reports/api/generate/route.ts",
-          ".hybrid-search/wiki/variant-data-isolated-2.md",
-          ".hybrid-search/wiki/no-constant-term-isolated.md"
+          "docs/archive/MATHFLAT_IMPLEMENTATION_PLAN.md",
+          "app/api/admin/pending-users/route.ts"
         ]
       },
       "warm_identity": {
@@ -972,16 +972,16 @@
         "any_hit_rank": 1,
         "recall_at_10": 1.0,
         "answer_found": true,
-        "qa_primary_rank": null,
+        "qa_primary_rank": 2,
         "mrr": 1.0,
-        "qa_hit_count": 0,
-        "qa_top1": false,
+        "qa_hit_count": 1,
+        "qa_top1": true,
         "top_paths": [
           "docs/plans/2026-04-15-variant-problems-plan.md",
-          ".hybrid-search/wiki/2026-04-15-variant-problems-plan-isolated.md",
+          ".hybrid-search/qa/2026/04/23-022413-cfc9ae74.md",
           "archive/learning-reports/api/generate/route.ts",
-          ".hybrid-search/wiki/variant-data-isolated-2.md",
-          ".hybrid-search/wiki/require-formula-solvable-isolated-1.md"
+          ".hybrid-search/wiki/2026-04-15-variant-problems-plan-isolated.md",
+          "docs/archive/MATHFLAT_IMPLEMENTATION_PLAN.md"
         ]
       }
     },
@@ -1065,7 +1065,7 @@
         "qa_top1": true,
         "top_paths": [
           ".hybrid-search/wiki/components-tuition.md",
-          ".hybrid-search/qa/2026/04/22-122205-e7e72f8d.md",
+          ".hybrid-search/qa/2026/04/23-022413-e7e72f8d.md",
           "services/tuition-service.ts",
           "app/tuition-fees/page.tsx",
           ".hybrid-search/wiki/components-tuition-isolated.md"
@@ -1111,7 +1111,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122205-4b9ba6b9.md",
+          ".hybrid-search/qa/2026/04/23-022414-4b9ba6b9.md",
           "database/migrations/20260327_create_admission_results.sql",
           "harness/app/dashboard/pages/students.md",
           "components/admissions/admission-table.tsx",
@@ -1151,11 +1151,11 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122205-4b9ba6b9.md",
+          ".hybrid-search/qa/2026/04/23-022414-4b9ba6b9.md",
           "docs/plans/2026-04-20-tuition-hub.md",
           "database/migrations/20260327_create_admission_results.sql",
           ".hybrid-search/wiki/services-student.md",
-          "harness/app/dashboard/pages/students.md"
+          "docs/features/2026-04-08-learning-attendance.md"
         ]
       }
     },
@@ -1193,7 +1193,7 @@
         "any_hit_rank": 1,
         "recall_at_10": 1.0,
         "answer_found": true,
-        "qa_primary_rank": 8,
+        "qa_primary_rank": 9,
         "mrr": 1.0,
         "qa_hit_count": 0,
         "qa_top1": false,
@@ -1285,7 +1285,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122206-e28423ea.md",
+          ".hybrid-search/qa/2026/04/23-022415-e28423ea.md",
           "database/migrations/create_academy_monthly_stats.sql",
           "app/actions/analytics-snapshot.ts",
           "services/analytics/monthly-analytics.ts",
@@ -1325,7 +1325,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122206-e28423ea.md",
+          ".hybrid-search/qa/2026/04/23-022415-e28423ea.md",
           "app/actions/analytics-snapshot.ts",
           "services/analytics/monthly-analytics.ts",
           "components/analytics/_hooks/use-operation-stats.ts",
@@ -1352,11 +1352,11 @@
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
-          ".hybrid-search/wiki/calendar-2.md",
-          ".hybrid-search/wiki/2026-04-08-learning-homework-analysis-isolated.md",
-          ".hybrid-search/wiki/school-field-migration-plan-isolated.md",
-          ".hybrid-search/wiki/ledger-writepath-isolated.md",
-          ".hybrid-search/wiki/writepath-isolated-2.md"
+          ".hybrid-search/wiki/entrance-test-management-isolated.md",
+          ".hybrid-search/wiki/app-dashboard-schedule-isolated.md",
+          ".hybrid-search/wiki/tuition-hub-isolated-2.md",
+          ".hybrid-search/wiki/students-isolated-2.md",
+          ".hybrid-search/wiki/study_logs-isolated.md"
         ]
       },
       "warm": {
@@ -1372,11 +1372,11 @@
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
-          ".hybrid-search/wiki/calendar-2.md",
-          ".hybrid-search/wiki/2026-04-08-learning-homework-analysis-isolated.md",
-          ".hybrid-search/wiki/school-field-migration-plan-isolated.md",
-          ".hybrid-search/wiki/ledger-writepath-isolated.md",
-          ".hybrid-search/wiki/writepath-isolated-2.md"
+          ".hybrid-search/wiki/entrance-test-management-isolated.md",
+          ".hybrid-search/wiki/app-dashboard-schedule-isolated.md",
+          ".hybrid-search/wiki/tuition-hub-isolated-2.md",
+          ".hybrid-search/wiki/students-isolated-2.md",
+          ".hybrid-search/wiki/study_logs-isolated.md"
         ]
       },
       "cold_identity": {
@@ -1412,7 +1412,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122206-ab93fd31.md",
+          ".hybrid-search/qa/2026/04/23-022415-ab93fd31.md",
           "database/migrations/20251022_standardize_rls_policies.sql",
           "database/README.md",
           "docs/archive/withdrawal-risk-detection-system.md",
@@ -1440,10 +1440,10 @@
         "qa_top1": false,
         "top_paths": [
           "docs/plans/2026-04-15-portal-v3-refactoring.md",
-          ".hybrid-search/qa.backup-1776860478/2026/04/22-104442-b1524b8a.md",
-          "docs/archive/payment-system-implementation-guide.md",
+          ".hybrid-search/qa.backup-1776910947/2026/04/22-104442-b1524b8a.md",
           ".hybrid-search/wiki/2026-04-15-portal-v3-refactoring-isolated.md",
-          "harness/learnings/2026-03-30-T-009.md"
+          "docs/archive/payment-system-implementation-guide.md",
+          "services/ledger/writepath/i-payment.ts"
         ]
       },
       "warm": {
@@ -1460,10 +1460,10 @@
         "qa_top1": true,
         "top_paths": [
           "docs/plans/2026-04-15-portal-v3-refactoring.md",
-          ".hybrid-search/qa.backup-1776860478/2026/04/22-104442-b1524b8a.md",
-          ".hybrid-search/qa/2026/04/22-122207-4c44bbd5.md",
-          "docs/archive/payment-system-implementation-guide.md",
-          ".hybrid-search/wiki/2026-04-15-portal-v3-refactoring-isolated.md"
+          ".hybrid-search/qa.backup-1776910947/2026/04/22-104442-b1524b8a.md",
+          ".hybrid-search/qa/2026/04/23-022415-4c44bbd5.md",
+          ".hybrid-search/wiki/2026-04-15-portal-v3-refactoring-isolated.md",
+          "docs/archive/payment-system-implementation-guide.md"
         ]
       },
       "cold_identity": {
@@ -1480,9 +1480,8 @@
         "qa_top1": false,
         "top_paths": [
           "docs/plans/2026-04-15-portal-v3-refactoring.md",
-          ".hybrid-search/qa.backup-1776860478/2026/04/22-104442-b1524b8a.md",
-          ".hybrid-search/wiki/2026-04-15-portal-v3-refactoring-isolated.md",
-          ".hybrid-search/wiki/eval-feedback-v1json-task-3useportallearning-db-5critical-mathflatdailyworkmathflathomeworktuitionsessions-task-1-2-4-isolated.md"
+          ".hybrid-search/qa.backup-1776910947/2026/04/22-104442-b1524b8a.md",
+          ".hybrid-search/wiki/2026-04-15-portal-v3-refactoring-isolated.md"
         ]
       },
       "warm_identity": {
@@ -1498,9 +1497,9 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122207-4c44bbd5.md",
+          ".hybrid-search/qa/2026/04/23-022415-4c44bbd5.md",
           "docs/plans/2026-04-15-portal-v3-refactoring.md",
-          ".hybrid-search/qa.backup-1776860478/2026/04/22-104442-b1524b8a.md",
+          ".hybrid-search/qa.backup-1776910947/2026/04/22-104442-b1524b8a.md",
           ".hybrid-search/wiki/2026-04-15-portal-v3-refactoring-isolated.md"
         ]
       }
@@ -1544,8 +1543,8 @@
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
-          ".hybrid-search/wiki/2026-04-21-ledger-writepath-abc-isolated.md",
           "docs/features/ledger-writepath.md",
+          ".hybrid-search/wiki/2026-04-21-ledger-writepath-abc-isolated.md",
           ".hybrid-search/wiki/ledger-writepath-isolated.md",
           "docs/plans/2026-04-21-ledger-writepath-abc.md",
           "docs/handoff/paid-fee-guard.md"
@@ -1583,7 +1582,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122207-b19e6281.md",
+          ".hybrid-search/qa/2026/04/23-022416-b19e6281.md",
           "docs/features/ledger-writepath.md",
           "docs/plans/2026-04-21-ledger-writepath-abc.md",
           ".hybrid-search/wiki/2026-04-21-ledger-writepath-abc-isolated.md",
@@ -1610,11 +1609,11 @@
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
+          ".hybrid-search/wiki/tuition-hub.md",
           "services/tuition-hub/makeup-fee-link.ts",
           "app/(dashboard)/students/tuition-hub/_components/extras-panel.tsx",
           "services/tuition-service.ts",
-          "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx",
-          "app/(dashboard)/students/tuition-hub/_hooks/use-tuition-hub.ts"
+          "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx"
         ]
       },
       "warm": {
@@ -1624,13 +1623,13 @@
         "primary_hit_rank": null,
         "any_hit_rank": null,
         "recall_at_10": 0.0,
-        "answer_found": true,
-        "qa_primary_rank": 1,
+        "answer_found": false,
+        "qa_primary_rank": null,
         "mrr": 0.0,
-        "qa_hit_count": 1,
-        "qa_top1": true,
+        "qa_hit_count": 0,
+        "qa_top1": false,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122207-85b04f38.md",
+          ".hybrid-search/wiki/tuition-hub.md",
           "services/tuition-hub/makeup-fee-link.ts",
           "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx",
           "app/(dashboard)/students/tuition-hub/_components/extras-panel.tsx",
@@ -1641,40 +1640,40 @@
         "id": "R3",
         "leakage_risk": "low",
         "category": "rationale",
-        "primary_hit_rank": 5,
-        "any_hit_rank": 5,
+        "primary_hit_rank": 4,
+        "any_hit_rank": 4,
         "recall_at_10": 1.0,
         "answer_found": true,
         "qa_primary_rank": null,
-        "mrr": 0.2,
+        "mrr": 0.25,
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
           "docs/superpowers/plans/2026-04-01-tuition-create-page.md",
           ".hybrid-search/wiki/tuition-hub.md",
           "services/tuition-session/session-generation.ts",
-          "services/tuition-service.ts",
-          "docs/plans/2026-04-20-tuition-hub.md"
+          "docs/plans/2026-04-20-tuition-hub.md",
+          "services/tuition-service.ts"
         ]
       },
       "warm_identity": {
         "id": "R3",
         "leakage_risk": "low",
         "category": "rationale",
-        "primary_hit_rank": 6,
-        "any_hit_rank": 6,
+        "primary_hit_rank": 5,
+        "any_hit_rank": 5,
         "recall_at_10": 1.0,
         "answer_found": true,
         "qa_primary_rank": 1,
-        "mrr": 0.16666666666666666,
+        "mrr": 0.2,
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122207-85b04f38.md",
+          ".hybrid-search/qa/2026/04/23-022416-85b04f38.md",
           "docs/superpowers/plans/2026-04-01-tuition-create-page.md",
           ".hybrid-search/wiki/tuition-hub.md",
           "services/tuition-session/session-generation.ts",
-          "services/tuition-service.ts"
+          "docs/plans/2026-04-20-tuition-hub.md"
         ]
       }
     },
@@ -1717,7 +1716,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122208-33aa319a.md",
+          ".hybrid-search/qa/2026/04/23-022417-33aa319a.md",
           "harness/app/dashboard/pages/marketing.md",
           ".hybrid-search/wiki/app-dashboard-marketing.md",
           "docs/plans/2026-04-08-ai-content-factory-plan.md",
@@ -1757,7 +1756,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122208-33aa319a.md",
+          ".hybrid-search/qa/2026/04/23-022417-33aa319a.md",
           "harness/app/dashboard/pages/marketing.md",
           "docs/plans/2026-04-08-ai-content-factory-plan.md",
           ".hybrid-search/wiki/app-dashboard-marketing.md",
@@ -1787,8 +1786,8 @@
           "docs/handoff/entrance-test-management.md",
           ".hybrid-search/wiki/2026-04-17-entrance-test-management-isolated.md",
           "docs/plans/2026-04-17-entrance-test-management.md",
-          ".hybrid-search/wiki/entrance-test-management-isolated-1.md",
-          ".hybrid-search/wiki/entrance-test-management-isolated-2.md"
+          ".hybrid-search/wiki/entrance-test-management-isolated-2.md",
+          ".hybrid-search/wiki/entrance-test-management-isolated.md"
         ]
       },
       "warm": {
@@ -1807,8 +1806,8 @@
           "docs/handoff/entrance-test-management.md",
           ".hybrid-search/wiki/2026-04-17-entrance-test-management-isolated.md",
           "docs/plans/2026-04-17-entrance-test-management.md",
-          ".hybrid-search/wiki/entrance-test-management-isolated-1.md",
-          ".hybrid-search/wiki/entrance-test-management-isolated-2.md"
+          ".hybrid-search/wiki/entrance-test-management-isolated-2.md",
+          ".hybrid-search/wiki/entrance-test-management-isolated.md"
         ]
       },
       "cold_identity": {
@@ -1827,8 +1826,8 @@
           "docs/handoff/entrance-test-management.md",
           "docs/plans/2026-04-17-entrance-test-management.md",
           ".hybrid-search/wiki/2026-04-17-entrance-test-management-isolated.md",
-          ".hybrid-search/wiki/entrance-test-management-isolated-1.md",
-          ".hybrid-search/wiki/entrance-test-management-isolated.md"
+          ".hybrid-search/wiki/entrance-test-management-isolated.md",
+          ".hybrid-search/wiki/entrance-test-management-isolated-2.md"
         ]
       },
       "warm_identity": {
@@ -1844,11 +1843,11 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/04/22-122208-aa562bc6.md",
+          ".hybrid-search/qa/2026/04/23-022417-aa562bc6.md",
           "docs/handoff/entrance-test-management.md",
           "docs/plans/2026-04-17-entrance-test-management.md",
           ".hybrid-search/wiki/2026-04-17-entrance-test-management-isolated.md",
-          ".hybrid-search/wiki/entrance-test-management-isolated-1.md"
+          ".hybrid-search/wiki/entrance-test-management-isolated.md"
         ]
       }
     }

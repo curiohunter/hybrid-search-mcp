@@ -71,23 +71,33 @@ def _detect_project(registry: ProjectRegistry, cwd: str) -> tuple[str, str] | No
 
 _CLAUDE_MD_MARKER = "<!-- hybrid-search -->"
 
+# v0.3.0: imperative routing rules that name the MCP tool explicitly. The
+# weaker descriptive version shipped in v0.2.x let Claude drift toward
+# Grep for exploratory questions; this version locks tool choice per
+# question category and cites the MCP path by full name.
 _CLAUDE_MD_SECTION = """<!-- hybrid-search -->
-## 검색 전략 — 의도 기반 라우팅
+## 검색 전략 — 반드시 이 순서로
 
-고정 순서가 아니라 **질문 유형에 따라 1차 도구를 선택**하고, 부족하면 fallback으로 보충한다.
+이 프로젝트는 `hybrid-search-mcp` Memory Layer가 설치돼 있다. **아래 규칙을 예외 없이 지킬 것.**
 
-| 질문 유형 | 신호 | 1차 | fallback |
-|-----------|------|-----|----------|
-| 구조/관계 | "누가 호출", 의존, 모듈 구조, 전체 그림 | Wiki | hybrid_search |
-| 기능 탐색 | 자연어, 한국어, 넓은 기능 질문 | hybrid_search | Wiki |
-| 정밀 조회 | 정확한 심볼명, 파일명, 에러 문자열 | Grep | Read |
-| 설계/맥락 | "왜 이렇게", QA 히스토리, 계획 문서 | hybrid_search | Wiki |
-| 스키마/DB | 마이그레이션, DDL, 테이블 구조 변화 | hybrid_search (node_types/file_pattern 활용) | Grep |
+| 질문 유형 | 신호 | **반드시 먼저 호출** | 보충 |
+|---|---|---|---|
+| **기능 탐색** | "어떤 기능", "관련 기능", "어떻게 구성", "흐름", "설명해줘", "정리해줘", "아키텍처" | `mcp__hybrid-search__hybrid_search` | Grep, Read |
+| **설계/맥락** | "왜 이렇게", "배경", "이유", "결정", "히스토리", "지난번" | `mcp__hybrid-search__hybrid_search` | Wiki |
+| **스키마/DB** | "테이블", "마이그레이션", "DDL", "스키마 변화" | `mcp__hybrid-search__hybrid_search` (file_pattern `*.sql`) | Grep |
+| **구조/관계** | "전체 그림", "누가 호출", "의존" | Wiki (`.hybrid-search/wiki/index.md`) | `mcp__hybrid-search__hybrid_search` |
+| **정밀 조회** | 정확한 심볼명 / 파일명 / 에러 문자열 | Grep | Read |
 
 **운영 규칙**:
-- 1차에서 답이 부족하면 도구를 **바꾸지 말고 보충**한다 (hybrid→wiki, wiki→hybrid, grep→read)
-- Wiki는 `.hybrid-search/wiki/index.md`에서 시작. `[[링크]]`가 있으면 따라갈 것
-- hybrid_search는 한국어 자연어 질의 + 코드/문서/계획 문서 크로스 도메인 검색이 강점
+- **탐색형 질문에 Grep 먼저 호출 금지** — 반드시 `mcp__hybrid-search__hybrid_search` 먼저.
+- 1차에서 답이 부족해도 도구를 **바꾸지 말고 같은 레인에서 보충** (hybrid→wiki MCP 레인, grep→read 텍스트 레인).
+- Wiki는 `.hybrid-search/wiki/index.md`에서 시작, `[[링크]]` 있으면 따라갈 것.
+
+**자동 동작 (수동 개입 불필요)**:
+- 질문 시작 시 관련 과거 Q&A 자동 컨텍스트 주입 (UserPromptSubmit)
+- 세션 시작 시 최근 Q&A 요약 주입 (SessionStart)
+- 답변 종료 시 `.hybrid-search/qa/`에 자동 저장 (Stop)
+- `git commit` 후 변경 파일만 재인덱싱 + 좀비 wiki 자동 삭제
 """
 
 
@@ -337,10 +347,37 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # Memory Layer auto-prune — journald-style two-ceiling policy.
     _run_auto_prune(config, Path(project_path))
 
+    # Orphan wiki cleanup — delete pages whose source files are no longer
+    # in the DB (gitignore drift or real removal).
+    _run_wiki_cleanup(Path(project_path))
+
     if result.errors:
         print(f"Errors: {len(result.errors)}")
         for err in result.errors[:5]:
             print(f"  {err}")
+
+
+def _run_wiki_cleanup(project_path: Path) -> None:
+    """Delete wiki pages whose source files are no longer in the DB.
+
+    Silent no-op when the wiki dir or store DB are missing (first-run
+    projects). Reports the count on success.
+    """
+    from hybrid_search import wiki_cleanup
+
+    wiki_dir = project_path / ".hybrid-search" / "wiki"
+    if not wiki_dir.is_dir():
+        return
+
+    indexed = wiki_cleanup.collect_indexed_paths(project_path)
+    if indexed is None:
+        return
+
+    result = wiki_cleanup.cleanup_orphans(wiki_dir, indexed)
+    if result.deleted:
+        print(f"Wiki cleanup: removed {len(result.deleted)} orphan page(s).")
+    if result.skipped_errors:
+        print(f"  {len(result.skipped_errors)} page(s) failed to unlink")
 
 
 def _run_auto_prune(config: Config, project_path: Path) -> None:
@@ -2603,6 +2640,47 @@ def cmd_qa_hook(args: argparse.Namespace) -> None:
     sys.exit(rc)
 
 
+def cmd_wiki_cleanup(args: argparse.Namespace) -> None:
+    """Delete orphan wiki pages (DB-based detection)."""
+    from hybrid_search import wiki_cleanup
+
+    project_path = Path(args.cwd).resolve()
+    wiki_dir = project_path / ".hybrid-search" / "wiki"
+    if not wiki_dir.is_dir():
+        print(f"No wiki directory at {wiki_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    indexed = wiki_cleanup.collect_indexed_paths(project_path)
+    if indexed is None:
+        print(
+            "Store DB unreachable — is this project registered? "
+            "Run `hybrid-search-mcp index .` first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    result = wiki_cleanup.cleanup_orphans(
+        wiki_dir,
+        indexed,
+        dry_run=args.dry_run,
+    )
+
+    tag = "[dry-run]" if args.dry_run else ""
+    print(f"{tag} scanned {result.scanned} page(s)")
+    print(f"{tag} orphans identified: {len(result.orphans)}")
+    if args.verbose:
+        for p in result.orphans[:50]:
+            print(f"  orphan: {p.name}")
+        if len(result.orphans) > 50:
+            print(f"  ... and {len(result.orphans) - 50} more")
+    if args.dry_run:
+        print("[dry-run] nothing removed")
+        return
+    print(f"removed {len(result.deleted)} page(s)")
+    if result.skipped_errors:
+        print(f"  failed to unlink {len(result.skipped_errors)} page(s)")
+
+
 def cmd_install_memory_hook(args: argparse.Namespace) -> None:
     """Merge memory hook config into .claude/settings(.local).json atomically."""
     from hybrid_search import hooks
@@ -3519,6 +3597,14 @@ def main() -> None:
         help="Claude Code PreToolUse/SessionStart hook entry (reads stdin JSON)",
     )
 
+    p_wiki_clean = sub.add_parser(
+        "wiki-cleanup",
+        help="Delete wiki pages whose source files are no longer indexed",
+    )
+    p_wiki_clean.add_argument("--cwd", default=".", help="Project directory")
+    p_wiki_clean.add_argument("--dry-run", action="store_true", help="Preview without deleting")
+    p_wiki_clean.add_argument("--verbose", action="store_true", help="List every orphan path")
+
     p_install_hook = sub.add_parser(
         "install-memory-hook",
         help="Merge the memory PreToolUse+SessionStart hook into .claude/settings.json",
@@ -3619,6 +3705,8 @@ def main() -> None:
         cmd_qa_hook(args)
     elif args.command == "install-memory-hook":
         cmd_install_memory_hook(args)
+    elif args.command == "wiki-cleanup":
+        cmd_wiki_cleanup(args)
     else:
         parser.print_help()
         sys.exit(1)
