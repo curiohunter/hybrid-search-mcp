@@ -2616,14 +2616,25 @@ def cmd_install_memory_hook(args: argparse.Namespace) -> None:
 
     result = hooks.install_memory_hook(settings_path, dry_run=args.dry_run)
     status = result["status"]
-    added = result["added"]
+    added = result.get("added", 0)
+    updated = result.get("updated", 0)
     if status == "exists":
         print(f"Memory hook already present in {settings_path} — nothing to do.")
         return
     if status == "dry-run":
-        print(f"Would add {added} hook block(s) to {settings_path}.")
+        parts = []
+        if added:
+            parts.append(f"add {added} hook block(s)")
+        if updated:
+            parts.append(f"refresh {updated} stale Python path(s)")
+        print(f"Would {', '.join(parts)} in {settings_path}.")
         return
-    print(f"Installed {added} hook block(s) → {settings_path}")
+    msg = []
+    if added:
+        msg.append(f"installed {added} hook block(s)")
+    if updated:
+        msg.append(f"refreshed {updated} stale Python path(s)")
+    print(f"Memory hook: {'; '.join(msg)} → {settings_path}")
     print("  Restart any running Claude Code sessions to pick up the change.")
 
 

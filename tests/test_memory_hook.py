@@ -261,3 +261,61 @@ class TestInstallMemoryHook:
         result = hooks.install_memory_hook(settings, dry_run=True)
         assert result["status"] == "dry-run"
         assert not settings.exists()
+
+    def test_embeds_current_python_path(self, tmp_path: Path) -> None:
+        import sys
+        settings = tmp_path / ".claude" / "settings.json"
+        hooks.install_memory_hook(settings)
+        written = json.loads(settings.read_text())
+        cmd = written["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        assert sys.executable in cmd, (
+            "hook command must embed the current interpreter so it works even "
+            "when the user's login-shell PATH doesn't include the venv"
+        )
+
+    def test_refreshes_stale_python_path(self, tmp_path: Path) -> None:
+        """Previously-installed hook with a different python path is rewritten in place."""
+        settings = tmp_path / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        stale = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Grep|Read",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python -m hybrid_search.cli qa-hook 2>/dev/null || true",
+                                "timeout": 5,
+                            }
+                        ],
+                    }
+                ],
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python -m hybrid_search.cli qa-hook 2>/dev/null || true",
+                                "timeout": 5,
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+        settings.write_text(json.dumps(stale))
+        result = hooks.install_memory_hook(settings)
+        assert result["status"] == "wrote"
+        assert result["added"] == 0
+        assert result["updated"] == 2
+
+        import sys
+        rewritten = json.loads(settings.read_text())
+        pre_cmd = rewritten["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        sess_cmd = rewritten["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        assert sys.executable in pre_cmd
+        assert sys.executable in sess_cmd
+        # Second run is a no-op once the paths are already current.
+        result2 = hooks.install_memory_hook(settings)
+        assert result2["status"] == "exists"
