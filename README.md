@@ -176,6 +176,24 @@ This registers:
 
 Restart Claude Code after setup.
 
+## Codex Integration (Optional)
+
+Codex can share the same project memory layer with Claude Code. Install the
+Codex hook/config pair inside a project:
+
+```bash
+hybrid-search-mcp install-codex-hook --cwd .
+```
+
+This writes `.codex/hooks.json`, enables `[features].codex_hooks = true` in
+`.codex/config.toml`, registers the MCP server as
+`[mcp_servers.hybrid-search]`, and adds a small `AGENTS.md` routing note.
+
+The Codex path uses `UserPromptSubmit` for pre-answer memory injection and
+`Stop` for completed-turn persistence. `Stop` writes qa logs tagged
+`trigger: codex_stop_hook` and `client: codex`, so Claude Code and Codex can
+search each other's saved project memory after reindexing.
+
 ### Skills
 
 Copy skills from `skills/` directory to `~/.claude/skills/`:
@@ -405,6 +423,20 @@ Output capped at 800 chars per injection. Inspired by the
 [Graphify](https://github.com/safishamsi/graphify) pattern (71× fewer
 tokens reported in real sessions by combining SessionStart + PreToolUse).
 
+### Codex memory consultation — UserPromptSubmit + Stop hooks
+
+Codex hooks are installed separately from Claude Code hooks:
+
+```bash
+hybrid-search-mcp install-codex-hook --cwd your-project/
+```
+
+Codex project hooks live in `.codex/hooks.json`; MCP registration and the
+`codex_hooks` feature flag live in `.codex/config.toml`. Project-local Codex
+hooks only run after Codex trusts the project config layer, so use
+`hybrid-search-mcp status --cwd your-project/` and a smoke test before relying
+on a new install.
+
 Reports:
 - Phase 5 full write-up with per-query detail + honest failure modes:
   [`benchmarks/valuein_report_v2_2026-04-22.md`](benchmarks/valuein_report_v2_2026-04-22.md)
@@ -534,6 +566,7 @@ Supported languages: TypeScript, JavaScript, Python, Rust, Go, Ruby, Java, C, C+
 | `reindex --force --cwd .` | Full reindex |
 | `stale --cwd .` | Check stale wiki pages |
 | `install-hook --cwd .` | Install post-commit + post-checkout hooks + `.gitignore` entries |
+| `install-codex-hook --cwd .` | Install Codex hooks + Codex TOML MCP config |
 | `annotate-wiki --cwd .` | Inject god-nodes Top-N into wiki/index.md (idempotent) |
 | `god-nodes --cwd .` | Top-N authority chunks by call-graph in-degree |
 | `shortest-path <a> <b>` | Shortest call-graph path between two symbols |

@@ -4,6 +4,27 @@ All notable changes to hybrid-search-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **Codex memory hooks**. New `codex-hook` entry handles Codex
+  `SessionStart`, `UserPromptSubmit`, and `Stop` payloads. Codex receives
+  hybrid-search context before exploratory prompts and completed turns are
+  saved as qa logs with `trigger: codex_stop_hook` and `client: codex`.
+- **`install-codex-hook` CLI**. Writes Codex hooks to `.codex/hooks.json`
+  or `~/.codex/hooks.json`, enables `[features].codex_hooks = true`, and
+  registers the MCP server using Codex TOML `[mcp_servers.hybrid-search]`.
+- Shared hook runtime for Claude Code and Codex prompt classification,
+  session context, prompt context, and completed-turn recording.
+- Status now reports Codex hook/config presence and warns about
+  `AGENTS.override.md` / near-limit `AGENTS.md` project docs.
+
+### Changed
+
+- qa log frontmatter accepts an optional `client` field. Existing records
+  without it remain valid.
+
 ## [0.4.0] — 2026-04-23
 
 **Memory integrity.** v0.3.0 guaranteed every turn persists; v0.4.0 keeps

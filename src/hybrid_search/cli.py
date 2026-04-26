@@ -990,6 +990,49 @@ def _check_project_status(project_path: Path) -> None:
     else:
         print("  ⚠ CLAUDE.md not found            (run install-hook to create)")
 
+    # Codex memory hooks / MCP config
+    try:
+        from hybrid_search import codex_hooks
+
+        cstat = codex_hooks.codex_status(project_path)
+        project_hook_ok = bool(cstat["project_hooks"])
+        user_hook_ok = bool(cstat["user_hooks"])
+        any_hook_ok = project_hook_ok or user_hook_ok
+        detail = []
+        if project_hook_ok:
+            detail.append("project")
+        if user_hook_ok:
+            detail.append("user")
+        print(
+            f"  {_status_mark(any_hook_ok)} Codex hooks:                 "
+            f"{', '.join(detail) if detail else 'MISSING'}"
+        )
+        codex_cfg_ok = (
+            (cstat["project_feature"] and cstat["project_mcp"])
+            or (cstat["user_feature"] and cstat["user_mcp"])
+        )
+        cfg_detail = []
+        if cstat["project_feature"]:
+            cfg_detail.append("project feature")
+        if cstat["project_mcp"]:
+            cfg_detail.append("project MCP")
+        if cstat["user_feature"]:
+            cfg_detail.append("user feature")
+        if cstat["user_mcp"]:
+            cfg_detail.append("user MCP")
+        print(
+            f"  {_status_mark(codex_cfg_ok, warn=any_hook_ok and not codex_cfg_ok)} "
+            f"Codex config:                {', '.join(cfg_detail) if cfg_detail else 'MISSING'}"
+        )
+        if project_hook_ok:
+            print("    Note: project-local Codex hooks require the project .codex layer to be trusted.")
+        if cstat["agents_override"]:
+            print("  ⚠ AGENTS.override.md present     (it takes precedence over AGENTS.md)")
+        if cstat["agents_near_limit"]:
+            print("  ⚠ AGENTS.md near 32 KiB limit    (Codex may truncate project docs)")
+    except Exception:
+        print("  ⚠ Codex status unavailable")
+
 
 def cmd_status(args: argparse.Namespace) -> None:
     """Show hybrid-search-mcp installation + project health."""
@@ -2744,6 +2787,14 @@ def cmd_qa_hook(args: argparse.Namespace) -> None:
     sys.exit(rc)
 
 
+def cmd_codex_hook(args: argparse.Namespace) -> None:
+    """Codex hook entry — read JSON from stdin, always emit JSON on stdout."""
+    from hybrid_search import codex_hooks
+
+    rc = codex_hooks.cli_main()
+    sys.exit(rc)
+
+
 def cmd_wiki_cleanup(args: argparse.Namespace) -> None:
     """Delete orphan wiki pages (DB-based detection)."""
     from hybrid_search import wiki_cleanup
@@ -2818,6 +2869,46 @@ def cmd_install_memory_hook(args: argparse.Namespace) -> None:
         msg.append(f"refreshed {updated} stale Python path(s)")
     print(f"Memory hook: {'; '.join(msg)} → {settings_path}")
     print("  Restart any running Claude Code sessions to pick up the change.")
+
+
+def cmd_install_codex_hook(args: argparse.Namespace) -> None:
+    """Install Codex lifecycle hooks and MCP config."""
+    from hybrid_search import codex_hooks
+
+    project_root = Path(args.cwd).resolve()
+    result = codex_hooks.install_codex_hook(
+        project_root,
+        user=bool(getattr(args, "user", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    scope = "user" if result.get("user") else "project"
+    if result["status"] == "dry-run":
+        print(
+            f"Would install Codex memory hook ({scope}) → "
+            f"{result['hooks_path']} and {result['config_path']}"
+        )
+        return
+    if result["status"] == "exists":
+        print(f"Codex memory hook already present ({scope}) — nothing to do.")
+    else:
+        parts = []
+        if result.get("added"):
+            parts.append(f"installed {result['added']} hook block(s)")
+        if result.get("updated"):
+            parts.append(f"refreshed {result['updated']} stale Python path(s)")
+        if result.get("feature_changed"):
+            parts.append("enabled codex_hooks")
+        if result.get("mcp_changed"):
+            parts.append("registered MCP server")
+        if result.get("gitignore_changed"):
+            parts.append("updated .gitignore")
+        if result.get("agents_changed"):
+            parts.append("updated AGENTS.md")
+        print(f"Codex memory hook: {'; '.join(parts) or 'updated'}")
+    print(f"  hooks: {result['hooks_path']}")
+    print(f"  config: {result['config_path']}")
+    if not result.get("user"):
+        print("  Start Codex in this trusted project and run status/smoke checks before relying on it.")
 
 
 def cmd_qa_stats(args: argparse.Namespace) -> None:
@@ -3806,6 +3897,10 @@ def main() -> None:
         "qa-hook",
         help="Claude Code PreToolUse/SessionStart hook entry (reads stdin JSON)",
     )
+    sub.add_parser(
+        "codex-hook",
+        help="Codex lifecycle hook entry (reads stdin JSON, writes JSON)",
+    )
 
     p_wiki_clean = sub.add_parser(
         "wiki-cleanup",
@@ -3837,6 +3932,24 @@ def main() -> None:
              "'local' = .claude/settings.local.json (default, gitignored)",
     )
     p_install_hook.add_argument("--dry-run", action="store_true")
+
+    p_install_codex = sub.add_parser(
+        "install-codex-hook",
+        help="Install Codex memory hooks plus Codex MCP config",
+    )
+    p_install_codex.add_argument("--cwd", default=".", help="Project directory")
+    p_install_codex.add_argument(
+        "--user",
+        action="store_true",
+        help="Install into ~/.codex instead of project .codex",
+    )
+    p_install_codex.add_argument(
+        "--target",
+        choices=("local", "user"),
+        default=None,
+        help="Alias for scope selection: local = project .codex, user = ~/.codex",
+    )
+    p_install_codex.add_argument("--dry-run", action="store_true")
 
     p_sub = sub.add_parser("subgraph", help="N-hop forward+reverse call graph around a chunk/symbol")
     p_sub.add_argument("symbol", help="Chunk_id, qualified_name, or symbol name")
@@ -3917,8 +4030,14 @@ def main() -> None:
         cmd_qa_prune(args)
     elif args.command == "qa-hook":
         cmd_qa_hook(args)
+    elif args.command == "codex-hook":
+        cmd_codex_hook(args)
     elif args.command == "install-memory-hook":
         cmd_install_memory_hook(args)
+    elif args.command == "install-codex-hook":
+        if getattr(args, "target", None) == "user":
+            args.user = True
+        cmd_install_codex_hook(args)
     elif args.command == "wiki-cleanup":
         cmd_wiki_cleanup(args)
     else:
