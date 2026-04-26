@@ -838,6 +838,34 @@ def _status_mark(ok: bool, warn: bool = False) -> str:
     return "⚠" if warn else ("✓" if ok else "✗")
 
 
+def _claude_memory_hook_status(paths: list[Path]) -> tuple[int, list[str]]:
+    """Return count/detail for Claude memory qa-hook entries across settings files."""
+    import json as _json
+
+    events = ("PreToolUse", "SessionStart", "UserPromptSubmit", "Stop")
+    present: set[str] = set()
+    sources: list[str] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            settings = _json.loads(path.read_text(encoding="utf-8") or "{}")
+        except (ValueError, OSError):
+            continue
+        hooks = settings.get("hooks", {})
+        if not isinstance(hooks, dict):
+            continue
+        source_hit = False
+        for event in events:
+            entries = hooks.get(event, [])
+            if "hybrid_search.cli qa-hook" in _json.dumps(entries):
+                present.add(event)
+                source_hit = True
+        if source_hit:
+            sources.append(str(path))
+    return len(present), sources
+
+
 def _check_global_status() -> None:
     """Print global installation health (MCP registration, hooks, skills, API key)."""
     import json as _json
@@ -877,7 +905,17 @@ def _check_global_status() -> None:
     n = len(installed_hooks)
     mark = _status_mark(n == total, warn=(0 < n < total))
     detail = ", ".join(installed_hooks) if installed_hooks else "none"
-    print(f"  {mark} PreToolUse hooks: {n}/{total}  ({detail})")
+    print(f"  {mark} Claude setup hooks: {n}/{total}  ({detail})")
+
+    mem_n, mem_sources = _claude_memory_hook_status([
+        Path.home() / ".claude" / "settings.json",
+        Path.home() / ".claude" / "settings.local.json",
+    ])
+    print(
+        f"  {_status_mark(mem_n == 4, warn=(0 < mem_n < 4))} "
+        f"Claude memory hooks: {mem_n}/4  "
+        f"({', '.join(mem_sources) if mem_sources else 'none'})"
+    )
 
     # Skills
     skills_dir = Path.home() / ".claude" / "skills"
@@ -989,6 +1027,18 @@ def _check_project_status(project_path: Path) -> None:
               f"{'present' if has_routing else 'marker missing — run install-hook'}")
     else:
         print("  ⚠ CLAUDE.md not found            (run install-hook to create)")
+
+    mem_n, mem_sources = _claude_memory_hook_status([
+        project_path / ".claude" / "settings.local.json",
+        project_path / ".claude" / "settings.json",
+        Path.home() / ".claude" / "settings.json",
+        Path.home() / ".claude" / "settings.local.json",
+    ])
+    print(
+        f"  {_status_mark(mem_n == 4, warn=(0 < mem_n < 4))} "
+        f"Claude memory hooks:          {mem_n}/4"
+        f"{' (' + ', '.join(mem_sources) + ')' if mem_sources else ' (run install-memory-hook)'}"
+    )
 
     # Codex memory hooks / MCP config
     try:
