@@ -152,13 +152,9 @@ def _format_session_start_context(indexes: list) -> str:
 
 def _resolve_project_root(event: dict) -> Path | None:
     """Pick the project root from the hook event's ``cwd``. None if missing."""
-    cwd = event.get("cwd")
-    if not cwd:
-        return None
-    try:
-        return Path(cwd).resolve()
-    except (OSError, ValueError):
-        return None
+    from hybrid_search.memory import hook_runtime
+
+    return hook_runtime.resolve_project_root(event)
 
 
 def _handle_pretooluse(event: dict) -> dict | None:
@@ -195,19 +191,11 @@ def _handle_session_start(event: dict) -> dict | None:
     if root is None:
         return None
 
-    from hybrid_search.memory import reader
+    from hybrid_search.memory import hook_runtime
 
-    try:
-        indexes = list(reader.iter_qa_indexes(root))
-    except Exception:
-        return None
-    if not indexes:
-        return None
-
-    ctx = _format_session_start_context(indexes[:20])
+    ctx = hook_runtime.build_session_context(root)
     if not ctx:
         return None
-    ctx = ctx[:_MAX_CONTEXT_CHARS]
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
@@ -391,49 +379,16 @@ def _is_exploratory_prompt(prompt: str) -> bool:
     Memory-intent tokens (지난번, previously, etc.) bypass the length gate
     because they're the memory layer's canonical use case.
     """
-    p = (prompt or "").strip()
-    if not p:
-        return False
-    if p.startswith(_SKIP_PREFIXES):
-        return False
-    if p.startswith("@") and " " not in p[:40]:
-        return False
-    # Memory intent — short prompts pass through
-    if any(tok in p for tok in _MEMORY_INTENT_TOKENS_KO):
-        return True
-    if _MEMORY_INTENT_TOKENS_EN_RE.search(p):
-        return True
-    # Everything else requires a minimum length gate
-    if len(p) < _EXPLORATORY_MIN_CHARS:
-        return False
-    if any(tok in p for tok in _EXPLORATORY_TOKENS_KO):
-        return True
-    if _EXPLORATORY_TOKENS_EN_RE.search(p):
-        return True
-    return False
+    from hybrid_search.memory import hook_runtime
+
+    return hook_runtime.classify_prompt_for_memory(prompt)
 
 
 def _format_user_prompt_context(prompt: str, response) -> str:
     """Render the pre-fetched hybrid_search top-K as additionalContext."""
-    results = getattr(response, "results", []) or []
-    if not results:
-        return ""
-    lines = [
-        f"[hybrid-search pre-fetch] {len(results)} relevant result(s) for your prompt:",
-    ]
-    for i, r in enumerate(results[:8], start=1):
-        fp = getattr(r, "file_path", "?") or "?"
-        start = getattr(r, "start_line", None)
-        end = getattr(r, "end_line", None)
-        name = getattr(r, "name", None) or getattr(r, "qualified_name", None) or ""
-        loc = f":{start}-{end}" if start and end else ""
-        tag = f" — {name}" if name else ""
-        lines.append(f"{i}. `{fp}{loc}`{tag}")
-    lines.append(
-        "Consider these before running raw Grep/Read. "
-        "Call mcp__hybrid-search__hybrid_search for more depth if needed."
-    )
-    return "\n".join(lines)
+    from hybrid_search.memory import hook_runtime
+
+    return hook_runtime._format_user_prompt_context(response)
 
 
 def _run_programmatic_search(prompt: str, cwd: str):
@@ -442,26 +397,10 @@ def _run_programmatic_search(prompt: str, cwd: str):
     Failures here must be silent — a failed pre-fetch just means the user
     misses one enrichment pass, never a blocked prompt.
     """
-    try:
-        from hybrid_search.config import load_config
-        from hybrid_search.index.embedder import Embedder
-        from hybrid_search.memory import qa_log
-        from hybrid_search.project import ProjectRegistry
-        from hybrid_search.search.orchestrator import SearchOrchestrator
-    except Exception:
-        return None
+    from hybrid_search.memory import hook_runtime
 
-    try:
-        cfg = load_config()
-        registry = ProjectRegistry(cfg.global_dir)
-        embedder = Embedder(cfg.embedding, cfg.models_dir)
-        orch = SearchOrchestrator(config=cfg, registry=registry, embedder=embedder)
-        response = orch.hybrid_search(
-            query=prompt,
-            cwd=cwd,
-            limit=10,
-        )
-    except Exception:
+    response = hook_runtime._run_programmatic_search(prompt, cwd)
+    if response is None:
         return None
 
     # Save the pre-fetch exchange under trigger="user_prompt_submit" so it
