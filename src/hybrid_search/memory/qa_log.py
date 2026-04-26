@@ -92,6 +92,7 @@ class QARecord:
     trigger: str | None = None              # "mcp_tool" | "stop_hook" | "user_prompt_submit"
     tools_used: tuple[str, ...] = ()        # names of tools Claude invoked this turn
     answer_chars: int | None = None         # length of Claude's final text response
+    client: str | None = None               # "claude" | "codex" | None for legacy records
 
 
 def is_enabled() -> bool:
@@ -189,6 +190,8 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"tools_used: [{tools_str}]")
     if record.answer_chars is not None:
         lines.append(f"answer_chars: {record.answer_chars}")
+    if record.client:
+        lines.append(f"client: {record.client}")
     lines += [
         "---",
         "",
@@ -205,6 +208,8 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"- **tools**: {', '.join(record.tools_used)}")
     if record.answer_chars is not None:
         lines.append(f"- **answer_chars**: {record.answer_chars}")
+    if record.client:
+        lines.append(f"- **client**: {record.client}")
     lines += [
         "",
         "## Top results",
@@ -386,6 +391,7 @@ def record_turn(
     project_infos: Iterable[Any] | None = None,
     async_write: bool = False,
     dedup: bool = True,
+    client: str | None = None,
 ) -> Path | None:
     """Persist a conversation turn that did NOT go through the MCP tool.
 
@@ -420,6 +426,7 @@ def record_turn(
             trigger=trigger,
             tools_used=tuple(tools_used),
             answer_chars=answer_chars,
+            client=client,
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("qa_log record_turn prepare failed: %s", exc)
