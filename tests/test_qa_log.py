@@ -140,6 +140,35 @@ class TestRecord:
             )
             assert path is None, f"leaked: {secret!r}"
 
+    def test_record_turn_stores_bounded_answer_excerpt(self, tmp_path, enabled):
+        answer = "첫 문장입니다. " + ("상세 설명 " * 400)
+        path = qa_log.record_turn(
+            query="why does memory improve",
+            cwd=str(tmp_path),
+            answer_chars=len(answer),
+            answer_excerpt=answer,
+            trigger="stop_hook",
+        )
+        assert path is not None
+        content = path.read_text(encoding="utf-8")
+        assert "answer_excerpt_chars:" in content
+        assert "## Answer excerpt" in content
+        assert "첫 문장입니다" in content
+        assert len(content) < len(answer) + 1000
+
+    def test_sensitive_answer_excerpt_is_omitted(self, tmp_path, enabled):
+        path = qa_log.record_turn(
+            query="summarize deployment",
+            cwd=str(tmp_path),
+            answer_chars=50,
+            answer_excerpt="Use api_key=sk-proj-abcdef12345 for the service.",
+            trigger="stop_hook",
+        )
+        assert path is not None
+        content = path.read_text(encoding="utf-8")
+        assert "## Answer excerpt" not in content
+        assert "sk-proj" not in content
+
     def test_on_writes_file(self, tmp_path, enabled):
         response = _FakeResponse(results=[_FakeResult()])
         path = qa_log.record(

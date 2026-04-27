@@ -186,6 +186,7 @@ def record_completed_turn(
             cwd=str(project_root),
             tools_used=tuple(tools_used),
             answer_chars=len(final_answer),
+            answer_excerpt=final_answer,
             trigger=trigger,
             client=client,
             async_write=False,
