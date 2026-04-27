@@ -114,6 +114,9 @@ def test_codex_hook_stop_records_turn_from_pending_prompt(tmp_path: Path) -> Non
     assert "explain payment flow" in body
     assert "trigger: codex_stop_hook" in body
     assert "client: codex" in body
+    assert "answer_excerpt_chars:" in body
+    assert "## Answer excerpt" in body
+    assert "Here is the answer." in body
 
 
 def test_codex_hook_stop_noops_without_answer(tmp_path: Path) -> None:

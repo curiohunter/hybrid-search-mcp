@@ -51,6 +51,7 @@ query. Privacy-sensitive users and CI environments opt out explicitly.
 _SNIPPET_MAX_CHARS = 240
 # Cap number of results persisted per log entry (top-k).
 _MAX_RESULTS = 10
+_ANSWER_EXCERPT_MAX_CHARS = 2000
 
 # Queries matching these fragments never hit disk. Covers the most common
 # shapes of "please look up the password/token for X" so that a secret
@@ -92,6 +93,7 @@ class QARecord:
     trigger: str | None = None              # "mcp_tool" | "stop_hook" | "user_prompt_submit"
     tools_used: tuple[str, ...] = ()        # names of tools Claude invoked this turn
     answer_chars: int | None = None         # length of Claude's final text response
+    answer_excerpt: str | None = None       # bounded, sanitized final-answer excerpt
     client: str | None = None               # "claude" | "codex" | None for legacy records
 
 
@@ -131,6 +133,20 @@ def _truncate(text: str | None, limit: int = _SNIPPET_MAX_CHARS) -> str:
     if len(flat) <= limit:
         return flat
     return flat[:limit].rstrip() + "…"
+
+
+def _truncate_answer_excerpt(text: str | None, limit: int = _ANSWER_EXCERPT_MAX_CHARS) -> str:
+    """Bound final-answer memory while preserving paragraph/sentence boundaries."""
+    if not text:
+        return ""
+    clean = text.replace("\r", "").strip()
+    if len(clean) <= limit:
+        return clean
+    window = clean[:limit]
+    cut = max(window.rfind("\n\n"), window.rfind(". "), window.rfind("。"), window.rfind("다. "))
+    if cut >= int(limit * 0.6):
+        window = window[: cut + 1]
+    return window.rstrip() + "…"
 
 
 def _yaml_escape(value: str) -> str:
@@ -190,6 +206,8 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"tools_used: [{tools_str}]")
     if record.answer_chars is not None:
         lines.append(f"answer_chars: {record.answer_chars}")
+    if record.answer_excerpt:
+        lines.append(f"answer_excerpt_chars: {len(record.answer_excerpt)}")
     if record.client:
         lines.append(f"client: {record.client}")
     lines += [
@@ -208,8 +226,17 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"- **tools**: {', '.join(record.tools_used)}")
     if record.answer_chars is not None:
         lines.append(f"- **answer_chars**: {record.answer_chars}")
+    if record.answer_excerpt:
+        lines.append(f"- **answer_excerpt_chars**: {len(record.answer_excerpt)}")
     if record.client:
         lines.append(f"- **client**: {record.client}")
+    if record.answer_excerpt:
+        lines += [
+            "",
+            "## Answer excerpt",
+            "",
+            record.answer_excerpt,
+        ]
     lines += [
         "",
         "## Top results",
@@ -387,6 +414,7 @@ def record_turn(
     cwd: str | None,
     tools_used: Iterable[str] = (),
     answer_chars: int | None = None,
+    answer_excerpt: str | None = None,
     trigger: str = "stop_hook",
     project_infos: Iterable[Any] | None = None,
     async_write: bool = False,
@@ -414,6 +442,10 @@ def record_turn(
         if dedup and _recent_qa_hash_exists(root, _hash_query(query)):
             return None
 
+        excerpt = _truncate_answer_excerpt(answer_excerpt)
+        if excerpt and is_sensitive_query(excerpt):
+            excerpt = None
+
         rec = QARecord(
             query=query,
             query_type="TURN",
@@ -426,6 +458,7 @@ def record_turn(
             trigger=trigger,
             tools_used=tuple(tools_used),
             answer_chars=answer_chars,
+            answer_excerpt=excerpt,
             client=client,
         )
     except Exception as exc:  # pragma: no cover

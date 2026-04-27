@@ -503,6 +503,9 @@ class TestStopHook:
         assert "tools_used:" in body
         assert "Grep" in body
         assert "Read" in body
+        assert "answer_excerpt_chars:" in body
+        assert "## Answer excerpt" in body
+        assert "9 places under services/..." in body
 
     def test_respects_stop_hook_active(self, project_root: Path, tmp_path: Path) -> None:
         """Guard against infinite continuation loops — exit silently when flag set."""
