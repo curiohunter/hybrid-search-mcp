@@ -36,9 +36,9 @@ FRONTMATTER_DELIM = "---"
 class QAIndex:
     """Metadata-only view of a qa log entry. Body is loaded on demand.
 
-    v2 fields (``trigger``, ``tools_used``, ``answer_chars``) are optional
-    and default empty when reading legacy MCP-only frontmatter produced by
-    v0.2.x.
+    v2/v3 fields (``trigger``, ``tools_used``, ``answer_chars``,
+    ``answer_excerpt_chars``) are optional and default empty when reading
+    legacy MCP-only frontmatter produced by v0.2.x.
     """
 
     path: Path
@@ -52,6 +52,7 @@ class QAIndex:
     trigger: str | None = None
     tools_used: tuple[str, ...] = ()
     answer_chars: int | None = None
+    answer_excerpt_chars: int | None = None
 
     @property
     def id(self) -> str:
@@ -198,6 +199,7 @@ def parse_qa_index(path: Path) -> QAIndex | None:
     if "query" not in fm:
         return None
     answer_chars_raw = fm.get("answer_chars", "")
+    answer_excerpt_chars_raw = fm.get("answer_excerpt_chars", "")
     return QAIndex(
         path=path,
         query=fm.get("query", ""),
@@ -210,6 +212,9 @@ def parse_qa_index(path: Path) -> QAIndex | None:
         trigger=fm.get("trigger") or None,
         tools_used=_parse_tools_used(fm.get("tools_used", "")),
         answer_chars=_safe_int(answer_chars_raw) if answer_chars_raw else None,
+        answer_excerpt_chars=(
+            _safe_int(answer_excerpt_chars_raw) if answer_excerpt_chars_raw else None
+        ),
     )
 
 
