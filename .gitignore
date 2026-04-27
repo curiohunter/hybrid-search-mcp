@@ -29,3 +29,4 @@ build/
 
 # hybrid-search-mcp (auto-added — wiki is machine-local)
 .hybrid-search/qa/
+.hybrid-search/runtime/
