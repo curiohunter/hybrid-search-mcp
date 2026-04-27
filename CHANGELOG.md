@@ -12,6 +12,10 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   `SessionStart`, `UserPromptSubmit`, and `Stop` payloads. Codex receives
   hybrid-search context before exploratory prompts and completed turns are
   saved as qa logs with `trigger: codex_stop_hook` and `client: codex`.
+- **Bounded answer excerpts for Stop-hook memory**. Claude and Codex completed
+  turns now persist a sanitized, capped `## Answer excerpt` plus
+  `answer_excerpt_chars`, improving memory quality without storing unbounded
+  transcripts.
 - **`install-codex-hook` CLI**. Writes Codex hooks to `.codex/hooks.json`
   or `~/.codex/hooks.json`, enables `[features].codex_hooks = true`, and
   registers the MCP server using Codex TOML `[mcp_servers.hybrid-search]`.

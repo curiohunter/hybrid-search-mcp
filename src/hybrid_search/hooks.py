@@ -214,8 +214,8 @@ _TRANSCRIPT_READ_LIMIT_BYTES = 8 * 1024 * 1024
 _TRANSCRIPT_TAIL_LINES = 400
 
 # Stop hook never blocks Claude. Even on failure, return exit 0 silently.
-# Keep this value trimmed so qa_log files stay small.
-_ANSWER_EXCERPT_MAX_CHARS = 400
+# Collect a bounded assistant excerpt; qa_log applies the final storage cap.
+_ANSWER_EXCERPT_COLLECT_MAX_CHARS = 4000
 
 
 def _read_transcript_tail(transcript_path: Path) -> list[dict]:
@@ -291,7 +291,7 @@ def _extract_user_text(user_rec: dict) -> str | None:
 def _extract_assistant_summary(
     records: list[dict],
     from_idx: int,
-) -> tuple[list[str], int]:
+) -> tuple[list[str], int, str]:
     """Walk forward from ``from_idx`` through assistant records.
 
     Accumulates (tool_names, text_chars) until the next user turn or end
@@ -299,6 +299,8 @@ def _extract_assistant_summary(
     """
     seen_tools: list[str] = []
     text_chars = 0
+    excerpts: list[str] = []
+    excerpt_chars = 0
     for i in range(from_idx, len(records)):
         rec = records[i]
         if rec.get("type") == "user":
@@ -314,16 +316,21 @@ def _extract_assistant_summary(
                 continue
             t = block.get("type")
             if t == "text":
-                text_chars += len(block.get("text") or "")
+                txt = block.get("text") or ""
+                text_chars += len(txt)
+                if txt and excerpt_chars < _ANSWER_EXCERPT_COLLECT_MAX_CHARS:
+                    remaining = _ANSWER_EXCERPT_COLLECT_MAX_CHARS - excerpt_chars
+                    excerpts.append(txt[:remaining])
+                    excerpt_chars += min(len(txt), remaining)
             elif t == "tool_use":
                 name = block.get("name") or ""
                 if name and name not in seen_tools:
                     seen_tools.append(name)
-    return seen_tools, text_chars
+    return seen_tools, text_chars, "\n\n".join(e.strip() for e in excerpts if e.strip())
 
 
-def _find_last_turn(records: list[dict]) -> tuple[str | None, list[str], int]:
-    """Return (last_user_prompt, tools_used, answer_chars).
+def _find_last_turn(records: list[dict]) -> tuple[str | None, list[str], int, str]:
+    """Return (last_user_prompt, tools_used, answer_chars, answer_excerpt).
 
     Walks the tail backwards to find the most recent genuine user prompt,
     then collects the assistant activity that followed it.
@@ -335,9 +342,9 @@ def _find_last_turn(records: list[dict]) -> tuple[str | None, list[str], int]:
         prompt = _extract_user_text(rec)
         if prompt is None:
             continue
-        tools, chars = _extract_assistant_summary(records, idx + 1)
-        return prompt, tools, chars
-    return None, [], 0
+        tools, chars, excerpt = _extract_assistant_summary(records, idx + 1)
+        return prompt, tools, chars, excerpt
+    return None, [], 0, ""
 
 
 # ── UserPromptSubmit hook — auto-MCP on exploratory prompts ───────────
@@ -483,7 +490,7 @@ def _handle_stop(event: dict) -> dict | None:
     if not records:
         return None
 
-    prompt, tools, answer_chars = _find_last_turn(records)
+    prompt, tools, answer_chars, answer_excerpt = _find_last_turn(records)
     if prompt is None:
         return None
 
@@ -495,6 +502,7 @@ def _handle_stop(event: dict) -> dict | None:
             cwd=str(root),
             tools_used=tools,
             answer_chars=answer_chars,
+            answer_excerpt=answer_excerpt,
             trigger="stop_hook",
             async_write=False,
             dedup=True,
