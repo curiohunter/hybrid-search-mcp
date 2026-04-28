@@ -66,6 +66,7 @@ def rank_of(results: list[str], expected: str) -> int | None:
 def score_query(
     result_paths: list[str],
     result_module_names: list[str | None],
+    result_node_types: list[str | None],
     query: dict,
     snippet_bytes: int,
     project_root: Path,
@@ -80,6 +81,7 @@ def score_query(
     expected = query.get("expected_files", [])
     primary = query.get("primary_target")
     acceptable_modules = set(query.get("acceptable_module_names", []))
+    expected_node_types = set(query.get("expected_node_types", []))
 
     # File-based primary rank (pre-Step-B behavior)
     file_primary_rank = rank_of(result_paths, primary) if primary else None
@@ -107,6 +109,17 @@ def score_query(
                 any_rank = r
     recall = hits / max(1, len(expected))
     mrr = (1.0 / any_rank) if any_rank else 0.0
+
+    memory_hit_rank: int | None = None
+    if expected_node_types:
+        for i, ntype in enumerate(result_node_types, start=1):
+            if ntype in expected_node_types:
+                memory_hit_rank = i
+                break
+    memory_hit_at_3 = memory_hit_rank is not None and memory_hit_rank <= 3
+    card_count = sum(1 for ntype in result_node_types if ntype == "memory_card")
+    raw_qa_count = sum(1 for ntype in result_node_types if ntype == "qa_log")
+    card_vs_raw_ratio = card_count / max(1, raw_qa_count)
 
     # Agent cost proxy:
     # - read_count_estimate: how many files agent must open to reach primary.
@@ -146,6 +159,11 @@ def score_query(
         "read_count_estimate": read_count_estimate,
         "read_cost_bytes": read_cost_bytes,
         "context_pack_bytes": snippet_bytes + read_cost_bytes,
+        "memory_hit_rank": memory_hit_rank,
+        "memory_hit_at_3": memory_hit_at_3,
+        "card_count": card_count,
+        "raw_qa_count": raw_qa_count,
+        "card_vs_raw_ratio": card_vs_raw_ratio,
     }
 
 
@@ -196,7 +214,7 @@ def scan_project_files(project_root: Path) -> list[Path]:
 
 def grep_baseline(
     query: str, project_root: Path, files: list[Path], limit: int = 10
-) -> tuple[list[str], list[str | None], float, int]:
+) -> tuple[list[str], list[str | None], list[str | None], float, int]:
     """Returns (top-N paths, parallel module_names (all None), elapsed_ms, snippet_bytes).
 
     Grep's "snippet bytes" = 0: it returns paths only (no content).
@@ -205,7 +223,7 @@ def grep_baseline(
     """
     tokens = tokenize(query)
     if not tokens:
-        return [], [], 0.0, 0
+        return [], [], [], 0.0, 0
     patterns = [re.compile(re.escape(t), re.IGNORECASE) for t in tokens]
     scores: dict[str, int] = {}
     t0 = time.perf_counter()
@@ -223,12 +241,12 @@ def grep_baseline(
     ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
     elapsed = (time.perf_counter() - t0) * 1000.0
     top = [path for path, _ in ranked[:limit]]
-    return top, [None] * len(top), elapsed, 0
+    return top, [None] * len(top), [None] * len(top), elapsed, 0
 
 
 def hybrid_track(
     query: str, project_name: str, orch: SearchOrchestrator, limit: int = 10
-) -> tuple[list[str], list[str | None], float, int]:
+) -> tuple[list[str], list[str | None], list[str | None], float, int]:
     """Returns (top-N paths, parallel module_names, elapsed_ms, snippet_bytes).
 
     snippet_bytes = sum of all hit.snippet lengths — the content the agent
@@ -243,6 +261,7 @@ def hybrid_track(
     elapsed = (time.perf_counter() - t0) * 1000.0
     seen: list[str] = []
     module_names: list[str | None] = []
+    node_types: list[str | None] = []
     snippet_bytes = 0
     # Step K: ``module_member`` entries carry their parent module's
     # ``name`` so ``acceptable_module_names`` matching is satisfied by a
@@ -256,7 +275,8 @@ def hybrid_track(
             continue
         seen.append(hit.file_path)
         module_names.append(hit.name if hit.node_type in _MODULE_LIKE else None)
-    return seen, module_names, elapsed, snippet_bytes
+        node_types.append(hit.node_type)
+    return seen, module_names, node_types, elapsed, snippet_bytes
 
 
 def aggregate(per_query: list[dict]) -> dict:
@@ -282,6 +302,8 @@ def aggregate(per_query: list[dict]) -> dict:
             "read_count_estimate_mean": mean(s["read_count_estimate"] for s in scores),
             "read_cost_bytes_mean": mean(s["read_cost_bytes"] for s in scores),
             "context_pack_bytes_mean": mean(s["context_pack_bytes"] for s in scores),
+            "memory_hit_rate_at_3": mean(1.0 if s.get("memory_hit_at_3") else 0.0 for s in scores),
+            "card_vs_raw_ratio_mean": mean(s.get("card_vs_raw_ratio", 0.0) for s in scores),
         }
 
     summary = {"per_category": {}, "overall": {}}
@@ -305,34 +327,45 @@ def main():
     args = ap.parse_args()
 
     gold = load_gold(Path(args.gold))
-    project_root = Path(gold["project_path"])
-    project_name = gold["project"]
+    default_project_root = Path(gold["project_path"])
+    default_project_name = gold["project"]
 
     config = load_config()
     registry = ProjectRegistry(config.global_dir)
     embedder = Embedder(config.embedding, config.models_dir)
     orch = SearchOrchestrator(config=config, registry=registry, embedder=embedder)
 
-    print(f"Scanning {project_root} for grep baseline …", flush=True)
-    files = scan_project_files(project_root)
-    print(f"  {len(files)} files to index-for-grep", flush=True)
+    files_cache: dict[Path, list[Path]] = {}
+
+    def files_for(root: Path) -> list[Path]:
+        root = root.resolve()
+        if root not in files_cache:
+            print(f"Scanning {root} for grep baseline …", flush=True)
+            files_cache[root] = scan_project_files(root)
+            print(f"  {len(files_cache[root])} files to index-for-grep", flush=True)
+        return files_cache[root]
 
     per_query = []
     for q in gold["queries"]:
         qid = q["id"]
         cat = q["category"]
+        project_root = Path(q.get("project_path", default_project_root))
+        project_name = q.get("project", default_project_name)
+        files = files_for(project_root)
         print(f"[{qid} {cat}] {q['query']}", flush=True)
-        hres, hmods, htime, hsnip = hybrid_track(q["query"], project_name, orch, limit=args.limit)
-        gres, gmods, gtime, gsnip = grep_baseline(q["query"], project_root, files, limit=args.limit)
-        hscore = score_query(hres, hmods, q, hsnip, project_root, args.limit)
-        gscore = score_query(gres, gmods, q, gsnip, project_root, args.limit)
+        hres, hmods, htypes, htime, hsnip = hybrid_track(q["query"], project_name, orch, limit=args.limit)
+        gres, gmods, gtypes, gtime, gsnip = grep_baseline(q["query"], project_root, files, limit=args.limit)
+        hscore = score_query(hres, hmods, htypes, q, hsnip, project_root, args.limit)
+        gscore = score_query(gres, gmods, gtypes, q, gsnip, project_root, args.limit)
         per_query.append({
             "id": qid,
             "category": cat,
+            "project": project_name,
+            "project_path": str(project_root),
             "query": q["query"],
             "tracks": {
-                "hybrid": {**hscore, "time_ms": htime, "top_results": hres},
-                "grep":   {**gscore, "time_ms": gtime, "top_results": gres},
+                "hybrid": {**hscore, "time_ms": htime, "top_results": hres, "node_types": htypes},
+                "grep":   {**gscore, "time_ms": gtime, "top_results": gres, "node_types": gtypes},
             },
         })
         print(
@@ -349,8 +382,8 @@ def main():
     summary = aggregate(per_query)
     report = {
         "gold": str(Path(args.gold).name),
-        "project": project_name,
-        "project_path": str(project_root),
+        "project": default_project_name,
+        "project_path": str(default_project_root),
         "limit": args.limit,
         "summary": summary,
         "per_query": per_query,
@@ -364,6 +397,8 @@ def main():
     print(f"Overall recall@10     — hybrid: {h['recall_at_10_mean']:.2f}  grep: {g['recall_at_10_mean']:.2f}", flush=True)
     print(f"Overall read_count    — hybrid: {h['read_count_estimate_mean']:.2f}  grep: {g['read_count_estimate_mean']:.2f}", flush=True)
     print(f"Overall context_pack  — hybrid: {h['context_pack_bytes_mean']/1024:.1f}KB  grep: {g['context_pack_bytes_mean']/1024:.1f}KB", flush=True)
+    print(f"Overall memory@3      — hybrid: {h['memory_hit_rate_at_3']:.2f}  grep: {g['memory_hit_rate_at_3']:.2f}", flush=True)
+    print(f"Overall card/raw      — hybrid: {h['card_vs_raw_ratio_mean']:.2f}  grep: {g['card_vs_raw_ratio_mean']:.2f}", flush=True)
 
 
 if __name__ == "__main__":

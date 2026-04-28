@@ -8,7 +8,8 @@
     "structure": "구조/관계 — Wiki 우선, hybrid fallback",
     "exploration": "기능 탐색 (한국어 자연어) — hybrid 우선, Wiki fallback",
     "precision": "정밀 조회 (심볼/파일/에러) — Grep 우선, Read fallback",
-    "rationale": "설계/맥락 (왜) — hybrid 우선, Wiki fallback"
+    "rationale": "설계/맥락 (왜) — hybrid 우선, Wiki fallback",
+    "memory": "자가 개선 메모리 — promoted memory_card 우선, raw qa fallback"
   },
   "queries": [
     {
@@ -224,6 +225,57 @@
         "docs/plans/2026-04-17-entrance-test-management.md"
       ],
       "primary_target": "docs/plans/2026-04-17-entrance-test-management.md"
+    },
+
+    {
+      "id": "M1",
+      "category": "memory",
+      "project": "hybrid-search-mcp",
+      "project_path": "/Users/ian/project/claude_project/hybrid-search-mcp",
+      "query": "Codex hook 저장 구조 어떻게 결정했지?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
+    },
+    {
+      "id": "M2",
+      "category": "memory",
+      "project": "hybrid-search-mcp",
+      "project_path": "/Users/ian/project/claude_project/hybrid-search-mcp",
+      "query": "Claude와 Codex memory hook 차이가 뭐였지?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
+    },
+    {
+      "id": "M3",
+      "category": "memory",
+      "project": "hybrid-search-mcp",
+      "project_path": "/Users/ian/project/claude_project/hybrid-search-mcp",
+      "query": "왜 Stop만 Codex qa_log writer로 정했지?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
+    },
+    {
+      "id": "M4",
+      "category": "memory",
+      "project": "hybrid-search-mcp",
+      "project_path": "/Users/ian/project/claude_project/hybrid-search-mcp",
+      "query": "메모리 레이어에서 qa_log와 memory card는 어떻게 달라?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
+    },
+    {
+      "id": "M5",
+      "category": "memory",
+      "project": "hybrid-search-mcp",
+      "project_path": "/Users/ian/project/claude_project/hybrid-search-mcp",
+      "query": "이 프로젝트에서 hook 설치 검증 순서가 뭐였지?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
     }
   ]
 }

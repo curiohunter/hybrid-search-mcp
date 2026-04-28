@@ -186,6 +186,7 @@ _MEMORY_INTENT_BOOST = 1.00
 # match since we check with ``in`` rather than regex word boundary.
 _MEMORY_INTENT_KO = (
     "지난번", "이전에", "아까", "방금", "전에", "저번에", "그때",
+    "뭐였지", "했지", "결정했지", "정했지", "기억", "메모리",
 )
 _MEMORY_INTENT_EN_RE = re.compile(
     r"\b(previously|earlier|before|last\s+time|the\s+other\s+day|what\s+did\s+(?:i|we|you)\s+(?:ask|say))\b",
@@ -264,6 +265,38 @@ def _apply_memory_boost(
     return adjusted
 
 
+def _merge_memory_results(
+    chunk_results: list[HybridResult],
+    memory_results: list[HybridResult],
+    limit: int,
+) -> list[HybridResult]:
+    """Promote explicit memory-lane hits without duplicating chunk IDs.
+
+    The normal RRF lane can bury memory cards because broad docs/modules
+    match the same topical words. For explicit recall queries, curated
+    memory cards are the primary answer unit, so we splice a small memory
+    head before the regular chunk stream and preserve all other ordering.
+    """
+    if not memory_results:
+        return chunk_results
+    memory_head = [r for r in memory_results if r.node_type in {"memory_card", "qa_log"}]
+    if not memory_head:
+        return chunk_results
+    memory_head.sort(key=lambda r: (0 if r.node_type == "memory_card" else 1, -r.rrf_score))
+    head_limit = min(3, max(1, limit))
+    merged: list[HybridResult] = []
+    seen: set[str] = set()
+    for r in memory_head[:head_limit]:
+        if r.chunk_id not in seen:
+            merged.append(r)
+            seen.add(r.chunk_id)
+    for r in chunk_results:
+        if r.chunk_id not in seen:
+            merged.append(r)
+            seen.add(r.chunk_id)
+    return merged
+
+
 class SearchOrchestrator:
     """Coordinates BM25 + Vector search with RRF fusion."""
 
@@ -319,6 +352,8 @@ class SearchOrchestrator:
         query_vector = self._embedder.embed_query(query)
         retrieval_depth = limit * 3
 
+        memory_intent = _has_memory_intent(query)
+
         # Search each project
         if len(project_infos) == 1:
             bm25_ids, vector_ids, total, skipped, authority_scores = self._search_single(
@@ -356,6 +391,29 @@ class SearchOrchestrator:
         # Enrich chunk results with metadata
         chunk_results = self._enrich_results(fused[:effective_limit], project_infos, query)
 
+        memory_results: list[HybridResult] = []
+        if memory_intent and node_types is None:
+            memory_depth = max(retrieval_depth, 50)
+            memory_node_types = ["memory_card", "qa_log"]
+            if len(project_infos) == 1:
+                mem_bm25_ids, mem_vector_ids, _, _, _ = self._search_single(
+                    project_infos[0], query, query_vector, memory_depth,
+                    file_pattern, memory_node_types, exclude_pattern,
+                )
+            else:
+                mem_bm25_ids, mem_vector_ids, _, _, _ = self._search_cross_project(
+                    project_infos, query, query_vector, memory_depth,
+                    file_pattern, memory_node_types,
+                    primary_project_id=primary_project_id,
+                    exclude_pattern=exclude_pattern,
+                )
+            mem_fused = reciprocal_rank_fusion(
+                mem_bm25_ids, mem_vector_ids,
+                k=self._config.search.rrf_k,
+                bm25_weight=effective_weight,
+            )
+            memory_results = self._enrich_results(mem_fused[:max(100, limit)], project_infos, query)
+
         # Memory Layer — time-decay & intent boost for qa_log chunks.
         # A past Q&A should surface in future searches (that's the whole
         # compounding-quality point), but its weight must fade with age
@@ -363,8 +421,10 @@ class SearchOrchestrator:
         # user is explicitly recalling ("지난번에 뭐라고 했지"). The boost
         # runs on the already-enriched list so file_mtime is available
         # to compute age; the list is re-sorted by the adjusted score.
-        memory_intent = _has_memory_intent(query)
         chunk_results = _apply_memory_boost(chunk_results, memory_intent)
+        if memory_results:
+            memory_results = _apply_memory_boost(memory_results, memory_intent)
+            chunk_results = _merge_memory_results(chunk_results, memory_results, limit)
 
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
@@ -374,10 +434,14 @@ class SearchOrchestrator:
         # structure queries whose answer spans several files in one subsystem
         # (F2's admissions module, S5's entrance-tests) get multiple recall
         # hits from a single module retrieval.
-        module_cards, module_members = self._module_results_for_query(
-            qtype, query, project_infos, query_vector
-        )
-        module_slots = _module_slots_for(qtype, query)
+        if memory_intent:
+            module_cards, module_members = [], []
+            module_slots = 0
+        else:
+            module_cards, module_members = self._module_results_for_query(
+                qtype, query, project_infos, query_vector
+            )
+            module_slots = _module_slots_for(qtype, query)
         results = _interleave_modules(
             chunk_results, module_cards, module_slots, limit,
             members=module_members,
@@ -617,8 +681,11 @@ class SearchOrchestrator:
                 db, pinfo.id, file_pattern, node_types, exclude_pattern,
             )
 
-            # BM25 search
-            bm25_results = bm25_eng.search(query, limit=depth)
+            # BM25 applies metadata filters after the Tantivy query. When the
+            # filtered corpus is tiny (for example memory_card), a normal
+            # top-K can contain zero eligible chunks even though matches exist.
+            bm25_limit = max(depth, 1000) if chunk_filter else depth
+            bm25_results = bm25_eng.search(query, limit=bm25_limit)
             bm25_ids = [r.chunk_id for r in bm25_results]
             if chunk_filter:
                 bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
@@ -691,7 +758,8 @@ class SearchOrchestrator:
                 chunk_filter = _build_filter(
                     db, pinfo.id, file_pattern, node_types, exclude_pattern,
                 )
-                bm25_res = bm25_eng.search(query, limit=depth)
+                bm25_limit = max(depth, 1000) if chunk_filter else depth
+                bm25_res = bm25_eng.search(query, limit=bm25_limit)
                 bm25_ids = [r.chunk_id for r in bm25_res]
                 if chunk_filter:
                     bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
@@ -777,13 +845,13 @@ class SearchOrchestrator:
                     file_rec = db.get_file(chunk.file_id)
                     file_path = file_rec.relative_path if file_rec else chunk.file_id
 
-                    # Memory Layer: only qa_log chunks carry file_mtime
+                    # Memory Layer: qa_log and memory_card chunks carry file_mtime
                     # through to the boost layer. Paying the attribute
                     # access for every chunk would bloat the hot path
                     # for the 99% of chunks that don't need it.
                     mtime = (
                         file_rec.file_mtime
-                        if (file_rec and chunk.node_type == "qa_log")
+                        if (file_rec and chunk.node_type in {"qa_log", "memory_card"})
                         else None
                     )
                     results.append(HybridResult(
@@ -1295,4 +1363,3 @@ def _build_filter(
         filtered_ids.add(chunk.id)
 
     return filtered_ids
-
