@@ -23,6 +23,7 @@ from hybrid_search.search.orchestrator import (
     HybridResult,
     _apply_memory_boost,
     _has_memory_intent,
+    _merge_memory_results,
     _parse_mtime_days_ago,
 )
 
@@ -38,6 +39,9 @@ class TestMemoryIntent:
         "이전에 했던 질문 중에 entrance test",
         "저번에 알려준 consultations 컴포넌트",
         "그때 보여준 homework analysis 경로",
+        "Codex hook 저장 구조 어떻게 결정했지?",
+        "Claude와 Codex memory hook 차이가 뭐였지?",
+        "메모리 레이어에서 qa_log와 memory card는 어떻게 달라?",
     ])
     def test_korean_recall_phrases_trigger(self, query: str) -> None:
         assert _has_memory_intent(query) is True
@@ -195,3 +199,23 @@ class TestApplyMemoryBoost:
         out = _apply_memory_boost([qa, card], memory_intent=True, now=now)
         assert out[0].chunk_id == "card"
         assert out[0].rrf_score > out[1].rrf_score
+
+
+class TestMergeMemoryResults:
+    def test_memory_lane_promotes_cards_before_regular_chunks(self) -> None:
+        code = _mk("code", "function", rrf=1.0)
+        doc = _mk("doc", "section", rrf=0.9)
+        card = _mk("card", "memory_card", rrf=0.8)
+        qa = _mk("qa", "qa_log", rrf=1.2)
+
+        out = _merge_memory_results([code, doc], [card, qa], limit=10)
+
+        assert [r.chunk_id for r in out[:4]] == ["card", "qa", "code", "doc"]
+
+    def test_memory_lane_deduplicates_existing_chunks(self) -> None:
+        code = _mk("code", "function", rrf=1.0)
+        card = _mk("card", "memory_card", rrf=0.8)
+
+        out = _merge_memory_results([card, code], [card], limit=10)
+
+        assert [r.chunk_id for r in out] == ["card", "code"]
