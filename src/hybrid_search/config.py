@@ -81,10 +81,12 @@ class IndexingConfig:
     max_file_size_kb: int = 512
     supported_extensions: tuple[str, ...] = tuple(DEFAULT_SUPPORTED_EXTENSIONS)
     # Sprint 3: self-reference for the Memory Layer. When True, the
-    # scanner walks into ``.hybrid-search/qa/`` and the resulting chunks are
-    # tagged ``node_type="qa_log"`` so hybrid_search can surface past queries
-    # alongside code. Default **on** so the compounding-quality loop works
-    # out of the box — sensitive queries are pre-filtered by
+    # scanner walks into ``.hybrid-search/qa/`` and
+    # ``.hybrid-search/memory/cards/``. The resulting chunks are tagged
+    # ``node_type="qa_log"`` / ``node_type="memory_card"`` so hybrid_search
+    # can surface past queries and promoted memory alongside code. Default
+    # **on** so the compounding-quality loop works out of the box — sensitive
+    # queries are pre-filtered by
     # ``qa_log.is_sensitive_query`` before they ever hit disk, and users
     # who want their Q&A off-disk set ``HYBRID_SEARCH_QA_LOG=0``.
     index_qa_logs: bool = True
