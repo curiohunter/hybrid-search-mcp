@@ -169,6 +169,12 @@ _MEMORY_HALF_LIFE_DAYS = 30.0
 # actual code or docs.
 _MEMORY_AMBIENT_BOOST = 0.20
 
+# Memory cards are curated, compact semantic memory. They should outrank
+# raw qa logs for memory-shaped queries without requiring as much recency
+# pressure.
+_MEMORY_CARD_AMBIENT_BOOST = 0.35
+_MEMORY_CARD_INTENT_BOOST = 1.25
+
 # Multiplier when the query explicitly recalls ("지난번에", "previously").
 # Strong — the user is asking for the past exchange itself, so a close
 # qa_log match should outrank most code chunks.
@@ -223,25 +229,28 @@ def _apply_memory_boost(
     memory_intent: bool,
     now: datetime | None = None,
 ) -> list[HybridResult]:
-    """Re-rank ``results`` with a half-life decay on qa_log chunks.
+    """Re-rank ``results`` with a half-life decay on memory chunks.
 
-    For qa_log chunks only:
+    For qa_log / memory_card chunks:
         new_score = rrf_score * (1 + boost * 2^(-age_days / half_life))
     Other node types pass through unchanged. Results are re-sorted by
     the adjusted score. No-op when no qa_log chunks are present.
     """
     if not results:
         return results
-    has_qa = any(r.node_type == "qa_log" for r in results)
-    if not has_qa:
+    has_memory = any(r.node_type in {"qa_log", "memory_card"} for r in results)
+    if not has_memory:
         return results
-    boost = _MEMORY_INTENT_BOOST if memory_intent else _MEMORY_AMBIENT_BOOST
     now = now or datetime.now(timezone.utc)
     adjusted: list[HybridResult] = []
     for r in results:
-        if r.node_type != "qa_log":
+        if r.node_type not in {"qa_log", "memory_card"}:
             adjusted.append(r)
             continue
+        if r.node_type == "memory_card":
+            boost = _MEMORY_CARD_INTENT_BOOST if memory_intent else _MEMORY_CARD_AMBIENT_BOOST
+        else:
+            boost = _MEMORY_INTENT_BOOST if memory_intent else _MEMORY_AMBIENT_BOOST
         age = _parse_mtime_days_ago(r.file_mtime, now)
         if age is None:
             # No mtime → treat as fresh (age=0) so newly-written Q&A
@@ -1286,5 +1295,4 @@ def _build_filter(
         filtered_ids.add(chunk.id)
 
     return filtered_ids
-
 

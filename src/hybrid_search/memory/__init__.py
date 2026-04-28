@@ -4,6 +4,6 @@ Sprint 1: qa_log (write). Sprint 2: reader (list/show/grep). Sprint 3 will
 index qa logs so the MCP tool surfaces them in future searches.
 """
 
-from hybrid_search.memory import qa_log, reader
+from hybrid_search.memory import cards, qa_log, reader
 
-__all__ = ["qa_log", "reader"]
+__all__ = ["cards", "qa_log", "reader"]
