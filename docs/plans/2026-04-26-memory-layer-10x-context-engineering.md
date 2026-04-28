@@ -295,6 +295,8 @@ Acceptance:
 
 ### P1 — Memory Card Schema And CLI
 
+**Status:** shipped in `memory-card create/list/show/grep`.
+
 **Goal:** introduce compact semantic memory as the primary retrieval unit.
 
 Files:
@@ -339,6 +341,9 @@ Acceptance:
 
 ### P2 — Index Cards Before Raw QA
 
+**Status:** shipped for `.hybrid-search/memory/cards/` scanner allowlist,
+`node_type="memory_card"`, and memory-card ranking boost.
+
 **Goal:** search retrieves compact memory before long raw logs.
 
 Tasks:
@@ -360,6 +365,9 @@ Acceptance:
 - "지난번 Codex hook 저장 구조 어떻게 했지?" returns memory cards top-3.
 
 ### P3 — Background Consolidation
+
+**Status:** shipped as deterministic `memory compact`; LLM-assisted
+summarization remains a future optional mode.
 
 **Goal:** prevent qa from becoming an append-only dump.
 
@@ -399,6 +407,9 @@ Acceptance:
 
 ### P4 — Procedural Memory Guardrail
 
+**Status:** shipped as `memory procedural review`; apply remains intentionally
+manual/future.
+
 **Goal:** convert repeated workflow lessons into reviewed instructions, not
 silent prompt drift.
 
@@ -428,6 +439,9 @@ Acceptance:
 - Candidate file is small, reviewed, and diffable.
 
 ### P5 — Temporal Facts / Graph Lite
+
+**Status:** shipped as `memory facts export/list` backed by
+`.hybrid-search/memory/facts.jsonl`.
 
 **Goal:** borrow the useful part of Graphiti without building a full graph
 database first.
@@ -463,6 +477,9 @@ Acceptance:
 - "예전에는 어떻게 했지?" can surface historical facts.
 
 ### P6 — Evaluation
+
+**Status:** partial. Unit/integration coverage exists; broader valuein
+agent-in-loop benchmark/report remains future work.
 
 **Goal:** prove 10x as lower turns/tokens and better recall, not just more
 stored files.
