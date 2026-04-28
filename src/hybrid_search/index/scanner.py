@@ -344,13 +344,13 @@ def _walk_files(
     extensions = set(config.supported_extensions)
     results: list[Path] = []
 
-    qa_opt_in = config.index_qa_logs
+    memory_opt_in = config.index_qa_logs
 
     def _keep_dir(rel_dir: Path, name: str) -> bool:
         if name.startswith("."):
-            # Opt-in: walk into .hybrid-search so the qa subtree is reachable.
+            # Opt-in: walk into .hybrid-search so qa/card subtrees are reachable.
             # Everything else under the dotdir is still blocked by ignore_spec.
-            if not (qa_opt_in and rel_dir == Path(".") and name == ".hybrid-search"):
+            if not (memory_opt_in and rel_dir == Path(".") and name == ".hybrid-search"):
                 return False
         return not ignore_spec.match_file(str(rel_dir / name) + "/")
 
@@ -506,6 +506,9 @@ def _build_ignore_spec(
             "!.hybrid-search/",
             "!.hybrid-search/qa/",
             "!.hybrid-search/qa/**",
+            "!.hybrid-search/memory/",
+            "!.hybrid-search/memory/cards/",
+            "!.hybrid-search/memory/cards/**",
         ])
 
     return pathspec.PathSpec.from_lines("gitignore", patterns)

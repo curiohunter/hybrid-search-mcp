@@ -14,6 +14,7 @@ LARGE_DOC_CHUNK_THRESHOLD = 4000
 
 
 QA_LOG_PATH_PREFIX = ".hybrid-search/qa/"
+MEMORY_CARD_PATH_PREFIX = ".hybrid-search/memory/cards/"
 
 
 def chunk_doc_file(
@@ -39,6 +40,8 @@ def chunk_doc_file(
 
     if rel_norm.startswith(QA_LOG_PATH_PREFIX):
         return [_whole_file_chunk(source, rel_path, project_id, "markdown", node_type="qa_log")]
+    if rel_norm.startswith(MEMORY_CARD_PATH_PREFIX):
+        return [_whole_file_chunk(source, rel_path, project_id, "markdown", node_type="memory_card")]
 
     if language == "markdown":
         return _chunk_markdown(source, rel_path, project_id)

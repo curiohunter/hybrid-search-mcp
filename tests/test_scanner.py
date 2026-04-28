@@ -529,13 +529,20 @@ class TestIndexQALogsOptIn:
         project_root = tmp_path / "project"
         project_root.mkdir()
         (project_root / ".git").mkdir()
-        # Matches what `setup` writes post-install — would normally hide qa/.
-        (project_root / ".gitignore").write_text(".hybrid-search/qa/\n")
+        # Matches what installers write — would normally hide memory dirs.
+        (project_root / ".gitignore").write_text(
+            ".hybrid-search/qa/\n.hybrid-search/memory/\n"
+        )
 
         qa_dir = project_root / ".hybrid-search" / "qa" / "2026" / "04"
         qa_dir.mkdir(parents=True)
         (qa_dir / "21-000000-deadbeef.md").write_text(
             "---\nquery: \"x\"\n---\n\n# Q: x\n"
+        )
+        card_dir = project_root / ".hybrid-search" / "memory" / "cards" / "2026" / "04"
+        card_dir.mkdir(parents=True)
+        (card_dir / "21-000001-feedbeef.md").write_text(
+            "---\ntype: memory_card\n---\n\n## Summary\n\nx\n"
         )
         (project_root / "main.py").write_text("x = 1\n")
         return project_root, db
@@ -547,6 +554,7 @@ class TestIndexQALogsOptIn:
         names = [p.name for p in result.added]
         assert "main.py" in names
         assert "21-000000-deadbeef.md" in names
+        assert "21-000001-feedbeef.md" in names
 
     def test_qa_logs_skipped_when_opted_out(self, tmp_path: Path) -> None:
         project_root, db = self._seed(tmp_path)
@@ -556,6 +564,7 @@ class TestIndexQALogsOptIn:
         names = [p.name for p in result.added]
         assert "main.py" in names
         assert "21-000000-deadbeef.md" not in names
+        assert "21-000001-feedbeef.md" not in names
 
     def test_subset_scan_respects_opt_out(self, tmp_path: Path) -> None:
         # Post-commit fast-path goes through scan_project_subset — same toggle.

@@ -23,11 +23,20 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   session context, prompt context, and completed-turn recording.
 - Status now reports Codex hook/config presence and warns about
   `AGENTS.override.md` / near-limit `AGENTS.md` project docs.
+- **Memory cards**. New `memory-card create/list/show/grep` commands promote
+  qa logs into compact semantic memory under
+  `.hybrid-search/memory/cards/`, indexed as `node_type="memory_card"`.
+- **Memory compaction and graph-lite facts**. New `memory compact`,
+  `memory procedural review`, and `memory facts export/list` commands create
+  cards from qa logs, write reviewed procedural candidates, and export
+  lightweight temporal facts to `.hybrid-search/memory/facts.jsonl`.
 
 ### Changed
 
 - qa log frontmatter accepts an optional `client` field. Existing records
   without it remain valid.
+- Memory-aware ranking now boosts curated `memory_card` chunks above raw
+  `qa_log` chunks for explicit recall queries.
 
 ## [0.4.0] — 2026-04-23
 

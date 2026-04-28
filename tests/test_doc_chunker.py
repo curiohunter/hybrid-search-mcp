@@ -145,3 +145,18 @@ class TestQALogChunking:
         chunks = self._chunk(source, "docs/normal.md")
         assert any(c.node_type == "section" for c in chunks)
         assert all(c.node_type != "qa_log" for c in chunks)
+
+
+class TestMemoryCardChunking:
+    def test_memory_card_path_gets_single_memory_card_chunk(self) -> None:
+        source = "---\ntype: memory_card\n---\n\n## Summary\n\nA compact decision.\n"
+        chunks = chunk_doc_file(
+            PROJECT_ROOT / ".hybrid-search/memory/cards/2026/04/26-120000-deadbeef.md",
+            PROJECT_ROOT,
+            PROJECT_ID,
+            "markdown",
+            source=source,
+        )
+        assert len(chunks) == 1
+        assert chunks[0].node_type == "memory_card"
+        assert "[memory_card]" in chunks[0].embedding_input
