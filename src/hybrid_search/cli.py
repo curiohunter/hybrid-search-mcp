@@ -1040,6 +1040,19 @@ def _check_project_status(project_path: Path) -> None:
         f"{' (' + ', '.join(mem_sources) + ')' if mem_sources else ' (run install-memory-hook)'}"
     )
 
+    try:
+        from hybrid_search.memory import cards
+
+        qa_count = _count_qa_files(project_path)
+        card_count = sum(1 for _ in cards.iter_card_files(project_path))
+        fact_count = sum(1 for _ in cards.iter_facts(project_path))
+        print(
+            f"  {_status_mark(card_count > 0, warn=qa_count > 0 and card_count == 0)} "
+            f"Memory corpus:               qa={qa_count}, cards={card_count}, facts={fact_count}"
+        )
+    except Exception:
+        print("  ⚠ Memory corpus status unavailable")
+
     # Codex memory hooks / MCP config
     try:
         from hybrid_search import codex_hooks
@@ -3077,6 +3090,162 @@ def cmd_qa_restore(args: argparse.Namespace) -> None:
     print(f"Restored: {restored}")
 
 
+def _resolve_memory_root(args: argparse.Namespace) -> Path | None:
+    return _resolve_qa_root(args)
+
+
+def cmd_memory_card_create(args: argparse.Namespace) -> None:
+    """Create a compact memory card from an existing qa log."""
+    from hybrid_search.memory import cards
+
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    path = cards.create_card_from_qa(root, args.from_qa)
+    if path is None:
+        print(f"qa log not found or unreadable: {args.from_qa}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Memory card created: {path}")
+
+
+def cmd_memory_card_list(args: argparse.Namespace) -> None:
+    """List memory cards for a project."""
+    from hybrid_search.memory import cards
+
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    items = list(cards.iter_cards(root))[: args.limit]
+    if args.json:
+        import json as _json
+
+        print(_json.dumps([
+            {
+                "id": c.id,
+                "summary": c.summary,
+                "query": c.query,
+                "topics": list(c.topics),
+                "files": list(c.files),
+                "source_ids": list(c.source_ids),
+                "path": str(c.path),
+            }
+            for c in items
+        ], ensure_ascii=False, indent=2))
+        return
+    if not items:
+        print(f"No memory cards under {root / cards.CARD_DIRNAME}")
+        return
+    for card in items:
+        ts = card.timestamp.strftime("%Y-%m-%d %H:%M") if card.timestamp else "?"
+        print(f"{card.id}  [{card.confidence}/{card.status}]  {ts}  {_truncate_preview(card.summary)}")
+
+
+def cmd_memory_card_show(args: argparse.Namespace) -> None:
+    """Print a single memory card by id/stem/hash suffix."""
+    from hybrid_search.memory import cards
+
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    path = cards.find_card_by_id(root, args.id)
+    if path is None:
+        print(f"memory card not found: {args.id}", file=sys.stderr)
+        sys.exit(1)
+    print(path.read_text(encoding="utf-8"))
+
+
+def cmd_memory_card_grep(args: argparse.Namespace) -> None:
+    """Grep memory cards. Newest files first."""
+    from hybrid_search.memory import cards
+
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    needle = args.term if args.case_sensitive else args.term.lower()
+    found = False
+    for card_path in cards.iter_card_files(root):
+        text = card_path.read_text(encoding="utf-8", errors="replace")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            hay = line if args.case_sensitive else line.lower()
+            if needle in hay:
+                card = cards.parse_card(card_path)
+                cid = card.id if card else card_path.stem
+                print(f"{cid}:{lineno}:{line}")
+                found = True
+    if not found:
+        sys.exit(1)
+
+
+def cmd_memory_compact(args: argparse.Namespace) -> None:
+    """Promote qa logs into compact memory cards."""
+    from hybrid_search.memory import cards
+
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    result = cards.compact_qa_to_cards(
+        root,
+        since=args.since,
+        dry_run=args.dry_run,
+        limit=args.limit,
+    )
+    tag = "[dry-run] " if args.dry_run else ""
+    print(f"{tag}memory compact: {result['created']} created / {result['candidates']} candidate(s)")
+    if args.verbose:
+        for path in result.get("paths", []):
+            print(f"  {path}")
+
+
+def cmd_memory_procedural_review(args: argparse.Namespace) -> None:
+    """Generate procedural memory candidates for human review."""
+    from hybrid_search.memory import cards
+
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    path = cards.write_procedural_candidates(root)
+    if path is None:
+        print("No procedural candidates found.")
+        return
+    print(f"Procedural candidates written: {path}")
+
+
+def cmd_memory_facts_export(args: argparse.Namespace) -> None:
+    """Export graph-lite temporal facts from memory cards."""
+    from hybrid_search.memory import cards
+
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    path = cards.export_facts(root)
+    if path is None:
+        print("No facts exported.")
+        return
+    print(f"Facts exported: {path}")
+
+
+def cmd_memory_facts_list(args: argparse.Namespace) -> None:
+    """List exported graph-lite facts."""
+    from hybrid_search.memory import cards
+
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    needle = (args.query or "").lower()
+    count = 0
+    for fact in cards.iter_facts(root):
+        text = " ".join(str(v) for v in fact.values()).lower()
+        if needle and needle not in text:
+            continue
+        print(f"{fact.get('subject')} — {fact.get('predicate')} — {fact.get('object')}")
+        print(f"  source: {fact.get('source')}")
+        count += 1
+        if count >= args.limit:
+            break
+    if count == 0:
+        sys.exit(1)
+
+
 def _bfs_shortest_path(
     db: StoreDB, project_id: str, start: str, goal: str, min_confidence: str
 ) -> list[str] | None:
@@ -3908,6 +4077,58 @@ def main() -> None:
     p_qa_restore.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
     p_qa_restore.add_argument("--project", help="Project name (overrides --cwd)")
 
+    p_mem = sub.add_parser("memory-card", help="Create/list/show/grep compact memory cards")
+    mem_sub = p_mem.add_subparsers(dest="memory_card_command")
+
+    p_mem_create = mem_sub.add_parser("create", help="Create a memory card from a qa log")
+    p_mem_create.add_argument("--from-qa", required=True, help="qa log id/hash/stem")
+    p_mem_create.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_mem_create.add_argument("--project", help="Project name (overrides --cwd)")
+
+    p_mem_list = mem_sub.add_parser("list", help="List memory cards")
+    p_mem_list.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_mem_list.add_argument("--project", help="Project name (overrides --cwd)")
+    p_mem_list.add_argument("--limit", type=int, default=20, help="Max cards (default: 20)")
+    p_mem_list.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_mem_show = mem_sub.add_parser("show", help="Show a memory card")
+    p_mem_show.add_argument("id", help="memory card id/hash/stem")
+    p_mem_show.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_mem_show.add_argument("--project", help="Project name (overrides --cwd)")
+
+    p_mem_grep = mem_sub.add_parser("grep", help="Grep memory cards")
+    p_mem_grep.add_argument("term", help="Substring to search for")
+    p_mem_grep.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_mem_grep.add_argument("--project", help="Project name (overrides --cwd)")
+    p_mem_grep.add_argument("--case-sensitive", action="store_true")
+
+    p_mem_compact = sub.add_parser("memory", help="Memory maintenance commands")
+    memory_sub = p_mem_compact.add_subparsers(dest="memory_command")
+    p_compact = memory_sub.add_parser("compact", help="Promote qa logs into memory cards")
+    p_compact.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_compact.add_argument("--project", help="Project name (overrides --cwd)")
+    p_compact.add_argument("--since", help="Only compact qa newer than duration, e.g. 7d")
+    p_compact.add_argument("--limit", type=int, default=None, help="Max qa logs to promote")
+    p_compact.add_argument("--dry-run", action="store_true")
+    p_compact.add_argument("--verbose", action="store_true")
+
+    p_proc = memory_sub.add_parser("procedural", help="Procedural memory commands")
+    proc_sub = p_proc.add_subparsers(dest="procedural_command")
+    p_proc_review = proc_sub.add_parser("review", help="Write procedural candidates")
+    p_proc_review.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_proc_review.add_argument("--project", help="Project name (overrides --cwd)")
+
+    p_facts = memory_sub.add_parser("facts", help="Graph-lite facts commands")
+    facts_sub = p_facts.add_subparsers(dest="facts_command")
+    p_facts_export = facts_sub.add_parser("export", help="Export facts from memory cards")
+    p_facts_export.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_facts_export.add_argument("--project", help="Project name (overrides --cwd)")
+    p_facts_list = facts_sub.add_parser("list", help="List exported facts")
+    p_facts_list.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_facts_list.add_argument("--project", help="Project name (overrides --cwd)")
+    p_facts_list.add_argument("--query", help="Filter substring")
+    p_facts_list.add_argument("--limit", type=int, default=20)
+
     p_integrity = sub.add_parser(
         "integrity",
         help="Run the Memory integrity pass now (qa stale + dedup + archive TTL)",
@@ -4074,6 +4295,28 @@ def main() -> None:
         cmd_qa_stats(args)
     elif args.command == "qa-restore":
         cmd_qa_restore(args)
+    elif args.command == "memory-card":
+        if args.memory_card_command == "create":
+            cmd_memory_card_create(args)
+        elif args.memory_card_command == "list":
+            cmd_memory_card_list(args)
+        elif args.memory_card_command == "show":
+            cmd_memory_card_show(args)
+        elif args.memory_card_command == "grep":
+            cmd_memory_card_grep(args)
+        else:
+            parser.parse_args([args.command, "--help"])
+    elif args.command == "memory":
+        if args.memory_command == "compact":
+            cmd_memory_compact(args)
+        elif args.memory_command == "procedural" and args.procedural_command == "review":
+            cmd_memory_procedural_review(args)
+        elif args.memory_command == "facts" and args.facts_command == "export":
+            cmd_memory_facts_export(args)
+        elif args.memory_command == "facts" and args.facts_command == "list":
+            cmd_memory_facts_list(args)
+        else:
+            parser.parse_args([args.command, "--help"])
     elif args.command == "integrity":
         cmd_integrity(args)
     elif args.command == "qa-prune":

@@ -187,3 +187,11 @@ class TestApplyMemoryBoost:
         out = _apply_memory_boost([code, qa], memory_intent=False, now=now)
         # qa → 0.6, code → 1.0. Code stays on top.
         assert out[0].chunk_id == "c"
+
+    def test_memory_card_boosts_above_raw_qa_on_memory_intent(self) -> None:
+        now = datetime(2026, 4, 22, tzinfo=timezone.utc)
+        card = _mk("card", "memory_card", rrf=0.5, mtime="2026-04-22T00:00:00+00:00")
+        qa = _mk("qa", "qa_log", rrf=0.5, mtime="2026-04-22T00:00:00+00:00")
+        out = _apply_memory_boost([qa, card], memory_intent=True, now=now)
+        assert out[0].chunk_id == "card"
+        assert out[0].rrf_score > out[1].rrf_score
