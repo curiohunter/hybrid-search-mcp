@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "created": "2026-04-28",
+  "project": "hybrid-search-mcp",
+  "project_path": "/Users/ian/project/claude_project/hybrid-search-mcp",
+  "description": "Memory Layer v2 self-hosting gold set. These queries should be answered from promoted memory cards before raw qa logs.",
+  "queries": [
+    {
+      "id": "M1",
+      "category": "memory",
+      "query": "Codex hook 저장 구조 어떻게 결정했지?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
+    },
+    {
+      "id": "M2",
+      "category": "memory",
+      "query": "Claude와 Codex memory hook 차이가 뭐였지?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
+    },
+    {
+      "id": "M3",
+      "category": "memory",
+      "query": "왜 Stop만 Codex qa_log writer로 정했지?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
+    },
+    {
+      "id": "M4",
+      "category": "memory",
+      "query": "메모리 레이어에서 qa_log와 memory card는 어떻게 달라?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
+    },
+    {
+      "id": "M5",
+      "category": "memory",
+      "query": "이 프로젝트에서 hook 설치 검증 순서가 뭐였지?",
+      "expected_files": [".hybrid-search/memory/cards/"],
+      "primary_target": ".hybrid-search/memory/cards/",
+      "expected_node_types": ["memory_card"]
+    }
+  ]
+}
