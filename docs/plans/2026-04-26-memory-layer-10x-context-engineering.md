@@ -33,6 +33,15 @@ The remaining weakness is memory quality:
 - The right next step is not "store more raw text"; it is "promote useful
   conversation turns into compact, typed memory."
 
+The next weakness after the core memory loop is product UX:
+
+- Users should not have to remember separate install, compact, facts, and
+  reindex commands.
+- A project should be able to explain why memory is not working before the
+  user discovers it through a bad answer.
+- Memory needs a visual surface: cards created, raw logs vs real turn logs,
+  hook readiness, and suggested recall questions.
+
 ## External Research Checkpoints
 
 These references point to the same product direction:
@@ -478,8 +487,9 @@ Acceptance:
 
 ### P6 — Evaluation
 
-**Status:** partial. Unit/integration coverage exists; broader valuein
-agent-in-loop benchmark/report remains future work.
+**Status:** shipped for the self-hosting memory benchmark in
+`benchmarks/memory_layer_v2_2026-04-28.md`; broader valuein
+agent-in-loop benchmark remains future work.
 
 **Goal:** prove 10x as lower turns/tokens and better recall, not just more
 stored files.
@@ -509,6 +519,307 @@ Acceptance:
 - Average context bytes decrease vs raw qa retrieval.
 - Agent-in-loop pilot shows fewer search/read turns than metadata-only qa.
 
+Shipped result:
+
+- `memory_hit_rate@3 = 1.00` on the 5-query self-hosting memory gold set.
+- `card_vs_raw_ratio = 3.00`.
+- `read_count_estimate = 1.00` for hybrid vs `11.00` for grep.
+- `benchmarks/valuein_gold.json` includes the 5 memory queries with per-query
+  project overrides.
+
+### P7 — Product UX: Setup, Doctor, Refresh
+
+**Status:** shipped for setup / doctor / refresh / recall.
+
+**Goal:** make the memory layer operable as a product, not a set of internal
+maintenance commands.
+
+User-facing commands:
+
+```bash
+hybrid-search-mcp setup --cwd .
+hybrid-search-mcp doctor --cwd .
+hybrid-search-mcp memory refresh --cwd .
+hybrid-search-mcp memory recall "지난번 대시보드 변경 방향이 뭐였지?" --cwd .
+```
+
+Short aliases can be added later (`hybrid setup`, `hybrid refresh`), but the
+canonical implementation should live in the existing CLI first.
+
+#### `setup`
+
+One command installs the whole client surface:
+
+- Claude memory hooks:
+  - `PreToolUse`
+  - `SessionStart`
+  - `UserPromptSubmit`
+  - `Stop`
+- Codex hooks:
+  - `.codex/hooks.json`
+  - `.codex/config.toml` with `[features] codex_hooks = true`
+  - project MCP server registration
+- `CLAUDE.md` / `AGENTS.md` routing snippet when missing or stale.
+
+Acceptance:
+
+- A fresh project reaches `Claude memory hooks: 4/4`.
+- A fresh project reaches `Codex hooks: project` and `Codex config: project
+  feature, project MCP`.
+- Output ends with the one required human action: restart Claude/Codex.
+
+#### `doctor`
+
+Diagnose why memory did not work.
+
+It must explicitly report:
+
+- Claude hook count and missing events.
+- Codex hook/config state.
+- `qa` count, `memory_card` count, `facts` count.
+- Last compaction time.
+- Whether recent records are mostly `mcp_tool` logs or real completed turns
+  (`stop_hook`, `codex_stop_hook`).
+- Whether cards are indexed as `node_type="memory_card"`.
+
+Example output:
+
+```text
+Memory is not fully active.
+
+Claude: 2/4 hooks (missing UserPromptSubmit, Stop)
+Codex:  missing
+Corpus: qa=14, cards=0, facts=0
+Recent QA: 12 mcp_tool logs, 0 completed-turn logs
+
+Fix:
+  hybrid-search-mcp setup --cwd .
+  restart Claude/Codex
+  hybrid-search-mcp memory refresh --cwd .
+```
+
+Acceptance:
+
+- The valuein failure mode is caught before the user asks a recall question:
+  `Claude memory hooks: 2/4`, `Codex missing`, `cards=0`.
+- Doctor distinguishes "search logs exist" from "conversation memory exists".
+
+#### `memory refresh`
+
+One command runs the whole background consolidation loop:
+
+```bash
+memory compact
+memory procedural review
+memory facts export
+reindex
+status summary
+```
+
+Behavior:
+
+- Skip expensive work when no new qa/card files exist.
+- Show created/updated/skipped counts.
+- Surface next recall questions from the newest cards.
+- Never delete raw qa unless an explicit archive flag is provided.
+
+Example output:
+
+```text
+Hybrid Memory Refresh
+
+Project: valuein_homepage
+
+Hooks
+  Claude: 4/4 ready
+  Codex:  ready
+
+Memory
+  QA logs:       14
+  New cards:      6
+  Total cards:    6
+  Facts:         18
+
+Index
+  Reindexed:      6 memory files
+  Status:         ready
+
+Try
+  "대시보드 페이지 변경 방향에 대해 지난번에 뭐라고 했지?"
+```
+
+Acceptance:
+
+- A user can run one command after a work session and get a searchable memory
+  card corpus.
+- The command is idempotent.
+- The command fails with actionable guidance when hooks are incomplete.
+
+#### `memory recall`
+
+Provide a memory-first search surface for humans:
+
+- Force or strongly prefer `memory_card`, then `episodic_example`, then
+  `qa_log`.
+- Print concise card summaries and evidence paths.
+- Clearly label `mcp_tool` logs as tool-search evidence, not conversation
+  memory.
+
+Acceptance:
+
+- "대시보드 페이지에 대해 무슨 대화를 나눴지?" returns actual completed-turn
+  cards if they exist.
+- If only `mcp_tool` logs exist, it says so and tells the user how to enable
+  completed-turn memory.
+
+### P8 — Visual Memory Surface
+
+**Status:** shipped as static HTML report via `memory open`.
+
+**Goal:** make memory visible enough that users trust it and can debug it
+without reading raw markdown files.
+
+CLI:
+
+```bash
+hybrid-search-mcp memory open --cwd .
+```
+
+Minimum viable implementation:
+
+- Generate a static HTML report under `.hybrid-search/memory/report.html`.
+- Open automatically only when the platform allows it; otherwise print the
+  path.
+- No server required for v1.
+
+Report sections:
+
+- Project readiness:
+  - Claude hook state
+  - Codex hook state
+  - MCP registration
+  - last reindex / last compaction
+- Corpus:
+  - qa count
+  - completed-turn qa count
+  - `mcp_tool` qa count
+  - card count
+  - facts count
+- Recent memory cards:
+  - summary
+  - topics
+  - source qa
+  - referenced files
+- Raw vs compact ratio:
+  - qa logs promoted
+  - qa logs not promoted
+  - cards vs raw qa
+- Suggested recall prompts:
+  - generated from newest cards and procedural candidates
+- Warnings:
+  - cards=0
+  - missing Stop hook
+  - Codex not installed
+  - mostly `mcp_tool` logs
+
+Acceptance:
+
+- Opening the report makes the valuein state obvious: hooks incomplete,
+  cards=0, and recent dashboard hits are tool-search logs rather than actual
+  conversation turns.
+- The report gives the same fix path as `doctor`.
+- The visual surface is useful without requiring a web app framework.
+
+### P9 — Trust Signals at Retrieval
+
+**Status:** shipped for hybrid/semantic result trust meta and superseded/archived
+down-ranking — added 2026-04-28 from external Codex review of valuein
+usage.
+
+**Goal:** surface confidence and recency on every search hit so the agent does
+not silently overweight stale or low-confidence memory.
+
+External evidence (Codex, 2026-04-28):
+
+> 검색 결과에 "최근성", "코드에서 검증됨", "과거 대화 기반 추정" 같은 신뢰도
+> 표시가 있으면 LLM이 메모리를 맹신하지 않고 적절히 검증할 수 있습니다.
+
+P3 and P5 already track confidence on the **write** side (`status`,
+`valid_to`, `confidence`). They are not surfaced on the **read** side, so
+hybrid_search hits look uniformly authoritative regardless of age or origin.
+
+Tasks:
+
+- Annotate each hit snippet with a single-line trust meta:
+  - `[card · confidence=high · 2d ago]`
+  - `[qa · stop_hook · 14d ago]`
+  - `[fact · superseded · valid_to=2026-04-20]`
+  - `[code · indexed]`
+- Down-weight `superseded` and `archived` records in default ranking.
+- Suppress superseded facts in "current truth" queries; allow them in
+  "history" queries (P5 query path).
+- Doctor reports per-record-type freshness, not only corpus totals.
+
+Acceptance:
+
+- A user can read 5 hits and tell at a glance which is durable and which is
+  one stale guess.
+- "현재 어떻게 처리하지?" does not return a card whose `status=superseded`
+  in the top 3.
+- An old qa_log without an answer excerpt is clearly labeled as
+  metadata-only.
+
+### P10 — Domain Glossary As First-Class Memory
+
+**Status:** shipped as deterministic `domain_term` card subtype and ranking lane;
+glossary seeding benchmark remains future work — added 2026-04-28 from external Codex review of valuein
+usage.
+
+**Goal:** make the "vibe coder vocabulary → code location" translation, which
+the tool already does implicitly via BM25+vector+wiki, an explicit and
+benchmarkable feature.
+
+External evidence (Codex, 2026-04-28):
+
+> "상담에서 테스트 예약되는 부분"이라고 말해도, 실제로는 consultations,
+> entrance_tests, students, reservation 등이 얽혀 있을 수 있는데, 이 간극을
+> 줄여줍니다.
+
+This is the strongest framed value of the tool but is currently emergent, not
+designed. Domain-heavy projects like valuein expose the gap most clearly: a
+non-engineer's natural-language phrase rarely matches a single code symbol.
+
+Tasks:
+
+- Add `type: domain_term` as a memory_card subtype:
+
+  ```yaml
+  type: domain_term
+  term: "입학테스트 예약"
+  aliases: ["entrance test reservation", "테스트 예약"]
+  maps_to:
+    tables: ["entrance_tests", "reservations", "students"]
+    files: ["app/models/entrance_test.rb", "app/services/reservation_creator.rb"]
+    flows: ["consultation → reservation → test"]
+  confidence: medium
+  source: qa_log:...
+  ```
+
+- Boost `domain_term` cards above generic `memory_card` when the query is a
+  Korean NL phrase or contains domain-language markers.
+- Seed the glossary deterministically from existing wiki pages and qa_log
+  excerpts; LLM-assisted seeding stays optional behind a flag.
+- Extend the benchmark with a domain-NL gold set: phrasings a non-engineer
+  would use, scored by hit-rate on the correct file/symbol.
+
+Acceptance:
+
+- A 5-query domain-NL benchmark on valuein hits the right file in top-3 ≥
+  80% of cases.
+- Glossary entries are creatable and editable via `memory-card create
+  --type domain_term`.
+- Glossary boost does not regress the existing self-hosting memory bench.
+
 ## Revised Roadmap
 
 | Phase | Deliverable | Est |
@@ -519,10 +830,16 @@ Acceptance:
 | P3 | deterministic compaction | 2-3 days |
 | P4 | procedural candidates | 1 day |
 | P5 | facts.jsonl graph-lite | 2-3 days |
-| P6 | benchmark + report | 1-2 days |
+| P6 | benchmark + report | shipped self-hosting; valuein pilot future |
+| P7 | setup / doctor / refresh / recall product UX | 1-2 days |
+| P8 | static visual memory report | 1-2 days |
+| P9 | trust signals on retrieval hits | 1-2 days |
+| P10 | domain glossary as first-class memory | 2-3 days |
 
-Total: 8-13 days, depending on whether LLM-assisted card generation ships in
-this release or stays behind a manual flag.
+Total: 13-22 days, depending on whether LLM-assisted card generation ships in
+this release or stays behind a manual flag, whether the visual report stays
+static HTML or becomes a richer dashboard, and whether glossary seeding stays
+deterministic.
 
 ## Non-Goals
 
@@ -534,16 +851,13 @@ this release or stays behind a manual flag.
 
 ## Immediate Next Step
 
-Implement P0 first.
+Implement P7 next.
 
-P0 is the smallest change that fixes the current mismatch:
-
-- today, `Stop` proves a turn happened;
-- after P0, `Stop` preserves the useful answer signal;
-- later phases promote that signal into cards and facts.
-
-Do not start with LLM summarization. First make the raw episode record good
-enough, bounded, and safe.
+P0-P6 proved the memory loop can work. The valuein smoke test exposed the next
+product gap: users can have hooks partially installed, `mcp_tool` logs present,
+and zero cards, then reasonably conclude memory is broken. `setup`, `doctor`,
+and `memory refresh` should make that state obvious and fixable with one or two
+commands.
 
 ## Completion Criteria
 
@@ -556,3 +870,13 @@ This plan is complete when:
 - Benchmarks show memory-specific improvement in hit rate and context bytes.
 - `status` reports Claude memory hooks, Codex hooks, qa/card counts, and last
   compaction time.
+- `setup` installs Claude and Codex memory surfaces for a project.
+- `doctor` explains missing hooks, zero-card corpora, and `mcp_tool`-only logs.
+- `memory refresh` runs the consolidation/reindex loop in one command.
+- `memory open` gives a visual report of memory health, cards, facts, and
+  suggested recall questions.
+- Search hits carry trust meta (record type, confidence, recency, supersession)
+  so the agent and user can tell durable memory from stale guesses.
+- Domain glossary entries (`type: domain_term`) translate non-engineer NL
+  phrases to the right files/tables/flows, with a benchmark proving hit-rate
+  on a domain-NL gold set.
