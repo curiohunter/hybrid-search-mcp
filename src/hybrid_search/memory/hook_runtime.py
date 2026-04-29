@@ -30,14 +30,26 @@ _SKIP_PREFIXES = ("/", "!", "#")
 
 
 def resolve_project_root(event: dict) -> Path | None:
-    """Pick the project root from a hook payload's ``cwd``."""
+    """Pick the project root from a hook payload's ``cwd``.
+
+    Hooks often run with ``cwd`` set to the file/task subdirectory. Resolve to
+    the enclosing git root first so memory is written once per project, not
+    into arbitrary nested content folders.
+    """
     cwd = event.get("cwd")
     if not cwd:
         return None
     try:
-        return Path(cwd).resolve()
+        cwd_path = Path(cwd).resolve()
     except (OSError, ValueError):
         return None
+    for path in (cwd_path, *cwd_path.parents):
+        if (path / ".git").exists():
+            return path
+    for path in (cwd_path, *cwd_path.parents):
+        if (path / ".hybrid-search").exists():
+            return path
+    return None
 
 
 def classify_prompt_for_memory(prompt: str) -> bool:
