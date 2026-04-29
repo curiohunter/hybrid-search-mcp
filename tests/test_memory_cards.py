@@ -14,6 +14,7 @@ class _Resp:
 
 
 def _write_turn(root: Path) -> Path:
+    (root / ".git").mkdir(exist_ok=True)
     path = qa_log.record_turn(
         query="Why did we choose Codex Stop as the qa writer?",
         cwd=str(root),
