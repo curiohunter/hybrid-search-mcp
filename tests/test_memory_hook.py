@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from hybrid_search import hooks
-from hybrid_search.memory import qa_log
+from hybrid_search.memory import hook_runtime, qa_log
 
 
 def _write_log(project_root: Path, query: str) -> Path:
@@ -81,6 +81,24 @@ class TestExtractTerm:
             "tool_name": "Edit",
             "tool_input": {"file_path": "/x"},
         }) is None
+
+
+class TestResolveProjectRoot:
+    def test_nested_cwd_resolves_to_git_root(self, tmp_path: Path) -> None:
+        root = tmp_path / "valuein"
+        nested = root / "docs" / "valueinmath_docs" / "학습" / "양진중"
+        (root / ".git").mkdir(parents=True)
+        nested.mkdir(parents=True)
+
+        got = hook_runtime.resolve_project_root({"cwd": str(nested)})
+
+        assert got == root.resolve()
+
+    def test_unmarked_nested_cwd_returns_none(self, tmp_path: Path) -> None:
+        nested = tmp_path / "docs" / "학습" / "양진중"
+        nested.mkdir(parents=True)
+
+        assert hook_runtime.resolve_project_root({"cwd": str(nested)}) is None
 
 
 class TestLooksLikeNoise:

@@ -160,7 +160,16 @@ def _resolve_project_root(
 ) -> Path | None:
     """Pick the directory that should own this log entry.
 
-    Priority: registered project whose path contains cwd → cwd itself → None.
+    Priority:
+
+    1. registered project whose path contains cwd;
+    2. nearest git/worktree root;
+    3. nearest existing ``.hybrid-search`` root;
+    4. None.
+
+    Never fall back to arbitrary ``cwd``. Stop/UserPromptSubmit hooks can fire
+    while an agent is working in a nested data folder; creating a fresh
+    ``.hybrid-search`` there pollutes user content.
     ``project_infos`` is an iterable of objects with a ``.path`` attribute
     (matches ``ProjectInfo``) — kept loosely typed so we don't import it here.
     """
@@ -182,7 +191,22 @@ def _resolve_project_root(
                 except ValueError:
                     pass
 
-        return cwd_path
+        git_root = _find_ancestor_with(cwd_path, ".git")
+        if git_root is not None:
+            return git_root
+
+        memory_root = _find_ancestor_with(cwd_path, ".hybrid-search")
+        if memory_root is not None:
+            return memory_root
+
+    return None
+
+
+def _find_ancestor_with(start: Path, marker: str) -> Path | None:
+    """Return nearest ancestor containing ``marker`` file/dir."""
+    for path in (start, *start.parents):
+        if (path / marker).exists():
+            return path
     return None
 
 
