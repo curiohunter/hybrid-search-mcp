@@ -9,10 +9,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import html
 import logging
 import os
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -836,6 +838,213 @@ def _auto_prepare_synthesis(
 
 def _status_mark(ok: bool, warn: bool = False) -> str:
     return "⚠" if warn else ("✓" if ok else "✗")
+
+
+def _memory_health(project_path: Path) -> dict[str, object]:
+    """Collect P7/P8 product-health data without printing.
+
+    The status command has historically printed checks inline. Product UX
+    commands need the same facts for doctor, refresh, recall, and the static
+    report, so this helper is intentionally file/DB based and cheap.
+    """
+    from hybrid_search.memory import cards, reader
+
+    project_path = project_path.resolve()
+    claude_count, claude_sources = _claude_memory_hook_status([
+        project_path / ".claude" / "settings.local.json",
+        project_path / ".claude" / "settings.json",
+        Path.home() / ".claude" / "settings.json",
+        Path.home() / ".claude" / "settings.local.json",
+    ])
+    claude_missing = [
+        event
+        for event in ("PreToolUse", "SessionStart", "UserPromptSubmit", "Stop")
+        if event not in _claude_memory_hook_events([
+            project_path / ".claude" / "settings.local.json",
+            project_path / ".claude" / "settings.json",
+            Path.home() / ".claude" / "settings.json",
+            Path.home() / ".claude" / "settings.local.json",
+        ])
+    ]
+
+    try:
+        from hybrid_search import codex_hooks
+
+        codex = codex_hooks.codex_status(project_path)
+    except Exception:
+        codex = {
+            "project_hooks": False,
+            "user_hooks": False,
+            "project_feature": False,
+            "project_mcp": False,
+            "user_feature": False,
+            "user_mcp": False,
+        }
+
+    qa_indexes = list(reader.iter_qa_indexes(project_path))
+    trigger_counts: Counter[str] = Counter(idx.trigger or "legacy" for idx in qa_indexes)
+    completed_triggers = {"stop_hook", "codex_stop_hook"}
+    completed_count = sum(trigger_counts[t] for t in completed_triggers)
+    mcp_tool_count = trigger_counts["mcp_tool"]
+    card_items = list(cards.iter_cards(project_path))
+    fact_count = sum(1 for _ in cards.iter_facts(project_path))
+    last_compaction = _last_mtime(cards.card_dir(project_path))
+    cards_indexed = _memory_cards_indexed(project_path)
+    routing_present = _CLAUDE_MD_MARKER in _safe_read_text(project_path / "CLAUDE.md")
+    agents_present = "<!-- hybrid-search-mcp:codex-routing -->" in _safe_read_text(project_path / "AGENTS.md")
+
+    return {
+        "project_path": project_path,
+        "claude_count": claude_count,
+        "claude_missing": claude_missing,
+        "claude_sources": claude_sources,
+        "codex": codex,
+        "codex_ready": bool(
+            (codex.get("project_hooks") and codex.get("project_feature") and codex.get("project_mcp"))
+            or (codex.get("user_hooks") and codex.get("user_feature") and codex.get("user_mcp"))
+        ),
+        "qa_count": len(qa_indexes),
+        "completed_qa_count": completed_count,
+        "mcp_tool_count": mcp_tool_count,
+        "trigger_counts": trigger_counts,
+        "card_count": len(card_items),
+        "fact_count": fact_count,
+        "cards_indexed": cards_indexed,
+        "last_compaction": last_compaction,
+        "routing_present": routing_present,
+        "agents_present": agents_present,
+        "recent_cards": card_items[:8],
+        "recent_qa": qa_indexes[:8],
+    }
+
+
+def _safe_read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _last_mtime(root: Path) -> datetime | None:
+    if not root.is_dir():
+        return None
+    newest: float | None = None
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        newest = mtime if newest is None else max(newest, mtime)
+    if newest is None:
+        return None
+    return datetime.fromtimestamp(newest, tz=timezone.utc)
+
+
+def _claude_memory_hook_events(paths: list[Path]) -> set[str]:
+    import json as _json
+
+    present: set[str] = set()
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            settings = _json.loads(path.read_text(encoding="utf-8") or "{}")
+        except (ValueError, OSError):
+            continue
+        hooks = settings.get("hooks", {})
+        if not isinstance(hooks, dict):
+            continue
+        for event in ("PreToolUse", "SessionStart", "UserPromptSubmit", "Stop"):
+            if "hybrid_search.cli qa-hook" in _json.dumps(hooks.get(event, [])):
+                present.add(event)
+    return present
+
+
+def _memory_cards_indexed(project_path: Path) -> bool:
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+    match = _detect_project(registry, str(project_path))
+    if match is None:
+        return False
+    pinfo = registry.get_by_name(match[0])
+    if pinfo is None:
+        return False
+    idx = IndexPaths(get_project_dir(config.projects_dir, pinfo.id))
+    if not idx.store_db.exists():
+        return False
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(idx.store_db))
+        try:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM chunks
+                WHERE node_type IN ('memory_card', 'domain_term', 'episodic_example')
+                """
+            ).fetchone()
+            return bool(row and row[0] > 0)
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def _print_doctor_report(health: dict[str, object]) -> None:
+    ready = (
+        health["claude_count"] == 4
+        and bool(health["codex_ready"])
+        and int(health["card_count"]) > 0
+        and (bool(health["cards_indexed"]) or int(health["card_count"]) == 0)
+    )
+    print("Memory is ready." if ready else "Memory is not fully active.")
+    print()
+    missing = health["claude_missing"]
+    miss = f" (missing {', '.join(missing)})" if missing else ""
+    print(f"Claude: {health['claude_count']}/4 hooks{miss}")
+    codex = health["codex"]
+    codex_parts = []
+    if codex.get("project_hooks"):
+        codex_parts.append("project hooks")
+    if codex.get("project_feature"):
+        codex_parts.append("project feature")
+    if codex.get("project_mcp"):
+        codex_parts.append("project MCP")
+    if codex.get("user_hooks"):
+        codex_parts.append("user hooks")
+    if codex.get("user_feature"):
+        codex_parts.append("user feature")
+    if codex.get("user_mcp"):
+        codex_parts.append("user MCP")
+    print(f"Codex:  {', '.join(codex_parts) if codex_parts else 'missing'}")
+    print(
+        f"Corpus: qa={health['qa_count']}, cards={health['card_count']}, "
+        f"facts={health['fact_count']}"
+    )
+    print(
+        f"Recent QA: {health['mcp_tool_count']} mcp_tool logs, "
+        f"{health['completed_qa_count']} completed-turn logs"
+    )
+    indexed = "yes" if health["cards_indexed"] else "no"
+    print(f"Indexed cards: {indexed}")
+    last = health["last_compaction"]
+    print(f"Last compaction: {last.isoformat() if isinstance(last, datetime) else 'never'}")
+
+    fixes: list[str] = []
+    if health["claude_count"] != 4 or not health["codex_ready"]:
+        fixes.append("hybrid-search-mcp setup --cwd .")
+        fixes.append("restart Claude/Codex")
+    if int(health["qa_count"]) > 0 and int(health["card_count"]) == 0:
+        fixes.append("hybrid-search-mcp memory refresh --cwd .")
+    if int(health["card_count"]) > 0 and not health["cards_indexed"]:
+        fixes.append("hybrid-search-mcp reindex --cwd . --force")
+    if fixes:
+        print()
+        print("Fix:")
+        for fix in dict.fromkeys(fixes):
+            print(f"  {fix}")
 
 
 def _claude_memory_hook_status(paths: list[Path]) -> tuple[int, list[str]]:
@@ -3101,7 +3310,7 @@ def cmd_memory_card_create(args: argparse.Namespace) -> None:
     root = _resolve_memory_root(args)
     if root is None:
         sys.exit(1)
-    path = cards.create_card_from_qa(root, args.from_qa)
+    path = cards.create_card_from_qa(root, args.from_qa, card_type=args.type)
     if path is None:
         print(f"qa log not found or unreadable: {args.from_qa}", file=sys.stderr)
         sys.exit(1)
@@ -3122,6 +3331,7 @@ def cmd_memory_card_list(args: argparse.Namespace) -> None:
         print(_json.dumps([
             {
                 "id": c.id,
+                "type": c.type,
                 "summary": c.summary,
                 "query": c.query,
                 "topics": list(c.topics),
@@ -3137,7 +3347,7 @@ def cmd_memory_card_list(args: argparse.Namespace) -> None:
         return
     for card in items:
         ts = card.timestamp.strftime("%Y-%m-%d %H:%M") if card.timestamp else "?"
-        print(f"{card.id}  [{card.confidence}/{card.status}]  {ts}  {_truncate_preview(card.summary)}")
+        print(f"{card.id}  [{card.type}/{card.confidence}/{card.status}]  {ts}  {_truncate_preview(card.summary)}")
 
 
 def cmd_memory_card_show(args: argparse.Namespace) -> None:
@@ -3244,6 +3454,269 @@ def cmd_memory_facts_list(args: argparse.Namespace) -> None:
             break
     if count == 0:
         sys.exit(1)
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """Diagnose whether project memory is truly operational."""
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    _print_doctor_report(_memory_health(root))
+
+
+def cmd_memory_refresh(args: argparse.Namespace) -> None:
+    """Run the deterministic memory consolidation loop for one project."""
+    from hybrid_search.memory import cards
+
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+
+    before = _memory_health(root)
+    print("Hybrid Memory Refresh")
+    print()
+    print(f"Project: {root.name}")
+    print()
+    print("Hooks")
+    print(f"  Claude: {before['claude_count']}/4 {'ready' if before['claude_count'] == 4 else 'incomplete'}")
+    print(f"  Codex:  {'ready' if before['codex_ready'] else 'incomplete'}")
+    if not args.allow_incomplete_hooks and (before["claude_count"] != 4 or not before["codex_ready"]):
+        print()
+        print("Memory refresh stopped because hooks are incomplete.")
+        print("Run `hybrid-search-mcp setup --cwd .`, restart Claude/Codex, then retry.")
+        sys.exit(1)
+
+    compact = cards.compact_qa_to_cards(root, since=args.since, limit=args.limit)
+    proc_path = cards.write_procedural_candidates(root)
+    facts_path = cards.export_facts(root)
+
+    reindexed = False
+    # Reindex only when searchable memory files changed. Procedural/facts
+    # exports are product surfaces, but cards are the retrieval unit.
+    if compact["created"] or args.force_reindex:
+        re_args = argparse.Namespace(
+            cwd=str(root),
+            force=args.force_reindex,
+            git_delta=False,
+            wiki=False,
+            wiki_scope="full",
+            synthesize=False,
+        )
+        cmd_reindex(re_args)
+        reindexed = True
+
+    after = _memory_health(root)
+    print()
+    print("Memory")
+    print(f"  QA logs:       {after['qa_count']}")
+    print(f"  New cards:     {compact['created']}")
+    print(f"  Total cards:   {after['card_count']}")
+    print(f"  Facts:         {after['fact_count']}")
+    print()
+    print("Index")
+    print(f"  Reindexed:     {'yes' if reindexed else 'skipped'}")
+    print(f"  Cards indexed: {'yes' if after['cards_indexed'] else 'no'}")
+    suggestions = _suggest_recall_prompts(after)
+    if suggestions:
+        print()
+        print("Try")
+        print(f'  "{suggestions[0]}"')
+
+
+def _suggest_recall_prompts(health: dict[str, object], *, limit: int = 4) -> list[str]:
+    prompts: list[str] = []
+    for card in health.get("recent_cards", []):
+        query = getattr(card, "query", "") or getattr(card, "summary", "")
+        query = _truncate_preview(query, 54)
+        if query:
+            prompts.append(f"{query}에 대해 지난번에 뭐라고 했지?")
+        if len(prompts) >= limit:
+            break
+    if prompts:
+        return prompts
+    for idx in health.get("recent_qa", []):
+        query = _truncate_preview(getattr(idx, "query", ""), 54)
+        if query:
+            prompts.append(f"{query}에 대해 어떤 대화를 나눴지?")
+        if len(prompts) >= limit:
+            break
+    return prompts
+
+
+def cmd_memory_recall(args: argparse.Namespace) -> None:
+    """Memory-first search for humans: cards, then completed turns, then raw logs."""
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+
+    try:
+        from hybrid_search.config import load_config
+        from hybrid_search.index.embedder import Embedder
+        from hybrid_search.project import ProjectRegistry
+        from hybrid_search.search.orchestrator import SearchOrchestrator
+    except Exception as exc:
+        print(f"Search unavailable: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    cfg = load_config()
+    registry = ProjectRegistry(cfg.global_dir)
+    embedder = Embedder(cfg.embedding, cfg.models_dir)
+    orch = SearchOrchestrator(config=cfg, registry=registry, embedder=embedder)
+    response = orch.hybrid_search(
+        query=args.query,
+        cwd=str(root),
+        limit=args.limit,
+    )
+    results = list(getattr(response, "results", []) or [])
+    memory = [
+        r for r in results
+        if getattr(r, "node_type", None) in {"domain_term", "memory_card", "episodic_example", "qa_log"}
+    ]
+    memory.sort(key=lambda r: {
+        "domain_term": 0,
+        "memory_card": 1,
+        "episodic_example": 2,
+        "qa_log": 3,
+    }.get(getattr(r, "node_type", ""), 9))
+
+    if not memory:
+        print("No memory results found.")
+        health = _memory_health(root)
+        if int(health["qa_count"]) == 0:
+            print("Completed-turn memory is empty. Run setup, restart the client, then ask again.")
+        elif int(health["card_count"]) == 0:
+            print("QA logs exist but no cards are available. Run `hybrid-search-mcp memory refresh --cwd .`.")
+        sys.exit(1)
+
+    has_card = any(getattr(r, "node_type", None) == "memory_card" for r in memory)
+    for idx, r in enumerate(memory[: args.limit], start=1):
+        nt = getattr(r, "node_type", "?")
+        path = getattr(r, "file_path", "?")
+        name = getattr(r, "name", None) or getattr(r, "qualified_name", None) or ""
+        print(f"{idx}. [{nt}] {path}{' — ' + name if name else ''}")
+        snippet = (getattr(r, "snippet", None) or getattr(r, "content", "") or "").strip()
+        if snippet:
+            print(f"   {_truncate_preview(snippet, 160)}")
+    if not has_card:
+        print()
+        print("Only raw/tool-search memory surfaced. Run `hybrid-search-mcp memory refresh --cwd .` to promote useful turns into cards.")
+
+
+def cmd_memory_open(args: argparse.Namespace) -> None:
+    """Generate the static visual Memory report."""
+    root = _resolve_memory_root(args)
+    if root is None:
+        sys.exit(1)
+    path = _write_memory_report(root)
+    print(f"Memory report: {path}")
+    if not args.no_open:
+        try:
+            import webbrowser
+
+            webbrowser.open(path.resolve().as_uri())
+        except Exception:
+            pass
+
+
+def _write_memory_report(project_root: Path) -> Path:
+    health = _memory_health(project_root)
+    warnings: list[str] = []
+    if health["claude_count"] != 4:
+        warnings.append("Claude Stop/UserPromptSubmit memory hooks are incomplete.")
+    if not health["codex_ready"]:
+        warnings.append("Codex memory hooks or project MCP config are incomplete.")
+    if int(health["card_count"]) == 0:
+        warnings.append("No memory cards exist yet.")
+    if int(health["mcp_tool_count"]) > int(health["completed_qa_count"]):
+        warnings.append("Recent memory is mostly tool-search logs, not completed conversation turns.")
+
+    suggestions = _suggest_recall_prompts(health)
+    rows = []
+    for card in health.get("recent_cards", []):
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(getattr(card, 'id', ''))}</td>"
+            f"<td>{html.escape(getattr(card, 'summary', ''))}</td>"
+            f"<td>{html.escape(', '.join(getattr(card, 'topics', ()) or ()))}</td>"
+            f"<td>{html.escape(', '.join(getattr(card, 'source_ids', ()) or ()))}</td>"
+            "</tr>"
+        )
+    warn_html = "".join(f"<li>{html.escape(w)}</li>" for w in warnings) or "<li>No blocking warnings.</li>"
+    sug_html = "".join(f"<li>{html.escape(s)}</li>" for s in suggestions) or "<li>No suggestions yet.</li>"
+    card_rows = "\n".join(rows) or '<tr><td colspan="4">No memory cards yet.</td></tr>'
+    completed = int(health["completed_qa_count"])
+    qa_count = int(health["qa_count"])
+    promoted = int(health["card_count"])
+    unpromoted = max(0, qa_count - promoted)
+    html_text = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Hybrid Search Memory Report</title>
+  <style>
+    body {{ margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #18202a; background: #f6f7f9; }}
+    header {{ padding: 28px 36px; background: #18202a; color: white; }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 28px; }}
+    section {{ margin: 0 0 24px; padding: 20px; background: white; border: 1px solid #d9dee7; border-radius: 8px; }}
+    h1, h2 {{ margin: 0 0 12px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
+    .metric {{ padding: 12px; border: 1px solid #e1e5ec; border-radius: 6px; }}
+    .metric b {{ display: block; font-size: 24px; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ padding: 8px 10px; border-bottom: 1px solid #e5e9f0; text-align: left; vertical-align: top; }}
+    code {{ background: #eef1f5; padding: 1px 4px; border-radius: 4px; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hybrid Search Memory Report</h1>
+    <div>{html.escape(str(project_root))}</div>
+  </header>
+  <main>
+    <section>
+      <h2>Readiness</h2>
+      <div class="grid">
+        <div class="metric"><span>Claude hooks</span><b>{health['claude_count']}/4</b></div>
+        <div class="metric"><span>Codex</span><b>{'ready' if health['codex_ready'] else 'missing'}</b></div>
+        <div class="metric"><span>Cards indexed</span><b>{'yes' if health['cards_indexed'] else 'no'}</b></div>
+        <div class="metric"><span>Last compaction</span><b>{html.escape(health['last_compaction'].date().isoformat() if isinstance(health['last_compaction'], datetime) else 'never')}</b></div>
+      </div>
+    </section>
+    <section>
+      <h2>Corpus</h2>
+      <div class="grid">
+        <div class="metric"><span>QA logs</span><b>{qa_count}</b></div>
+        <div class="metric"><span>Completed turns</span><b>{completed}</b></div>
+        <div class="metric"><span>mcp_tool logs</span><b>{health['mcp_tool_count']}</b></div>
+        <div class="metric"><span>Cards</span><b>{promoted}</b></div>
+        <div class="metric"><span>Facts</span><b>{health['fact_count']}</b></div>
+        <div class="metric"><span>Unpromoted QA</span><b>{unpromoted}</b></div>
+      </div>
+    </section>
+    <section>
+      <h2>Recent Memory Cards</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Summary</th><th>Topics</th><th>Source QA</th></tr></thead>
+        <tbody>{card_rows}</tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Suggested Recall Prompts</h2>
+      <ul>{sug_html}</ul>
+    </section>
+    <section>
+      <h2>Warnings</h2>
+      <ul>{warn_html}</ul>
+      <p>Fix path: <code>hybrid-search-mcp setup --cwd .</code>, restart Claude/Codex, then <code>hybrid-search-mcp memory refresh --cwd .</code>.</p>
+    </section>
+  </main>
+</body>
+</html>
+"""
+    path = project_root / ".hybrid-search" / "memory" / "report.html"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(html_text, encoding="utf-8")
+    return path
 
 
 def _bfs_shortest_path(
@@ -3461,9 +3934,10 @@ def cmd_serve(_args: argparse.Namespace) -> None:
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
-    """One-time global setup: register MCP server + Claude Code hooks."""
+    """One-command setup: global Claude surface plus project memory hooks."""
     import json as _json
 
+    project_path = Path(getattr(args, "cwd", ".")).resolve()
     venv_python = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python"
     if not venv_python.exists():
         venv_python = Path(sys.executable)
@@ -3647,8 +4121,35 @@ def cmd_setup(args: argparse.Namespace) -> None:
     else:
         print(f"Skills source not found: {skills_src} (skipped)")
 
+    # --- Step 4: project-local memory product surface ---
+    try:
+        from hybrid_search import codex_hooks, hooks as memory_hooks
+
+        project_settings = project_path / ".claude" / "settings.local.json"
+        mem_result = memory_hooks.install_memory_hook(project_settings)
+        if mem_result["status"] == "exists":
+            print(f"Claude memory hooks already present: {project_settings}")
+        else:
+            print(f"Claude memory hooks installed: {project_settings}")
+
+        codex_result = codex_hooks.install_codex_hook(project_path)
+        if codex_result["status"] == "exists":
+            print(f"Codex memory hooks already present: {codex_result['hooks_path']}")
+        else:
+            print(f"Codex memory hooks installed: {codex_result['hooks_path']}")
+
+        _ensure_claude_md(str(project_path))
+        _ensure_gitignore_entries(project_path)
+    except Exception as exc:
+        print(f"Project memory setup skipped: {exc}")
+
     print()
-    print("Setup complete. Restart Claude Code to apply changes.")
+    health = _memory_health(project_path)
+    print(
+        f"Claude memory hooks: {health['claude_count']}/4; "
+        f"Codex hooks: {'ready' if health['codex_ready'] else 'incomplete'}"
+    )
+    print("Setup complete. Restart Claude/Codex to apply changes.")
 
 
 def _git_hooks_dir(repo_root: Path) -> Path:
@@ -3918,7 +4419,12 @@ def main() -> None:
     sub.add_parser("serve", help="Start MCP server (for Claude Code / MCP clients)")
 
     # ── Setup & admin ──
-    sub.add_parser("setup", help="One-time setup: register MCP server + hooks in Claude Code")
+    p_setup = sub.add_parser("setup", help="One-time setup: register MCP server + memory hooks")
+    p_setup.add_argument("--cwd", default=".", help="Project directory")
+
+    p_doctor = sub.add_parser("doctor", help="Diagnose Memory Layer setup and corpus health")
+    p_doctor.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_doctor.add_argument("--project", help="Project name (overrides --cwd)")
 
     p_reindex = sub.add_parser("reindex", help="Delta reindex a project")
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
@@ -4082,6 +4588,12 @@ def main() -> None:
 
     p_mem_create = mem_sub.add_parser("create", help="Create a memory card from a qa log")
     p_mem_create.add_argument("--from-qa", required=True, help="qa log id/hash/stem")
+    p_mem_create.add_argument(
+        "--type",
+        choices=("memory_card", "domain_term"),
+        default="memory_card",
+        help="Card type to create",
+    )
     p_mem_create.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
     p_mem_create.add_argument("--project", help="Project name (overrides --cwd)")
 
@@ -4128,6 +4640,29 @@ def main() -> None:
     p_facts_list.add_argument("--project", help="Project name (overrides --cwd)")
     p_facts_list.add_argument("--query", help="Filter substring")
     p_facts_list.add_argument("--limit", type=int, default=20)
+
+    p_refresh = memory_sub.add_parser("refresh", help="Compact memory, export facts, and reindex")
+    p_refresh.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_refresh.add_argument("--project", help="Project name (overrides --cwd)")
+    p_refresh.add_argument("--since", help="Only compact qa newer than duration, e.g. 7d")
+    p_refresh.add_argument("--limit", type=int, default=None, help="Max qa logs to promote")
+    p_refresh.add_argument("--force-reindex", action="store_true", help="Force full reindex after refresh")
+    p_refresh.add_argument(
+        "--allow-incomplete-hooks",
+        action="store_true",
+        help="Run even when Claude/Codex hooks are incomplete",
+    )
+
+    p_recall = memory_sub.add_parser("recall", help="Memory-first search over cards and qa logs")
+    p_recall.add_argument("query", help="Recall question")
+    p_recall.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_recall.add_argument("--project", help="Project name (overrides --cwd)")
+    p_recall.add_argument("--limit", type=int, default=8)
+
+    p_open = memory_sub.add_parser("open", help="Generate a static visual memory report")
+    p_open.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_open.add_argument("--project", help="Project name (overrides --cwd)")
+    p_open.add_argument("--no-open", action="store_true", help="Only print report path")
 
     p_integrity = sub.add_parser(
         "integrity",
@@ -4245,6 +4780,8 @@ def main() -> None:
         cmd_serve(args)
     elif args.command == "setup":
         cmd_setup(args)
+    elif args.command == "doctor":
+        cmd_doctor(args)
     elif args.command == "reindex":
         cmd_reindex(args)
     elif args.command == "status":
@@ -4315,6 +4852,12 @@ def main() -> None:
             cmd_memory_facts_export(args)
         elif args.memory_command == "facts" and args.facts_command == "list":
             cmd_memory_facts_list(args)
+        elif args.memory_command == "refresh":
+            cmd_memory_refresh(args)
+        elif args.memory_command == "recall":
+            cmd_memory_recall(args)
+        elif args.memory_command == "open":
+            cmd_memory_open(args)
         else:
             parser.parse_args([args.command, "--help"])
     elif args.command == "integrity":

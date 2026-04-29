@@ -88,6 +88,7 @@ def handle_hybrid_search(
                 "end_line": r.end_line,
                 "content": sanitize_snippet(r.content),
                 "snippet": sanitize_snippet(r.snippet),
+                "trust_meta": sanitize_snippet(getattr(r, "trust_meta", None)),
             }
             for r in response.results
         ],
