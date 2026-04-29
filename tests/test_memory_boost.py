@@ -95,7 +95,7 @@ class TestParseMtimeDaysAgo:
 # --- _apply_memory_boost ---------------------------------------------------
 
 def _mk(
-    chunk_id: str, node_type: str, rrf: float, mtime: str | None = None,
+    chunk_id: str, node_type: str, rrf: float, mtime: str | None = None, content: str | None = None,
 ) -> HybridResult:
     return HybridResult(
         chunk_id=chunk_id,
@@ -109,7 +109,7 @@ def _mk(
         node_type=node_type,
         start_line=1,
         end_line=2,
-        content=None,
+        content=content,
         snippet="s",
         file_mtime=mtime,
     )
@@ -200,6 +200,26 @@ class TestApplyMemoryBoost:
         assert out[0].chunk_id == "card"
         assert out[0].rrf_score > out[1].rrf_score
 
+    def test_domain_term_boosts_above_generic_memory_card(self) -> None:
+        now = datetime(2026, 4, 22, tzinfo=timezone.utc)
+        term = _mk("term", "domain_term", rrf=0.5, mtime="2026-04-22T00:00:00+00:00")
+        card = _mk("card", "memory_card", rrf=0.5, mtime="2026-04-22T00:00:00+00:00")
+        out = _apply_memory_boost([card, term], memory_intent=True, now=now)
+        assert out[0].chunk_id == "term"
+
+    def test_superseded_memory_is_downweighted(self) -> None:
+        active = _mk("active", "memory_card", rrf=0.5)
+        stale = _mk(
+            "stale",
+            "memory_card",
+            rrf=1.0,
+            content="---\ntype: memory_card\nstatus: superseded\n---\n\n## Summary\n\nOld.",
+        )
+
+        out = _apply_memory_boost([stale, active], memory_intent=True)
+
+        assert out[0].chunk_id == "active"
+
 
 class TestMergeMemoryResults:
     def test_memory_lane_promotes_cards_before_regular_chunks(self) -> None:
@@ -211,6 +231,15 @@ class TestMergeMemoryResults:
         out = _merge_memory_results([code, doc], [card, qa], limit=10)
 
         assert [r.chunk_id for r in out[:4]] == ["card", "qa", "code", "doc"]
+
+    def test_memory_lane_promotes_domain_terms_first(self) -> None:
+        code = _mk("code", "function", rrf=1.0)
+        card = _mk("card", "memory_card", rrf=0.9)
+        term = _mk("term", "domain_term", rrf=0.8)
+
+        out = _merge_memory_results([code], [card, term], limit=10)
+
+        assert [r.chunk_id for r in out[:3]] == ["term", "card", "code"]
 
     def test_memory_lane_deduplicates_existing_chunks(self) -> None:
         code = _mk("code", "function", rrf=1.0)

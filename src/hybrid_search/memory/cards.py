@@ -19,6 +19,7 @@ FRONTMATTER_DELIM = "---"
 @dataclass(frozen=True)
 class MemoryCard:
     path: Path
+    type: str
     summary: str
     query: str
     source_ids: tuple[str, ...]
@@ -141,6 +142,7 @@ def _extract_followups(body: str) -> tuple[str, ...]:
 
 def _build_card_content(
     *,
+    card_type: str = "memory_card",
     query: str,
     summary: str,
     source_id: str,
@@ -153,7 +155,7 @@ def _build_card_content(
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     lines = [
         FRONTMATTER_DELIM,
-        "type: memory_card",
+        f"type: {card_type}",
         f"query: {_yaml_scalar(query)}",
         f"summary: {_yaml_scalar(summary)}",
         f"source_ids: {_yaml_list([source_id])}",
@@ -197,10 +199,12 @@ def _build_card_content(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def create_card_from_qa(project_root: Path, qa_id: str) -> Path | None:
+def create_card_from_qa(project_root: Path, qa_id: str, *, card_type: str = "memory_card") -> Path | None:
     idx = qa_reader.find_qa_by_id(project_root, qa_id)
     if idx is None:
         return None
+    if card_type not in {"memory_card", "domain_term"}:
+        raise ValueError(f"unsupported memory card type: {card_type}")
     qa_path = idx.path
     body = qa_reader.read_qa_body(qa_path)
     summary = _summary_from_body(idx.query, body)
@@ -210,6 +214,7 @@ def create_card_from_qa(project_root: Path, qa_id: str) -> Path | None:
     followups = _extract_followups(body)
     source_id = idx.id
     content = _build_card_content(
+        card_type=card_type,
         query=idx.query,
         summary=summary,
         source_id=source_id,
@@ -220,7 +225,8 @@ def create_card_from_qa(project_root: Path, qa_id: str) -> Path | None:
         followups=followups,
     )
     now = datetime.now(timezone.utc)
-    stem = f"{now.strftime('%d-%H%M%S')}-{_hash_text(idx.query + source_id)}"
+    prefix = "term" if card_type == "domain_term" else "card"
+    stem = f"{now.strftime('%d-%H%M%S')}-{prefix}-{_hash_text(idx.query + source_id)}"
     path = card_dir(project_root) / f"{now.year:04d}" / f"{now.month:02d}" / f"{stem}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -315,7 +321,8 @@ def parse_card(path: Path) -> MemoryCard | None:
     if not block:
         return None
     fm = _parse_frontmatter(block)
-    if fm.get("type") != "memory_card":
+    card_type = fm.get("type", "memory_card")
+    if card_type not in {"memory_card", "domain_term"}:
         return None
     try:
         ts = datetime.fromisoformat(fm.get("timestamp", ""))
@@ -323,6 +330,7 @@ def parse_card(path: Path) -> MemoryCard | None:
         ts = None
     return MemoryCard(
         path=path,
+        type=card_type,
         summary=fm.get("summary", ""),
         query=fm.get("query", ""),
         source_ids=_parse_list(fm.get("source_ids", "")),

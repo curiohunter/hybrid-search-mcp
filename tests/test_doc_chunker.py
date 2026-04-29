@@ -160,3 +160,16 @@ class TestMemoryCardChunking:
         assert len(chunks) == 1
         assert chunks[0].node_type == "memory_card"
         assert "[memory_card]" in chunks[0].embedding_input
+
+    def test_domain_term_path_gets_domain_term_node_type(self) -> None:
+        source = "---\ntype: domain_term\n---\n\n## Summary\n\n입학테스트 예약 maps to files.\n"
+        chunks = chunk_doc_file(
+            PROJECT_ROOT / ".hybrid-search/memory/cards/2026/04/26-120000-term-deadbeef.md",
+            PROJECT_ROOT,
+            PROJECT_ID,
+            "markdown",
+            source=source,
+        )
+        assert len(chunks) == 1
+        assert chunks[0].node_type == "domain_term"
+        assert "[domain_term]" in chunks[0].embedding_input
