@@ -41,7 +41,13 @@ def chunk_doc_file(
     if rel_norm.startswith(QA_LOG_PATH_PREFIX):
         return [_whole_file_chunk(source, rel_path, project_id, "markdown", node_type="qa_log")]
     if rel_norm.startswith(MEMORY_CARD_PATH_PREFIX):
-        return [_whole_file_chunk(source, rel_path, project_id, "markdown", node_type="memory_card")]
+        return [_whole_file_chunk(
+            source,
+            rel_path,
+            project_id,
+            "markdown",
+            node_type=_memory_card_node_type(source),
+        )]
 
     if language == "markdown":
         return _chunk_markdown(source, rel_path, project_id)
@@ -198,3 +204,20 @@ def _whole_file_chunk(
         start_byte=0,
         end_byte=len(source.encode()),
     )
+
+
+def _memory_card_node_type(source: str) -> str:
+    """Preserve first-class memory subtypes from card frontmatter."""
+    text = source.lstrip()
+    if not text.startswith("---\n"):
+        return "memory_card"
+    end = text.find("\n---", 4)
+    if end < 0:
+        return "memory_card"
+    for line in text[4:end].splitlines():
+        key, sep, raw_value = line.partition(":")
+        if sep and key.strip() == "type":
+            value = raw_value.strip().strip('"')
+            if value in {"memory_card", "domain_term", "episodic_example"}:
+                return value
+    return "memory_card"

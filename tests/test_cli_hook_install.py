@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -20,10 +21,17 @@ from hybrid_search.cli import (
     _ensure_claude_md,
     _ensure_gitignore_entries,
     _git_hooks_dir,
+    _memory_health,
+    _memory_cards_indexed,
+    _print_doctor_report,
     _remove_claude_md,
+    _write_memory_report,
     _write_needs_synthesis_flag,
     cmd_install_hook,
+    cmd_memory_refresh,
 )
+from hybrid_search.memory import qa_log
+from hybrid_search.project import ProjectInfo
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +439,105 @@ class TestInstallHookBothScripts:
         default = tmp_path / ".git" / "hooks"
         assert not (default / "post-commit").exists() or \
             _HOOK_IDENTITY_MARKER not in (default / "post-commit").read_text()
+
+
+class TestMemoryProductUx:
+    """P7/P8 product UX helpers: doctor, refresh, and static report."""
+
+    def test_doctor_distinguishes_tool_logs_from_completed_turns(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        qa_log.record_turn(
+            query="How did we decide hook storage?",
+            cwd=str(tmp_path),
+            answer_chars=20,
+            answer_excerpt="Decision: Stop hook stores completed turns.",
+            trigger="codex_stop_hook",
+            client="codex",
+        )
+        health = _memory_health(tmp_path)
+        _print_doctor_report(health)
+        out = capsys.readouterr().out
+        assert "Memory is not fully active." in out
+        assert "Corpus: qa=1, cards=0" in out
+        assert "1 completed-turn logs" in out
+        assert "hybrid-search-mcp memory refresh --cwd ." in out
+
+    def test_memory_refresh_can_run_with_incomplete_hooks_when_allowed(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        qa_log.record_turn(
+            query="Why use memory cards?",
+            cwd=str(tmp_path),
+            answer_chars=60,
+            answer_excerpt=(
+                "Decision: memory cards are the compact retrieval unit. "
+                "Next: refresh should promote useful turns."
+            ),
+            trigger="codex_stop_hook",
+            client="codex",
+        )
+        monkeypatch.setattr("hybrid_search.cli.cmd_reindex", lambda _args: print("reindex stub"))
+        cmd_memory_refresh(argparse.Namespace(
+            cwd=str(tmp_path),
+            project=None,
+            since=None,
+            limit=None,
+            force_reindex=False,
+            allow_incomplete_hooks=True,
+        ))
+        out = capsys.readouterr().out
+        assert "Hybrid Memory Refresh" in out
+        assert "New cards:     1" in out
+        assert "Facts:" in out
+
+    def test_memory_report_writes_static_html_with_warnings(self, tmp_path: Path) -> None:
+        qa_log.record_turn(
+            query="How does report explain memory?",
+            cwd=str(tmp_path),
+            answer_chars=40,
+            answer_excerpt="Decision: report shows hooks, corpus, and warnings.",
+            trigger="codex_stop_hook",
+            client="codex",
+        )
+        path = _write_memory_report(tmp_path)
+        text = path.read_text(encoding="utf-8")
+        assert "Hybrid Search Memory Report" in text
+        assert "No memory cards exist yet." in text
+        assert "Completed turns" in text
+
+    def test_memory_cards_indexed_accepts_domain_term_only(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        index_root = tmp_path / "indexes"
+        store_db = index_root / "proj1" / "store.db"
+        store_db.parent.mkdir(parents=True)
+        conn = sqlite3.connect(store_db)
+        try:
+            conn.execute("CREATE TABLE chunks (node_type TEXT)")
+            conn.execute("INSERT INTO chunks (node_type) VALUES ('domain_term')")
+            conn.commit()
+        finally:
+            conn.close()
+
+        class _Config:
+            global_dir = tmp_path / "global"
+            projects_dir = index_root
+
+        class _Registry:
+            def __init__(self, _global_dir: Path) -> None:
+                pass
+
+            def list_all(self):
+                return [ProjectInfo(id="proj1", name="p", path=str(tmp_path))]
+
+            def get_by_name(self, name: str):
+                return ProjectInfo(id="proj1", name=name, path=str(tmp_path))
+
+        monkeypatch.setattr("hybrid_search.cli.load_config", lambda: _Config())
+        monkeypatch.setattr("hybrid_search.cli.ProjectRegistry", _Registry)
+
+        assert _memory_cards_indexed(tmp_path) is True
 
 
 class TestPostCheckoutScriptGates:
