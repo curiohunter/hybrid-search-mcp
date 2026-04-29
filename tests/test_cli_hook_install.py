@@ -447,6 +447,7 @@ class TestMemoryProductUx:
     def test_doctor_distinguishes_tool_logs_from_completed_turns(
         self, tmp_path: Path, capsys,
     ) -> None:
+        (tmp_path / ".git").mkdir()
         qa_log.record_turn(
             query="How did we decide hook storage?",
             cwd=str(tmp_path),
@@ -466,6 +467,7 @@ class TestMemoryProductUx:
     def test_memory_refresh_can_run_with_incomplete_hooks_when_allowed(
         self, tmp_path: Path, monkeypatch, capsys,
     ) -> None:
+        (tmp_path / ".git").mkdir()
         qa_log.record_turn(
             query="Why use memory cards?",
             cwd=str(tmp_path),
@@ -492,6 +494,7 @@ class TestMemoryProductUx:
         assert "Facts:" in out
 
     def test_memory_report_writes_static_html_with_warnings(self, tmp_path: Path) -> None:
+        (tmp_path / ".git").mkdir()
         qa_log.record_turn(
             query="How does report explain memory?",
             cwd=str(tmp_path),

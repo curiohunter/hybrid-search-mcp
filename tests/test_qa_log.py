@@ -61,6 +61,11 @@ def enabled(monkeypatch):
     monkeypatch.setenv(qa_log.ENV_TOGGLE, "1")
 
 
+def _mark_project(root: Path) -> Path:
+    (root / ".git").mkdir(parents=True, exist_ok=True)
+    return root
+
+
 # --- Toggle -----------------------------------------------------------------
 
 class TestToggle:
@@ -90,11 +95,26 @@ class TestResolveProjectRoot:
         got = qa_log._resolve_project_root(str(sub), infos)
         assert got == proj.resolve()
 
-    def test_cwd_with_no_matching_project_falls_back_to_cwd(self, tmp_path):
+    def test_cwd_with_no_matching_project_uses_git_root(self, tmp_path):
+        other = _mark_project(tmp_path / "other")
+        sub = other / "docs" / "학습"
+        sub.mkdir(parents=True)
+        got = qa_log._resolve_project_root(str(sub), [_FakeProjectInfo(path=str(tmp_path / "x"))])
+        assert got == other.resolve()
+
+    def test_cwd_without_project_marker_returns_none(self, tmp_path):
         other = tmp_path / "other"
         other.mkdir()
         got = qa_log._resolve_project_root(str(other), [_FakeProjectInfo(path=str(tmp_path / "x"))])
-        assert got == other.resolve()
+        assert got is None
+
+    def test_cwd_with_existing_memory_root_uses_that_root(self, tmp_path):
+        root = tmp_path / "project"
+        sub = root / "nested"
+        (root / ".hybrid-search").mkdir(parents=True)
+        sub.mkdir()
+        got = qa_log._resolve_project_root(str(sub), None)
+        assert got == root.resolve()
 
     def test_none_cwd_returns_none(self):
         assert qa_log._resolve_project_root(None, None) is None
@@ -141,6 +161,7 @@ class TestRecord:
             assert path is None, f"leaked: {secret!r}"
 
     def test_record_turn_stores_bounded_answer_excerpt(self, tmp_path, enabled):
+        _mark_project(tmp_path)
         answer = "첫 문장입니다. " + ("상세 설명 " * 400)
         path = qa_log.record_turn(
             query="why does memory improve",
@@ -157,6 +178,7 @@ class TestRecord:
         assert len(content) < len(answer) + 1000
 
     def test_sensitive_answer_excerpt_is_omitted(self, tmp_path, enabled):
+        _mark_project(tmp_path)
         path = qa_log.record_turn(
             query="summarize deployment",
             cwd=str(tmp_path),
@@ -170,6 +192,7 @@ class TestRecord:
         assert "sk-proj" not in content
 
     def test_on_writes_file(self, tmp_path, enabled):
+        _mark_project(tmp_path)
         response = _FakeResponse(results=[_FakeResult()])
         path = qa_log.record(
             query="검색 쿼리",
@@ -182,6 +205,7 @@ class TestRecord:
         assert path.parent.parts[-3] == "qa" or path.parent.parents[0].name == "qa"
 
     def test_frontmatter_fields_present(self, tmp_path, enabled):
+        _mark_project(tmp_path)
         response = _FakeResponse(
             results=[_FakeResult(snippet="hello world")],
             query_type="KOREAN_NL",
@@ -219,6 +243,7 @@ class TestRecord:
 
     def test_write_failure_is_swallowed(self, tmp_path, enabled, monkeypatch):
         """A crash during persistence must not propagate."""
+        _mark_project(tmp_path)
         def _boom(*_a, **_kw):
             raise OSError("disk full")
 
@@ -242,6 +267,7 @@ class TestRecord:
         assert path is None
 
     def test_empty_results_still_writes(self, tmp_path, enabled):
+        _mark_project(tmp_path)
         path = qa_log.record(
             query="no hits",
             response=_FakeResponse(results=[]),
@@ -252,6 +278,7 @@ class TestRecord:
         assert "_(no results)_" in path.read_text(encoding="utf-8")
 
     def test_caps_result_count(self, tmp_path, enabled):
+        _mark_project(tmp_path)
         many = [_FakeResult(chunk_id=f"c{i}") for i in range(50)]
         response = _FakeResponse(results=many)
         path = qa_log.record(

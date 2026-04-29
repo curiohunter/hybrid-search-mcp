@@ -10,6 +10,10 @@ from hybrid_search import codex_hooks
 from hybrid_search.memory import hook_runtime, qa_log
 
 
+def _mark_project(root: Path) -> None:
+    (root / ".git").mkdir(exist_ok=True)
+
+
 def _run(payload: dict) -> dict:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -21,6 +25,7 @@ def _run(payload: dict) -> dict:
 
 
 def _write_log(project_root: Path, query: str) -> None:
+    (project_root / ".hybrid-search").mkdir(exist_ok=True)
     resp = SimpleNamespace(
         results=[
             SimpleNamespace(
@@ -44,6 +49,7 @@ def _write_log(project_root: Path, query: str) -> None:
 
 
 def test_codex_hook_session_start_injects_recent_memory(tmp_path: Path) -> None:
+    _mark_project(tmp_path)
     _write_log(tmp_path, "how does parseConfig work")
     out = _run({
         "hook_event_name": "SessionStart",
@@ -55,11 +61,13 @@ def test_codex_hook_session_start_injects_recent_memory(tmp_path: Path) -> None:
 
 
 def test_codex_hook_session_start_skips_clear_source(tmp_path: Path) -> None:
+    _mark_project(tmp_path)
     _write_log(tmp_path, "how does parseConfig work")
     assert _run({"hook_event_name": "SessionStart", "source": "clear", "cwd": str(tmp_path)}) == {}
 
 
 def test_codex_hook_user_prompt_submit_injects_context(tmp_path: Path, monkeypatch) -> None:
+    _mark_project(tmp_path)
     def fake_context(project_root: Path, prompt: str, *, record_prefetch: bool = False) -> str:
         assert project_root == tmp_path.resolve()
         assert "architecture" in prompt
@@ -81,6 +89,7 @@ def test_codex_hook_user_prompt_submit_injects_context(tmp_path: Path, monkeypat
 
 
 def test_codex_hook_user_prompt_submit_skips_precision_prompt(tmp_path: Path, monkeypatch) -> None:
+    _mark_project(tmp_path)
     called = False
 
     def fake_context(*args, **kwargs) -> str:
@@ -94,6 +103,7 @@ def test_codex_hook_user_prompt_submit_skips_precision_prompt(tmp_path: Path, mo
 
 
 def test_codex_hook_stop_records_turn_from_pending_prompt(tmp_path: Path) -> None:
+    _mark_project(tmp_path)
     _run({
         "hook_event_name": "UserPromptSubmit",
         "prompt": "explain payment flow",
@@ -120,6 +130,7 @@ def test_codex_hook_stop_records_turn_from_pending_prompt(tmp_path: Path) -> Non
 
 
 def test_codex_hook_stop_noops_without_answer(tmp_path: Path) -> None:
+    _mark_project(tmp_path)
     _run({
         "hook_event_name": "UserPromptSubmit",
         "prompt": "explain payment flow",
@@ -137,10 +148,12 @@ def test_codex_hook_stop_noops_without_answer(tmp_path: Path) -> None:
 
 
 def test_codex_hook_stop_noop_prints_valid_json(tmp_path: Path) -> None:
+    _mark_project(tmp_path)
     assert _run({"hook_event_name": "Stop", "cwd": str(tmp_path)}) == {}
 
 
 def test_codex_hook_stop_is_only_qa_log_writer(tmp_path: Path) -> None:
+    _mark_project(tmp_path)
     _run({
         "hook_event_name": "UserPromptSubmit",
         "prompt": "explain payment flow",
@@ -151,6 +164,7 @@ def test_codex_hook_stop_is_only_qa_log_writer(tmp_path: Path) -> None:
 
 
 def test_codex_pending_prompt_write_is_atomic(tmp_path: Path) -> None:
+    _mark_project(tmp_path)
     _run({
         "hook_event_name": "UserPromptSubmit",
         "prompt": "explain payment flow",
