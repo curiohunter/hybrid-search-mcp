@@ -48,6 +48,7 @@ def test_iter_and_parse_cards(tmp_path: Path) -> None:
     assert card_path is not None
     parsed = cards.parse_card(card_path)
     assert parsed is not None
+    assert parsed.type == "memory_card"
     assert parsed.source_ids
     assert "src/hybrid_search/codex_hooks.py" in parsed.files
     assert list(cards.iter_cards(tmp_path))[0].path == card_path
@@ -100,3 +101,15 @@ def test_export_and_iter_facts(tmp_path: Path) -> None:
     assert facts
     assert facts[0]["predicate"] == "notes"
     assert "Codex Stop" in str(facts[0]["object"])
+
+
+def test_create_domain_term_from_qa(tmp_path: Path) -> None:
+    qa_path = _write_turn(tmp_path)
+    card_path = cards.create_card_from_qa(tmp_path, qa_path.stem, card_type="domain_term")
+
+    assert card_path is not None
+    text = card_path.read_text(encoding="utf-8")
+    assert "type: domain_term" in text
+    parsed = cards.parse_card(card_path)
+    assert parsed is not None
+    assert parsed.type == "domain_term"

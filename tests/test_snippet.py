@@ -132,3 +132,38 @@ class TestFallbacks:
     def test_context_lines_constant_sane(self):
         assert CONTEXT_LINES >= 3
         assert SNIPPET_MAX_CHARS >= 200
+
+
+class TestMemoryCardSnippets:
+    def test_memory_card_snippet_skips_frontmatter_head_fallback(self):
+        content = """---
+type: memory_card
+query: "dashboard direction"
+summary: "Use compact cards"
+---
+
+## Summary
+
+Use compact cards for memory recall.
+"""
+        snippet = make_snippet(None, content, "missing-token", node_type="memory_card")
+        assert "type: memory_card" not in snippet
+        assert "query:" not in snippet
+        assert "## Summary" in snippet
+        assert "Use compact cards" in snippet
+
+    def test_memory_card_hit_window_does_not_include_frontmatter(self):
+        content = """---
+type: memory_card
+query: "TARGET"
+summary: "frontmatter should not leak"
+---
+
+## Summary
+
+This card contains TARGET in the useful body.
+"""
+        snippet = make_snippet(None, content, "TARGET", node_type="memory_card")
+        assert "type: memory_card" not in snippet
+        assert "query:" not in snippet
+        assert "This card contains TARGET" in snippet

@@ -143,6 +143,7 @@ class HybridResult:
     # the Memory-Layer boost needs age information. Everything else
     # leaves this None and pays no attention to it.
     file_mtime: str | None = None
+    trust_meta: str | None = None
 
 
 @dataclass
@@ -174,6 +175,8 @@ _MEMORY_AMBIENT_BOOST = 0.20
 # pressure.
 _MEMORY_CARD_AMBIENT_BOOST = 0.35
 _MEMORY_CARD_INTENT_BOOST = 1.25
+_DOMAIN_TERM_AMBIENT_BOOST = 0.55
+_DOMAIN_TERM_INTENT_BOOST = 1.40
 
 # Multiplier when the query explicitly recalls ("지난번에", "previously").
 # Strong — the user is asking for the past exchange itself, so a close
@@ -225,6 +228,64 @@ def _parse_mtime_days_ago(mtime: str | None, now: datetime | None = None) -> flo
     return max(0.0, delta)
 
 
+def _frontmatter_value(content: str | None, key: str) -> str | None:
+    if not content:
+        return None
+    text = content.lstrip()
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---", 4)
+    if end < 0:
+        return None
+    for line in text[4:end].splitlines():
+        raw_key, sep, raw_value = line.partition(":")
+        if sep and raw_key.strip() == key:
+            return raw_value.strip().strip('"')
+    return None
+
+
+def _memory_status(result: HybridResult) -> str:
+    return (_frontmatter_value(result.content, "status") or "active").lower()
+
+
+def _trust_meta(
+    *,
+    node_type: str | None,
+    trigger: str | None,
+    confidence: str | None,
+    status: str | None,
+    mtime: str | None,
+    content: str | None,
+) -> str:
+    kind = {
+        "memory_card": "card",
+        "domain_term": "domain_term",
+        "episodic_example": "example",
+        "qa_log": "qa",
+    }.get(node_type or "", "code")
+    parts = [kind]
+    if confidence and kind in {"card", "domain_term", "example"}:
+        parts.append(f"confidence={confidence}")
+    if status and status != "active":
+        parts.append(status)
+    if trigger and kind == "qa":
+        parts.append(trigger)
+    age = _parse_mtime_days_ago(mtime)
+    if age is not None:
+        if age < 1:
+            parts.append("today")
+        else:
+            parts.append(f"{int(age)}d ago")
+    elif kind == "qa" and "## Answer excerpt" not in (content or ""):
+        parts.append("metadata-only")
+    elif kind == "code":
+        parts.append("indexed")
+    return "[" + " - ".join(parts) + "]"
+
+
+_MEMORY_NODE_TYPES = {"qa_log", "memory_card", "domain_term", "episodic_example"}
+
+
 def _apply_memory_boost(
     results: list[HybridResult],
     memory_intent: bool,
@@ -232,23 +293,28 @@ def _apply_memory_boost(
 ) -> list[HybridResult]:
     """Re-rank ``results`` with a half-life decay on memory chunks.
 
-    For qa_log / memory_card chunks:
+    For qa_log / memory_card / domain_term chunks:
         new_score = rrf_score * (1 + boost * 2^(-age_days / half_life))
     Other node types pass through unchanged. Results are re-sorted by
     the adjusted score. No-op when no qa_log chunks are present.
     """
     if not results:
         return results
-    has_memory = any(r.node_type in {"qa_log", "memory_card"} for r in results)
+    has_memory = any(r.node_type in _MEMORY_NODE_TYPES for r in results)
     if not has_memory:
         return results
     now = now or datetime.now(timezone.utc)
     adjusted: list[HybridResult] = []
     for r in results:
-        if r.node_type not in {"qa_log", "memory_card"}:
+        if r.node_type not in _MEMORY_NODE_TYPES:
             adjusted.append(r)
             continue
-        if r.node_type == "memory_card":
+        if _memory_status(r) in {"superseded", "archived"}:
+            adjusted.append(_dc_replace(r, rrf_score=round(r.rrf_score * 0.35, 6)))
+            continue
+        if r.node_type == "domain_term":
+            boost = _DOMAIN_TERM_INTENT_BOOST if memory_intent else _DOMAIN_TERM_AMBIENT_BOOST
+        elif r.node_type == "memory_card":
             boost = _MEMORY_CARD_INTENT_BOOST if memory_intent else _MEMORY_CARD_AMBIENT_BOOST
         else:
             boost = _MEMORY_INTENT_BOOST if memory_intent else _MEMORY_AMBIENT_BOOST
@@ -279,10 +345,13 @@ def _merge_memory_results(
     """
     if not memory_results:
         return chunk_results
-    memory_head = [r for r in memory_results if r.node_type in {"memory_card", "qa_log"}]
+    memory_head = [r for r in memory_results if r.node_type in _MEMORY_NODE_TYPES]
     if not memory_head:
         return chunk_results
-    memory_head.sort(key=lambda r: (0 if r.node_type == "memory_card" else 1, -r.rrf_score))
+    memory_head.sort(key=lambda r: (
+        {"domain_term": 0, "memory_card": 1, "episodic_example": 2, "qa_log": 3}.get(r.node_type or "", 9),
+        -r.rrf_score,
+    ))
     head_limit = min(3, max(1, limit))
     merged: list[HybridResult] = []
     seen: set[str] = set()
@@ -394,7 +463,7 @@ class SearchOrchestrator:
         memory_results: list[HybridResult] = []
         if memory_intent and node_types is None:
             memory_depth = max(retrieval_depth, 50)
-            memory_node_types = ["memory_card", "qa_log"]
+            memory_node_types = ["domain_term", "memory_card", "episodic_example", "qa_log"]
             if len(project_infos) == 1:
                 mem_bm25_ids, mem_vector_ids, _, _, _ = self._search_single(
                     project_infos[0], query, query_vector, memory_depth,
@@ -851,9 +920,25 @@ class SearchOrchestrator:
                     # for the 99% of chunks that don't need it.
                     mtime = (
                         file_rec.file_mtime
-                        if (file_rec and chunk.node_type in {"qa_log", "memory_card"})
+                        if (file_rec and chunk.node_type in _MEMORY_NODE_TYPES)
                         else None
                     )
+                    trust_meta = _trust_meta(
+                        node_type=chunk.node_type,
+                        trigger=_frontmatter_value(chunk.content, "trigger"),
+                        confidence=_frontmatter_value(chunk.content, "confidence"),
+                        status=_frontmatter_value(chunk.content, "status"),
+                        mtime=mtime,
+                        content=chunk.content,
+                    )
+                    snippet = make_snippet(
+                        chunk.docstring,
+                        chunk.content,
+                        query,
+                        node_type=chunk.node_type,
+                    )
+                    if trust_meta and snippet:
+                        snippet = f"{trust_meta}\n{snippet}"
                     results.append(HybridResult(
                         chunk_id=fr.chunk_id,
                         rrf_score=round(fr.rrf_score, 6),
@@ -867,8 +952,9 @@ class SearchOrchestrator:
                         start_line=chunk.start_line,
                         end_line=chunk.end_line,
                         content=chunk.content,
-                        snippet=make_snippet(chunk.docstring, chunk.content, query),
+                        snippet=snippet,
                         file_mtime=mtime,
+                        trust_meta=trust_meta,
                     ))
                     break  # Found the chunk, no need to check other projects
         finally:

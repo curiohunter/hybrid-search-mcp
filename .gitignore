@@ -11,22 +11,7 @@ build/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
-.hybrid-search/wiki/_synthesis_input/
-.hybrid-search/wiki/_synthesis_output/
-.hybrid-search/wiki/STALE.md
-.hybrid-search/.gaps-shown
-.hybrid-search/.reindex.lock
 
-# hybrid-search-mcp (auto-added — wiki is machine-local)
-.hybrid-search/wiki-gaps.*
-.hybrid-search/coverage.json
-
-# hybrid-search-mcp (auto-added — wiki is machine-local)
-.hybrid-search/wiki/
-
-# hybrid-search-mcp (auto-added — wiki is machine-local)
-.hybrid-search/needs_synthesis
-
-# hybrid-search-mcp (auto-added — wiki is machine-local)
-.hybrid-search/qa/
-.hybrid-search/runtime/
+# Machine-local runtime state — never commit
+.hybrid-search/
+.codex/

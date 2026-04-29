@@ -42,8 +42,13 @@ def make_snippet(
     docstring: str | None,
     content: str | None,
     query: str | None = None,
+    *,
+    node_type: str | None = None,
 ) -> str:
     """Build a snippet, preferring a hit-centered window over head-fallback."""
+    if node_type == "memory_card":
+        content = _strip_frontmatter(content)
+
     if content:
         tokens = _query_tokens(query)
         if tokens:
@@ -64,3 +69,17 @@ def make_snippet(
         return "\n".join(lines[:HEAD_FALLBACK_LINES])[:SNIPPET_MAX_CHARS]
 
     return ""
+
+
+def _strip_frontmatter(content: str | None) -> str | None:
+    """Drop YAML frontmatter from memory-card markdown before previewing."""
+    if not content:
+        return content
+    text = content.lstrip()
+    if not text.startswith("---\n"):
+        return content
+    end = text.find("\n---", 4)
+    if end < 0:
+        return content
+    rest = text[end + len("\n---"):]
+    return rest.lstrip("\n")

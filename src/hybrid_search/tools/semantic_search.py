@@ -8,6 +8,7 @@ from hybrid_search.config import Config
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.project import ProjectRegistry, project_hash
 from hybrid_search.search.snippet import make_snippet
+from hybrid_search.search.orchestrator import _frontmatter_value, _trust_meta
 from hybrid_search.search.vector import VectorEngine
 from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
@@ -80,6 +81,23 @@ def handle_semantic_search(
                 file_rec = db.get_file(chunk.file_id)
                 file_path = file_rec.relative_path if file_rec else chunk.file_id
 
+                mtime = file_rec.file_mtime if file_rec else None
+                trust_meta = _trust_meta(
+                    node_type=chunk.node_type,
+                    trigger=_frontmatter_value(chunk.content, "trigger"),
+                    confidence=_frontmatter_value(chunk.content, "confidence"),
+                    status=_frontmatter_value(chunk.content, "status"),
+                    mtime=mtime,
+                    content=chunk.content,
+                )
+                snippet = make_snippet(
+                    chunk.docstring,
+                    chunk.content,
+                    query,
+                    node_type=chunk.node_type,
+                )
+                if trust_meta and snippet:
+                    snippet = f"{trust_meta}\n{snippet}"
                 all_results.append({
                     "chunk_id": chunk.id,
                     "similarity": round(vr.score, 4),
@@ -91,7 +109,8 @@ def handle_semantic_search(
                     "start_line": chunk.start_line,
                     "end_line": chunk.end_line,
                     "content": chunk.content,
-                    "snippet": make_snippet(chunk.docstring, chunk.content, query),
+                    "snippet": snippet,
+                    "trust_meta": trust_meta,
                 })
         finally:
             db.close()
@@ -137,5 +156,3 @@ def _build_filter(
         filtered_ids.add(chunk.id)
 
     return filtered_ids if (file_pattern or node_types) else None
-
-
