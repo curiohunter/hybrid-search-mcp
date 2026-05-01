@@ -416,8 +416,10 @@ class TestUserPromptSubmitHook:
         parsed = json.loads(buf.getvalue())
         assert parsed["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
-        assert "ledger" in ctx
         assert "docs/features/ledger.md" in ctx
+        assert "services/ledger/write.ts" in ctx
+        assert "Call hybrid_search for details" in ctx
+        assert len(ctx) <= 360
 
     def test_silent_on_non_exploratory(self, project_root: Path, monkeypatch) -> None:
         called = {"n": 0}
