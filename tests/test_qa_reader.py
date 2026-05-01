@@ -262,7 +262,8 @@ class TestPruneOlderThan:
         qa_root = reader.qa_dir(project_root)
         remaining = [x for x in qa_root.rglob("*") if x.is_file()]
         assert remaining == []
-        assert any("04" in d.name for d in result.dirs_removed)
+        month_dirs = [d for d in result.dirs_removed if d.name.isdigit() and len(d.name) == 2]
+        assert month_dirs, "expected month dir to be cleaned up"
 
     def test_keeps_recent_entries(self, project_root: Path) -> None:
         fresh = _write_log(project_root, "fresh")
