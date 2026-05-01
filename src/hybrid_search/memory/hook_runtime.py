@@ -6,7 +6,9 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-_MAX_CONTEXT_CHARS = 800
+_MAX_CONTEXT_CHARS = 360
+_SESSION_TOPIC_LIMIT = 3
+_PREFETCH_RESULT_LIMIT = 3
 
 _EXPLORATORY_TOKENS_KO = (
     "어떤", "어떻게", "무엇", "무슨", "왜", "어디",
@@ -77,22 +79,23 @@ def classify_prompt_for_memory(prompt: str) -> bool:
 def _format_session_start_context(indexes: list) -> str:
     if not indexes:
         return ""
+    recent = []
+    for idx in indexes[:_SESSION_TOPIC_LIMIT]:
+        q = " ".join((idx.query or "").split())
+        if len(q) > 42:
+            q = q[:39] + "..."
+        if q:
+            recent.append(q)
     lines = [
-        f"[hybrid-search memory] You have {len(indexes)} recent past Q&A in this project.",
-        "Before running Grep/Read for information you might have asked about,",
-        "call `mcp__hybrid-search__hybrid_search` — it searches past Q&A alongside code/docs.",
-        "Recent topics:",
+        f"[hybrid-search memory] {len(indexes)} past turns available.",
+        "Use mcp__hybrid-search__hybrid_search for recall/context.",
     ]
-    for idx in indexes[:20]:
-        ts = idx.timestamp.date().isoformat() if idx.timestamp else "?"
-        q = (idx.query or "").strip()
-        if len(q) > 80:
-            q = q[:77] + "…"
-        lines.append(f"- {ts} — {q}")
+    if recent:
+        lines.append("Recent: " + " | ".join(recent))
     return "\n".join(lines)
 
 
-def build_session_context(project_root: Path, *, limit: int = 20) -> str:
+def build_session_context(project_root: Path, *, limit: int = _SESSION_TOPIC_LIMIT) -> str:
     """Build recent-memory context for a session-start hook."""
     try:
         from hybrid_search.memory import reader
@@ -108,20 +111,14 @@ def _format_user_prompt_context(response) -> str:
     if not results:
         return ""
     lines = [
-        f"[hybrid-search pre-fetch] {len(results)} relevant result(s) for your prompt:",
+        f"[hybrid-search pre-fetch] {len(results)} hits. Top paths:",
     ]
-    for i, r in enumerate(results[:8], start=1):
+    for i, r in enumerate(results[:_PREFETCH_RESULT_LIMIT], start=1):
         fp = getattr(r, "file_path", "?") or "?"
         start = getattr(r, "start_line", None)
-        end = getattr(r, "end_line", None)
-        name = getattr(r, "name", None) or getattr(r, "qualified_name", None) or ""
-        loc = f":{start}-{end}" if start and end else ""
-        tag = f" — {name}" if name else ""
-        lines.append(f"{i}. `{fp}{loc}`{tag}")
-    lines.append(
-        "Consider these before running raw Grep/Read. "
-        "Call mcp__hybrid-search__hybrid_search for more depth if needed."
-    )
+        loc = f":{start}" if start else ""
+        lines.append(f"{i}. `{fp}{loc}`")
+    lines.append("Call hybrid_search for details if needed.")
     return "\n".join(lines)
 
 
