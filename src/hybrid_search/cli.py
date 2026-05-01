@@ -3923,6 +3923,85 @@ def cmd_index(args: argparse.Namespace) -> None:
     cmd_reindex(args)
 
 
+def cmd_maintain(args: argparse.Namespace) -> None:
+    """Codex-friendly maintenance wrapper for index + wiki synthesis lifecycle.
+
+    Claude Code has a `/maintain` skill that can spawn synthesis agents. Codex
+    does not have that skill surface, so this CLI command performs the
+    deterministic parts and gives an explicit handoff when LLM-authored
+    synthesis files are still needed.
+    """
+    project_root = Path(args.cwd).resolve()
+    wiki_dir = project_root / ".hybrid-search" / "wiki"
+    input_dir = wiki_dir / "_synthesis_input"
+    output_dir = wiki_dir / "_synthesis_output"
+
+    print("Hybrid Search Maintain")
+    print()
+    print(f"Project: {project_root}")
+    print()
+    print("Step 1: reindex + synthesis prepare")
+    re_args = argparse.Namespace(
+        cwd=str(project_root),
+        force=args.force_reindex,
+        git_delta=False,
+        wiki=False,
+        wiki_scope="full",
+        synthesize=True,
+    )
+    cmd_reindex(re_args)
+
+    output_files = _md_files(output_dir)
+    if output_files:
+        print()
+        print(f"Step 2: finalize {len(output_files)} synthesis output file(s)")
+        fin_args = argparse.Namespace(
+            cwd=str(project_root),
+            module=None,
+            dry_run=False,
+            finalize=True,
+        )
+        cmd_synthesize_wiki(fin_args)
+    else:
+        input_files = _md_files(input_dir)
+        if input_files:
+            print()
+            print("Step 2: synthesis input is ready")
+            print(f"  Input dir:  {input_dir}")
+            print(f"  Output dir: {output_dir}")
+            print(f"  Pending:    {len(input_files)} module(s)")
+            for path in input_files[:10]:
+                print(f"    - {path.name}")
+            if len(input_files) > 10:
+                print(f"    ... and {len(input_files) - 10} more")
+            print()
+            print("Next:")
+            print("  Write one output markdown file per input file, then run:")
+            print(f"  hybrid-search-mcp maintain --cwd {project_root}")
+            if not args.keep_going:
+                return
+        else:
+            print()
+            print("Step 2: no synthesis input/output pending")
+
+    print()
+    print("Step 3: verify synthesis")
+    verify_args = argparse.Namespace(cwd=str(project_root), json=False, fix=True)
+    cmd_verify_synthesis(verify_args)
+
+    if not args.no_status:
+        print()
+        print("Step 4: status")
+        status_args = argparse.Namespace(cwd=str(project_root))
+        cmd_status(status_args)
+
+
+def _md_files(path: Path) -> list[Path]:
+    if not path.is_dir():
+        return []
+    return sorted(p for p in path.glob("*.md") if p.is_file())
+
+
 def cmd_serve(_args: argparse.Namespace) -> None:
     """Start MCP server over stdio (for Claude Code / MCP clients)."""
     import asyncio
@@ -4426,6 +4505,20 @@ def main() -> None:
     p_doctor.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
     p_doctor.add_argument("--project", help="Project name (overrides --cwd)")
 
+    p_maintain = sub.add_parser("maintain", help="Codex-friendly index/wiki maintenance")
+    p_maintain.add_argument("--cwd", default=".", help="Project directory")
+    p_maintain.add_argument(
+        "--force-reindex",
+        action="store_true",
+        help="Force full reindex instead of normal scan",
+    )
+    p_maintain.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="Continue to verify/status even when synthesis input is pending",
+    )
+    p_maintain.add_argument("--no-status", action="store_true", help="Skip final status output")
+
     p_reindex = sub.add_parser("reindex", help="Delta reindex a project")
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
     p_reindex.add_argument("--force", action="store_true", help="Force full reindex")
@@ -4782,6 +4875,8 @@ def main() -> None:
         cmd_setup(args)
     elif args.command == "doctor":
         cmd_doctor(args)
+    elif args.command == "maintain":
+        cmd_maintain(args)
     elif args.command == "reindex":
         cmd_reindex(args)
     elif args.command == "status":
