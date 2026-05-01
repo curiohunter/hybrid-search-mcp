@@ -28,6 +28,7 @@ from hybrid_search.cli import (
     _write_memory_report,
     _write_needs_synthesis_flag,
     cmd_install_hook,
+    cmd_maintain,
     cmd_memory_refresh,
 )
 from hybrid_search.memory import qa_log
@@ -541,6 +542,54 @@ class TestMemoryProductUx:
         monkeypatch.setattr("hybrid_search.cli.ProjectRegistry", _Registry)
 
         assert _memory_cards_indexed(tmp_path) is True
+
+
+class TestMaintainCommand:
+    def test_stops_with_synthesis_guidance_when_input_pending(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        input_dir = tmp_path / ".hybrid-search" / "wiki" / "_synthesis_input"
+        input_dir.mkdir(parents=True)
+        (input_dir / "module-a.md").write_text("context", encoding="utf-8")
+        calls: list[str] = []
+
+        monkeypatch.setattr("hybrid_search.cli.cmd_reindex", lambda _args: calls.append("reindex"))
+        monkeypatch.setattr("hybrid_search.cli.cmd_verify_synthesis", lambda _args: calls.append("verify"))
+        monkeypatch.setattr("hybrid_search.cli.cmd_status", lambda _args: calls.append("status"))
+
+        cmd_maintain(argparse.Namespace(
+            cwd=str(tmp_path),
+            force_reindex=False,
+            keep_going=False,
+            no_status=False,
+        ))
+
+        out = capsys.readouterr().out
+        assert calls == ["reindex"]
+        assert "synthesis input is ready" in out
+        assert "module-a.md" in out
+
+    def test_finalizes_existing_output_then_verifies_and_statuses(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        output_dir = tmp_path / ".hybrid-search" / "wiki" / "_synthesis_output"
+        output_dir.mkdir(parents=True)
+        (output_dir / "module-a.md").write_text("synthesis", encoding="utf-8")
+        calls: list[str] = []
+
+        monkeypatch.setattr("hybrid_search.cli.cmd_reindex", lambda _args: calls.append("reindex"))
+        monkeypatch.setattr("hybrid_search.cli.cmd_synthesize_wiki", lambda _args: calls.append("finalize"))
+        monkeypatch.setattr("hybrid_search.cli.cmd_verify_synthesis", lambda _args: calls.append("verify"))
+        monkeypatch.setattr("hybrid_search.cli.cmd_status", lambda _args: calls.append("status"))
+
+        cmd_maintain(argparse.Namespace(
+            cwd=str(tmp_path),
+            force_reindex=False,
+            keep_going=False,
+            no_status=False,
+        ))
+
+        assert calls == ["reindex", "finalize", "verify", "status"]
 
 
 class TestPostCheckoutScriptGates:
