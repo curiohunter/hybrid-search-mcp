@@ -57,7 +57,10 @@ def test_codex_hook_session_start_injects_recent_memory(tmp_path: Path) -> None:
         "cwd": str(tmp_path),
     })
     assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
-    assert "parseConfig" in out["hookSpecificOutput"]["additionalContext"]
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "past turns available" in ctx
+    assert "parseConfig" in ctx
+    assert len(ctx) <= 360
 
 
 def test_codex_hook_session_start_skips_clear_source(tmp_path: Path) -> None:
