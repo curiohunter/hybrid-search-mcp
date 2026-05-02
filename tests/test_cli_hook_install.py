@@ -465,6 +465,26 @@ class TestMemoryProductUx:
         assert "1 completed-turn logs" in out
         assert "hybrid-search-mcp memory refresh --cwd ." in out
 
+    def test_doctor_prints_excluded_paths_summary(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "manual.skip").write_text("x")
+        health = _memory_health(tmp_path)
+        health["excluded_paths_summary"] = {
+            "extension": 2,
+            "oversize_md": 1,
+            "manual": 3,
+        }
+
+        _print_doctor_report(health)
+        out = capsys.readouterr().out
+
+        assert "Excluded paths summary:" in out
+        assert "extension: 2" in out
+        assert "oversize_md: 1" in out
+        assert "manual: 3" in out
+
     def test_memory_refresh_can_run_with_incomplete_hooks_when_allowed(
         self, tmp_path: Path, monkeypatch, capsys,
     ) -> None:

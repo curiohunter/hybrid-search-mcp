@@ -30,6 +30,10 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   `memory procedural review`, and `memory facts export/list` commands create
   cards from qa logs, write reviewed procedural candidates, and export
   lightweight temporal facts to `.hybrid-search/memory/facts.jsonl`.
+- **Router Phase 1 scanner noise filter**. Reindex now skips common content
+  binaries/media/archives and oversized Markdown under content roots by
+  default, with `[scanner.exclude]` overrides, `reindex --include-content`,
+  and a doctor excluded-paths summary.
 
 ### Changed
 
