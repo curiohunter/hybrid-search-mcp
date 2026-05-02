@@ -8,6 +8,7 @@ from hybrid_search.index.scanner import (
     _is_changed,
     _is_sensitive_file,
     compute_file_hash,
+    excluded_paths_summary,
     get_changed_files_from_git,
     parse_git_diff_name_status,
     scan_project,
@@ -344,6 +345,113 @@ class TestScanProjectSkipsSensitive:
         assert "service-account.json" not in names
 
 
+class TestContentNoiseFilter:
+    """Phase 1 router plan — content-heavy corpus noise is skipped by default."""
+
+    def test_binary_content_extensions_are_skipped(self, tmp_path: Path) -> None:
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "app.py").write_text("print('x')\n")
+        (project_root / "guide.pdf").write_bytes(b"%PDF-1.7")
+        (project_root / "book.epub").write_bytes(b"epub")
+
+        cfg = IndexingConfig(supported_extensions=(".py", ".pdf", ".epub"))
+        result = scan_project(project_root, "p1", db, cfg)
+        names = {p.name for p in result.added}
+
+        assert "app.py" in names
+        assert "guide.pdf" not in names
+        assert "book.epub" not in names
+
+    def test_oversized_content_markdown_skipped_only_under_content_roots(
+        self, tmp_path: Path,
+    ) -> None:
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        learning = project_root / "docs" / "learning"
+        plans = project_root / "docs" / "plans"
+        learning.mkdir(parents=True)
+        plans.mkdir(parents=True)
+        large = "x" * 32
+        (learning / "book.md").write_text(large)
+        (plans / "design.md").write_text(large)
+
+        cfg = IndexingConfig(content_md_max_bytes=8)
+        result = scan_project(project_root, "p1", db, cfg)
+        rels = {str(p.relative_to(project_root)) for p in result.added}
+
+        assert "docs/learning/book.md" not in rels
+        assert "docs/plans/design.md" in rels
+
+    def test_oversized_markdown_skipped_under_nested_content_root(
+        self, tmp_path: Path,
+    ) -> None:
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        learning = project_root / "docs" / "valueinmath_docs" / "학습"
+        analysis = project_root / "docs" / "valueinmath_docs" / "분석"
+        learning.mkdir(parents=True)
+        analysis.mkdir(parents=True)
+        (learning / "worksheet.md").write_text("x" * 32)
+        (analysis / "report.md").write_text("x" * 32)
+
+        cfg = IndexingConfig(
+            content_md_max_bytes=8,
+            content_roots=("학습", "분석"),
+        )
+        result = scan_project(project_root, "p1", db, cfg)
+
+        assert [p.name for p in result.added] == []
+
+    def test_allow_paths_override_content_filter(self, tmp_path: Path) -> None:
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        learning = project_root / "docs" / "learning"
+        learning.mkdir(parents=True)
+        (learning / "keep.md").write_text("x" * 32)
+
+        cfg = IndexingConfig(
+            content_md_max_bytes=8,
+            content_allow_paths=("docs/learning/keep.md",),
+        )
+        result = scan_project(project_root, "p1", db, cfg)
+
+        assert [p.name for p in result.added] == ["keep.md"]
+
+    def test_include_content_disables_content_filter(self, tmp_path: Path) -> None:
+        db = StoreDB(tmp_path / "store.db")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "guide.pdf").write_bytes(b"%PDF-1.7")
+
+        cfg = IndexingConfig(supported_extensions=(".pdf",), include_content=True)
+        result = scan_project(project_root, "p1", db, cfg)
+
+        assert [p.name for p in result.added] == ["guide.pdf"]
+
+    def test_excluded_paths_summary_counts_reasons(self, tmp_path: Path) -> None:
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".hybrid-search-ignore").write_text("generated/\n")
+        (project_root / "guide.pdf").write_bytes(b"%PDF-1.7")
+        learning = project_root / "docs" / "learning"
+        learning.mkdir(parents=True)
+        (learning / "book.md").write_text("x" * 32)
+        generated = project_root / "generated"
+        generated.mkdir()
+        (generated / "schema.py").write_text("# generated\n")
+
+        summary = excluded_paths_summary(
+            project_root,
+            IndexingConfig(content_md_max_bytes=8),
+        )
+
+        assert summary.counts["extension"] == 1
+        assert summary.counts["oversize_md"] == 1
+        assert summary.counts["manual"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Q10 — .hybrid-search-ignore + upward walk to .git boundary
 # ---------------------------------------------------------------------------
@@ -584,3 +692,13 @@ class TestIndexQALogsOptIn:
             changed_paths=[rel],
         )
         assert [p.name for p in off.added] == []
+
+    def test_qa_archive_is_not_indexed(self, tmp_path: Path) -> None:
+        project_root, db = self._seed(tmp_path)
+        archive = project_root / ".hybrid-search" / "qa-archive" / "2026" / "04"
+        archive.mkdir(parents=True)
+        (archive / "21-000002-archived.md").write_text("# archived\n")
+
+        result = scan_project(project_root, "p1", db, IndexingConfig())
+
+        assert "21-000002-archived.md" not in [p.name for p in result.added]
