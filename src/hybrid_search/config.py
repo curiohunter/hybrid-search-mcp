@@ -18,6 +18,8 @@ DEFAULT_EXCLUDE_PATTERNS = [
     "dist",
     "build",
     ".venv",
+    ".hybrid-search/qa-archive/",
+    ".hybrid-search/qa-archive/**",
     "*.lock",
 ]
 
@@ -26,6 +28,16 @@ DEFAULT_SUPPORTED_EXTENSIONS = [
     ".rb", ".java", ".c", ".cpp", ".h", ".hpp",
     ".swift", ".kt", ".sql", ".css", ".scss",
     ".md", ".json", ".yaml", ".yml", ".toml",
+]
+
+DEFAULT_CONTENT_EXCLUDE_EXTENSIONS = [
+    ".pdf", ".epub", ".docx", ".pptx", ".xlsx", ".zip",
+    ".tar", ".gz", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".mp3", ".mp4",
+]
+
+DEFAULT_CONTENT_ROOTS = [
+    "docs/learning", "학습", "자료", "materials", "book", "책",
 ]
 
 # Known model token limits for auto-detection
@@ -90,6 +102,13 @@ class IndexingConfig:
     # ``qa_log.is_sensitive_query`` before they ever hit disk, and users
     # who want their Q&A off-disk set ``HYBRID_SEARCH_QA_LOG=0``.
     index_qa_logs: bool = True
+    content_exclude_extensions: tuple[str, ...] = tuple(
+        DEFAULT_CONTENT_EXCLUDE_EXTENSIONS
+    )
+    content_allow_paths: tuple[str, ...] = ()
+    content_md_max_bytes: int = 262144
+    content_roots: tuple[str, ...] = tuple(DEFAULT_CONTENT_ROOTS)
+    include_content: bool = False
 
 
 @dataclass(frozen=True)
@@ -217,6 +236,7 @@ def load_config(config_path: Path | None = None) -> Config:
     )
 
     idx_raw = raw.get("indexing", {})
+    scanner_exclude_raw = raw.get("scanner", {}).get("exclude", {})
     env_index_qa = os.environ.get("HYBRID_SEARCH_INDEX_QA", "").strip().lower()
     indexing = IndexingConfig(
         exclude_patterns=tuple(idx_raw.get("exclude_patterns", DEFAULT_EXCLUDE_PATTERNS)),
@@ -233,6 +253,17 @@ def load_config(config_path: Path | None = None) -> Config:
             if env_index_qa
             else bool(idx_raw.get("index_qa_logs", True))
         ),
+        content_exclude_extensions=tuple(
+            dict.fromkeys(
+                [
+                    *DEFAULT_CONTENT_EXCLUDE_EXTENSIONS,
+                    *scanner_exclude_raw.get("extensions", []),
+                ]
+            )
+        ),
+        content_allow_paths=tuple(scanner_exclude_raw.get("allow_paths", [])),
+        content_md_max_bytes=int(scanner_exclude_raw.get("content_md_max_bytes", 262144)),
+        content_roots=tuple(scanner_exclude_raw.get("content_roots", DEFAULT_CONTENT_ROOTS)),
     )
 
     wiki_raw = raw.get("wiki", {})
@@ -307,7 +338,9 @@ authority_alpha = 0.3
 [indexing]
 exclude_patterns = [
     "node_modules", ".git", "__pycache__", ".next",
-    "dist", "build", ".venv", "*.lock"
+    "dist", "build", ".venv",
+    ".hybrid-search/qa-archive/", ".hybrid-search/qa-archive/**",
+    "*.lock"
 ]
 max_file_size_kb = 512
 supported_extensions = [
@@ -316,6 +349,15 @@ supported_extensions = [
     ".swift", ".kt", ".sql", ".css", ".scss",
     ".md", ".json", ".yaml", ".yml", ".toml"
 ]
+
+[scanner.exclude]
+# Extends the built-in content/noise list (.pdf, .epub, media, archives, Office files).
+extensions = []
+# Paths listed here bypass the content/noise filter.
+allow_paths = []
+# Large markdown files are skipped only under these content roots.
+content_md_max_bytes = 262144
+content_roots = ["docs/learning", "학습", "자료", "materials", "book", "책"]
 
 [memory]
 # Memory Layer retention policy. Two ceilings, either can trigger prune.
