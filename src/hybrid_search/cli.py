@@ -15,6 +15,7 @@ import os
 import sys
 import time
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from hybrid_search.index.dag import generate_all_wiki_pages
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.pipeline import IndexingPipeline
 from hybrid_search.index.scanner import (
+    excluded_paths_summary,
     get_changed_files_from_git,
     parse_git_diff_name_status,
 )
@@ -186,6 +188,11 @@ def _write_gap_flag(cwd: str, files_added: int) -> None:
 def cmd_reindex(args: argparse.Namespace) -> None:
     """Delta reindex the project at cwd."""
     config = load_config()
+    if getattr(args, "include_content", False):
+        config = replace(
+            config,
+            indexing=replace(config.indexing, include_content=True),
+        )
     registry = ProjectRegistry(config.global_dir)
 
     cwd = str(Path(args.cwd).resolve())
@@ -892,6 +899,11 @@ def _memory_health(project_path: Path) -> dict[str, object]:
     cards_indexed = _memory_cards_indexed(project_path)
     routing_present = _CLAUDE_MD_MARKER in _safe_read_text(project_path / "CLAUDE.md")
     agents_present = "<!-- hybrid-search-mcp:codex-routing -->" in _safe_read_text(project_path / "AGENTS.md")
+    try:
+        config = load_config()
+        excluded_summary = excluded_paths_summary(project_path, config.indexing).counts
+    except Exception:
+        excluded_summary = {}
 
     return {
         "project_path": project_path,
@@ -913,6 +925,7 @@ def _memory_health(project_path: Path) -> dict[str, object]:
         "last_compaction": last_compaction,
         "routing_present": routing_present,
         "agents_present": agents_present,
+        "excluded_paths_summary": excluded_summary,
         "recent_cards": card_items[:8],
         "recent_qa": qa_indexes[:8],
     }
@@ -1031,6 +1044,12 @@ def _print_doctor_report(health: dict[str, object]) -> None:
     print(f"Indexed cards: {indexed}")
     last = health["last_compaction"]
     print(f"Last compaction: {last.isoformat() if isinstance(last, datetime) else 'never'}")
+    excluded = health.get("excluded_paths_summary") or {}
+    if isinstance(excluded, dict):
+        print("Excluded paths summary:")
+        print(f"  extension: {int(excluded.get('extension', 0))}")
+        print(f"  oversize_md: {int(excluded.get('oversize_md', 0))}")
+        print(f"  manual: {int(excluded.get('manual', 0))}")
 
     fixes: list[str] = []
     if health["claude_count"] != 4 or not health["codex_ready"]:
@@ -4523,6 +4542,11 @@ def main() -> None:
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
     p_reindex.add_argument("--force", action="store_true", help="Force full reindex")
     p_reindex.add_argument("--git-delta", action="store_true", help="Use git diff for changed-file detection with full-scan fallback")
+    p_reindex.add_argument(
+        "--include-content",
+        action="store_true",
+        help="Include content files normally skipped as retrieval noise",
+    )
     p_reindex.add_argument("--wiki", action="store_true", help="Auto-generate wiki after reindex")
     p_reindex.add_argument(
         "--wiki-scope",

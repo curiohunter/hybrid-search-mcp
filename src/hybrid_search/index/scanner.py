@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,6 +79,11 @@ class ScanResult:
     added: list[Path]
     changed: list[Path]
     deleted: list[str]  # relative paths of deleted files
+
+
+@dataclass(frozen=True)
+class ExcludedPathsSummary:
+    counts: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -369,6 +375,9 @@ def _walk_files(
             if ignore_spec.match_file(rel_path):
                 continue
 
+            if _content_exclusion_reason(file_path, rel_path, config) is not None:
+                continue
+
             # Check extension
             if file_path.suffix.lower() not in extensions:
                 continue
@@ -410,6 +419,9 @@ def _is_indexable_path(
     if ignore_spec.match_file(rel_path):
         return False
 
+    if _content_exclusion_reason(file_path, rel_path, config) is not None:
+        return False
+
     if file_path.suffix.lower() not in set(config.supported_extensions):
         return False
 
@@ -437,6 +449,96 @@ def _is_indexable_path(
         return False
 
     return True
+
+
+def excluded_paths_summary(project_root: Path, config: IndexingConfig) -> ExcludedPathsSummary:
+    """Return content/noise exclusion counts for doctor output.
+
+    Counts are intentionally coarse: ``manual`` covers ignore files/configured
+    ignore patterns, while ``extension`` and ``oversize_md`` cover the Phase 1
+    content-noise rules.
+    """
+    project_root = project_root.resolve()
+    ignore_spec = _build_ignore_spec(project_root, config)
+    counts: Counter[str] = Counter()
+
+    memory_opt_in = config.index_qa_logs
+
+    def _keep_dir(rel_dir: Path, name: str) -> bool:
+        rel = str(rel_dir / name) + "/"
+        if name.startswith("."):
+            if not (memory_opt_in and rel_dir == Path(".") and name == ".hybrid-search"):
+                counts["manual"] += 1
+                return False
+        if ignore_spec.match_file(rel):
+            counts["manual"] += 1
+            return False
+        return True
+
+    for dirpath, dirnames, filenames in os.walk(project_root, followlinks=False):
+        dir_path = Path(dirpath)
+        rel_dir = dir_path.relative_to(project_root)
+        dirnames[:] = [d for d in dirnames if _keep_dir(rel_dir, d)]
+
+        for fname in filenames:
+            file_path = dir_path / fname
+            rel_path = str(file_path.relative_to(project_root))
+            if ignore_spec.match_file(rel_path):
+                counts["manual"] += 1
+                continue
+            reason = _content_exclusion_reason(file_path, rel_path, config)
+            if reason is not None:
+                counts[reason] += 1
+
+    return ExcludedPathsSummary(counts=dict(counts))
+
+
+def _content_exclusion_reason(
+    file_path: Path,
+    rel_path: str,
+    config: IndexingConfig,
+) -> str | None:
+    if config.include_content:
+        return None
+
+    rel_norm = rel_path.replace(os.sep, "/")
+    if _is_content_allow_path(rel_norm, config.content_allow_paths):
+        return None
+
+    if file_path.suffix.lower() in set(config.content_exclude_extensions):
+        return "extension"
+
+    if file_path.suffix.lower() == ".md" and _under_content_root(rel_norm, config.content_roots):
+        try:
+            if file_path.stat().st_size > config.content_md_max_bytes:
+                return "oversize_md"
+        except OSError:
+            return "manual"
+
+    return None
+
+
+def _is_content_allow_path(rel_path: str, allow_paths: tuple[str, ...]) -> bool:
+    rel = rel_path.strip("/")
+    for raw in allow_paths:
+        allowed = raw.replace("\\", "/").strip("/")
+        if allowed and (rel == allowed or rel.startswith(allowed.rstrip("/") + "/")):
+            return True
+    return False
+
+
+def _under_content_root(rel_path: str, content_roots: tuple[str, ...]) -> bool:
+    rel = rel_path.strip("/")
+    segments = rel.split("/")
+    for raw in content_roots:
+        root = raw.replace("\\", "/").strip("/")
+        if not root:
+            continue
+        if "/" in root and (rel == root or rel.startswith(root + "/")):
+            return True
+        if "/" not in root and root in segments[:-1]:
+            return True
+    return False
 
 
 def _collect_hybrid_search_ignore_patterns(project_root: Path) -> list[str]:
@@ -509,6 +611,8 @@ def _build_ignore_spec(
             "!.hybrid-search/memory/",
             "!.hybrid-search/memory/cards/",
             "!.hybrid-search/memory/cards/**",
+            ".hybrid-search/qa-archive/",
+            ".hybrid-search/qa-archive/**",
         ])
 
     return pathspec.PathSpec.from_lines("gitignore", patterns)

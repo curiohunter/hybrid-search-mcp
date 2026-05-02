@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from hybrid_search.config import (
+    DEFAULT_CONTENT_EXCLUDE_EXTENSIONS,
     DEFAULT_DATA_DIR,
     DEFAULT_EXCLUDE_PATTERNS,
     DEFAULT_SUPPORTED_EXTENSIONS,
@@ -77,6 +78,8 @@ class TestIndexingConfig:
         cfg = IndexingConfig()
         assert "node_modules" in cfg.exclude_patterns
         assert ".git" in cfg.exclude_patterns
+        assert ".hybrid-search/qa-archive/" in cfg.exclude_patterns
+        assert ".hybrid-search/qa-archive/**" in cfg.exclude_patterns
         assert "*.lock" in cfg.exclude_patterns
 
     def test_default_supported_extensions(self) -> None:
@@ -88,6 +91,14 @@ class TestIndexingConfig:
     def test_max_file_size(self) -> None:
         cfg = IndexingConfig()
         assert cfg.max_file_size_kb == 512
+
+    def test_default_content_noise_filter(self) -> None:
+        cfg = IndexingConfig()
+        assert ".pdf" in cfg.content_exclude_extensions
+        assert ".epub" in cfg.content_exclude_extensions
+        assert cfg.content_md_max_bytes == 262144
+        assert "docs/learning" in cfg.content_roots
+        assert cfg.include_content is False
 
 
 class TestLoadConfig:
@@ -135,6 +146,23 @@ path = "/home/user/project"
         assert cfg.indexing.max_file_size_kb == 1024
         assert len(cfg.projects) == 1
         assert cfg.projects[0].name == "my-project"
+
+    def test_load_scanner_exclude_config(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""\
+[scanner.exclude]
+extensions = [".mov"]
+allow_paths = ["docs/learning/keep.md"]
+content_md_max_bytes = 123
+content_roots = ["자료"]
+""")
+        cfg = load_config(config_path)
+        assert tuple(DEFAULT_CONTENT_EXCLUDE_EXTENSIONS) != ()
+        assert ".pdf" in cfg.indexing.content_exclude_extensions
+        assert ".mov" in cfg.indexing.content_exclude_extensions
+        assert cfg.indexing.content_allow_paths == ("docs/learning/keep.md",)
+        assert cfg.indexing.content_md_max_bytes == 123
+        assert cfg.indexing.content_roots == ("자료",)
 
     def test_partial_config_uses_defaults(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"

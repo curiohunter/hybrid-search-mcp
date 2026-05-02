@@ -105,7 +105,7 @@ class Embedder:
             "input": texts,
         }).encode("utf-8")
 
-        max_retries = 5
+        max_retries = 12
         for attempt in range(max_retries):
             req = urllib.request.Request(
                 OPENAI_EMBED_URL,
@@ -126,10 +126,13 @@ class Embedder:
                 if e.code == 429 and attempt < max_retries - 1:
                     import re as _re
                     import time as _time
-                    wait = 5.0
+                    wait = min(30.0, 2.0 * (attempt + 1))
                     m = _re.search(r"try again in ([\d.]+)s", body)
+                    ms = _re.search(r"try again in ([\d.]+)ms", body)
                     if m:
                         wait = float(m.group(1)) + 0.5
+                    elif ms:
+                        wait = float(ms.group(1)) / 1000.0 + 0.5
                     logger.info("Rate limited, waiting %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries)
                     _time.sleep(wait)
                     continue
