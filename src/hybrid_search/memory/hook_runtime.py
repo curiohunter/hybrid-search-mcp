@@ -110,8 +110,14 @@ def _format_user_prompt_context(response) -> str:
     results = getattr(response, "results", []) or []
     if not results:
         return ""
+    confidence = getattr(response, "confidence", "weak") or "weak"
+    hint = getattr(response, "fallback_hint", None)
+    confidence_line = f"pre-fetch confidence: {confidence}"
+    if confidence == "weak" and hint:
+        confidence_line += f" · {hint}"
     lines = [
         f"[hybrid-search pre-fetch] {len(results)} hits. Top paths:",
+        confidence_line,
     ]
     for i, r in enumerate(results[:_PREFETCH_RESULT_LIMIT], start=1):
         fp = getattr(r, "file_path", "?") or "?"
