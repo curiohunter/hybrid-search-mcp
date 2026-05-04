@@ -16,6 +16,11 @@ from pathlib import Path
 
 from hybrid_search.config import Config
 from hybrid_search.index.embedder import Embedder
+from hybrid_search.memory.router import (
+    classify_confidence,
+    fallback_hint,
+    has_identifier_shape_token,
+)
 from hybrid_search.project import ProjectRegistry, ProjectInfo
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.fusion import FusedResult, reciprocal_rank_fusion
@@ -153,6 +158,10 @@ class HybridSearchResponse:
     effective_bm25_weight: float
     query_time_ms: float
     total_chunks_searched: int
+    top_score: float = 0.0
+    score_gap: float | None = None
+    confidence: str = "weak"
+    fallback_hint: str | None = None
     skipped_projects: list[str] = field(default_factory=list)
     reranked: bool = False
 
@@ -366,6 +375,33 @@ def _merge_memory_results(
     return merged
 
 
+def _has_quality_anchor(
+    query: str,
+    results: list[HybridResult],
+    top_score: float,
+    thresholds: dict[str, float],
+) -> bool:
+    """Detect strong returned anchors that raw RRF gap alone underrates.
+
+    Module and memory cards are injected after chunk fusion, so they often
+    create small raw score gaps even when the returned answer unit is exactly
+    the desired subsystem/context. Exact identifier prompts have the inverse
+    issue: their top hit can be right despite a near-tie among sibling chunks.
+    This keeps the public ranking unchanged and only avoids over-eager weak
+    confidence metadata.
+    """
+    if not results:
+        return False
+    weak_score = thresholds.get("weak_score", 0.0)
+    anchor_types = {"module_card", "memory_card", "domain_term", "episodic_example"}
+    if top_score >= weak_score * 0.90:
+        if any((r.node_type or "") in anchor_types for r in results[:3]):
+            return True
+    if top_score >= weak_score * 0.94 and has_identifier_shape_token(query):
+        return True
+    return False
+
+
 class SearchOrchestrator:
     """Coordinates BM25 + Vector search with RRF fusion."""
 
@@ -395,7 +431,8 @@ class SearchOrchestrator:
         if project:
             info = self._registry.get_by_name(project)
             if info is None:
-                return HybridSearchResponse(
+                return self._make_response(
+                    query=query,
                     results=[], query_type=qtype, effective_bm25_weight=effective_weight,
                     query_time_ms=0, total_chunks_searched=0,
                 )
@@ -412,7 +449,8 @@ class SearchOrchestrator:
                 primary_project_id = detected_id
 
         if not project_infos:
-            return HybridSearchResponse(
+            return self._make_response(
+                query=query,
                 results=[], query_type=qtype, effective_bm25_weight=effective_weight,
                 query_time_ms=0, total_chunks_searched=0,
             )
@@ -517,7 +555,8 @@ class SearchOrchestrator:
         )
 
         elapsed_ms = (time.monotonic() - start) * 1000
-        return HybridSearchResponse(
+        return self._make_response(
+            query=query,
             results=results,
             query_type=qtype,
             effective_bm25_weight=effective_weight,
@@ -525,6 +564,47 @@ class SearchOrchestrator:
             total_chunks_searched=total,
             skipped_projects=skipped,
             reranked=reranking_cfg.enabled,
+        )
+
+    def _make_response(
+        self,
+        *,
+        query: str,
+        results: list[HybridResult],
+        query_type: str,
+        effective_bm25_weight: float,
+        query_time_ms: float,
+        total_chunks_searched: int,
+        skipped_projects: list[str] | None = None,
+        reranked: bool = False,
+    ) -> HybridSearchResponse:
+        ranked_scores = sorted(
+            (r.rrf_score for r in results if r.rrf_score > 0),
+            reverse=True,
+        )
+        top_score = ranked_scores[0] if ranked_scores else 0.0
+        score_gap = (
+            round(ranked_scores[0] - ranked_scores[1], 6)
+            if len(ranked_scores) >= 2
+            else None
+        )
+        thresholds = self._config.router.confidence.as_dict()
+        confidence = classify_confidence(top_score, score_gap, thresholds)
+        if confidence == "weak" and _has_quality_anchor(query, results, top_score, thresholds):
+            confidence = "mixed"
+        hint = fallback_hint(query) if confidence == "weak" else None
+        return HybridSearchResponse(
+            results=results,
+            query_type=query_type,
+            effective_bm25_weight=effective_bm25_weight,
+            query_time_ms=query_time_ms,
+            total_chunks_searched=total_chunks_searched,
+            top_score=top_score,
+            score_gap=score_gap,
+            confidence=confidence,
+            fallback_hint=hint,
+            skipped_projects=skipped_projects or [],
+            reranked=reranked,
         )
 
     def _module_results_for_query(

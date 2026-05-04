@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import logging
 import os
 import sys
@@ -44,6 +45,83 @@ from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
 
 logger = logging.getLogger("hybrid_search.cli")
+
+
+def _load_gold_queries(path: Path) -> list[dict]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, list):
+        return raw
+    queries = raw.get("queries", [])
+    if not isinstance(queries, list):
+        raise ValueError(f"{path} does not contain a query list")
+    return queries
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    """Nearest-rank percentile with interpolation for deterministic calibration."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = (len(ordered) - 1) * pct
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = pos - lo
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * frac
+
+
+def _calibrate_router_confidence(orchestrator, queries: list[dict], *, project, cwd, limit) -> dict[str, float]:
+    top_scores: list[float] = []
+    score_gaps: list[float] = []
+    for item in queries:
+        query = item.get("query") or item.get("prompt")
+        if not query:
+            continue
+        if item.get("expected_tool") not in (None, "hybrid_search"):
+            continue
+        response = orchestrator.hybrid_search(
+            query=query,
+            project=project,
+            cwd=cwd,
+            limit=limit,
+        )
+        top_scores.append(float(response.top_score))
+        if response.score_gap is not None:
+            score_gaps.append(float(response.score_gap))
+    return {
+        "strong_score": round(_percentile(top_scores, 0.67), 6),
+        "strong_gap": round(_percentile(score_gaps, 0.67), 6),
+        "weak_score": round(_percentile(top_scores, 0.33), 6),
+    }
+
+
+def _router_confidence_block(thresholds: dict[str, float]) -> str:
+    return (
+        "[router.confidence]\n"
+        f"strong_score = {thresholds['strong_score']:.6f}\n"
+        f"strong_gap = {thresholds['strong_gap']:.6f}\n"
+        f"weak_score = {thresholds['weak_score']:.6f}\n"
+    )
+
+
+def _write_router_confidence_config(config_path: Path, thresholds: dict[str, float]) -> bool:
+    """Write [router.confidence] idempotently. Returns True when bytes changed."""
+    import re as _re
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    old = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    block = _router_confidence_block(thresholds)
+    pattern = _re.compile(r"(?ms)^\[router\.confidence\]\n.*?(?=^\[|\Z)")
+    if pattern.search(old):
+        new = pattern.sub(block.rstrip("\n") + "\n\n", old).rstrip() + "\n"
+    else:
+        sep = "\n\n" if old.strip() else ""
+        new = old.rstrip() + sep + block
+    if new == old:
+        return False
+    config_path.write_text(new, encoding="utf-8")
+    return True
 
 
 def _detect_project(registry: ProjectRegistry, cwd: str) -> tuple[str, str] | None:
@@ -2622,6 +2700,34 @@ def cmd_search(args: argparse.Namespace) -> None:
         print()
 
 
+def cmd_recalibrate(args: argparse.Namespace) -> None:
+    """Derive router confidence thresholds from a gold set and persist them."""
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+    embedder = Embedder(config.embedding, config.models_dir)
+
+    from hybrid_search.search.orchestrator import SearchOrchestrator
+
+    cwd = str(Path(args.cwd).resolve())
+    orchestrator = SearchOrchestrator(config, registry, embedder)
+    thresholds = _calibrate_router_confidence(
+        orchestrator,
+        _load_gold_queries(Path(args.gold)),
+        project=args.project,
+        cwd=cwd,
+        limit=args.limit,
+    )
+    config_path = Path(cwd) / "config.toml"
+    changed = _write_router_confidence_config(config_path, thresholds)
+    status = "updated" if changed else "unchanged"
+    print(
+        "router.confidence "
+        f"{status}: strong_score={thresholds['strong_score']:.6f}, "
+        f"strong_gap={thresholds['strong_gap']:.6f}, "
+        f"weak_score={thresholds['weak_score']:.6f}"
+    )
+
+
 def _resolve_chunk_for_graph(
     db: StoreDB, project_id: str, token: str
 ) -> str | None:
@@ -4514,6 +4620,15 @@ def main() -> None:
     p_search.add_argument("--node-types", help="Comma-separated: function,class,method")
     p_search.add_argument("--json", action="store_true", help="Output as JSON")
 
+    p_recal = sub.add_parser(
+        "recalibrate",
+        help="Derive router confidence thresholds from a gold set",
+    )
+    p_recal.add_argument("--cwd", required=True, help="Project directory")
+    p_recal.add_argument("--gold", required=True, help="Gold set JSON path")
+    p_recal.add_argument("--project", help="Registered project name")
+    p_recal.add_argument("--limit", type=int, default=10, help="Search limit")
+
     sub.add_parser("serve", help="Start MCP server (for Claude Code / MCP clients)")
 
     # ── Setup & admin ──
@@ -4893,6 +5008,8 @@ def main() -> None:
         cmd_index(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "recalibrate":
+        cmd_recalibrate(args)
     elif args.command == "serve":
         cmd_serve(args)
     elif args.command == "setup":

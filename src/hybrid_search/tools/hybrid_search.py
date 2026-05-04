@@ -96,8 +96,13 @@ def handle_hybrid_search(
         "effective_bm25_weight": response.effective_bm25_weight,
         "query_time_ms": response.query_time_ms,
         "total_chunks_searched": response.total_chunks_searched,
+        "top_score": getattr(response, "top_score", 0.0),
+        "score_gap": getattr(response, "score_gap", None),
+        "confidence": getattr(response, "confidence", "weak"),
         "skipped_projects": response.skipped_projects,
     }
+    if getattr(response, "fallback_hint", None):
+        result["fallback_hint"] = sanitize_snippet(response.fallback_hint)
 
     if response.reranked and len(response.results) > safe_limit:
         result["rerank_hint"] = _RERANK_HINT.format(
