@@ -34,6 +34,9 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   binaries/media/archives and oversized Markdown under content roots by
   default, with `[scanner.exclude]` overrides, `reindex --include-content`,
   and a doctor excluded-paths summary.
+- **Router Phase 2 — quality signals**. Hybrid search responses now include
+  `top_score`, `score_gap`, confidence bands, weak-result fallback hints, and
+  a `recalibrate` CLI for project-specific thresholds.
 
 ### Changed
 

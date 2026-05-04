@@ -9,7 +9,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from hybrid_search.project import ProjectInfo
-from hybrid_search.search.orchestrator import SearchOrchestrator
+from hybrid_search.search.orchestrator import HybridResult, SearchOrchestrator
 
 
 def _make_orchestrator(authority_map: dict[str, float]) -> SearchOrchestrator:
@@ -17,6 +17,11 @@ def _make_orchestrator(authority_map: dict[str, float]) -> SearchOrchestrator:
     config.search.rrf_k = 60
     config.search.reranking.enabled = False
     config.search.reranking.max_candidates = 20
+    config.router.confidence.as_dict.return_value = {
+        "strong_score": 0.02,
+        "strong_gap": 0.001,
+        "weak_score": 0.01,
+    }
 
     pinfo = ProjectInfo(
         id="proj1", name="test", path="/tmp/test",
@@ -54,6 +59,49 @@ class TestAuthorityGating:
         _, kwargs = fusion.call_args
         assert kwargs["chunk_authority_scores"] is None
         assert resp.query_type == "EXACT_SYMBOL"
+
+    def test_response_metadata_does_not_change_hit_order(self):
+        orch = _make_orchestrator({})
+        expected = [
+            HybridResult(
+                chunk_id="a",
+                rrf_score=0.02,
+                bm25_rank=1,
+                vector_rank=None,
+                file_path="src/a.py",
+                project="test",
+                name="a",
+                qualified_name="src.a",
+                node_type="function",
+                start_line=1,
+                end_line=2,
+                content="",
+                snippet="",
+            ),
+            HybridResult(
+                chunk_id="b",
+                rrf_score=0.015,
+                bm25_rank=None,
+                vector_rank=1,
+                file_path="src/b.py",
+                project="test",
+                name="b",
+                qualified_name="src.b",
+                node_type="function",
+                start_line=3,
+                end_line=4,
+                content="",
+                snippet="",
+            ),
+        ]
+        orch._enrich_results = MagicMock(return_value=expected)
+
+        response = orch.hybrid_search(query="how does search work", project="test")
+
+        assert [r.chunk_id for r in response.results] == ["a", "b"]
+        assert response.top_score == 0.02
+        assert response.score_gap == 0.005
+        assert response.confidence == "strong"
 
     def test_snake_case_symbol_disables_authority(self):
         auth = {"a": 1.0}

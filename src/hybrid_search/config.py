@@ -40,6 +40,12 @@ DEFAULT_CONTENT_ROOTS = [
     "docs/learning", "학습", "자료", "materials", "book", "책",
 ]
 
+DEFAULT_ROUTER_CONFIDENCE = {
+    "strong_score": 0.016081,
+    "strong_gap": 0.000656,
+    "weak_score": 0.014864,
+}
+
 # Known model token limits for auto-detection
 MODEL_MAX_TOKENS: dict[str, int] = {
     "multilingual-e5-small": 512,
@@ -167,6 +173,25 @@ class MemoryConfig:
 
 
 @dataclass(frozen=True)
+class RouterConfidenceConfig:
+    strong_score: float = DEFAULT_ROUTER_CONFIDENCE["strong_score"]
+    strong_gap: float = DEFAULT_ROUTER_CONFIDENCE["strong_gap"]
+    weak_score: float = DEFAULT_ROUTER_CONFIDENCE["weak_score"]
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "strong_score": self.strong_score,
+            "strong_gap": self.strong_gap,
+            "weak_score": self.weak_score,
+        }
+
+
+@dataclass(frozen=True)
+class RouterConfig:
+    confidence: RouterConfidenceConfig = field(default_factory=RouterConfidenceConfig)
+
+
+@dataclass(frozen=True)
 class Config:
     data_dir: Path = DEFAULT_DATA_DIR
     log_level: str = "info"
@@ -175,6 +200,7 @@ class Config:
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
     wiki: WikiConfig = field(default_factory=WikiConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    router: RouterConfig = field(default_factory=RouterConfig)
     projects: tuple[ProjectEntry, ...] = ()
 
     @property
@@ -294,6 +320,28 @@ def load_config(config_path: Path | None = None) -> Config:
         integrity=integrity,
     )
 
+    router_raw = raw.get("router", {})
+    confidence_raw = router_raw.get("confidence", {})
+    router = RouterConfig(
+        confidence=RouterConfidenceConfig(
+            strong_score=float(
+                confidence_raw.get(
+                    "strong_score", DEFAULT_ROUTER_CONFIDENCE["strong_score"]
+                )
+            ),
+            strong_gap=float(
+                confidence_raw.get(
+                    "strong_gap", DEFAULT_ROUTER_CONFIDENCE["strong_gap"]
+                )
+            ),
+            weak_score=float(
+                confidence_raw.get(
+                    "weak_score", DEFAULT_ROUTER_CONFIDENCE["weak_score"]
+                )
+            ),
+        )
+    )
+
     projects = tuple(
         ProjectEntry(name=p["name"], path=p["path"])
         for p in raw.get("projects", [])
@@ -308,6 +356,7 @@ def load_config(config_path: Path | None = None) -> Config:
         indexing=indexing,
         wiki=wiki,
         memory=memory,
+        router=router,
         projects=projects,
     )
 
@@ -371,6 +420,11 @@ max_files = 2000
 # and asks the user to confirm by running `hybrid-search qa-prune
 # --older-than 90d --confirm-first-run` once. Set to false to skip the gate.
 require_first_run_confirm = true
+
+[router.confidence]
+strong_score = 0.016081
+strong_gap = 0.000656
+weak_score = 0.014864
 
 # [[projects]]
 # name = "my-project"

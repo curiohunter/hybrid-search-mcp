@@ -397,6 +397,8 @@ class TestUserPromptSubmitHook:
                 _FakeHit("docs/features/ledger.md", "ledger"),
                 _FakeHit("services/ledger/write.ts", "writeLedger"),
             ]
+            confidence = "weak"
+            fallback_hint = "weak match -> wiki `ledger`"
 
         def fake_search(prompt, cwd):
             return _FakeResp()
@@ -418,6 +420,7 @@ class TestUserPromptSubmitHook:
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         assert "docs/features/ledger.md" in ctx
         assert "services/ledger/write.ts" in ctx
+        assert "pre-fetch confidence: weak" in ctx
         assert "Call hybrid_search for details" in ctx
         assert len(ctx) <= 360
 
