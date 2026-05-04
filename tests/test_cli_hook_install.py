@@ -7,6 +7,7 @@ import json
 import sqlite3
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,9 +31,90 @@ from hybrid_search.cli import (
     cmd_install_hook,
     cmd_maintain,
     cmd_memory_refresh,
+    cmd_recalibrate,
 )
 from hybrid_search.memory import qa_log
 from hybrid_search.project import ProjectInfo
+
+
+class TestRecalibrate:
+    def test_first_run_writes_router_confidence(self, tmp_path: Path, monkeypatch) -> None:
+        gold = tmp_path / "gold.json"
+        gold.write_text(
+            json.dumps({"queries": [{"query": "a"}, {"query": "b"}, {"query": "c"}]}),
+            encoding="utf-8",
+        )
+
+        class _Resp:
+            def __init__(self, top_score, score_gap):
+                self.top_score = top_score
+                self.score_gap = score_gap
+
+        class _Orchestrator:
+            def __init__(self, *args, **kwargs):
+                self.values = iter([
+                    _Resp(0.01, 0.001),
+                    _Resp(0.03, 0.003),
+                    _Resp(0.05, 0.005),
+                ])
+
+            def hybrid_search(self, **kwargs):
+                return next(self.values)
+
+        monkeypatch.setattr(
+            "hybrid_search.cli.load_config",
+            lambda: SimpleNamespace(
+                global_dir=tmp_path / "g",
+                embedding=None,
+                models_dir=tmp_path / "m",
+            ),
+        )
+        monkeypatch.setattr("hybrid_search.cli.ProjectRegistry", lambda global_dir: object())
+        monkeypatch.setattr("hybrid_search.cli.Embedder", lambda embedding, models_dir: object())
+        monkeypatch.setattr("hybrid_search.search.orchestrator.SearchOrchestrator", _Orchestrator)
+
+        cmd_recalibrate(SimpleNamespace(cwd=str(tmp_path), gold=str(gold), project=None, limit=10))
+
+        content = (tmp_path / "config.toml").read_text(encoding="utf-8")
+        assert "[router.confidence]" in content
+        assert "strong_score = 0.036800" in content
+        assert "strong_gap = 0.003680" in content
+        assert "weak_score = 0.023200" in content
+
+    def test_rerun_is_byte_identical(self, tmp_path: Path, monkeypatch) -> None:
+        gold = tmp_path / "gold.json"
+        gold.write_text(json.dumps({"queries": [{"query": "a"}]}), encoding="utf-8")
+
+        class _Resp:
+            top_score = 0.02
+            score_gap = 0.004
+
+        class _Orchestrator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def hybrid_search(self, **kwargs):
+                return _Resp()
+
+        monkeypatch.setattr(
+            "hybrid_search.cli.load_config",
+            lambda: SimpleNamespace(
+                global_dir=tmp_path / "g",
+                embedding=None,
+                models_dir=tmp_path / "m",
+            ),
+        )
+        monkeypatch.setattr("hybrid_search.cli.ProjectRegistry", lambda global_dir: object())
+        monkeypatch.setattr("hybrid_search.cli.Embedder", lambda embedding, models_dir: object())
+        monkeypatch.setattr("hybrid_search.search.orchestrator.SearchOrchestrator", _Orchestrator)
+
+        args = SimpleNamespace(cwd=str(tmp_path), gold=str(gold), project=None, limit=10)
+        cmd_recalibrate(args)
+        first = (tmp_path / "config.toml").read_bytes()
+        cmd_recalibrate(args)
+        second = (tmp_path / "config.toml").read_bytes()
+
+        assert first == second
 
 
 # ---------------------------------------------------------------------------
