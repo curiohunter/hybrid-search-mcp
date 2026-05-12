@@ -395,7 +395,7 @@ def _format_user_prompt_context(prompt: str, response) -> str:
     """Render the pre-fetched hybrid_search top-K as additionalContext."""
     from hybrid_search.memory import hook_runtime
 
-    return hook_runtime._format_user_prompt_context(response)
+    return hook_runtime._format_user_prompt_context(response, prompt)
 
 
 def _run_programmatic_search(prompt: str, cwd: str):
