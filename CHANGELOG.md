@@ -37,6 +37,9 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 - **Router Phase 2 — quality signals**. Hybrid search responses now include
   `top_score`, `score_gap`, confidence bands, weak-result fallback hints, and
   a `recalibrate` CLI for project-specific thresholds.
+- **Router Phase 3 — heuristic prompt router**. User prompt hooks now surface
+  a bounded route suggestion for `hybrid_search`, `grep`, or `memory`, backed
+  by a hand-labeled router benchmark.
 
 ### Changed
 

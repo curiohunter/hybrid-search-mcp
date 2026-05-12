@@ -418,11 +418,76 @@ class TestUserPromptSubmitHook:
         parsed = json.loads(buf.getvalue())
         assert parsed["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert ctx.splitlines()[0] == (
+            "[hybrid-search route] suggest hybrid_search · exploratory NL"
+        )
         assert "docs/features/ledger.md" in ctx
         assert "services/ledger/write.ts" in ctx
         assert "pre-fetch confidence: weak" in ctx
         assert "Call hybrid_search for details" in ctx
         assert len(ctx) <= 360
+
+    def test_router_off_omits_route_line(
+        self, project_root: Path, monkeypatch
+    ) -> None:
+        class _FakeHit:
+            file_path = "services/ledger/write.ts"
+            start_line = 9
+
+        class _FakeResp:
+            results = [_FakeHit()]
+            confidence = "mixed"
+            fallback_hint = None
+
+        monkeypatch.setenv("HYBRID_SEARCH_ROUTER", "0")
+        monkeypatch.setattr(hooks, "_run_programmatic_search", lambda p, c: _FakeResp())
+
+        payload = json.dumps({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "ledger 전체 구조 설명해줘",
+            "cwd": str(project_root),
+        })
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hooks.run_hook(payload)
+        assert rc == 0
+        parsed = json.loads(buf.getvalue())
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "[hybrid-search route]" not in ctx
+        assert ctx.startswith("[hybrid-search pre-fetch]")
+
+    def test_route_line_drops_last_hit_near_cap(self, monkeypatch) -> None:
+        class _FakeHit:
+            def __init__(self, path: str, start: int):
+                self.file_path = path
+                self.start_line = start
+
+        long_a = "src/features/" + ("a" * 58) + ".ts"
+        long_b = "src/features/" + ("b" * 58) + ".ts"
+        long_c = "src/features/" + ("c" * 58) + ".ts"
+
+        class _FakeResp:
+            results = [
+                _FakeHit(long_a, 10),
+                _FakeHit(long_b, 20),
+                _FakeHit(long_c, 30),
+            ]
+            confidence = "mixed"
+            fallback_hint = None
+
+        monkeypatch.delenv("HYBRID_SEARCH_ROUTER", raising=False)
+
+        ctx = hook_runtime._format_user_prompt_context(
+            _FakeResp(),
+            "billing flow 어떻게 구성돼 있나",
+        )
+
+        assert len(ctx) <= 360
+        assert "[hybrid-search route]" in ctx
+        assert f"1. `{long_a}:10`" in ctx
+        assert f"2. `{long_b}:20`" in ctx
+        assert f"3. `{long_c}:30`" not in ctx
 
     def test_silent_on_non_exploratory(self, project_root: Path, monkeypatch) -> None:
         called = {"n": 0}
