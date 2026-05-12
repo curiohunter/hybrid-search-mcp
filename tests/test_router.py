@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from hybrid_search.memory.router import classify_confidence, fallback_hint
+from hybrid_search.memory.router import classify_confidence, classify_prompt, fallback_hint
 
 
 THRESHOLDS = {
@@ -48,3 +48,56 @@ class TestFallbackHint:
 
     def test_non_identifier_prompt_chooses_wiki(self) -> None:
         assert "-> wiki `" in fallback_hint("수강료 정산 시스템은 어떻게 구성되어 있나")
+
+
+class TestClassifyPrompt:
+    @pytest.mark.parametrize(
+        ("prompt", "reason"),
+        [
+            ("왜 `paid_fee_guard`가 안 되지", "exact identifier"),
+            ("TuitionChargeSection 렌더링 위치", "exact identifier"),
+            ("*.ts 파일에서 찾아줘", "file path"),
+            ("src/app/dashboard/page.tsx 확인", "file path"),
+            ("Error: missing relation Traceback 확인", "error trace"),
+        ],
+    )
+    def test_grep_signals(self, prompt: str, reason: str) -> None:
+        decision = classify_prompt(prompt)
+        assert decision.tool == "grep"
+        assert decision.reason == reason
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "지난번 결정 다시 보여줘",
+            "이전에 왜 이렇게 결정했지",
+            "what did we do last time for billing",
+        ],
+    )
+    def test_memory_signals(self, prompt: str) -> None:
+        decision = classify_prompt(prompt)
+        assert decision.tool == "memory"
+        assert decision.reason == "history reference"
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "수강료 정산이 어떻게 흘러가?",
+            "왜 자꾸 결제가 취소되지",
+            "how does billing work",
+        ],
+    )
+    def test_hybrid_search_signals(self, prompt: str) -> None:
+        decision = classify_prompt(prompt)
+        assert decision.tool == "hybrid_search"
+        assert decision.reason == "exploratory NL"
+
+    def test_default_fallback(self) -> None:
+        decision = classify_prompt("please review the recent dashboard behavior")
+        assert decision.tool == "hybrid_search"
+        assert decision.reason == "default"
+
+    def test_grep_beats_exploratory_signal(self) -> None:
+        decision = classify_prompt("왜 `paid_fee_guard`가 안 되지")
+        assert decision.tool == "grep"
+        assert decision.reason == "exact identifier"
