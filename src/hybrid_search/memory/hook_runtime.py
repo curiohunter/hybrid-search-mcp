@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Iterable
@@ -9,6 +10,7 @@ from typing import Iterable
 _MAX_CONTEXT_CHARS = 360
 _SESSION_TOPIC_LIMIT = 3
 _PREFETCH_RESULT_LIMIT = 3
+_ROUTER_ENV = "HYBRID_SEARCH_ROUTER"
 
 _EXPLORATORY_TOKENS_KO = (
     "어떤", "어떻게", "무엇", "무슨", "왜", "어디",
@@ -106,7 +108,11 @@ def build_session_context(project_root: Path, *, limit: int = _SESSION_TOPIC_LIM
     return _format_session_start_context(indexes[:limit])[:_MAX_CONTEXT_CHARS]
 
 
-def _format_user_prompt_context(response) -> str:
+def _router_enabled() -> bool:
+    return os.environ.get(_ROUTER_ENV) != "0"
+
+
+def _format_user_prompt_context(response, prompt: str | None = None) -> str:
     results = getattr(response, "results", []) or []
     if not results:
         return ""
@@ -115,17 +121,36 @@ def _format_user_prompt_context(response) -> str:
     confidence_line = f"pre-fetch confidence: {confidence}"
     if confidence == "weak" and hint:
         confidence_line += f" · {hint}"
-    lines = [
+    lines = []
+    if prompt is not None and _router_enabled():
+        from hybrid_search.memory.router import classify_prompt
+
+        decision = classify_prompt(prompt)
+        lines.append(f"[hybrid-search route] suggest {decision.tool} · {decision.reason}")
+
+    lines.extend([
         f"[hybrid-search pre-fetch] {len(results)} hits. Top paths:",
         confidence_line,
-    ]
+    ])
+    hit_lines = []
     for i, r in enumerate(results[:_PREFETCH_RESULT_LIMIT], start=1):
         fp = getattr(r, "file_path", "?") or "?"
         start = getattr(r, "start_line", None)
         loc = f":{start}" if start else ""
-        lines.append(f"{i}. `{fp}{loc}`")
+        hit_lines.append(f"{i}. `{fp}{loc}`")
+    lines.extend(hit_lines)
     lines.append("Call hybrid_search for details if needed.")
-    return "\n".join(lines)
+    context = "\n".join(lines)
+    if len(context) <= _MAX_CONTEXT_CHARS:
+        return context
+
+    # The route hint has priority. If it pushes the payload over the hook
+    # budget, drop only the final hit row while preserving confidence and at
+    # least two concrete result locations.
+    if prompt is not None and _router_enabled() and len(hit_lines) > 2:
+        lines.pop(-2)
+        context = "\n".join(lines)
+    return context[:_MAX_CONTEXT_CHARS]
 
 
 def _run_programmatic_search(prompt: str, cwd: str):
@@ -176,7 +201,7 @@ def build_user_prompt_context(
         except Exception:
             pass
 
-    return _format_user_prompt_context(response)[:_MAX_CONTEXT_CHARS]
+    return _format_user_prompt_context(response, prompt)
 
 
 def record_completed_turn(

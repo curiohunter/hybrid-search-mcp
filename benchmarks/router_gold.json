@@ -1,0 +1,219 @@
+[
+  {
+    "id": "hs-001",
+    "prompt": "우리 프로젝트에서 llm 과의 대화가 어떻게 자동으로 메모리에 기억되는지 확인해볼래",
+    "expected_tool": "hybrid_search",
+    "rationale": "Korean exploratory flow question over memory behavior",
+    "source": "hybrid-search-2026-04-26"
+  },
+  {
+    "id": "hs-002",
+    "prompt": "응 근데 하기전에. 이게 대화가 저장되는게 대화를 할때마다 저장되는건지 어떤 로직으로 대화를 저장하는건지 궁금해요",
+    "expected_tool": "hybrid_search",
+    "rationale": "asks how the save logic works across the system",
+    "source": "hybrid-search-2026-05-02"
+  },
+  {
+    "id": "hs-003",
+    "prompt": "라우터 골드 셋이 정확히 뭔가요 자세히 설명",
+    "expected_tool": "hybrid_search",
+    "rationale": "conceptual explanation request",
+    "source": "hybrid-search-2026-05-01"
+  },
+  {
+    "id": "hs-004",
+    "prompt": "밸류인 프로젝트 발전방향을 찾을 수 있을거 같아요",
+    "expected_tool": "hybrid_search",
+    "rationale": "broad retrospective synthesis",
+    "source": "hybrid-search-2026-04-28"
+  },
+  {
+    "id": "hs-005",
+    "prompt": "how does portal memory prefetch work",
+    "expected_tool": "hybrid_search",
+    "rationale": "English how does exploratory question",
+    "source": "hybrid-search-2026-04-30"
+  },
+  {
+    "id": "vi-001",
+    "prompt": "그게 아니고 보낸 청구서로 결제했는데 자꾸 취소된다고 하셔서 왜 또 결제하면 자꾸 결제취소된다고 하시네 뭐가 이유인줄 모르겠어",
+    "expected_tool": "hybrid_search",
+    "rationale": "domain symptom needs scattered payment flow context",
+    "source": "valuein-2026-04-30"
+  },
+  {
+    "id": "vi-002",
+    "prompt": "자 지금까지 저랑 작업하면서 하이브리드 서치가 얼마나 도움이 됐나요",
+    "expected_tool": "hybrid_search",
+    "rationale": "retrospective synthesis over past work",
+    "source": "valuein-2026-04-30"
+  },
+  {
+    "id": "vi-003",
+    "prompt": "이게 컨텍스트에 미치는 영향은",
+    "expected_tool": "hybrid_search",
+    "rationale": "conceptual impact question",
+    "source": "valuein-2026-04-28"
+  },
+  {
+    "id": "vi-004",
+    "prompt": "입학테스트 상태 흐름이 어떻게 되는지 설명해줘",
+    "expected_tool": "hybrid_search",
+    "rationale": "flow signal for a multi-step domain workflow",
+    "source": "valuein-2026-05-01"
+  },
+  {
+    "id": "hs-006",
+    "prompt": "`resolve_project_root` fallback cwd creates .hybrid-search subdirectory stop_hook",
+    "expected_tool": "grep",
+    "rationale": "specific function and path-like token search",
+    "source": "hybrid-search-2026-04-29"
+  },
+  {
+    "id": "hs-007",
+    "prompt": "`memory_card` snippet frontmatter search snippet generation concise card summaries",
+    "expected_tool": "grep",
+    "rationale": "exact symbol-shaped implementation terms",
+    "source": "hybrid-search-2026-04-28"
+  },
+  {
+    "id": "hs-008",
+    "prompt": "src/hybrid_search/memory/hook_runtime.py 읽어줘",
+    "expected_tool": "grep",
+    "rationale": "absolute file path",
+    "source": "hybrid-search-2026-04-28"
+  },
+  {
+    "id": "hs-009",
+    "prompt": "`classify_confidence` 기준 확인",
+    "expected_tool": "grep",
+    "rationale": "backtick-wrapped exact identifier",
+    "source": "hybrid-search-2026-05-01"
+  },
+  {
+    "id": "hs-010",
+    "prompt": "Traceback at line 42 hook runtime failure",
+    "expected_tool": "grep",
+    "rationale": "stack trace signature",
+    "source": "hybrid-search-2026-04-30"
+  },
+  {
+    "id": "vi-005",
+    "prompt": "WatchlistActionQueue ai_churn_risk consultations 정기상담",
+    "expected_tool": "grep",
+    "rationale": "specific CamelCase product label plus exact table terms",
+    "source": "valuein-2026-05-01"
+  },
+  {
+    "id": "vi-006",
+    "prompt": "services/ledger/writepath/i-payment.ts cancelPaymentOnce 확인",
+    "expected_tool": "grep",
+    "rationale": "specific file path and symbol",
+    "source": "valuein-2026-04-30"
+  },
+  {
+    "id": "vi-007",
+    "prompt": "components/students/entrance-tests/entrance-tests-table.tsx",
+    "expected_tool": "grep",
+    "rationale": "direct component file path",
+    "source": "valuein-2026-04-26"
+  },
+  {
+    "id": "vi-008",
+    "prompt": "*.tsx 에서 TuitionDashboard 찾아줘",
+    "expected_tool": "grep",
+    "rationale": "file-extension glob and exact component",
+    "source": "valuein-2026-05-01"
+  },
+  {
+    "id": "hs-011",
+    "prompt": "지난번 세션에서 이런 일이 있었는데 다시 확인",
+    "expected_tool": "memory",
+    "rationale": "Korean history reference",
+    "source": "hybrid-search-2026-04-29"
+  },
+  {
+    "id": "hs-012",
+    "prompt": "지난번에 뭐 물어봤지",
+    "expected_tool": "memory",
+    "rationale": "explicit last-time memory query",
+    "source": "hybrid-search-2026-04-28"
+  },
+  {
+    "id": "hs-013",
+    "prompt": "이전에 코덱스 훅 설정 어떻게 했는지",
+    "expected_tool": "memory",
+    "rationale": "previous-session setup recall",
+    "source": "hybrid-search-2026-04-30"
+  },
+  {
+    "id": "hs-014",
+    "prompt": "왜 이렇게 결정했는지 기억나",
+    "expected_tool": "memory",
+    "rationale": "decision-history phrase",
+    "source": "hybrid-search-2026-05-01"
+  },
+  {
+    "id": "hs-015",
+    "prompt": "last time what branch did we use",
+    "expected_tool": "memory",
+    "rationale": "English last time recall",
+    "source": "hybrid-search-2026-04-29"
+  },
+  {
+    "id": "vi-009",
+    "prompt": "이전에 dashboard beta 교체는 어디까지 했지",
+    "expected_tool": "memory",
+    "rationale": "prior progress recall in valuein project",
+    "source": "valuein-2026-05-01"
+  },
+  {
+    "id": "vi-010",
+    "prompt": "지난번 신규상담 상태 기준 정리 다시 보여줘",
+    "expected_tool": "memory",
+    "rationale": "history lookup for a previous domain decision",
+    "source": "valuein-2026-05-01"
+  },
+  {
+    "id": "vi-011",
+    "prompt": "previously why did we remove the complete button",
+    "expected_tool": "memory",
+    "rationale": "English previous decision recall",
+    "source": "valuein-2026-05-02"
+  },
+  {
+    "id": "vi-012",
+    "prompt": "earlier we decided pagination size for 상담 리스트",
+    "expected_tool": "memory",
+    "rationale": "earlier we decided phrase",
+    "source": "valuein-2026-05-02"
+  },
+  {
+    "id": "hs-016",
+    "prompt": "ㅇㅇ",
+    "expected_tool": "none",
+    "rationale": "acknowledgement with no retrieval value",
+    "source": "hybrid-search-2026-04-29"
+  },
+  {
+    "id": "hs-017",
+    "prompt": "진행",
+    "expected_tool": "none",
+    "rationale": "command continuation with no retrieval value",
+    "source": "hybrid-search-2026-04-29"
+  },
+  {
+    "id": "vi-013",
+    "prompt": "네",
+    "expected_tool": "none",
+    "rationale": "short acknowledgement",
+    "source": "valuein-2026-04-29"
+  },
+  {
+    "id": "vi-014",
+    "prompt": "2번으로 진행하세요.",
+    "expected_tool": "none",
+    "rationale": "local choice instruction without retrieval need",
+    "source": "valuein-2026-05-02"
+  }
+]
