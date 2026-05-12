@@ -2,7 +2,120 @@
 
 ---
 
-## 🔴 현재 세션 인계 (2026-04-22, 22회차) — 다음 세션 여기부터 읽을 것
+## 🔴 현재 세션 인계 (2026-05-12) — 다음 세션 여기부터 읽을 것
+
+### 한줄 요약
+
+**Tool Router + Quality Signals plan의 Phase 1–3 완료 + 커밋.** valuein 실사용 회고에서 드러난 3대 갭(AI grep 편향 / pre-fetch 노이즈 / 결과 품질 자가평가 부재)을 해소하는 4-Phase 계획(`docs/plans/2026-05-01-router-and-quality-signals.md`)을 Codex가 단계별 구현. 6개 success goal 중 **G1/G2/G3 통과**. 남은 작업은 **Phase 4 (CLAUDE.md / AGENTS.md sentinel-marker 템플릿)** + G4 replay 측정. 934/934 그린.
+
+### ✅ 이 세션 완료된 것
+
+**1. Plan 작성 + ACTIVE 승격**
+- `docs/plans/2026-05-01-router-and-quality-signals.md` (DRAFT → ACTIVE)
+- 6 success goal (G1–G6), 4 decisions (D1–D4), 4 phase 명시
+- Codex 핸드오프 가능하도록 self-contained
+
+**2. Phase 1 — Index noise filter (`f31ccf3`)**
+- Scanner: `.pdf/.epub/Office/media/archive` 확장자 기본 제외
+- `_under_content_root` segment 매칭 (nested `docs/.../학습/` 잡힘)
+- `[scanner.exclude]` config, `reindex --include-content`, `doctor`에 excluded-paths summary
+- `.hybrid-search/qa-archive/` 인덱스 제외
+- Embedder 429 backoff 강화 (5→12 retry, exp backoff, ms hint 파싱)
+- `benchmarks/prefetch_precision.py` 신규 (G1 측정)
+- **G1 ✅ 91.57% → 90.36%** (≥90% 유지)
+
+**3. Phase 2 — Quality signals (`edfae35`)**
+- `HybridSearchResponse`에 `top_score`, `score_gap`, `confidence`, `fallback_hint` 추가
+- `src/hybrid_search/memory/router.py` 신규: `classify_confidence`, `fallback_hint`, `has_identifier_shape_token`, `distinctive_token`
+- MCP tool response + pre-fetch hook 둘 다 노출 (360자 cap 유지)
+- `cli.py recalibrate` 서브커맨드 + `[router.confidence]` config block (idempotent)
+- `DEFAULT_ROUTER_CONFIDENCE` = `{strong_score=0.016081, strong_gap=0.000656, weak_score=0.014864}` (valuein gold 기준)
+- `_has_quality_anchor` 보조 휴리스틱: module/memory card나 identifier token 있으면 weak→mixed 승급 (RRF가 카드 underrate하는 보정 — spec엔 없지만 정직한 동기)
+- `benchmarks/confidence_eval.py` 신규 (G2 측정)
+- **G2 ✅ precision 100%, recall 88.89%** (≥80% 둘 다)
+
+**4. Phase 3 — Heuristic router (`8a596a5`)**
+- `router.py::classify_prompt(prompt) → RouterDecision(tool, reason)`
+- Precedence: **grep > memory > hybrid_search exploratory > default**
+- grep 신호: backtick, CamelCase ≥8, `*.{ts,py,...}`, file path, error/Traceback
+- memory 신호: `지난번`, `이전에`, `왜 이렇게 결정`, EN: `last time`, `previously`, `earlier we decided`
+- hybrid_search 신호: `_EXPLORATORY_TOKENS_KO` 재사용 + EN `why`, `how does`, `flow of`, `where is X handled`
+- `hook_runtime._format_user_prompt_context`에 route line 추가, 360자 초과 시 "drop last hit" fallback
+- `HYBRID_SEARCH_ROUTER=0`으로 끌 수 있음
+- `benchmarks/router_gold.json` 31개 prompt (이 repo + valuein qa에서 손라벨링)
+- `benchmarks/router_eval.py` 신규 (G3 측정)
+- **G3 ✅ 87.10% (27/31)** — grep 9/9, hybrid_search 9/9, memory 9/9, none 0/4 (spec상 default=hybrid_search, "none" 라벨은 회귀 방어용 보존)
+
+**5. 사전 발견 + 수정**
+- 어제 Codex 커밋(`cde848b`)이 .codex/, .hybrid-search/, qa-archive transcript 등 머신-로컬 파일을 통째 커밋했던 것을 발견 → `reset --soft` 후 `.gitignore`를 `.hybrid-search/` + `.codex/` 통째로 단순화하여 재커밋(`4333d70`)
+- Hook cwd 해석 버그 수정(`0700191`): cwd가 nested 콘텐츠 폴더일 때 `.hybrid-search/`를 거기 새로 만들던 문제. 이제 `.git` / `.hybrid-search` ancestor를 찾고 없으면 silent skip
+- `docs/plan` (singular) → `docs/plans`로 병합(`bfb65c4`), legacy plan 4개 분류:
+  - `2026-04-14-design.md`, `2026-04-16-conversation-indexing.md` → completed/
+  - `2026-04-21-memory-layer-10x.md`, `2026-04-21-PLAN_q1_routing_hook.md` → archive/
+- `test_qa_reader` 날짜 의존 테스트 수정(`0339157`): 하드코딩된 "04"를 월-agnostic 매칭으로
+- Hook context 토큰 노이즈 축소(`a1b7e44`): SessionStart 20→3 topics, pre-fetch 8→3 hits, 360자 cap
+
+### 🔜 다음 할일 (새 세션에서 시작)
+
+**Phase 4 — CLAUDE.md / AGENTS.md sentinel-marker 템플릿 (G4 측정 포함)**
+
+Plan: `docs/plans/2026-05-01-router-and-quality-signals.md` 참조.
+
+핵심 작업:
+1. `setup` 커맨드가 sentinel marker(`<!-- BEGIN/END hybrid-search-mcp routing v1 -->`) 안에 라우팅 블록을 idempotent하게 write/replace
+2. 블록 내용: 라우팅 표 + "Before any retrieval call, state in one sentence which tool you picked and why" self-justify 룰 + confidence band contract (weak → 대체 도구로 fallback)
+3. `setup --dry-run`: unified diff 출력 후 write 안 함
+4. Corrupted (BEGIN만 있거나 END만 있는) 케이스: abort + 명확한 에러
+5. Re-run 시 byte-identical (no diff)
+6. CLAUDE.md (Claude 프로젝트) + AGENTS.md (Codex 프로젝트) 둘 다 처리
+
+**G4 측정**:
+- 새 measurement script: `benchmarks/router_replay.py` (또는 manual `benchmarks/router_replay_2026-05.md`)
+- valuein-style multi-domain trace 재현 (4 win 케이스 from `project_valuein_field_report_v2.md`)
+- baseline: router/template OFF로 측정 → 그 후 ON 상태로 같은 시나리오
+- 목표: first-pick tool correctness **≥ 90%**
+
+Codex 핸드오프 프롬프트 만들 때 참고:
+- Phase 1–3 패턴 답습 (self-contained, acceptance checkbox, don't-commit)
+- D4 알고리즘은 plan에 명시되어 있음
+- 기존 `_CLAUDE_MD_MARKER = "<!-- hybrid-search-mcp:routing -->"` 패턴이 `cli.py`에 이미 있음 — 충돌 없도록 versioned marker(`routing v1`)로 정확히 따라갈 것
+- AGENTS.md용 marker는 `codex-routing`이 이미 cli.py에서 쓰이는 중 → v1 suffix 추가하거나 새 명명 협의 필요
+
+### 📊 현재 상태 스냅샷 (2026-05-12 기준)
+
+```
+Branch:  main
+HEAD:    8a596a5 feat(router): Phase 3 — heuristic prompt router for UserPromptSubmit
+Tests:   934/934 green
+Goals:   G1 ✅ G2 ✅ G3 ✅ | G4 🔜 G5 ✅ (사실상) G6 ✅
+```
+
+최근 5 커밋:
+```
+8a596a5 feat(router): Phase 3 — heuristic prompt router for UserPromptSubmit
+edfae35 feat(router): Phase 2 — quality signals (top_score/score_gap/confidence)
+f31ccf3 feat(router): Phase 1 — content noise filter for indexer + G1 measurement
+3db2ae4 docs: ACTIVE plan for tool router + quality signals
+0339157 fix: make qa prune test date-agnostic
+```
+
+### 🔑 빠른 컨텍스트 — 새 세션 처음 5분에 봐야 할 것
+
+1. `docs/plans/2026-05-01-router-and-quality-signals.md` — Phase 4 spec
+2. `~/.claude/projects/-Users-ian-project-claude-project-hybrid-search-mcp/memory/project_valuein_field_report_v2.md` — field 검증 데이터
+3. `~/.claude/projects/.../memory/feedback_no_new_mcp_tools.md` — Phase 4도 CLI/hook surface만, MCP 도구 추가 금지
+4. `src/hybrid_search/cli.py::cmd_setup` (1700~) — 기존 setup 흐름
+5. `src/hybrid_search/cli.py`의 기존 `_CLAUDE_MD_MARKER` / `"<!-- hybrid-search-mcp:codex-routing -->"` — 신규 marker 명명 충돌 검토 출발점
+
+### ⚠️ Phase 4 시작 전 의사결정 필요한 것
+
+- 기존 `routing` 마커(이미 setup이 쓰는 중)와 신규 `routing v1` 마커가 공존할지, 마이그레이션할지
+- `setup --dry-run`을 새로 만들지, 기존 `setup`에 flag 추가할지
+- G4 측정 자동화 vs manual replay (manual이 더 정직하지만 재현성 떨어짐)
+
+---
+
+## 🔵 이전 세션 인계 (2026-04-22, 22회차) — 참고용
 
 ### 한줄 요약
 
