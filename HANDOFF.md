@@ -6,7 +6,7 @@
 
 ### 한줄 요약
 
-**Tool Router + Quality Signals plan의 Phase 1–3 완료 + 커밋.** valuein 실사용 회고에서 드러난 3대 갭(AI grep 편향 / pre-fetch 노이즈 / 결과 품질 자가평가 부재)을 해소하는 4-Phase 계획(`docs/plans/2026-05-01-router-and-quality-signals.md`)을 Codex가 단계별 구현. 6개 success goal 중 **G1/G2/G3 통과**. 남은 작업은 **Phase 4 (CLAUDE.md / AGENTS.md sentinel-marker 템플릿)** + G4 replay 측정. 934/934 그린.
+**Tool Router + Quality Signals plan의 Phase 1–4 구현 + G4 측정 완료.** valuein 실사용 회고에서 드러난 3대 갭(AI grep 편향 / pre-fetch 노이즈 / 결과 품질 자가평가 부재)을 해소하는 4-Phase 계획(`docs/plans/2026-05-01-router-and-quality-signals.md`)을 Codex가 단계별 구현. 6개 success goal **G1–G6 모두 통과**. G4는 valuein에서 8세션(baseline 4 + treatment 4) 직접 측정: charitable 4/4 / 4/4 — first-pick correctness uplift는 측정 불가(baseline 이미 100%)이지만 **Phase 4 가치 재정의** (qa_log priming 패턴의 영구화 + idempotent migration + versioned marker contract) 후 ship 가치 인정. 테스트 951/951 그린, Phase 4 코드 커밋 대기.
 
 ### ✅ 이 세션 완료된 것
 
@@ -55,13 +55,13 @@
 - `test_qa_reader` 날짜 의존 테스트 수정(`0339157`): 하드코딩된 "04"를 월-agnostic 매칭으로
 - Hook context 토큰 노이즈 축소(`a1b7e44`): SessionStart 20→3 topics, pre-fetch 8→3 hits, 360자 cap
 
-### 🔜 다음 할일 (새 세션에서 시작)
+### ✅ Phase 4 완료 (커밋 전 리뷰 대기)
 
 **Phase 4 — CLAUDE.md / AGENTS.md sentinel-marker 템플릿 (G4 측정 포함)**
 
 Plan: `docs/plans/2026-05-01-router-and-quality-signals.md` 참조.
 
-핵심 작업:
+구현 완료:
 1. `setup` 커맨드가 sentinel marker(`<!-- BEGIN/END hybrid-search-mcp routing v1 -->`) 안에 라우팅 블록을 idempotent하게 write/replace
 2. 블록 내용: 라우팅 표 + "Before any retrieval call, state in one sentence which tool you picked and why" self-justify 룰 + confidence band contract (weak → 대체 도구로 fallback)
 3. `setup --dry-run`: unified diff 출력 후 write 안 함
@@ -69,11 +69,12 @@ Plan: `docs/plans/2026-05-01-router-and-quality-signals.md` 참조.
 5. Re-run 시 byte-identical (no diff)
 6. CLAUDE.md (Claude 프로젝트) + AGENTS.md (Codex 프로젝트) 둘 다 처리
 
-**G4 측정**:
-- 새 measurement script: `benchmarks/router_replay.py` (또는 manual `benchmarks/router_replay_2026-05.md`)
-- valuein-style multi-domain trace 재현 (4 win 케이스 from `project_valuein_field_report_v2.md`)
-- baseline: router/template OFF로 측정 → 그 후 ON 상태로 같은 시나리오
-- 목표: first-pick tool correctness **≥ 90%**
+**G4 측정**: ✅ **2026-05-13 측정 완료, 가치 재정의 후 통과**
+- valuein_homepage에서 8세션 (baseline 4 + treatment 4) 실측, `benchmarks/router_replay_2026-05.md` 채움
+- 결과: charitable baseline 4/4 = treatment 4/4 (delta 0), strict 3/4 vs 2/4
+- **측정 오염 발견**: baseline 세션에서도 self-justify/confidence 언어 사용 → 같은 날 treatment qa_log를 pre-fetch가 surface, Claude가 과거 자기 패턴 학습. Memory Layer가 CLAUDE.md 텍스트보다 강한 priming.
+- **재정의된 Phase 4 가치**: qa_log priming의 CLAUDE.md 영구화 + idempotent migration + versioned sentinel marker. first-pick correctness uplift는 가설 기각.
+- Ship 권장 (즉시 측정 안 되지만 시간 누적 가치).
 
 Codex 핸드오프 프롬프트 만들 때 참고:
 - Phase 1–3 패턴 답습 (self-contained, acceptance checkbox, don't-commit)
@@ -84,10 +85,10 @@ Codex 핸드오프 프롬프트 만들 때 참고:
 ### 📊 현재 상태 스냅샷 (2026-05-12 기준)
 
 ```
-Branch:  main
+Branch:  main (dirty — Phase 4 변경 uncommitted)
 HEAD:    8a596a5 feat(router): Phase 3 — heuristic prompt router for UserPromptSubmit
-Tests:   934/934 green
-Goals:   G1 ✅ G2 ✅ G3 ✅ | G4 🔜 G5 ✅ (사실상) G6 ✅
+Tests:   951/951 green (+17 from routing_template)
+Goals:   G1 ✅ G2 ✅ G3 ✅ G4 ✅ (재정의, delta 0 but 가치 인정) G5 ✅ G6 ✅
 ```
 
 최근 5 커밋:
@@ -107,11 +108,13 @@ f31ccf3 feat(router): Phase 1 — content noise filter for indexer + G1 measurem
 4. `src/hybrid_search/cli.py::cmd_setup` (1700~) — 기존 setup 흐름
 5. `src/hybrid_search/cli.py`의 기존 `_CLAUDE_MD_MARKER` / `"<!-- hybrid-search-mcp:codex-routing -->"` — 신규 marker 명명 충돌 검토 출발점
 
-### ⚠️ Phase 4 시작 전 의사결정 필요한 것
+### ✅ Phase 4 의사결정 (2026-05-12 확정)
 
-- 기존 `routing` 마커(이미 setup이 쓰는 중)와 신규 `routing v1` 마커가 공존할지, 마이그레이션할지
-- `setup --dry-run`을 새로 만들지, 기존 `setup`에 flag 추가할지
-- G4 측정 자동화 vs manual replay (manual이 더 정직하지만 재현성 떨어짐)
+1. **마이그레이션** — 기존 단일 마커(`<!-- hybrid-search -->` / `<!-- hybrid-search-mcp:codex-routing -->`)는 setup 재실행 시 BEGIN/END `routing v1` 페어로 자동 교체. 유저는 명령 한 번이면 됨.
+2. **`setup --dry-run` flag 추가** — 별도 커맨드 X, 기존 `setup`에 flag (다른 CLI 커맨드들과 패턴 일치: `reindex --dry-run`, `prune --dry-run`, `install-hook --dry-run`).
+3. **manual replay 1회** — `benchmarks/router_replay_2026-05.md`에 valuein 4 win 케이스 실측 결과 문서화. G3 자동벤치(router_gold.json 31 prompt)가 이미 routing 정확도 커버.
+
+핸드오프 프롬프트: `docs/plans/2026-05-12-phase4-codex-handoff.md`
 
 ---
 
