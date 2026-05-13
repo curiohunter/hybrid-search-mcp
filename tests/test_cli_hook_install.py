@@ -28,6 +28,7 @@ from hybrid_search.cli import (
     _remove_claude_md,
     _write_memory_report,
     _write_needs_synthesis_flag,
+    cmd_setup,
     cmd_install_hook,
     cmd_maintain,
     cmd_memory_refresh,
@@ -312,7 +313,7 @@ class TestEnsureClaudeMd:
         claude_md = tmp_path / "CLAUDE.md"
         assert claude_md.exists()
         content = claude_md.read_text(encoding="utf-8")
-        assert _CLAUDE_MD_MARKER in content
+        assert "<!-- BEGIN hybrid-search-mcp routing v1 -->" in content
         assert "반드시 이 순서로" in content
 
     def test_inserts_after_h1_when_present(self, tmp_path: Path) -> None:
@@ -322,7 +323,7 @@ class TestEnsureClaudeMd:
         content = claude_md.read_text(encoding="utf-8")
         lines = content.splitlines()
         h1_idx = next(i for i, ln in enumerate(lines) if ln.startswith("# "))
-        marker_idx = next(i for i, ln in enumerate(lines) if _CLAUDE_MD_MARKER in ln)
+        marker_idx = next(i for i, ln in enumerate(lines) if "hybrid-search-mcp routing v1" in ln)
         assert h1_idx < marker_idx, "hybrid-search block must follow the H1"
         assert "Existing intro paragraph." in content
 
@@ -391,9 +392,73 @@ class TestRemoveClaudeMd:
         assert _remove_claude_md(str(tmp_path)) is True
         content = claude_md.read_text(encoding="utf-8")
         assert _CLAUDE_MD_MARKER not in content
-        assert "의도 기반 라우팅" not in content
+        assert "검색 전략" not in content
         assert "## Follow-up" in content
         assert "keep me" in content
+
+
+class TestSetupRoutingFlags:
+    def _home(self, tmp_path: Path, monkeypatch) -> Path:
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        return home
+
+    def test_setup_dry_run_prints_diff_without_mutation(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        home = self._home(tmp_path, monkeypatch)
+        project = tmp_path / "project"
+        project.mkdir()
+        claude_md = project / "CLAUDE.md"
+        original = "# Project\n"
+        claude_md.write_text(original, encoding="utf-8")
+
+        cmd_setup(argparse.Namespace(cwd=str(project), dry_run=True, force=False))
+
+        out = capsys.readouterr().out
+        assert "--- " in out
+        assert "CLAUDE.md (current)" in out
+        assert "AGENTS.md (proposed)" in out
+        assert "hook/config installation skipped" in out
+        assert claude_md.read_text(encoding="utf-8") == original
+        assert not (project / "AGENTS.md").exists()
+        assert not (home / ".claude.json").exists()
+
+    def test_setup_migrates_legacy_claude(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        self._home(tmp_path, monkeypatch)
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text(
+            f"{_CLAUDE_MD_MARKER}\n## 검색 전략 — old\nlegacy\n",
+            encoding="utf-8",
+        )
+
+        cmd_setup(argparse.Namespace(cwd=str(project), dry_run=False, force=False))
+
+        text = (project / "CLAUDE.md").read_text(encoding="utf-8")
+        assert "<!-- BEGIN hybrid-search-mcp routing v1 -->" in text
+        assert _CLAUDE_MD_MARKER not in text
+
+    def test_setup_force_recovers_corrupted_claude(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        self._home(tmp_path, monkeypatch)
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text(
+            "<!-- BEGIN hybrid-search-mcp routing v1 -->\nold\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_setup(argparse.Namespace(cwd=str(project), dry_run=False, force=False))
+
+        cmd_setup(argparse.Namespace(cwd=str(project), dry_run=False, force=True))
+        text = (project / "CLAUDE.md").read_text(encoding="utf-8")
+        assert text.count("hybrid-search-mcp routing v1") == 2
 
 
 # ---------------------------------------------------------------------------

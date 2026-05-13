@@ -29,6 +29,13 @@ from hybrid_search.index.scanner import (
     get_changed_files_from_git,
     parse_git_diff_name_status,
 )
+from hybrid_search.memory.routing_template import (
+    LEGACY_CLAUDE_MARKER,
+    ROUTING_BODY,
+    agents_block,
+    apply_update,
+    claude_block,
+)
 
 # M3: Post-commit hook captures ``git diff --name-status HEAD~1 HEAD`` at the
 # exact commit moment and exports it via this env var. ``cmd_reindex`` then
@@ -151,98 +158,44 @@ def _detect_project(registry: ProjectRegistry, cwd: str) -> tuple[str, str] | No
     return best
 
 
-_CLAUDE_MD_MARKER = "<!-- hybrid-search -->"
+_CLAUDE_MD_MARKER = LEGACY_CLAUDE_MARKER
 
 # v0.3.0: imperative routing rules that name the MCP tool explicitly. The
 # weaker descriptive version shipped in v0.2.x let Claude drift toward
 # Grep for exploratory questions; this version locks tool choice per
 # question category and cites the MCP path by full name.
-_CLAUDE_MD_SECTION = """<!-- hybrid-search -->
-## 검색 전략 — 반드시 이 순서로
-
-이 프로젝트는 `hybrid-search-mcp` Memory Layer가 설치돼 있다. **아래 규칙을 예외 없이 지킬 것.**
-
-| 질문 유형 | 신호 | **반드시 먼저 호출** | 보충 |
-|---|---|---|---|
-| **기능 탐색** | "어떤 기능", "관련 기능", "어떻게 구성", "흐름", "설명해줘", "정리해줘", "아키텍처" | `mcp__hybrid-search__hybrid_search` | Grep, Read |
-| **설계/맥락** | "왜 이렇게", "배경", "이유", "결정", "히스토리", "지난번" | `mcp__hybrid-search__hybrid_search` | Wiki |
-| **스키마/DB** | "테이블", "마이그레이션", "DDL", "스키마 변화" | `mcp__hybrid-search__hybrid_search` (file_pattern `*.sql`) | Grep |
-| **구조/관계** | "전체 그림", "누가 호출", "의존" | Wiki (`.hybrid-search/wiki/index.md`) | `mcp__hybrid-search__hybrid_search` |
-| **정밀 조회** | 정확한 심볼명 / 파일명 / 에러 문자열 | Grep | Read |
-
-**운영 규칙**:
-- **탐색형 질문에 Grep 먼저 호출 금지** — 반드시 `mcp__hybrid-search__hybrid_search` 먼저.
-- 1차에서 답이 부족해도 도구를 **바꾸지 말고 같은 레인에서 보충** (hybrid→wiki MCP 레인, grep→read 텍스트 레인).
-- Wiki는 `.hybrid-search/wiki/index.md`에서 시작, `[[링크]]` 있으면 따라갈 것.
-
-**자동 동작 (수동 개입 불필요)**:
-- 질문 시작 시 관련 과거 Q&A 자동 컨텍스트 주입 (UserPromptSubmit)
-- 세션 시작 시 최근 Q&A 요약 주입 (SessionStart)
-- 답변 종료 시 `.hybrid-search/qa/`에 자동 저장 (Stop)
-- `git commit` 후 변경 파일만 재인덱싱 + 좀비 wiki 자동 삭제
-"""
+_CLAUDE_MD_SECTION = f"{_CLAUDE_MD_MARKER}\n{ROUTING_BODY}"
 
 
-def _ensure_claude_md(project_path: str) -> None:
-    """Install or update hybrid-search section in CLAUDE.md. Idempotent.
-
-    On re-install, replaces the existing section in-place (marker-bounded
-    from ``<!-- hybrid-search -->`` up to the next top-level ``## `` heading
-    or EOF). First-install inserts at the top, after the first ``# `` H1 if
-    present. Removal is exposed via ``_remove_claude_md``.
-    """
-    import re as _re
+def _ensure_claude_md(project_path: str, *, force: bool = False) -> None:
+    """Install or update the versioned hybrid-search routing block."""
     claude_md = Path(project_path) / "CLAUDE.md"
-
-    if claude_md.exists():
-        content = claude_md.read_text(encoding="utf-8")
-        pattern = _re.compile(
-            _re.escape(_CLAUDE_MD_MARKER) + r"\n## [^\n]+\n.*?(?=\n## |\Z)",
-            flags=_re.DOTALL,
-        )
-        if pattern.search(content):
-            # Lambda replacement avoids back-reference parsing in the section body.
-            new_content = pattern.sub(lambda _m: _CLAUDE_MD_SECTION.rstrip("\n"), content)
-            # Preserve the original's trailing newline if any — keeps diff minimal.
-            if content.endswith("\n") and not new_content.endswith("\n"):
-                new_content += "\n"
-            if new_content != content:
-                claude_md.write_text(new_content, encoding="utf-8")
-                print("CLAUDE.md: hybrid-search section updated")
-            return
-        # First install — insert at TOP (after first H1 if exists)
-        lines = content.split("\n")
-        insert_at = 0
-        for i, line in enumerate(lines):
-            if line.startswith("# "):
-                insert_at = i + 1
-                while insert_at < len(lines) and not lines[insert_at].strip():
-                    insert_at += 1
-                break
-        lines.insert(insert_at, _CLAUDE_MD_SECTION)
-        claude_md.write_text("\n".join(lines), encoding="utf-8")
-        print("CLAUDE.md: hybrid-search section added (top)")
-    else:
-        claude_md.write_text(_CLAUDE_MD_SECTION.lstrip(), encoding="utf-8")
-        print("CLAUDE.md: created with hybrid-search instructions")
+    result = apply_update(claude_md, claude_block(), force=force)
+    if result.status == "fresh_install":
+        print("CLAUDE.md: hybrid-search routing block added")
+    elif result.status == "migrate_legacy":
+        print("CLAUDE.md: migrated legacy routing block to v1")
+    elif result.status == "update":
+        print("CLAUDE.md: hybrid-search routing block updated")
 
 
 def _remove_claude_md(project_path: str) -> bool:
-    """Remove the hybrid-search section from CLAUDE.md. Returns True if removed.
-
-    Uses the same marker-bounded regex as :func:`_ensure_claude_md`. Safe if
-    the section is missing or the file does not exist.
-    """
+    """Remove the hybrid-search section from CLAUDE.md. Returns True if removed."""
     import re as _re
     claude_md = Path(project_path) / "CLAUDE.md"
     if not claude_md.exists():
         return False
     content = claude_md.read_text(encoding="utf-8")
-    pattern = _re.compile(
+    legacy_pattern = _re.compile(
         r"\n*" + _re.escape(_CLAUDE_MD_MARKER) + r"\n## [^\n]+\n.*?(?=\n## |\Z)",
         flags=_re.DOTALL,
     )
-    new_content = pattern.sub("", content)
+    v1_pattern = _re.compile(
+        r"\n*^<!-- BEGIN hybrid-search-mcp routing v\d+ -->\n.*?"
+        r"^<!-- END hybrid-search-mcp routing v\d+ -->\n?",
+        flags=_re.DOTALL | _re.MULTILINE,
+    )
+    new_content = v1_pattern.sub("", legacy_pattern.sub("", content))
     if new_content == content:
         return False
     claude_md.write_text(new_content.lstrip("\n"), encoding="utf-8")
@@ -4142,6 +4095,26 @@ def cmd_setup(args: argparse.Namespace) -> None:
     import json as _json
 
     project_path = Path(getattr(args, "cwd", ".")).resolve()
+    dry_run = bool(getattr(args, "dry_run", False))
+    force = bool(getattr(args, "force", False))
+
+    if dry_run:
+        try:
+            for path, block in (
+                (project_path / "CLAUDE.md", claude_block()),
+                (project_path / "AGENTS.md", agents_block()),
+            ):
+                result = apply_update(path, block, dry_run=True, force=force)
+                if result.diff:
+                    print(result.diff, end="" if result.diff.endswith("\n") else "\n")
+                else:
+                    print(f"{path.name}: no change")
+        except (RuntimeError, NotImplementedError) as exc:
+            print(f"ERROR: {exc}")
+            raise SystemExit(1) from exc
+        print("setup --dry-run: no files written; hook/config installation skipped.")
+        return
+
     venv_python = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python"
     if not venv_python.exists():
         venv_python = Path(sys.executable)
@@ -4336,14 +4309,17 @@ def cmd_setup(args: argparse.Namespace) -> None:
         else:
             print(f"Claude memory hooks installed: {project_settings}")
 
-        codex_result = codex_hooks.install_codex_hook(project_path)
+        codex_result = codex_hooks.install_codex_hook(project_path, force=force)
         if codex_result["status"] == "exists":
             print(f"Codex memory hooks already present: {codex_result['hooks_path']}")
         else:
             print(f"Codex memory hooks installed: {codex_result['hooks_path']}")
 
-        _ensure_claude_md(str(project_path))
+        _ensure_claude_md(str(project_path), force=force)
         _ensure_gitignore_entries(project_path)
+    except (RuntimeError, NotImplementedError) as exc:
+        print(f"ERROR: {exc}")
+        raise SystemExit(1) from exc
     except Exception as exc:
         print(f"Project memory setup skipped: {exc}")
 
@@ -4634,6 +4610,8 @@ def main() -> None:
     # ── Setup & admin ──
     p_setup = sub.add_parser("setup", help="One-time setup: register MCP server + memory hooks")
     p_setup.add_argument("--cwd", default=".", help="Project directory")
+    p_setup.add_argument("--dry-run", action="store_true", help="Preview setup changes without writing")
+    p_setup.add_argument("--force", action="store_true", help="Recover from corrupted routing markers")
 
     p_doctor = sub.add_parser("doctor", help="Diagnose Memory Layer setup and corpus health")
     p_doctor.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
