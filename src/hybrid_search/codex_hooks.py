@@ -11,10 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from hybrid_search.memory import hook_runtime
+from hybrid_search.memory.routing_template import (
+    LEGACY_AGENTS_MARKER,
+    agents_block,
+    apply_update,
+)
 
 _PENDING_REL = Path(".hybrid-search") / "runtime" / "codex-last-prompt.json"
 _HOOK_MARKER = "hybrid_search.cli codex-hook"
-_AGENTS_MARKER = "<!-- hybrid-search-mcp:codex-routing -->"
+_AGENTS_MARKER = LEGACY_AGENTS_MARKER
 
 
 def codex_context_response(event: str, text: str) -> dict[str, Any]:
@@ -353,22 +358,8 @@ def _append_unique_line(path: Path, line: str) -> bool:
 
 
 def _update_agents_md(path: Path) -> bool:
-    section = f"""{_AGENTS_MARKER}
-## Hybrid Search Memory
-
-- Use `mcp__hybrid-search__hybrid_search` for project memory and code/docs search when context may already exist.
-- Codex hooks inject relevant hybrid-search memory before exploratory prompts and save completed turns after answers.
-"""
-    existing = ""
-    if path.exists():
-        try:
-            existing = path.read_text(encoding="utf-8")
-        except OSError:
-            existing = ""
-    if _AGENTS_MARKER in existing:
-        return False
-    path.write_text((existing.rstrip() + "\n\n" + section).lstrip(), encoding="utf-8")
-    return True
+    result = apply_update(path, agents_block())
+    return result.written
 
 
 def _has_toml_codex_config(path: Path) -> tuple[bool, bool]:
@@ -391,6 +382,7 @@ def install_codex_hook(
     *,
     user: bool = False,
     dry_run: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Install Codex hooks.json plus config.toml MCP registration."""
     if user:
@@ -424,7 +416,8 @@ def install_codex_hook(
     if not user:
         gitignore_changed = _append_unique_line(project_root / ".gitignore", ".hybrid-search/runtime/")
         if agents_path is not None:
-            agents_changed = _update_agents_md(agents_path)
+            result = apply_update(agents_path, agents_block(), force=force)
+            agents_changed = result.written
 
     changed = any((added, updated, feature_changed, mcp_changed, gitignore_changed, agents_changed))
     return {
