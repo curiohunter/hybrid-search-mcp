@@ -40,6 +40,8 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 - **Router Phase 3 — heuristic prompt router**. User prompt hooks now surface
   a bounded route suggestion for `hybrid_search`, `grep`, or `memory`, backed
   by a hand-labeled router benchmark.
+- `setup --dry-run`: preview CLAUDE.md/AGENTS.md changes without writing.
+- `setup --force`: recover from a corrupted routing block.
 
 ### Changed
 
@@ -47,6 +49,15 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   without it remain valid.
 - Memory-aware ranking now boosts curated `memory_card` chunks above raw
   `qa_log` chunks for explicit recall queries.
+- CLAUDE.md and AGENTS.md routing sections now use versioned sentinel
+  markers (`<!-- BEGIN/END hybrid-search-mcp routing v1 -->`). Existing
+  installs migrate automatically on the next `setup`. Idempotent —
+  re-running `setup` on a current install produces no diff.
+- Routing block now includes a self-justify rule (one-sentence tool
+  choice per call) and a weak-confidence fallback contract. G4 manual
+  replay (`benchmarks/router_replay_2026-05.md`) showed these rules
+  were already being followed via qa_log priming; the durable value is
+  pinning the contract in CLAUDE.md so it survives qa_log churn.
 
 ## [0.4.0] — 2026-04-23
 
