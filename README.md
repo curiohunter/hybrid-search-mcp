@@ -1,20 +1,30 @@
 # Hybrid Search MCP
 
-**A code search that learns from your questions.**
-The more you use it, the better it gets — at *your* codebase specifically.
+**One memory. Claude Code or Codex — doesn't matter.**
+Questions you ask in one agent become context the other agent sees tomorrow.
+Auto-save, auto-recall, Korean + English.
 
 Hybrid BM25 + Vector + Memory Layer. Cross-language (Korean ↔ English)
 across code, docs, and your own past exchanges.
 
 ```
-Turn 1:  "how does portal-v3 work?"            → answer from code
-Turn 2:  "지난번에 portal-v3 뭐 물어봤지?"       → surfaces Turn 1's exchange
-Turn 3:  "portal 인증 흐름"                    → uses Turn 1 as context
+Day 1 (Claude Code): "portal-v3 인증 흐름이 어떻게 되지?"
+                     → answers from code, saves Q&A to .hybrid-search/qa/
+
+Day 2 (Codex):       "portal 인증 어디서 처리해?"
+                     → pre-fetch surfaces Day 1's exchange before Codex even searches
 ```
 
-That third turn didn't search the code fresh — it found the *conversation*
-you had earlier, and used your own prior question as context. Every
-answered query becomes a first-class search result for every future query.
+The Day-2 turn didn't re-search the code fresh — yesterday's Claude Code
+answer surfaced as context inside Codex. Every answered query becomes a
+first-class search result for every future query, in either agent.
+
+**Trade-offs you should know up-front** (we've measured them):
+- First-query latency adds **~400 ms** of pre-fetch overhead (vs ~50 ms `grep`). Worth it for exploratory questions; not for `grep`-shaped lookups (and the router knows the difference).
+- Default embedder = **OpenAI `text-embedding-3-small`** (API key required). Local fallback exists but recall drops.
+- "0-config" is *almost* true: one `pip install` + one `setup` command after, but you also need `OPENAI_API_KEY` and (for Codex) a separate `install-codex-hook`.
+
+**Who this is for:** 1인 개발자가 Claude Code를 주력으로 + 가끔 Codex도 쓰면서, 같은 코드베이스에서 반복 질문을 줄이고 싶은 사람. Korean + English 코드베이스에서 검증됨 (valuein_homepage 708-commit, 1,307 files).
 
 **v0.3.0 (2026-04-23): deterministic guarantees.** Four Claude Code hooks
 (PreToolUse, SessionStart, UserPromptSubmit, Stop) wire the memory layer
@@ -35,18 +45,27 @@ pre-enriched.
 
 ## Why this is different
 
-Every other code-search tool indexes once and searches forever:
+Most code-search and memory tools either (a) index source once and forget
+your conversations, or (b) live inside one agent's UI:
 
 - Sourcegraph / Cody: static embeddings of source files.
-- Cursor / Aider: ephemeral context, forgotten next session.
+- Cursor / Aider: ephemeral context, tied to one tool, forgotten next session.
 - Graphify: knowledge graph, rebuilt on commit.
 - ChatGPT Memory: personal preferences, no code context.
+- Mem0 / Letta: agent memory, but you wire it in and manage facts manually.
 
-This tool is the **first** to close the loop: the answer to your last
-question becomes indexed context for the next question. No configuration,
-no "memory" dashboard — it just happens. Your `.hybrid-search/qa/`
-directory is the log of every exchange, in plain markdown, grep-able
-and git-able.
+Two things make this stack different:
+
+1. **Closed loop, automatic.** The answer to your last question becomes
+   indexed context for the next question. No "save this" command, no memory
+   dashboard — every turn persists via the Stop hook, every prompt gets
+   enriched via the UserPromptSubmit hook.
+2. **One memory, two agents.** Claude Code and Codex hooks both read and
+   write the same `.hybrid-search/qa/` directory. Yesterday's Claude session
+   informs today's Codex session, and vice versa.
+
+Your `.hybrid-search/qa/` directory is the log of every exchange, in plain
+markdown, grep-able and git-able.
 
 ### The Memory Layer at a glance
 
@@ -60,6 +79,25 @@ and git-able.
 | Paste a secret by accident | Regex filter drops sensitive queries before they touch disk |
 
 **Turn it off anytime:** `export HYBRID_SEARCH_QA_LOG=0`.
+
+### How it compares (honestly)
+
+`⚠️` means "claim is partly true." We won't pretend everything is `✅`.
+
+| Project | Claude Code | Codex | 한글 | Q&A auto-save | Wiki auto-gen | Hooks | Setup | Embedding | 1st-query latency |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Mem0 | API only | API only | ❌ | manual | ❌ | ❌ | complex | external | n/a |
+| Letta (MemGPT) | ❌ | ❌ | ❌ | ⚠️ | ❌ | ❌ | complex | external | n/a |
+| Aider repo map | ❌ | ❌ | ❌ | ❌ | ❌ | self | ✅ | none | <50 ms |
+| `@mcp/server-memory` (official) | ✅ key-val | ✅ key-val | ❌ | ❌ | ❌ | ❌ | ✅ | none | <10 ms |
+| Continue.dev context | VS Code only | ❌ | ⚠️ | ❌ | ❌ | ⚠️ | ⚠️ | mixed | varies |
+| **hybrid-search-mcp** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ 1-command after install | ⚠️ OpenAI by default | **~400 ms** |
+
+What this table says, plainly:
+
+- **Strict wins:** `Q&A auto-save`, `wiki auto-gen`, dual-agent (Claude Code **and** Codex), Korean, hooks. No other OSS combines all five.
+- **Honest concessions:** setup needs a Python install + API key; default embedder is OpenAI; pre-fetch adds ~400 ms.
+- **Where we're not best:** if you only use one agent, `grep`-shaped queries, or zero-API-key constraint → Aider or `@mcp/server-memory` may serve you better.
 
 ---
 
@@ -94,7 +132,9 @@ Or create `~/.env.local`:
 OPENAI_API_KEY=sk-...
 ```
 
-### First search in 30 seconds
+### First search
+
+After `pip install` + API key (≈5–10 min on first machine):
 
 ```bash
 cd your-project/
@@ -102,7 +142,8 @@ hybrid-search-mcp index .
 hybrid-search-mcp search "authentication flow"
 ```
 
-That's it. Your project is indexed and searchable.
+Your project is indexed and searchable. Indexing time scales with codebase
+size (~165s for 1,776 files; see [Performance](#performance)).
 
 ---
 
@@ -529,9 +570,21 @@ Supported languages: TypeScript, JavaScript, Python, Rust, Go, Ruby, Java, C, C+
 
 | Operation | Time | Cost |
 |-----------|------|------|
-| First index (1,776 files) | ~165s | ~$0.04 |
+| First index (1,776 files) | ~165s | ~$0.04 (OpenAI embed) |
 | Git delta (post-commit) | ~2s | Minimal |
-| Search | <2s | Free |
+| Search (direct CLI / MCP call) | <2s | Free |
+| **Per-prompt pre-fetch hook** (UserPromptSubmit) | **~400 ms** | Free |
+| `grep` baseline (for context) | ~50 ms | Free |
+
+The ~400 ms pre-fetch is the price you pay on **every** user prompt — that's
+what lets memory and routing context arrive *before* the agent picks a tool.
+For grep-shaped lookups (exact symbol, file path, error string) the router
+detects this and the hook stays lightweight; for exploratory questions the
+overhead pays for itself in 1.5–2× time saved downstream (valuein field
+report v2).
+
+If you want a hard off-switch: `export HYBRID_SEARCH_ROUTER=0` disables the
+pre-fetch entirely.
 
 ---
 
