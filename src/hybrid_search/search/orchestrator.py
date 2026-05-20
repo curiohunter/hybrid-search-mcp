@@ -24,6 +24,11 @@ from hybrid_search.memory.router import (
 from hybrid_search.project import ProjectRegistry, ProjectInfo
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.fusion import FusedResult, reciprocal_rank_fusion
+from hybrid_search.search.in_flight import (
+    collect_in_flight_overlay,
+    merge_in_flight_results,
+    score_in_flight_files,
+)
 from hybrid_search.search.modules_search import search_modules
 from hybrid_search.search.snippet import make_snippet
 from hybrid_search.search.vector import VectorEngine
@@ -497,6 +502,35 @@ class SearchOrchestrator:
 
         # Enrich chunk results with metadata
         chunk_results = self._enrich_results(fused[:effective_limit], project_infos, query)
+
+        # Phase 5: query-time overlay for tracked dirty files. This only runs
+        # for a cwd-scoped single project and never touches persistent indexes.
+        cwd_scoped_project = (
+            cwd
+            and len(project_infos) == 1
+            and self._detect_primary_project(cwd, project_infos) == project_infos[0].id
+        )
+        if cwd_scoped_project:
+            pinfo = project_infos[0]
+            overlay = collect_in_flight_overlay(
+                Path(pinfo.path),
+                indexing_config=self._config.indexing,
+            )
+            dirty_results: list[HybridResult] = []
+            if node_types is None or "in_flight_file" in set(node_types):
+                dirty_results = score_in_flight_files(
+                    overlay,
+                    query=query,
+                    project_name=pinfo.name,
+                    project_id=pinfo.id,
+                )
+            if dirty_results or overlay.deleted_paths:
+                chunk_results = merge_in_flight_results(
+                    chunk_results,
+                    dirty_results,
+                    deleted_paths=overlay.deleted_paths,
+                    limit=effective_limit,
+                )
 
         memory_results: list[HybridResult] = []
         if memory_intent and node_types is None:
