@@ -298,6 +298,19 @@ class TestHandleHybridSearchIntegration:
         assert "\x1b" not in r["content"]
         assert "\x07" not in r["snippet"]
 
+    def test_preserves_in_flight_metadata_in_output(self) -> None:
+        orch = MagicMock()
+        resp = _mock_response(content="dirty", snippet="[in-flight] src/foo.py\ndirty")
+        resp.results[0].node_type = "in_flight_file"
+        resp.results[0].trust_meta = "[in-flight dirty worktree; not indexed]"
+        orch.hybrid_search.return_value = resp
+
+        out = handle_hybrid_search(orch, query="x")
+        r = out["results"][0]
+
+        assert r["node_type"] == "in_flight_file"
+        assert r["trust_meta"] == "[in-flight dirty worktree; not indexed]"
+
     def test_rerank_hint_uses_sanitized_query(self) -> None:
         orch = MagicMock()
         resp = _mock_response()
