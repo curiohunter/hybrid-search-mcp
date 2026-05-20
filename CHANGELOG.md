@@ -40,6 +40,10 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 - **Router Phase 3 — heuristic prompt router**. User prompt hooks now surface
   a bounded route suggestion for `hybrid_search`, `grep`, or `memory`, backed
   by a hand-labeled router benchmark.
+- **In-flight dirty worktree visibility**. `hybrid_search(..., cwd=...)` now
+  overlays tracked uncommitted file changes as ephemeral `[in-flight]` results,
+  suppresses deleted dirty paths, and avoids persisting or embedding dirty
+  content.
 - `setup --dry-run`: preview CLAUDE.md/AGENTS.md changes without writing.
 - `setup --force`: recover from a corrupted routing block.
 

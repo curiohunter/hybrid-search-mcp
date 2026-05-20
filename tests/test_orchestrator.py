@@ -182,6 +182,144 @@ class TestAuthorityGating:
         assert kwargs["chunk_authority_scores"] is None
 
 
+class TestInFlightOverlay:
+    def test_dirty_modified_file_replaces_stale_same_file_result(self):
+        orch = _make_orchestrator({})
+        stale = HybridResult(
+            chunk_id="old",
+            rrf_score=0.02,
+            bm25_rank=1,
+            vector_rank=None,
+            file_path="src/app.py",
+            project="test",
+            name="app.py",
+            qualified_name="src/app.py",
+            node_type="function",
+            start_line=1,
+            end_line=2,
+            content="old indexed content",
+            snippet="old indexed content",
+        )
+        dirty = HybridResult(
+            chunk_id="ephemeral:proj1:abc",
+            rrf_score=0.03,
+            bm25_rank=1,
+            vector_rank=None,
+            file_path="src/app.py",
+            project="test",
+            name="app.py",
+            qualified_name="src/app.py",
+            node_type="in_flight_file",
+            start_line=1,
+            end_line=None,
+            content="new dirty content",
+            snippet="[in-flight] src/app.py\nnew dirty content",
+            trust_meta="[in-flight dirty worktree; not indexed]",
+        )
+        orch._enrich_results = MagicMock(return_value=[stale])
+
+        with patch("hybrid_search.search.orchestrator.collect_in_flight_overlay") as collect:
+            with patch("hybrid_search.search.orchestrator.score_in_flight_files") as score:
+                collect.return_value = MagicMock(files=[object()], deleted_paths=set())
+                score.return_value = [dirty]
+                resp = orch.hybrid_search(query="dirty content", cwd="/tmp/test")
+
+        assert [r.chunk_id for r in resp.results] == ["ephemeral:proj1:abc"]
+        assert resp.results[0].trust_meta == "[in-flight dirty worktree; not indexed]"
+
+    def test_dirty_deleted_file_suppresses_stale_indexed_result(self):
+        orch = _make_orchestrator({})
+        orch._enrich_results = MagicMock(
+            return_value=[
+                HybridResult(
+                    chunk_id="old",
+                    rrf_score=0.02,
+                    bm25_rank=1,
+                    vector_rank=None,
+                    file_path="src/deleted.py",
+                    project="test",
+                    name="deleted.py",
+                    qualified_name="src/deleted.py",
+                    node_type="function",
+                    start_line=1,
+                    end_line=2,
+                    content="old indexed content",
+                    snippet="old indexed content",
+                ),
+                HybridResult(
+                    chunk_id="keep",
+                    rrf_score=0.01,
+                    bm25_rank=2,
+                    vector_rank=None,
+                    file_path="src/keep.py",
+                    project="test",
+                    name="keep.py",
+                    qualified_name="src/keep.py",
+                    node_type="function",
+                    start_line=1,
+                    end_line=2,
+                    content="keep",
+                    snippet="keep",
+                ),
+            ]
+        )
+
+        with patch("hybrid_search.search.orchestrator.collect_in_flight_overlay") as collect:
+            collect.return_value = MagicMock(files=[], deleted_paths={"src/deleted.py"})
+            resp = orch.hybrid_search(query="deleted", cwd="/tmp/test")
+
+        assert [r.file_path for r in resp.results] == ["src/keep.py"]
+
+    def test_no_cwd_does_not_collect_overlay(self):
+        orch = _make_orchestrator({})
+        with patch("hybrid_search.search.orchestrator.collect_in_flight_overlay") as collect:
+            orch.hybrid_search(query="dirty content", project="test")
+
+        collect.assert_not_called()
+
+    def test_cross_project_search_does_not_collect_overlay(self):
+        orch = _make_orchestrator({})
+        p2 = ProjectInfo(
+            id="proj2", name="other", path="/tmp/other",
+            last_indexed_at=None, file_count=1, chunk_count=1,
+        )
+        orch._registry.list_all.return_value = [orch._registry.get_by_name.return_value, p2]
+        orch._search_cross_project = MagicMock(return_value=(["a"], ["a"], 1, [], {}))
+
+        with patch("hybrid_search.search.orchestrator.collect_in_flight_overlay") as collect:
+            orch.hybrid_search(query="dirty content")
+
+        collect.assert_not_called()
+
+    def test_weak_confidence_remains_possible_for_low_dirty_score(self):
+        orch = _make_orchestrator({})
+        dirty = HybridResult(
+            chunk_id="ephemeral:proj1:abc",
+            rrf_score=0.001,
+            bm25_rank=1,
+            vector_rank=None,
+            file_path="src/app.py",
+            project="test",
+            name="app.py",
+            qualified_name="src/app.py",
+            node_type="in_flight_file",
+            start_line=1,
+            end_line=None,
+            content="weak",
+            snippet="[in-flight] src/app.py\nweak",
+            trust_meta="[in-flight dirty worktree; not indexed]",
+        )
+        orch._enrich_results = MagicMock(return_value=[])
+
+        with patch("hybrid_search.search.orchestrator.collect_in_flight_overlay") as collect:
+            with patch("hybrid_search.search.orchestrator.score_in_flight_files") as score:
+                collect.return_value = MagicMock(files=[object()], deleted_paths=set())
+                score.return_value = [dirty]
+                resp = orch.hybrid_search(query="weak", cwd="/tmp/test")
+
+        assert resp.confidence == "weak"
+
+
 class TestBuildFilterExcludePattern:
     """D — exclude_pattern drops chunks whose file matches the glob."""
 
