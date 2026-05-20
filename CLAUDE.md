@@ -9,7 +9,7 @@ source .venv/bin/activate
 python -m pytest tests/ -x -q
 ```
 
-<!-- hybrid-search -->
+<!-- BEGIN hybrid-search-mcp routing v1 -->
 ## 검색 전략 — 반드시 이 순서로
 
 이 프로젝트는 `hybrid-search-mcp` Memory Layer가 설치돼 있다. **아래 규칙을 예외 없이 지킬 것.**
@@ -32,3 +32,12 @@ python -m pytest tests/ -x -q
 - 세션 시작 시 최근 Q&A 요약 주입 (SessionStart)
 - 답변 종료 시 `.hybrid-search/qa/`에 자동 저장 (Stop)
 - `git commit` 후 변경 파일만 재인덱싱 + 좀비 wiki 자동 삭제
+
+**자기 정당화 (Self-justify)**:
+- 모든 검색 호출 직전, **한 문장으로 어떤 도구를 골랐고 왜인지** 말할 것.
+- 예: "탐색형 질문이라 `mcp__hybrid-search__hybrid_search` 먼저 호출합니다."
+
+**Confidence 계약 (weak → fallback)**:
+- `hybrid_search` 응답의 `confidence: weak`이면 답하기 전에 `fallback_hint`에 적힌 대체 도구로 한 번 더 시도할 것.
+- `strong`/`mixed`면 그대로 진행.
+<!-- END hybrid-search-mcp routing v1 -->

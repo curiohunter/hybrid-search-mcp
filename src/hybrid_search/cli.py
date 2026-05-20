@@ -3247,7 +3247,7 @@ def cmd_install_codex_hook(args: argparse.Namespace) -> None:
         if result.get("updated"):
             parts.append(f"refreshed {result['updated']} stale Python path(s)")
         if result.get("feature_changed"):
-            parts.append("enabled codex_hooks")
+            parts.append("enabled hooks")
         if result.get("mcp_changed"):
             parts.append("registered MCP server")
         if result.get("gitignore_changed"):
