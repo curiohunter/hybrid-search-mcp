@@ -200,7 +200,18 @@ def test_install_codex_hook_enables_feature_flag(tmp_path: Path) -> None:
     codex_hooks.install_codex_hook(tmp_path)
     text = (tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8")
     assert "[features]" in text
-    assert "codex_hooks = true" in text
+    assert "hooks = true" in text
+    assert "codex_hooks" not in text
+
+
+def test_install_codex_hook_migrates_deprecated_feature_flag(tmp_path: Path) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text("[features]\ncodex_hooks = true\n", encoding="utf-8")
+    codex_hooks.install_codex_hook(tmp_path)
+    text = config.read_text(encoding="utf-8")
+    assert "hooks = true" in text
+    assert "codex_hooks" not in text
 
 
 def test_install_codex_hook_writes_toml_mcp_server(tmp_path: Path) -> None:
