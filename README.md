@@ -226,7 +226,7 @@ Codex hook/config pair inside a project:
 hybrid-search-mcp install-codex-hook --cwd .
 ```
 
-This writes `.codex/hooks.json`, enables `[features].codex_hooks = true` in
+This writes `.codex/hooks.json`, enables `[features].hooks = true` in
 `.codex/config.toml`, registers the MCP server as
 `[mcp_servers.hybrid-search]`, and adds a small `AGENTS.md` routing note.
 
@@ -473,7 +473,7 @@ hybrid-search-mcp install-codex-hook --cwd your-project/
 ```
 
 Codex project hooks live in `.codex/hooks.json`; MCP registration and the
-`codex_hooks` feature flag live in `.codex/config.toml`. Project-local Codex
+`hooks` feature flag live in `.codex/config.toml`. Project-local Codex
 hooks only run after Codex trusts the project config layer, so use
 `hybrid-search-mcp status --cwd your-project/` and a smoke test before relying
 on a new install.

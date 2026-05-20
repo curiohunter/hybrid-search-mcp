@@ -261,27 +261,33 @@ def _set_feature_flag(text: str) -> tuple[str, bool]:
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
             if in_features and not saw_flag:
-                out.append("codex_hooks = true")
+                out.append("hooks = true")
                 changed = True
                 inserted = True
             in_features = stripped == "[features]"
             saw_features = saw_features or in_features
-        if in_features and stripped.startswith("codex_hooks"):
+        if in_features and stripped.startswith("hooks"):
             saw_flag = True
-            if stripped != "codex_hooks = true":
-                out.append("codex_hooks = true")
+            if stripped != "hooks = true":
+                out.append("hooks = true")
                 changed = True
             else:
                 out.append(line)
             continue
+        if in_features and stripped.startswith("codex_hooks"):
+            if not saw_flag:
+                out.append("hooks = true")
+                saw_flag = True
+            changed = True
+            continue
         out.append(line)
     if in_features and not saw_flag and not inserted:
-        out.append("codex_hooks = true")
+        out.append("hooks = true")
         changed = True
     if not saw_features:
         if out and out[-1].strip():
             out.append("")
-        out.extend(["[features]", "codex_hooks = true"])
+        out.extend(["[features]", "hooks = true"])
         changed = True
     return "\n".join(out).rstrip() + "\n", changed
 
@@ -371,7 +377,7 @@ def _has_toml_codex_config(path: Path) -> tuple[bool, bool]:
         return False, False
     features = data.get("features") if isinstance(data, dict) else {}
     mcp = data.get("mcp_servers") if isinstance(data, dict) else {}
-    feature_ok = isinstance(features, dict) and features.get("codex_hooks") is True
+    feature_ok = isinstance(features, dict) and features.get("hooks") is True
     server = mcp.get("hybrid-search") if isinstance(mcp, dict) else None
     mcp_ok = isinstance(server, dict) and server.get("command") == sys.executable
     return feature_ok, mcp_ok
