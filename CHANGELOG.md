@@ -17,7 +17,7 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   `answer_excerpt_chars`, improving memory quality without storing unbounded
   transcripts.
 - **`install-codex-hook` CLI**. Writes Codex hooks to `.codex/hooks.json`
-  or `~/.codex/hooks.json`, enables `[features].codex_hooks = true`, and
+  or `~/.codex/hooks.json`, enables `[features].hooks = true`, and
   registers the MCP server using Codex TOML `[mcp_servers.hybrid-search]`.
 - Shared hook runtime for Claude Code and Codex prompt classification,
   session context, prompt context, and completed-turn recording.
@@ -49,6 +49,8 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   without it remain valid.
 - Memory-aware ranking now boosts curated `memory_card` chunks above raw
   `qa_log` chunks for explicit recall queries.
+- Codex hook installation now migrates the deprecated
+  `[features].codex_hooks` flag to `[features].hooks`.
 - CLAUDE.md and AGENTS.md routing sections now use versioned sentinel
   markers (`<!-- BEGIN/END hybrid-search-mcp routing v1 -->`). Existing
   installs migrate automatically on the next `setup`. Idempotent —
