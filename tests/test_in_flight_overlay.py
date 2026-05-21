@@ -155,6 +155,96 @@ def test_scores_path_match_above_generic_content_overlap() -> None:
     assert results[0].snippet.startswith("[in-flight]")
 
 
+def test_score_applies_file_pattern_to_dirty_files() -> None:
+    overlay = InFlightOverlay(
+        files=[
+            InFlightFile(
+                relative_path="src/app.py",
+                status="modified",
+                content="phase five overlay notes",
+                content_hash="a",
+            ),
+            InFlightFile(
+                relative_path="docs/plan.md",
+                status="modified",
+                content="phase five overlay notes",
+                content_hash="b",
+            ),
+        ],
+        deleted_paths=set(),
+    )
+
+    results = score_in_flight_files(
+        overlay,
+        query="phase five overlay",
+        project_name="demo",
+        project_id="p1",
+        file_pattern="docs/*",
+    )
+
+    assert [r.file_path for r in results] == ["docs/plan.md"]
+
+
+def test_score_applies_exclude_pattern_to_dirty_files() -> None:
+    overlay = InFlightOverlay(
+        files=[
+            InFlightFile(
+                relative_path="src/generated/client.py",
+                status="modified",
+                content="generated endpoint overlay",
+                content_hash="a",
+            ),
+            InFlightFile(
+                relative_path="src/app.py",
+                status="modified",
+                content="generated endpoint overlay",
+                content_hash="b",
+            ),
+        ],
+        deleted_paths=set(),
+    )
+
+    results = score_in_flight_files(
+        overlay,
+        query="generated endpoint overlay",
+        project_name="demo",
+        project_id="p1",
+        exclude_pattern="src/generated/*",
+    )
+
+    assert [r.file_path for r in results] == ["src/app.py"]
+
+
+def test_camel_case_identifier_content_match_beats_generic_overlap() -> None:
+    overlay = InFlightOverlay(
+        files=[
+            InFlightFile(
+                relative_path="src/auth.py",
+                status="modified",
+                content="def signInHandler():\n    return True\n",
+                content_hash="a",
+            ),
+            InFlightFile(
+                relative_path="src/generic.py",
+                status="modified",
+                content="auth handler login",
+                content_hash="b",
+            ),
+        ],
+        deleted_paths=set(),
+    )
+
+    results = score_in_flight_files(
+        overlay,
+        query="signInHandler auth handler",
+        project_name="demo",
+        project_id="p1",
+    )
+
+    assert results[0].file_path == "src/auth.py"
+    assert results[0].rrf_score > results[1].rrf_score
+
+
 def test_merge_suppresses_deleted_and_replaces_stale_same_file() -> None:
     dirty = _result("src/app.py")
     dirty.node_type = "in_flight_file"
