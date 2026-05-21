@@ -8,6 +8,7 @@ indexes or embedding backends.
 from __future__ import annotations
 
 import hashlib
+import fnmatch
 import re
 import subprocess
 from dataclasses import dataclass
@@ -26,6 +27,9 @@ MAX_BYTES_PER_FILE = 200_000
 SNIPPET_CHARS = 500
 CONTENT_CHARS = 4_000
 _TOKEN_RE = re.compile(r"[\w\uac00-\ud7a3]+", re.UNICODE)
+_CAMEL_OR_PASCAL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*[a-z][A-Z][A-Za-z0-9_]*$")
+_SNAKE_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+_SCREAMING_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 
 
 @dataclass(frozen=True)
@@ -115,16 +119,24 @@ def score_in_flight_files(
     project_name: str,
     project_id: str,
     limit: int = 5,
+    file_pattern: str | None = None,
+    exclude_pattern: str | None = None,
 ) -> list:
     """Score dirty files locally and return ``HybridResult`` instances."""
     from hybrid_search.search.orchestrator import HybridResult
 
-    query_tokens = _tokens(query)
+    query_tokens = _query_tokens(query)
     if not query_tokens:
         return []
 
     scored: list[tuple[float, InFlightFile]] = []
     for item in overlay.files:
+        if not _matches_path_filters(
+            item.relative_path,
+            file_pattern=file_pattern,
+            exclude_pattern=exclude_pattern,
+        ):
+            continue
         score = _score_file(query_tokens, item)
         if score > 0:
             scored.append((score, item))
@@ -213,19 +225,42 @@ def _tokens(text: str) -> set[str]:
     return {token.lower() for token in _TOKEN_RE.findall(text) if len(token) >= 2}
 
 
-def _score_file(query_tokens: set[str], item: InFlightFile) -> float:
+def _query_tokens(text: str) -> dict[str, bool]:
+    tokens: dict[str, bool] = {}
+    for raw_token in _TOKEN_RE.findall(text):
+        if len(raw_token) < 2:
+            continue
+        lowered = raw_token.lower()
+        tokens[lowered] = tokens.get(lowered, False) or _identifierish(raw_token)
+    return tokens
+
+
+def _matches_path_filters(
+    rel_path: str,
+    *,
+    file_pattern: str | None,
+    exclude_pattern: str | None,
+) -> bool:
+    if file_pattern and not fnmatch.fnmatch(rel_path, file_pattern):
+        return False
+    if exclude_pattern and fnmatch.fnmatch(rel_path, exclude_pattern):
+        return False
+    return True
+
+
+def _score_file(query_tokens: dict[str, bool], item: InFlightFile) -> float:
     path = item.relative_path.lower()
     path_tokens = _tokens(item.relative_path)
     content_tokens = _tokens(item.content)
 
     score = 0.0
-    for token in query_tokens:
+    for token, is_identifier in query_tokens.items():
         if token in path:
             score += 0.014
         if token in path_tokens:
             score += 0.010
         if token in content_tokens:
-            score += 0.006 if _identifierish(token) else 0.003
+            score += 0.006 if is_identifier else 0.003
 
     if item.status == "added":
         score += 0.001
@@ -234,9 +269,10 @@ def _score_file(query_tokens: set[str], item: InFlightFile) -> float:
 
 def _identifierish(token: str) -> bool:
     return (
-        "_" in token
+        bool(_CAMEL_OR_PASCAL_RE.match(token))
+        or bool(_SNAKE_RE.match(token))
+        or bool(_SCREAMING_SNAKE_RE.match(token))
         or any(ch.isdigit() for ch in token)
-        or any(ch.isupper() for ch in token)
     )
 
 
