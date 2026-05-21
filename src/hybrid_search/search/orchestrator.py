@@ -523,6 +523,8 @@ class SearchOrchestrator:
                     query=query,
                     project_name=pinfo.name,
                     project_id=pinfo.id,
+                    file_pattern=file_pattern,
+                    exclude_pattern=exclude_pattern,
                 )
             if dirty_results or overlay.deleted_paths:
                 chunk_results = merge_in_flight_results(
