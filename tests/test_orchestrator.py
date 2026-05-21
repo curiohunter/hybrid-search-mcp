@@ -9,6 +9,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from hybrid_search.project import ProjectInfo
+from hybrid_search.search.in_flight import InFlightFile, InFlightOverlay
 from hybrid_search.search.orchestrator import HybridResult, SearchOrchestrator
 
 
@@ -318,6 +319,89 @@ class TestInFlightOverlay:
                 resp = orch.hybrid_search(query="weak", cwd="/tmp/test")
 
         assert resp.confidence == "weak"
+
+    def test_file_pattern_applies_to_in_flight_overlay(self):
+        orch = _make_orchestrator({})
+        orch._enrich_results = MagicMock(return_value=[])
+        overlay = InFlightOverlay(
+            files=[
+                InFlightFile(
+                    relative_path="src/app.py",
+                    status="modified",
+                    content="phase overlay marker",
+                    content_hash="a",
+                ),
+                InFlightFile(
+                    relative_path="docs/plan.md",
+                    status="modified",
+                    content="phase overlay marker",
+                    content_hash="b",
+                ),
+            ],
+            deleted_paths=set(),
+        )
+
+        with patch("hybrid_search.search.orchestrator.collect_in_flight_overlay") as collect:
+            collect.return_value = overlay
+            resp = orch.hybrid_search(
+                query="phase overlay marker",
+                cwd="/tmp/test",
+                file_pattern="docs/*",
+            )
+
+        assert [r.file_path for r in resp.results] == ["docs/plan.md"]
+        assert resp.results[0].node_type == "in_flight_file"
+
+    def test_node_types_function_suppresses_in_flight_file(self):
+        orch = _make_orchestrator({})
+        orch._enrich_results = MagicMock(return_value=[])
+        overlay = InFlightOverlay(
+            files=[
+                InFlightFile(
+                    relative_path="src/app.py",
+                    status="modified",
+                    content="dirty function marker",
+                    content_hash="a",
+                ),
+            ],
+            deleted_paths=set(),
+        )
+
+        with patch("hybrid_search.search.orchestrator.collect_in_flight_overlay") as collect:
+            collect.return_value = overlay
+            resp = orch.hybrid_search(
+                query="dirty function marker",
+                cwd="/tmp/test",
+                node_types=["function"],
+            )
+
+        assert resp.results == []
+
+    def test_node_types_in_flight_file_allows_dirty_result(self):
+        orch = _make_orchestrator({})
+        orch._enrich_results = MagicMock(return_value=[])
+        overlay = InFlightOverlay(
+            files=[
+                InFlightFile(
+                    relative_path="src/app.py",
+                    status="modified",
+                    content="dirty overlay marker",
+                    content_hash="a",
+                ),
+            ],
+            deleted_paths=set(),
+        )
+
+        with patch("hybrid_search.search.orchestrator.collect_in_flight_overlay") as collect:
+            collect.return_value = overlay
+            resp = orch.hybrid_search(
+                query="dirty overlay marker",
+                cwd="/tmp/test",
+                node_types=["in_flight_file"],
+            )
+
+        assert [r.node_type for r in resp.results] == ["in_flight_file"]
+        assert resp.results[0].file_path == "src/app.py"
 
 
 class TestBuildFilterExcludePattern:
