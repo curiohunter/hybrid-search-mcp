@@ -4002,14 +4002,45 @@ def cmd_index(args: argparse.Namespace) -> None:
     cmd_reindex(args)
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _acquire_conv_lock(lock_path: Path) -> bool:
+    """Best-effort PID lock so concurrent conv-index runs don't clash on the
+    Tantivy/USearch writers. Returns False when another live run holds it."""
+    try:
+        if lock_path.exists():
+            try:
+                holder = int(lock_path.read_text().strip())
+            except (ValueError, OSError):
+                holder = None
+            if holder and holder != os.getpid() and _pid_alive(holder):
+                return False
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(str(os.getpid()))
+        return True
+    except OSError:
+        return False
+
+
 def cmd_index_conversations(args: argparse.Namespace) -> None:
     """Index Claude Code + Codex transcripts for the project at cwd.
 
-    Reads ``~/.claude/projects/<slug>/*.jsonl`` and the Codex sessions whose
-    ``session_meta.cwd`` matches this project, turning each turn into a
-    searchable ``conv_turn`` chunk. Cross-tool recall: a question answered in
-    one agent becomes context the other agent can find.
+    Without ``--transcript`` it scans all of the project's transcripts
+    (``~/.claude/projects/<slug>/*.jsonl`` + Codex sessions whose
+    ``session_meta.cwd`` matches). With ``--transcript`` it indexes a single
+    session file — the cheap per-turn path the Stop hooks call. Each turn
+    becomes a searchable ``conv_turn`` chunk: cross-tool recall where a
+    question answered in one agent becomes context the other can find.
     """
+    from hybrid_search.project import project_hash
+    from hybrid_search.storage.indexes import get_project_dir
+
     config = load_config()
     registry = ProjectRegistry(config.global_dir)
 
@@ -4020,9 +4051,28 @@ def cmd_index_conversations(args: argparse.Namespace) -> None:
     else:
         project_path, project_name = cwd, Path(cwd).name
 
-    embedder = Embedder(config.embedding, config.models_dir)
-    indexer = ConversationIndexer(config, registry, embedder)
-    result = indexer.index_conversations(project_path, project_name=project_name)
+    project_dir = get_project_dir(config.projects_dir, project_hash(str(Path(project_path).resolve())))
+    lock_path = project_dir / ".conv-index.lock"
+    if not _acquire_conv_lock(lock_path):
+        print("Conversation indexing already running, skipping.")
+        return
+
+    try:
+        embedder = Embedder(config.embedding, config.models_dir)
+        indexer = ConversationIndexer(config, registry, embedder)
+        raw_source = getattr(args, "source", "auto")
+        source = None if raw_source in (None, "auto") else raw_source
+        transcript = getattr(args, "transcript", None)
+        if transcript:
+            result = indexer.index_transcript(transcript, project_path, source=source)
+        else:
+            result = indexer.index_conversations(project_path, project_name=project_name)
+    finally:
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
     print(
         f"Conversation indexing for {result.project_name}: "
         f"{result.sessions_indexed} sessions indexed, "
@@ -4621,6 +4671,16 @@ def main() -> None:
         help="Index Claude Code + Codex transcripts for cross-tool recall",
     )
     p_conv.add_argument("--cwd", default=".", help="Project directory (default: .)")
+    p_conv.add_argument(
+        "--transcript",
+        help="Index a single transcript file (per-session, used by Stop hooks)",
+    )
+    p_conv.add_argument(
+        "--source",
+        choices=["claude", "codex", "auto"],
+        default="auto",
+        help="Transcript source for --transcript (default: auto-detect)",
+    )
 
     p_search = sub.add_parser("search", help="Hybrid BM25 + semantic search")
     p_search.add_argument("query", help="Search query (Korean or English)")

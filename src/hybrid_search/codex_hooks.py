@@ -132,7 +132,26 @@ def _handle_stop(event: dict[str, Any]) -> dict[str, Any]:
         tools_used=(),
         client="codex",
     )
+
+    # Fire-and-forget: background-index this Codex session for cross-tool recall.
+    session_file = _find_codex_session_file(event.get("session_id"))
+    if session_file is not None:
+        hook_runtime.spawn_conversation_index(session_file, root, "codex")
     return codex_noop_response()
+
+
+def _find_codex_session_file(session_id: Any) -> Path | None:
+    """Locate the rollout JSONL for a session id (the filename ends with it)."""
+    if not session_id or not isinstance(session_id, str):
+        return None
+    root = Path.home() / ".codex" / "sessions"
+    if not root.is_dir():
+        return None
+    try:
+        matches = list(root.rglob(f"*{session_id}*.jsonl"))
+    except OSError:
+        return None
+    return matches[0] if matches else None
 
 
 def run_hook(stdin_text: str) -> int:
