@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from hybrid_search.config import load_config
+from hybrid_search.index.conversation_indexer import ConversationIndexer
 from hybrid_search.index.dag import generate_all_wiki_pages
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.pipeline import IndexingPipeline
@@ -4001,6 +4002,34 @@ def cmd_index(args: argparse.Namespace) -> None:
     cmd_reindex(args)
 
 
+def cmd_index_conversations(args: argparse.Namespace) -> None:
+    """Index Claude Code + Codex transcripts for the project at cwd.
+
+    Reads ``~/.claude/projects/<slug>/*.jsonl`` and the Codex sessions whose
+    ``session_meta.cwd`` matches this project, turning each turn into a
+    searchable ``conv_turn`` chunk. Cross-tool recall: a question answered in
+    one agent becomes context the other agent can find.
+    """
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    if match:
+        project_name, project_path = match
+    else:
+        project_path, project_name = cwd, Path(cwd).name
+
+    embedder = Embedder(config.embedding, config.models_dir)
+    indexer = ConversationIndexer(config, registry, embedder)
+    result = indexer.index_conversations(project_path, project_name=project_name)
+    print(
+        f"Conversation indexing for {result.project_name}: "
+        f"{result.sessions_indexed} sessions indexed, "
+        f"{result.sessions_skipped} unchanged, {result.chunks_total} chunks."
+    )
+
+
 def cmd_maintain(args: argparse.Namespace) -> None:
     """Codex-friendly maintenance wrapper for index + wiki synthesis lifecycle.
 
@@ -4587,6 +4616,12 @@ def main() -> None:
     p_index.add_argument("--force", action="store_true", help="Force full reindex")
     p_index.add_argument("--wiki", action="store_true", help="Auto-generate wiki after index")
 
+    p_conv = sub.add_parser(
+        "index-conversations",
+        help="Index Claude Code + Codex transcripts for cross-tool recall",
+    )
+    p_conv.add_argument("--cwd", default=".", help="Project directory (default: .)")
+
     p_search = sub.add_parser("search", help="Hybrid BM25 + semantic search")
     p_search.add_argument("query", help="Search query (Korean or English)")
     p_search.add_argument("--cwd", default=".", help="Project directory (default: .)")
@@ -4984,6 +5019,8 @@ def main() -> None:
 
     if args.command == "index":
         cmd_index(args)
+    elif args.command == "index-conversations":
+        cmd_index_conversations(args)
     elif args.command == "search":
         cmd_search(args)
     elif args.command == "recalibrate":
