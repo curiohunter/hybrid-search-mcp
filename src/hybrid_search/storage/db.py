@@ -632,6 +632,17 @@ class StoreDB:
         conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
         return chunk_ids
 
+    def delete_chunks_by_ids(self, conn: sqlite3.Connection, chunk_ids: list[str]) -> None:
+        """Delete specific chunks by id (FK cascades to conversation_meta).
+
+        Used for incremental conversation re-indexing — only stale turns are
+        dropped, leaving unchanged turns (and their embeddings) in place.
+        """
+        if not chunk_ids:
+            return
+        placeholders = ",".join("?" for _ in chunk_ids)
+        conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", tuple(chunk_ids))
+
     def get_chunks_by_project(self, project_id: str) -> list[ChunkRecord]:
         cur = self._conn.execute("SELECT * FROM chunks WHERE project_id = ?", (project_id,))
         return [self._row_to_chunk(row) for row in cur.fetchall()]
