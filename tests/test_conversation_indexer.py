@@ -164,6 +164,68 @@ def test_full_scan_does_not_delete_conv_files(tmp_path: Path) -> None:
         db.close()
 
 
+def _write_claude_turns(claude_root: Path, project: Path, user_texts: list[str],
+                        session: str = "s1") -> Path:
+    """Write a Claude transcript with one (user, assistant) turn per text."""
+    d = claude_root / claude_slug_for(project)
+    d.mkdir(parents=True, exist_ok=True)
+    lines: list[dict] = []
+    for i, text in enumerate(user_texts):
+        lines.append({"type": "user", "message": {"role": "user", "content": text},
+                      "timestamp": f"2026-04-29T0{i}:00:00Z", "cwd": str(project)})
+        lines.append({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": f"answer {i}"}]}})
+    path = d / f"{session}.jsonl"
+    path.write_text("\n".join(json.dumps(x) for x in lines), encoding="utf-8")
+    return path
+
+
+def test_index_transcript_incremental_only_embeds_new_turns(tmp_path: Path) -> None:
+    indexer, config, project, embedder, roots = _setup(tmp_path)
+    path = _write_claude_turns(roots["claude_root"], project, ["first question"])
+
+    r1 = indexer.index_transcript(path, str(project), source="claude")
+    assert r1.chunks_total == 1
+    assert embedder.embedded == 1
+
+    db, _, _, pid = _engines(config, project)
+    ids_after_first = {c.id for c in db.get_chunks_by_project(pid)}
+    db.close()
+
+    # Append a second turn to the same session, re-index.
+    _write_claude_turns(roots["claude_root"], project, ["first question", "second question"])
+    r2 = indexer.index_transcript(path, str(project), source="claude")
+
+    # Only the new turn is embedded; the first turn's chunk is untouched.
+    assert r2.chunks_total == 1
+    assert embedder.embedded == 2  # 1 + 1, not 1 + 2
+
+    db, bm25, vector, pid = _engines(config, project)
+    try:
+        ids_after_second = {c.id for c in db.get_chunks_by_project(pid)}
+        assert ids_after_first <= ids_after_second  # first turn's id preserved
+        assert len(ids_after_second) == 2
+        assert vector.count == 2 == bm25.count
+    finally:
+        db.close()
+
+
+def test_index_transcript_auto_detects_source(tmp_path: Path) -> None:
+    indexer, config, project, embedder, roots = _setup(tmp_path)
+    cx = _write_codex(roots["codex_root"], project)
+    result = indexer.index_transcript(cx, str(project))  # no source → auto
+    assert result.sessions_indexed == 1
+
+    db, _, _, pid = _engines(config, project)
+    try:
+        metas = db.get_conversation_meta_batch(
+            [c.id for c in db.get_chunks_by_project(pid)]
+        )
+        assert all(m.source == "codex" for m in metas.values())
+    finally:
+        db.close()
+
+
 def test_cli_index_conversations_command(tmp_path: Path, monkeypatch, capsys) -> None:
     """A6 — the `index-conversations` CLI command indexes Claude transcripts."""
     from hybrid_search import cli
