@@ -8,6 +8,7 @@ namespace keeps a full project rescan from deleting them.
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -159,5 +160,40 @@ def test_full_scan_does_not_delete_conv_files(tmp_path: Path) -> None:
         scan = scan_project(project, pid, db, config.indexing)
         conv_deleted = [p for p in scan.deleted if p.startswith(".conversations/")]
         assert conv_deleted == []
+    finally:
+        db.close()
+
+
+def test_cli_index_conversations_command(tmp_path: Path, monkeypatch, capsys) -> None:
+    """A6 — the `index-conversations` CLI command indexes Claude transcripts."""
+    from hybrid_search import cli
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    config = Config(data_dir=tmp_path / "data", embedding=EmbeddingConfig())
+    claude_root = tmp_path / "claude"
+    _write_claude(claude_root, project, "hook cwd 버그 고쳐줘")
+
+    # The command discovers transcripts under ~/.claude; point HOME at our fixture.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude" / "projects").mkdir(parents=True, exist_ok=True)
+    real_slug_dir = claude_root / claude_slug_for(project)
+    target = tmp_path / ".claude" / "projects" / claude_slug_for(project)
+    target.mkdir(parents=True, exist_ok=True)
+    for f in real_slug_dir.glob("*.jsonl"):
+        (target / f.name).write_text(f.read_text(), encoding="utf-8")
+
+    monkeypatch.setattr(cli, "load_config", lambda: config)
+    monkeypatch.setattr(cli, "Embedder", lambda embedding, models_dir: _FakeEmbedder())
+
+    cli.cmd_index_conversations(argparse.Namespace(cwd=str(project)))
+
+    out = capsys.readouterr().out
+    assert "sessions indexed" in out
+
+    db, bm25, vector, pid = _engines(config, project)
+    try:
+        assert db.get_chunk_count(pid) > 0
+        assert vector.count == db.get_chunk_count(pid) == bm25.count
     finally:
         db.close()
