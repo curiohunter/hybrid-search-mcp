@@ -4,8 +4,58 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable
+
+_CONV_INDEX_ENV = "HYBRID_SEARCH_CONV_INDEX"
+
+
+def _build_conv_index_command(
+    transcript_path: "Path | str",
+    project_root: "Path | str",
+    source: str,
+) -> list[str]:
+    """The detached CLI invocation for single-transcript indexing (pure)."""
+    return [
+        sys.executable, "-m", "hybrid_search.cli", "index-conversations",
+        "--transcript", str(transcript_path),
+        "--cwd", str(project_root),
+        "--source", source,
+    ]
+
+
+def spawn_conversation_index(
+    transcript_path: "Path | str",
+    project_root: "Path | str",
+    source: str,
+) -> None:
+    """Fire-and-forget background indexing of one transcript after a turn ends.
+
+    Spawns a detached ``index-conversations --transcript`` process so the Stop
+    hook returns immediately. Incremental indexing embeds only the new turn,
+    so per-turn cost is one tiny embedding call. Disable with
+    ``HYBRID_SEARCH_CONV_INDEX=0``. Never blocks or raises.
+    """
+    toggle = os.environ.get(_CONV_INDEX_ENV, "1").strip().lower()
+    if toggle in ("0", "false", "no", "off"):
+        return
+    # Stay hermetic under pytest — never launch real indexing subprocesses
+    # (which would hit the embedder and the real index) during the test suite.
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    try:
+        subprocess.Popen(
+            _build_conv_index_command(transcript_path, project_root, source),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
 
 _MAX_CONTEXT_CHARS = 360
 _SESSION_TOPIC_LIMIT = 3

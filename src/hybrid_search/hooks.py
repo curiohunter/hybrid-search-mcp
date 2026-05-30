@@ -510,6 +510,12 @@ def _handle_stop(event: dict) -> dict | None:
     except Exception:
         # Never let save failures bubble up — Stop hook must exit 0 cleanly.
         pass
+
+    # Fire-and-forget: background-index this Claude session for cross-tool
+    # recall. Detached + error-swallowed, so it never blocks the turn.
+    from hybrid_search.memory import hook_runtime
+
+    hook_runtime.spawn_conversation_index(transcript_path, root, "claude")
     return None
 
 
