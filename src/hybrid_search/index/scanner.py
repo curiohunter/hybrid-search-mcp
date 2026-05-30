@@ -96,6 +96,12 @@ class GitDiffResult:
     renamed: list[tuple[str, str]]
 
 
+# Reserved file-path namespace for indexed conversation transcripts. These
+# rows have no on-disk counterpart; the conversation indexer owns their
+# lifecycle, so the project scanner must skip them in deletion detection.
+CONVERSATION_PATH_PREFIX = ".conversations/"
+
+
 def scan_project(
     project_root: Path,
     project_id: str,
@@ -133,8 +139,12 @@ def scan_project(
         if _is_changed(abs_path, db_rec):
             changed.append(abs_path)
 
-    # Find deleted
+    # Find deleted. Conversation chunks live under a reserved synthetic
+    # namespace (no on-disk file), so they must never be flagged as deleted
+    # by a full project rescan — only the conversation indexer manages them.
     for rel_path in db_paths:
+        if rel_path.startswith(CONVERSATION_PATH_PREFIX):
+            continue
         if rel_path not in disk_files:
             deleted.append(rel_path)
 
