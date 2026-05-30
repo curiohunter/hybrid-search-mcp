@@ -15,3 +15,6 @@ build/
 # Machine-local runtime state — never commit
 .hybrid-search/
 .codex/
+
+# PoC embedding cache — derived from conversation content, regenerated on run
+scripts/.poc_cache/
