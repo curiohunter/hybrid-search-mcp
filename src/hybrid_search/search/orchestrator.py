@@ -299,6 +299,12 @@ def _trust_meta(
 
 _MEMORY_NODE_TYPES = {"qa_log", "memory_card", "domain_term", "episodic_example"}
 
+# Conversation turns (A4/A5). They share the unified index but form their own
+# retrieval lane: excluded from the main code lane (id prefix below), surfaced
+# only via the conv lane on memory-intent queries.
+_CONV_NODE_TYPE = "conv_turn"
+_CONV_ID_PREFIX = "conv:"
+
 
 def _apply_memory_boost(
     results: list[HybridResult],
@@ -370,6 +376,37 @@ def _merge_memory_results(
     merged: list[HybridResult] = []
     seen: set[str] = set()
     for r in memory_head[:head_limit]:
+        if r.chunk_id not in seen:
+            merged.append(r)
+            seen.add(r.chunk_id)
+    for r in chunk_results:
+        if r.chunk_id not in seen:
+            merged.append(r)
+            seen.add(r.chunk_id)
+    return merged
+
+
+def _merge_conv_results(
+    chunk_results: list[HybridResult],
+    conv_results: list[HybridResult],
+    limit: int,
+) -> list[HybridResult]:
+    """Splice a small conversation head ahead of the code stream.
+
+    Mirrors ``_merge_memory_results``: conv turns are a distinct answer unit
+    for recall-shaped queries, so a rank-bounded head is prepended rather than
+    merged by score (conv cosine vs code RRF are not comparable).
+    """
+    if not conv_results:
+        return chunk_results
+    conv_head = [r for r in conv_results if r.node_type == _CONV_NODE_TYPE]
+    if not conv_head:
+        return chunk_results
+    conv_head.sort(key=lambda r: -r.rrf_score)
+    head_limit = min(3, max(1, limit))
+    merged: list[HybridResult] = []
+    seen: set[str] = set()
+    for r in conv_head[:head_limit]:
         if r.chunk_id not in seen:
             merged.append(r)
             seen.add(r.chunk_id)
@@ -480,6 +517,15 @@ class SearchOrchestrator:
                 exclude_pattern=exclude_pattern,
             )
 
+        # Keep conversation turns out of the main code lane. They live in the
+        # same index (unified store) but answer a different question ("what did
+        # we do/decide"), so a code query must not surface them. The conv lane
+        # below retrieves them separately on memory-intent queries. Cheap prefix
+        # filter — no DB scan. Skip when the caller explicitly asked for conv.
+        if not (node_types and _CONV_NODE_TYPE in node_types):
+            bm25_ids = [c for c in bm25_ids if not c.startswith(_CONV_ID_PREFIX)]
+            vector_ids = [c for c in vector_ids if not c.startswith(_CONV_ID_PREFIX)]
+
         # RRF fusion — numeric confidence scores nudge chunks with strong
         # incoming call edges ahead (M1). Absent chunks stay neutral.
         # M1.2: EXACT_SYMBOL queries bypass authority — exact-match lookup
@@ -568,6 +614,38 @@ class SearchOrchestrator:
         if memory_results:
             memory_results = _apply_memory_boost(memory_results, memory_intent)
             chunk_results = _merge_memory_results(chunk_results, memory_results, limit)
+
+        # Conversation lane (A5). On recall-shaped queries, retrieve conv_turn
+        # chunks separately and splice a small head ahead of code. Kept a
+        # distinct lane (not fused by raw score) because conv cosine and code
+        # RRF live on different scales — splicing a rank-bounded head is the
+        # typed late fusion the 2026-04-16 design called for, minus the
+        # incomparable-score merge the retrieval eval warned against.
+        if memory_intent and node_types is None:
+            conv_depth = max(retrieval_depth, 50)
+            conv_node_types = [_CONV_NODE_TYPE]
+            if len(project_infos) == 1:
+                conv_bm25_ids, conv_vector_ids, _, _, _ = self._search_single(
+                    project_infos[0], query, query_vector, conv_depth,
+                    file_pattern, conv_node_types, exclude_pattern,
+                )
+            else:
+                conv_bm25_ids, conv_vector_ids, _, _, _ = self._search_cross_project(
+                    project_infos, query, query_vector, conv_depth,
+                    file_pattern, conv_node_types,
+                    primary_project_id=primary_project_id,
+                    exclude_pattern=exclude_pattern,
+                )
+            conv_fused = reciprocal_rank_fusion(
+                conv_bm25_ids, conv_vector_ids,
+                k=self._config.search.rrf_k,
+                bm25_weight=effective_weight,
+            )
+            conv_results = self._enrich_results(
+                conv_fused[:max(50, limit)], project_infos, query
+            )
+            if conv_results:
+                chunk_results = _merge_conv_results(chunk_results, conv_results, limit)
 
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
@@ -1039,14 +1117,19 @@ class SearchOrchestrator:
                         if (file_rec and chunk.node_type in _MEMORY_NODE_TYPES)
                         else None
                     )
-                    trust_meta = _trust_meta(
-                        node_type=chunk.node_type,
-                        trigger=_frontmatter_value(chunk.content, "trigger"),
-                        confidence=_frontmatter_value(chunk.content, "confidence"),
-                        status=_frontmatter_value(chunk.content, "status"),
-                        mtime=mtime,
-                        content=chunk.content,
-                    )
+                    if chunk.node_type == _CONV_NODE_TYPE:
+                        # qualified_name is "{source}:{session}#{turn}"
+                        source = (chunk.qualified_name or "").split(":", 1)[0] or "agent"
+                        trust_meta = f"[conversation - {source}]"
+                    else:
+                        trust_meta = _trust_meta(
+                            node_type=chunk.node_type,
+                            trigger=_frontmatter_value(chunk.content, "trigger"),
+                            confidence=_frontmatter_value(chunk.content, "confidence"),
+                            status=_frontmatter_value(chunk.content, "status"),
+                            mtime=mtime,
+                            content=chunk.content,
+                        )
                     snippet = make_snippet(
                         chunk.docstring,
                         chunk.content,
