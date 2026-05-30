@@ -11,7 +11,7 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "7"
+SCHEMA_VERSION = "8"
 
 # Semantic labels for call-edge confidence (M1.1).
 # Order: weakest → strongest; _confidence_filter relies on this ordering.
@@ -172,6 +172,20 @@ CREATE TABLE IF NOT EXISTS file_modules (
 
 CREATE INDEX IF NOT EXISTS idx_file_modules_module ON file_modules(module_id);
 CREATE INDEX IF NOT EXISTS idx_file_modules_project ON file_modules(project_id);
+
+CREATE TABLE IF NOT EXISTS conversation_meta (
+    chunk_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_index INTEGER NOT NULL,
+    ts TEXT,
+    files TEXT,
+    FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_conv_meta_project ON conversation_meta(project_id);
+CREATE INDEX IF NOT EXISTS idx_conv_meta_session ON conversation_meta(source, session_id);
 """
 
 
@@ -225,6 +239,24 @@ class ModuleRecord:
     # text has not changed.
     summary_vector: bytes | None = None
     vector_input_hash: str | None = None
+
+
+@dataclass
+class ConversationMeta:
+    """Agent-specific metadata for a ``node_type='conv_turn'`` chunk.
+
+    Lives in the ``conversation_meta`` side table so the shared ``chunks``
+    table stays free of conv-only columns. ``files`` is a JSON array of file
+    paths the turn's tool calls touched — the conv↔code bridge seed for B.
+    """
+
+    chunk_id: str
+    project_id: str
+    source: str  # 'claude' | 'codex'
+    session_id: str
+    turn_index: int
+    ts: str | None = None
+    files: str | None = None
 
 
 class StoreDB:
@@ -372,6 +404,28 @@ class StoreDB:
                     "ALTER TABLE modules ADD COLUMN vector_input_hash TEXT"
                 )
             logger.info("Migrated schema v6 → v7 (modules.summary_vector + vector_input_hash)")
+
+        if cur_ver < 8:
+            # v7 → v8: conversation_meta side table for conv_turn chunks
+            # (cross-tool conversation indexer, A3). Conv turns live in the
+            # shared chunks table; their source/session/turn metadata lives here.
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_meta (
+                    chunk_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    ts TEXT,
+                    files TEXT,
+                    FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_conv_meta_project ON conversation_meta(project_id);
+                CREATE INDEX IF NOT EXISTS idx_conv_meta_session ON conversation_meta(source, session_id);
+                """
+            )
+            logger.info("Migrated schema v7 → v8 (conversation_meta table)")
 
         self._conn.execute(
             "UPDATE index_meta SET value = ? WHERE key = 'schema_version'",
@@ -861,6 +915,59 @@ class StoreDB:
             embedding_input=row["embedding_input"],
             docstring=row["docstring"],
             parent_name=row["parent_name"],
+        )
+
+    # ---------- Conversation meta (A3) ----------
+
+    def upsert_conversation_meta(
+        self, conn: sqlite3.Connection, records: list[ConversationMeta]
+    ) -> None:
+        """Insert/replace conv_turn metadata. Idempotent on chunk_id."""
+        if not records:
+            return
+        conn.executemany(
+            """INSERT OR REPLACE INTO conversation_meta
+               (chunk_id, project_id, source, session_id, turn_index, ts, files)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (r.chunk_id, r.project_id, r.source, r.session_id,
+                 r.turn_index, r.ts, r.files)
+                for r in records
+            ],
+        )
+
+    def get_conversation_meta(self, chunk_id: str) -> ConversationMeta | None:
+        cur = self._conn.execute(
+            "SELECT * FROM conversation_meta WHERE chunk_id = ?", (chunk_id,)
+        )
+        row = cur.fetchone()
+        return self._row_to_conversation_meta(row) if row else None
+
+    def get_conversation_meta_batch(
+        self, chunk_ids: list[str]
+    ) -> dict[str, ConversationMeta]:
+        """Batch lookup for enrichment — returns only chunk_ids that exist."""
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" for _ in chunk_ids)
+        cur = self._conn.execute(
+            f"SELECT * FROM conversation_meta WHERE chunk_id IN ({placeholders})",
+            tuple(chunk_ids),
+        )
+        return {
+            row["chunk_id"]: self._row_to_conversation_meta(row)
+            for row in cur.fetchall()
+        }
+
+    def _row_to_conversation_meta(self, row: sqlite3.Row) -> ConversationMeta:
+        return ConversationMeta(
+            chunk_id=row["chunk_id"],
+            project_id=row["project_id"],
+            source=row["source"],
+            session_id=row["session_id"],
+            turn_index=row["turn_index"],
+            ts=row["ts"],
+            files=row["files"],
         )
 
     # ---------- Modules (Phase 5) ----------
