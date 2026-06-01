@@ -100,4 +100,7 @@ def test_recall_query_surfaces_conversation(tmp_path: Path) -> None:
         f"conv turn not surfaced for recall query. node_types={node_types}"
     )
     conv = next(r for r in resp.results if r.node_type == "conv_turn")
-    assert conv.trust_meta == "[conversation - claude]"
+    # trust_meta marks the source and warns that the path is virtual so agents
+    # don't try to Read it and wrongly conclude the turn is unavailable.
+    assert conv.trust_meta.startswith("[conversation - claude;")
+    assert "virtual path" in conv.trust_meta
