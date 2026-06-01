@@ -127,6 +127,77 @@ def discover_codex_sessions(
     return sorted(matches)
 
 
+def discover_recent_transcripts(
+    project_path: Path,
+    *,
+    max_files: int = 4,
+    claude_root: Path | None = None,
+    codex_root: Path | None = None,
+    codex_scan_cap: int = 40,
+    codex_day_dirs: int = 3,
+) -> list[tuple[Source, Path]]:
+    """Bounded, mtime-first transcript discovery for the query-time overlay.
+
+    ``collect_project_chunks`` reads the first line of *every* Codex session to
+    filter by cwd — fine for a background reindex, far too slow for a per-query
+    overlay (a busy machine has thousands of sessions). This variant restricts
+    the Codex scan to the most recent ``codex_day_dirs`` ``YYYY/MM/DD`` folders
+    (so it never stats the whole tree), sorts those by mtime, and only sniffs
+    the cwd of the freshest ``codex_scan_cap`` files. Returns at most
+    ``max_files`` ``(source, path)`` pairs, newest first across both agents —
+    enough to cover the live session whose tail turns lag the index.
+    """
+    target = str(project_path.resolve())
+    candidates: list[tuple[float, Source, Path]] = []
+
+    for path in discover_claude_transcripts(project_path, claude_root):
+        mtime = _safe_mtime(path)
+        if mtime is not None:
+            candidates.append((mtime, "claude", path))
+
+    codex_dir = codex_root or (Path.home() / ".codex" / "sessions")
+    if codex_dir.is_dir():
+        codex_paths = [
+            (mt, p)
+            for p in _recent_codex_files(codex_dir, codex_day_dirs)
+            if (mt := _safe_mtime(p)) is not None
+        ]
+        codex_paths.sort(key=lambda pair: -pair[0])
+        for mtime, path in codex_paths[:codex_scan_cap]:
+            if _codex_session_cwd(path) == target:
+                candidates.append((mtime, "codex", path))
+
+    candidates.sort(key=lambda c: -c[0])
+    return [(source, path) for _mt, source, path in candidates[:max_files]]
+
+
+def _recent_codex_files(codex_dir: Path, day_dirs: int) -> list[Path]:
+    """Codex JSONL files from the newest ``YYYY/MM/DD`` folders only.
+
+    The date-named tree sorts chronologically by path, so the most recent days
+    are found by name without stat-ing every file. Falls back to a full
+    ``rglob`` when the layout isn't the expected date tree.
+    """
+    dated = sorted(
+        (d for d in codex_dir.glob("[0-9]*/[0-9]*/[0-9]*") if d.is_dir()),
+        key=lambda d: d.as_posix(),
+        reverse=True,
+    )[:day_dirs]
+    if not dated:
+        return list(codex_dir.rglob("*.jsonl"))
+    files: list[Path] = []
+    for day in dated:
+        files.extend(day.glob("*.jsonl"))
+    return files
+
+
+def _safe_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
 def _codex_session_cwd(path: Path) -> str | None:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:

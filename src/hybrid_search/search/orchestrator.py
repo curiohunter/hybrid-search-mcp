@@ -390,23 +390,33 @@ def _merge_conv_results(
     chunk_results: list[HybridResult],
     conv_results: list[HybridResult],
     limit: int,
+    *,
+    in_flight_head: list[HybridResult] = (),
 ) -> list[HybridResult]:
     """Splice a small conversation head ahead of the code stream.
 
     Mirrors ``_merge_memory_results``: conv turns are a distinct answer unit
     for recall-shaped queries, so a rank-bounded head is prepended rather than
     merged by score (conv cosine vs code RRF are not comparable).
+
+    ``in_flight_head`` are live, not-yet-indexed turns. Their local token score
+    is not comparable to indexed RRF either, so they lead the conv head by
+    recency rather than competing by score — but they cede at least one slot to
+    indexed conv when both exist, so older relevant turns still show.
     """
-    if not conv_results:
-        return chunk_results
     conv_head = [r for r in conv_results if r.node_type == _CONV_NODE_TYPE]
-    if not conv_head:
+    if not conv_head and not in_flight_head:
         return chunk_results
     conv_head.sort(key=lambda r: -r.rrf_score)
     head_limit = min(3, max(1, limit))
+    lead = list(in_flight_head)
+    if lead and conv_head:
+        lead = lead[:max(1, head_limit - 1)]
     merged: list[HybridResult] = []
     seen: set[str] = set()
-    for r in conv_head[:head_limit]:
+    for r in (*lead, *conv_head):
+        if len(merged) >= head_limit:
+            break
         if r.chunk_id not in seen:
             merged.append(r)
             seen.add(r.chunk_id)
@@ -644,8 +654,20 @@ class SearchOrchestrator:
             conv_results = self._enrich_results(
                 conv_fused[:max(50, limit)], project_infos, query
             )
-            if conv_results:
-                chunk_results = _merge_conv_results(chunk_results, conv_results, limit)
+            # Phase 5 (conv): collect live-session turns the async per-turn
+            # indexer hasn't caught yet. The Stop hook indexes detached, so the
+            # freshest turns of an ongoing session — and the turn in progress —
+            # lag the store; they lead the conv head so recall sees them now.
+            in_flight_conv: list[HybridResult] = []
+            if cwd_scoped_project:
+                in_flight_conv = self._collect_conv_in_flight_results(
+                    project_infos[0], query, limit
+                )
+            if conv_results or in_flight_conv:
+                chunk_results = _merge_conv_results(
+                    chunk_results, conv_results, limit,
+                    in_flight_head=in_flight_conv,
+                )
 
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
@@ -1120,7 +1142,15 @@ class SearchOrchestrator:
                     if chunk.node_type == _CONV_NODE_TYPE:
                         # qualified_name is "{source}:{session}#{turn}"
                         source = (chunk.qualified_name or "").split(":", 1)[0] or "agent"
-                        trust_meta = f"[conversation - {source}]"
+                        # The file_path (.conversations/<source>/<id>.jsonl) is a
+                        # reserved *virtual* path — the real transcript lives in
+                        # ~/.claude or ~/.codex, not the worktree. Agents that try
+                        # to Read it fail and wrongly conclude the turn is gone, so
+                        # spell out that the turn text is already in this result.
+                        trust_meta = (
+                            f"[conversation - {source}; virtual path, not a file — "
+                            "turn content is in this result, do not Read the path]"
+                        )
                     else:
                         trust_meta = _trust_meta(
                             node_type=chunk.node_type,
@@ -1161,6 +1191,49 @@ class SearchOrchestrator:
                 db.close()
 
         return results
+
+    def _collect_conv_in_flight_results(
+        self,
+        pinfo: ProjectInfo,
+        query: str,
+        limit: int,
+    ) -> list[HybridResult]:
+        """Score live-session turns missing from the store (never raises)."""
+        try:
+            import os
+            from hybrid_search.search import conv_in_flight
+
+            # Power users can relocate transcript roots; tests point them at
+            # fixtures. Default to the conv indexer's real ~/.claude / ~/.codex.
+            claude_root = os.environ.get("HYBRID_SEARCH_CLAUDE_ROOT")
+            codex_root = os.environ.get("HYBRID_SEARCH_CODEX_ROOT")
+            # Stay hermetic under pytest unless a test opts in via those roots —
+            # otherwise the suite would scan the real home transcript trees.
+            if "PYTEST_CURRENT_TEST" in os.environ and not (claude_root or codex_root):
+                return []
+            idx_paths = IndexPaths(
+                get_project_dir(self._config.projects_dir, pinfo.id)
+            )
+            if not idx_paths.store_db.exists():
+                return []
+            db = StoreDB(idx_paths.store_db)
+            try:
+                turns = conv_in_flight.collect_conv_in_flight(
+                    Path(pinfo.path), pinfo.id, db,
+                    claude_root=Path(claude_root) if claude_root else None,
+                    codex_root=Path(codex_root) if codex_root else None,
+                )
+            finally:
+                db.close()
+            return conv_in_flight.score_conv_in_flight(
+                turns,
+                query=query,
+                project_name=pinfo.name,
+                project_id=pinfo.id,
+                limit=min(3, max(1, limit)),
+            )
+        except Exception:
+            return []
 
 
 # Rationale signal tokens (Step A). When present the query is asking "why" —

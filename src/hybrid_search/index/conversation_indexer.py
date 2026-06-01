@@ -65,6 +65,15 @@ def _conv_rel_path(source: str, session_id: str) -> str:
     return f".conversations/{source}/{session_id}.jsonl"
 
 
+def conv_file_id(project_id: str, rel_path: str) -> str:
+    """Synthetic file id for a session's conv chunks — the dedup key.
+
+    Shared with the query-time in-flight overlay so both sides derive the same
+    id; if this formula ever changes, dedup stays consistent in one edit.
+    """
+    return hashlib.sha256(f"{project_id}:{rel_path}".encode()).hexdigest()[:16]
+
+
 def _session_hash(chunks: list[ConvChunk]) -> str:
     """Aggregate fingerprint of a session's turns — the delta key."""
     joined = "\n".join(c.text for c in chunks)
@@ -204,7 +213,7 @@ class ConversationIndexer:
             return None
 
         rel_path = _conv_rel_path(source, session_id)
-        file_id = hashlib.sha256(f"{project_id}:{rel_path}".encode()).hexdigest()[:16]
+        file_id = conv_file_id(project_id, rel_path)
         new_hash = _session_hash(chunks)
 
         existing = db.get_file_by_path(project_id, rel_path)
