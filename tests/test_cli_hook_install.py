@@ -14,6 +14,7 @@ import pytest
 from hybrid_search.cli import (
     _CLAUDE_MD_MARKER,
     _CLAUDE_MD_SECTION,
+    _claude_md_has_routing,
     _HOOK_IDENTITY_MARKER,
     _NEEDS_SYNTHESIS_FLAG,
     _build_post_checkout_script,
@@ -965,3 +966,33 @@ def subprocess_env_minimal(tmp_path: Path) -> dict[str, str]:
         # per-repo in the test, but also scrub GIT_DIR so the hook's
         # rev-parse uses our tmp repo.
     }
+
+
+class TestStatusRoutingMarkerDetection:
+    """status' CLAUDE.md routing check must recognize the v1 marker.
+
+    Regression: install-hook writes ``<!-- BEGIN hybrid-search-mcp routing v1
+    -->``, but status only matched the legacy ``<!-- hybrid-search -->`` string,
+    so a freshly-installed CLAUDE.md was mis-reported as "marker missing".
+    """
+
+    def test_v1_marker_detected(self, tmp_path: Path) -> None:
+        # The exact block install-hook / _ensure_claude_md writes.
+        _ensure_claude_md(str(tmp_path))
+        text = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
+        assert "BEGIN hybrid-search-mcp routing v" in text  # precondition
+        assert _CLAUDE_MD_MARKER not in text                # not the legacy one
+        assert _claude_md_has_routing(text) is True
+
+    def test_v1_marker_detected_with_user_content_above(self, tmp_path: Path) -> None:
+        # Mirrors the real install: a user purpose header precedes the block.
+        _ensure_claude_md(str(tmp_path))
+        block = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
+        assert _claude_md_has_routing("# My Project\n\nnotes\n\n" + block) is True
+
+    def test_legacy_marker_still_detected(self) -> None:
+        assert _claude_md_has_routing(f"{_CLAUDE_MD_MARKER}\n## old routing\n") is True
+
+    def test_no_marker_not_detected(self) -> None:
+        assert _claude_md_has_routing("# Just a project\n") is False
+        assert _claude_md_has_routing("") is False
