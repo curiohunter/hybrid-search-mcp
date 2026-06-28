@@ -31,6 +31,7 @@ from hybrid_search.index.scanner import (
     parse_git_diff_name_status,
 )
 from hybrid_search.memory.routing_template import (
+    BEGIN_RE,
     LEGACY_CLAUDE_MARKER,
     ROUTING_BODY,
     agents_block,
@@ -160,6 +161,16 @@ def _detect_project(registry: ProjectRegistry, cwd: str) -> tuple[str, str] | No
 
 
 _CLAUDE_MD_MARKER = LEGACY_CLAUDE_MARKER
+
+
+def _claude_md_has_routing(text: str) -> bool:
+    """True if CLAUDE.md carries a hybrid-search routing block.
+
+    install-hook writes the versioned ``<!-- BEGIN hybrid-search-mcp routing
+    vN -->`` marker; older installs used the legacy ``<!-- hybrid-search -->``
+    string. Accept either so status never mis-reports a real block as missing.
+    """
+    return bool(BEGIN_RE.search(text)) or _CLAUDE_MD_MARKER in text
 
 # v0.3.0: imperative routing rules that name the MCP tool explicitly. The
 # weaker descriptive version shipped in v0.2.x let Claude drift toward
@@ -1282,7 +1293,7 @@ def _check_project_status(project_path: Path) -> None:
     # CLAUDE.md (routing section bounded by the hybrid-search marker)
     claude_md = project_path / "CLAUDE.md"
     if claude_md.exists():
-        has_routing = _CLAUDE_MD_MARKER in claude_md.read_text(encoding="utf-8")
+        has_routing = _claude_md_has_routing(claude_md.read_text(encoding="utf-8"))
         print(f"  {_status_mark(has_routing, warn=not has_routing)} CLAUDE.md routing:            "
               f"{'present' if has_routing else 'marker missing — run install-hook'}")
     else:
