@@ -100,6 +100,7 @@ def handle_hybrid_search(
         "score_gap": getattr(response, "score_gap", None),
         "confidence": getattr(response, "confidence", "weak"),
         "skipped_projects": response.skipped_projects,
+        "generated_ratio": getattr(response, "generated_ratio", 0.0),
     }
     if getattr(response, "fallback_hint", None):
         result["fallback_hint"] = sanitize_snippet(response.fallback_hint)

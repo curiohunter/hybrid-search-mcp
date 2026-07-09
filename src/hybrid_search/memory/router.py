@@ -33,15 +33,34 @@ _EXPLORATORY_TOKENS_EN_RE = re.compile(
 )
 
 
+# A runner-up within this fraction of the top score is a tie. Relative, not
+# absolute: RRF scores live on a fixed ~1/(k+rank) scale whose absolute
+# spread shrinks as the corpus grows, so an absolute floor (the old
+# ``gap < 0.001``) misreads dense-but-correct heads on large projects as
+# weak. See docs: 2026-07-09 self-pollution audit.
+_TIE_RATIO = 0.02
+
+
 def classify_confidence(
     top_score: float,
     gap: float | None,
     thresholds: Mapping[str, float],
+    *,
+    coherent: bool = False,
 ) -> str:
-    """Classify a search response into strong/mixed/weak confidence."""
+    """Classify a search response into strong/mixed/weak confidence.
+
+    ``gap`` should be the *effective* gap — distance from the top hit to the
+    first result anchored in a different file — so sibling chunks of one file
+    don't register as ambiguity. ``coherent`` marks a head whose top results
+    share one directory/module: a near-tie there means several good answers
+    to an exploratory question, not a confused ranking.
+    """
     if top_score == 0:
         return "weak"
-    if gap is not None and gap < 0.001:
+    if gap is not None and gap < top_score * _TIE_RATIO:
+        if coherent or top_score >= thresholds["strong_score"]:
+            return "mixed"
         return "weak"
     if (
         gap is not None
@@ -113,8 +132,16 @@ def distinctive_token(prompt: str) -> str:
     return max(tokens, key=lambda t: (len(t), t.lower()))[:48]
 
 
-def fallback_hint(prompt: str) -> str:
-    """Return a short alternative-tool hint for a weak hybrid_search result."""
+def fallback_hint(prompt: str, top_hit: str | None = None) -> str:
+    """Return a short alternative-tool hint for a weak hybrid_search result.
+
+    ``top_hit`` (the best result's file path) turns "weak = discard" into
+    "weak = low-trust candidate": the caller gets a concrete place to start
+    reading even when the ranking as a whole is ambiguous.
+    """
     tool = "grep" if has_identifier_shape_token(prompt) else "wiki"
     token = distinctive_token(prompt)
-    return f"weak match -> {tool} `{token}`"
+    hint = f"weak match -> {tool} `{token}`"
+    if top_hit:
+        hint += f" (top hit: {top_hit})"
+    return hint
