@@ -224,6 +224,18 @@ def _derive_module_name(
 
 _DOC_EXTENSIONS = frozenset({".md", ".txt", ".rst", ".adoc"})
 
+# Memory-lane chunk types — indexed for retrieval, never wiki material.
+_MEMORY_NODE_TYPES = frozenset({
+    "qa_log", "memory_card", "domain_term", "episodic_example", "conv_turn",
+})
+
+
+def _is_memory_layer_file(file_id: str, file_map: dict[str, FileRecord]) -> bool:
+    file_rec = file_map.get(file_id)
+    if not file_rec:
+        return False
+    return file_rec.relative_path.startswith((".hybrid-search/", ".conversations/"))
+
 
 def _group_isolated_by_directory(
     isolated_ids: set[str],
@@ -281,8 +293,17 @@ def generate_wiki_plan(db: StoreDB, project_id: str) -> WikiPlan:
     all_files = db.get_all_files(project_id)
 
     # Build lookup maps
-    chunk_map: dict[str, ChunkRecord] = {c.id: c for c in all_chunks}
     file_map: dict[str, FileRecord] = {f.id: f for f in all_files}
+    # Memory-lane chunks (qa logs, memory cards, conversations) and anything
+    # under .hybrid-search/ are retrieval content, not code. Wiki pages
+    # generated about them get re-read as "modules" on the next pass,
+    # compounding into `-isolated-isolated` page chains.
+    chunk_map: dict[str, ChunkRecord] = {
+        c.id: c
+        for c in all_chunks
+        if c.node_type not in _MEMORY_NODE_TYPES
+        and not _is_memory_layer_file(c.file_id, file_map)
+    }
     all_chunk_ids = set(chunk_map.keys())
 
     # Step 1: Build dependency graph (extracted+inferred only)

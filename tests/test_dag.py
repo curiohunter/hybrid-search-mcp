@@ -500,6 +500,53 @@ class TestGenerateWikiPlan:
         assert len(plan.isolated_modules) >= 1
         db.close()
 
+    def test_memory_lane_chunks_excluded_from_plan(self, tmp_path):
+        """qa/memory/conv chunks and .hybrid-search files never become wiki
+        modules — pages generated about them get re-read as "modules" on the
+        next pass, compounding into `-isolated-isolated` chains."""
+        db = _make_db(tmp_path)
+        _seed_graph_db(db)
+        with db.transaction() as conn:
+            db.upsert_file(conn, FileRecord(
+                id="f-qa", project_id=PROJECT_ID,
+                relative_path=".hybrid-search/qa/2026/07/09-000000-cafe.md",
+                file_hash="hq",
+            ))
+            db.upsert_file(conn, FileRecord(
+                id="f-conv", project_id=PROJECT_ID,
+                relative_path=".conversations/claude/abc.jsonl", file_hash="hc",
+            ))
+            db.insert_chunks(conn, [
+                ChunkRecord(
+                    id="chunk-qa", file_id="f-qa", project_id=PROJECT_ID,
+                    name="qa entry", node_type="qa_log",
+                ),
+                ChunkRecord(
+                    id="chunk-conv", file_id="f-conv", project_id=PROJECT_ID,
+                    name="turn", node_type="conv_turn",
+                ),
+                # Memory-typed chunk in a regular path — node_type still wins.
+                ChunkRecord(
+                    id="chunk-card", file_id="file-utils", project_id=PROJECT_ID,
+                    name="card", node_type="memory_card",
+                ),
+            ])
+
+        plan = generate_wiki_plan(db, PROJECT_ID)
+
+        planned = {
+            cid
+            for m in (*plan.modules, *plan.isolated_modules)
+            for cid in m.chunks
+        }
+        assert "chunk-qa" not in planned
+        assert "chunk-conv" not in planned
+        assert "chunk-card" not in planned
+        # Real code chunks still planned.
+        assert "chunk-handler" in planned
+        assert "chunk-format" in planned
+        db.close()
+
 
 class TestGenerateModuleWiki:
     """Tests for generate_module_wiki() and generate_all_wiki_pages()."""
