@@ -165,10 +165,19 @@ def _handle_pretooluse(event: dict) -> dict | None:
     if root is None:
         return None
 
-    from hybrid_search.memory import reader
+    from hybrid_search.memory import quality, reader
 
     try:
-        hits = list(reader.grep_qa(root, term))
+        # Read events search by bare filename — matching bodies (which quote
+        # tool logs and paths from unrelated turns) floods the context with
+        # irrelevant entries, so filenames must appear in the question
+        # itself. Grep patterns are content terms; body matches stay useful.
+        tool = event.get("tool_name") or ""
+        if tool == "Read":
+            hits = list(reader.grep_qa_queries(root, term))
+        else:
+            hits = list(reader.grep_qa(root, term))
+        hits = [h for h in hits if not quality.is_junk_query(h.index.query)]
     except Exception:
         return None
     if not hits:
