@@ -83,6 +83,7 @@ def _percentile(values: list[float], pct: float) -> float:
 def _calibrate_router_confidence(orchestrator, queries: list[dict], *, project, cwd, limit) -> dict[str, float]:
     top_scores: list[float] = []
     score_gaps: list[float] = []
+    top_cosines: list[float] = []
     for item in queries:
         query = item.get("query") or item.get("prompt")
         if not query:
@@ -96,12 +97,24 @@ def _calibrate_router_confidence(orchestrator, queries: list[dict], *, project, 
             limit=limit,
         )
         top_scores.append(float(response.top_score))
-        if response.score_gap is not None:
-            score_gaps.append(float(response.score_gap))
+        # Calibrate the gap on the same quantity classification uses — the
+        # different-file effective gap, not the raw top1-top2 spread.
+        gap = getattr(response, "effective_gap", None)
+        if gap is None:
+            gap = response.score_gap
+        if gap is not None:
+            score_gaps.append(float(gap))
+        cosine = getattr(response, "top_cosine", None)
+        if cosine is not None:
+            top_cosines.append(float(cosine))
     return {
         "strong_score": round(_percentile(top_scores, 0.67), 6),
         "strong_gap": round(_percentile(score_gaps, 0.67), 6),
         "weak_score": round(_percentile(top_scores, 0.33), 6),
+        # Median semantic similarity of representative queries: a
+        # weak-classified response whose best match clears what a typical
+        # answerable query scores is a rescue candidate, not a miss.
+        "cosine_anchor": round(_percentile(top_cosines, 0.5), 6),
     }
 
 
@@ -111,6 +124,7 @@ def _router_confidence_block(thresholds: dict[str, float]) -> str:
         f"strong_score = {thresholds['strong_score']:.6f}\n"
         f"strong_gap = {thresholds['strong_gap']:.6f}\n"
         f"weak_score = {thresholds['weak_score']:.6f}\n"
+        f"cosine_anchor = {thresholds.get('cosine_anchor', 0.0):.6f}\n"
     )
 
 
@@ -2682,14 +2696,20 @@ def cmd_recalibrate(args: argparse.Namespace) -> None:
         cwd=cwd,
         limit=args.limit,
     )
-    config_path = Path(cwd) / "config.toml"
+    # Write where load_config actually reads (the data dir, normally
+    # ~/.hybrid-search). The old target (cwd/config.toml) was never loaded
+    # back, so calibration silently had no effect.
+    from hybrid_search.config import DEFAULT_DATA_DIR
+
+    config_path = Path(getattr(config, "data_dir", DEFAULT_DATA_DIR)) / "config.toml"
     changed = _write_router_confidence_config(config_path, thresholds)
     status = "updated" if changed else "unchanged"
     print(
         "router.confidence "
-        f"{status}: strong_score={thresholds['strong_score']:.6f}, "
+        f"{status} ({config_path}): strong_score={thresholds['strong_score']:.6f}, "
         f"strong_gap={thresholds['strong_gap']:.6f}, "
-        f"weak_score={thresholds['weak_score']:.6f}"
+        f"weak_score={thresholds['weak_score']:.6f}, "
+        f"cosine_anchor={thresholds.get('cosine_anchor', 0.0):.6f}"
     )
 
 

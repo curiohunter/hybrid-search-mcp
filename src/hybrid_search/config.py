@@ -44,6 +44,10 @@ DEFAULT_ROUTER_CONFIDENCE = {
     "strong_score": 0.016081,
     "strong_gap": 0.000656,
     "weak_score": 0.014864,
+    # Cosine similarity bar for the weak→mixed semantic rescue. 0.0 = off:
+    # absolute cosine scales vary by embedding model and corpus, so the bar
+    # only exists after `recalibrate` derives it from real queries.
+    "cosine_anchor": 0.0,
 }
 
 # Known model token limits for auto-detection
@@ -177,12 +181,14 @@ class RouterConfidenceConfig:
     strong_score: float = DEFAULT_ROUTER_CONFIDENCE["strong_score"]
     strong_gap: float = DEFAULT_ROUTER_CONFIDENCE["strong_gap"]
     weak_score: float = DEFAULT_ROUTER_CONFIDENCE["weak_score"]
+    cosine_anchor: float = DEFAULT_ROUTER_CONFIDENCE["cosine_anchor"]
 
     def as_dict(self) -> dict[str, float]:
         return {
             "strong_score": self.strong_score,
             "strong_gap": self.strong_gap,
             "weak_score": self.weak_score,
+            "cosine_anchor": self.cosine_anchor,
         }
 
 
@@ -339,6 +345,11 @@ def load_config(config_path: Path | None = None) -> Config:
                     "weak_score", DEFAULT_ROUTER_CONFIDENCE["weak_score"]
                 )
             ),
+            cosine_anchor=float(
+                confidence_raw.get(
+                    "cosine_anchor", DEFAULT_ROUTER_CONFIDENCE["cosine_anchor"]
+                )
+            ),
         )
     )
 
@@ -425,6 +436,9 @@ require_first_run_confirm = true
 strong_score = 0.016081
 strong_gap = 0.000656
 weak_score = 0.014864
+# cosine_anchor: weak→mixed semantic rescue bar. 0.0 = off until
+# `recalibrate` derives it from a representative query battery.
+cosine_anchor = 0.0
 
 # [[projects]]
 # name = "my-project"
