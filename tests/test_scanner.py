@@ -693,6 +693,38 @@ class TestIndexQALogsOptIn:
         )
         assert [p.name for p in off.added] == []
 
+    def test_generated_output_is_not_indexed(self, tmp_path: Path) -> None:
+        # Regression: the opt-in negations must not re-include the whole
+        # .hybrid-search/ dotdir. Indexing wiki/qa-derived output feeds the
+        # index its own generated markdown (self-pollution feedback loop).
+        project_root, db = self._seed(tmp_path)
+        wiki_dir = project_root / ".hybrid-search" / "wiki"
+        wiki_dir.mkdir(parents=True)
+        (wiki_dir / "storage-isolated-isolated.md").write_text("# wiki page\n")
+        (wiki_dir / "index.md").write_text("# Wiki Index\n")
+        runtime_dir = project_root / ".hybrid-search" / "runtime"
+        runtime_dir.mkdir(parents=True)
+        (runtime_dir / "codex-last-prompt.json").write_text("{}\n")
+        (project_root / ".hybrid-search" / "coverage.json").write_text("{}\n")
+        (project_root / ".hybrid-search" / "wiki-gaps.json").write_text("{}\n")
+        (project_root / ".hybrid-search" / "memory" / "procedural-candidates.md").write_text(
+            "# candidates\n"
+        )
+
+        result = scan_project(project_root, "p1", db, IndexingConfig())
+        names = [p.name for p in result.added]
+
+        # Opt-in subtrees still index.
+        assert "21-000000-deadbeef.md" in names
+        assert "21-000001-feedbeef.md" in names
+        # Generated output stays out.
+        assert "storage-isolated-isolated.md" not in names
+        assert "index.md" not in names
+        assert "codex-last-prompt.json" not in names
+        assert "coverage.json" not in names
+        assert "wiki-gaps.json" not in names
+        assert "procedural-candidates.md" not in names
+
     def test_qa_archive_is_not_indexed(self, tmp_path: Path) -> None:
         project_root, db = self._seed(tmp_path)
         archive = project_root / ".hybrid-search" / "qa-archive" / "2026" / "04"
