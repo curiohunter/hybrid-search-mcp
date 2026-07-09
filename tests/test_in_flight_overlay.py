@@ -92,6 +92,29 @@ def test_collects_modified_deleted_and_renamed_from_temp_git_repo(tmp_path: Path
     assert any("createPayssamV2Payment" in f.content for f in overlay.files)
 
 
+def test_collects_untracked_files(tmp_path: Path) -> None:
+    # Brand-new files are invisible to `git diff HEAD` until the first
+    # `git add`; the overlay must still see them.
+    _git(tmp_path, "init")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("x = 1\n", encoding="utf-8")
+    _commit_all(tmp_path)
+
+    (tmp_path / "src/brand_new.py").write_text(
+        "def freshly_written_helper():\n    return 42\n", encoding="utf-8"
+    )
+    (tmp_path / ".gitignore").write_text("secret.py\n", encoding="utf-8")
+    (tmp_path / "secret.py").write_text("token = 'x'\n", encoding="utf-8")
+
+    overlay = collect_in_flight_overlay(tmp_path)
+
+    by_path = {f.relative_path: f for f in overlay.files}
+    assert "src/brand_new.py" in by_path
+    assert by_path["src/brand_new.py"].status == "added"
+    # .gitignore'd files stay invisible (--exclude-standard).
+    assert "secret.py" not in by_path
+
+
 def test_collect_skips_binary_and_truncates_oversized_text(tmp_path: Path) -> None:
     _git(tmp_path, "init")
     (tmp_path / "binary.py").write_bytes(b"print('ok')\x00more")
