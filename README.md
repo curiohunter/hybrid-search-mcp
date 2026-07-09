@@ -21,7 +21,7 @@ first-class search result for every future query, in either agent.
 
 **Trade-offs you should know up-front** (we've measured them):
 - First-query latency adds **~400 ms** of pre-fetch overhead (vs ~50 ms `grep`). Worth it for exploratory questions; not for `grep`-shaped lookups (and the router knows the difference).
-- Default embedder = **OpenAI `text-embedding-3-small`** (API key required). Local fallback exists but recall drops.
+- Embedder = **OpenAI `text-embedding-3-small`** (API key required). **There is no local embedding backend yet** — if zero-API-key is a hard constraint, this tool isn't for you today. (A `backend` config field is reserved; local ONNX/Ollama support is the top roadmap item.)
 - "0-config" is *almost* true: one `pip install` + one `setup` command after, but you also need `OPENAI_API_KEY` and (for Codex) a separate `install-codex-hook`.
 
 **Who this is for:** 1인 개발자가 Claude Code를 주력으로 + 가끔 Codex도 쓰면서, 같은 코드베이스에서 반복 질문을 줄이고 싶은 사람. Korean + English 코드베이스에서 검증됨 (valuein_homepage 708-commit, 1,307 files).
@@ -91,13 +91,58 @@ markdown, grep-able and git-able.
 | Aider repo map | ❌ | ❌ | ❌ | ❌ | ❌ | self | ✅ | none | <50 ms |
 | `@mcp/server-memory` (official) | ✅ key-val | ✅ key-val | ❌ | ❌ | ❌ | ❌ | ✅ | none | <10 ms |
 | Continue.dev context | VS Code only | ❌ | ⚠️ | ❌ | ❌ | ⚠️ | ⚠️ | mixed | varies |
-| **hybrid-search-mcp** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ 1-command after install | ⚠️ OpenAI by default | **~400 ms** |
+| **hybrid-search-mcp** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ 1-command after install | ⚠️ OpenAI only (no local yet) | **~400 ms** |
 
 What this table says, plainly:
 
 - **Strict wins:** `Q&A auto-save`, `wiki auto-gen`, dual-agent (Claude Code **and** Codex), Korean, hooks. No other OSS combines all five.
 - **Honest concessions:** setup needs a Python install + API key; default embedder is OpenAI; pre-fetch adds ~400 ms.
 - **Where we're not best:** if you only use one agent, `grep`-shaped queries, or zero-API-key constraint → Aider or `@mcp/server-memory` may serve you better.
+
+---
+
+## Privacy & Data
+
+Read this before installing — the Memory Layer stores conversation-derived
+content on disk **by default**, because that is what makes the compounding
+loop work. Everything below is local, plain-text, and opt-out.
+
+**What is stored, where:**
+
+| Data | Location | Default |
+|------|----------|---------|
+| Q&A logs (your query + answer excerpt + top results) | `<project>/.hybrid-search/qa/` | **on** |
+| Memory cards / facts | `<project>/.hybrid-search/memory/` | on |
+| Generated wiki pages | `<project>/.hybrid-search/wiki/` | on |
+| Indexed agent transcripts (Claude Code + Codex turns) | global index, from `index-conversations` / per-turn hooks | on when hooks installed |
+
+**What leaves your machine:** chunk text (code, docs, qa logs, conversation
+turns) is sent to the **OpenAI embeddings API** for embedding — nothing
+else. No telemetry, no other network calls. There is currently **no local
+embedding backend**; if sending chunk text to OpenAI is unacceptable, do
+not install this tool yet (local ONNX/Ollama support is the top roadmap
+item).
+
+**Safety rails built in:**
+- A sensitive-query regex drops password/token/secret-shaped queries before
+  they ever touch disk; files that look like secrets are never indexed.
+- A quality gate drops junk turns; a re-asked question within 7 days is
+  not stored twice.
+- Indexed conversation turns containing prompt-injection-shaped text are
+  tagged with an `[untrusted content …]` banner at display time.
+- `setup` writes `.gitignore` entries so `.hybrid-search/qa/` and memory
+  never end up in your repo — teammates don't see your conversation log
+  unless you deliberately commit it.
+- Retention: 90-day / 2,000-file auto-prune with a dry-run first pass;
+  archived entries live 30 more days and are restorable (`qa-restore`).
+
+**Full opt-out:**
+
+```bash
+export HYBRID_SEARCH_QA_LOG=0     # stop persisting Q&A turns
+export HYBRID_SEARCH_INDEX_QA=0   # stop indexing existing qa logs
+export HYBRID_SEARCH_ROUTER=0     # stop per-prompt pre-fetch injection
+```
 
 ---
 
@@ -170,8 +215,7 @@ hybrid-search-mcp annotate-wiki --cwd .      # inject god-nodes Top-N into wiki/
 hybrid-search-mcp shortest-path <a> <b>      # call-graph path between two symbols
 hybrid-search-mcp subgraph <symbol>          # N-hop forward+reverse call graph
 
-# Memory Layer — persistent Q&A log
-export HYBRID_SEARCH_QA_LOG=1                # enable persistence (opt-in)
+# Memory Layer — persistent Q&A log (ON by default; =0 disables)
 hybrid-search-mcp qa-list --cwd .            # recent queries, newest first
 hybrid-search-mcp qa-list --all              # across every registered project
 hybrid-search-mcp qa-show <id-or-hash>       # full entry (accepts hash prefix ≥4)
@@ -487,11 +531,13 @@ Reports:
 ### Memory Layer
 
 Persist hybrid_search responses as markdown and use them as first-class search
-targets. Four axes, each independently opt-in.
+targets. Four axes. Write and self-reference are **on by default** (that is
+what makes the compounding loop work out of the box) — each is independently
+opt-out:
 
 ```bash
-export HYBRID_SEARCH_QA_LOG=1      # write:    persist every response
-export HYBRID_SEARCH_INDEX_QA=1    # self-ref: treat qa logs as indexable corpus
+export HYBRID_SEARCH_QA_LOG=0      # write:    stop persisting responses
+export HYBRID_SEARCH_INDEX_QA=0    # self-ref: stop indexing past qa logs
 ```
 
 #### 1. Write
@@ -499,7 +545,7 @@ export HYBRID_SEARCH_INDEX_QA=1    # self-ref: treat qa logs as indexable corpus
 Each response lands at `<project>/.hybrid-search/qa/YYYY/MM/DD-HHMMSS-<hash>.md`
 with YAML frontmatter (query, query_type, effective BM25 weight, timestamp)
 + top-10 result snippets. A daemon thread does the I/O so the search hot
-path is not touched. Default **off**.
+path is not touched. Default **on** (see [Privacy & Data](#privacy--data)).
 
 #### 2. Read (human)
 
@@ -515,11 +561,12 @@ order and prefixes each line with the project name.
 
 #### 3. Self-reference (AI)
 
-When `HYBRID_SEARCH_INDEX_QA=1`, the scanner walks into `.hybrid-search/qa/`
-(overriding the `.gitignore` entry that `setup` writes). Each log becomes a
-single whole-file chunk tagged `node_type="qa_log"`, so future `hybrid_search`
-queries surface past conversations alongside code. Search JSON preserves
-`node_type` — clients can filter or re-rank qa hits separately.
+Enabled by default (`HYBRID_SEARCH_INDEX_QA=0` disables): the scanner walks
+into `.hybrid-search/qa/` (overriding the `.gitignore` entry that `setup`
+writes). Each log becomes a single whole-file chunk tagged
+`node_type="qa_log"`, so future `hybrid_search` queries surface past
+conversations alongside code. Search JSON preserves `node_type` — clients
+can filter or re-rank qa hits separately.
 
 #### 4. Rotation
 
@@ -600,7 +647,7 @@ pre-fetch entirely.
 │   ├── index.md                         # god-nodes Top-N auto-injected via annotate-wiki
 │   ├── STALE.md
 │   └── {module}.md
-├── qa/YYYY/MM/                          # Q&A log (opt-in, HYBRID_SEARCH_QA_LOG=1)
+├── qa/YYYY/MM/                          # Q&A log (on by default, HYBRID_SEARCH_QA_LOG=0 disables)
 └── wiki-gaps.txt
 ```
 
@@ -645,7 +692,7 @@ pre-fetch entirely.
 | Hooks not working | `hybrid-search-mcp setup` (re-run) |
 | Docs dominate search | `--exclude-pattern "docs/*"` or `"plan/*"` |
 | qa log not written from CLI | Expected — async daemon races short-lived CLI exit. Writes via the long-running MCP server are reliable. |
-| qa logs not surfacing in search | Set `HYBRID_SEARCH_INDEX_QA=1` and re-run `reindex --force --cwd .` |
+| qa logs not surfacing in search | Ensure `HYBRID_SEARCH_INDEX_QA` isn't set to `0`, then re-run `reindex --force --cwd .` |
 
 ---
 
