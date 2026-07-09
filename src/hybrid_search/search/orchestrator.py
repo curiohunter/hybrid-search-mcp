@@ -173,6 +173,12 @@ class HybridSearchResponse:
     # (qa logs, cards, conv turns, .hybrid-search/ files). High values on
     # topical queries signal index pollution / retrieval collapse.
     generated_ratio: float = 0.0
+    # Best cosine similarity in the vector lane. Unlike RRF, cosine has
+    # absolute meaning — a calibrated anchor for confidence decisions.
+    top_cosine: float | None = None
+    # Gap from the top hit to the first different-file result — the value
+    # classification actually uses (score_gap keeps the raw top1-top2).
+    effective_gap: float | None = None
 
 
 # --- Memory Layer boost ------------------------------------------------
@@ -615,17 +621,18 @@ class SearchOrchestrator:
 
         # Search each project
         if len(project_infos) == 1:
-            bm25_ids, vector_ids, total, skipped, authority_scores = self._search_single(
+            bm25_ids, vector_ids, total, skipped, authority_scores, vector_scores = self._search_single(
                 project_infos[0], query, query_vector, retrieval_depth,
                 file_pattern, node_types, exclude_pattern,
             )
         else:
-            bm25_ids, vector_ids, total, skipped, authority_scores = self._search_cross_project(
+            bm25_ids, vector_ids, total, skipped, authority_scores, vector_scores = self._search_cross_project(
                 project_infos, query, query_vector, retrieval_depth,
                 file_pattern, node_types,
                 primary_project_id=primary_project_id,
                 exclude_pattern=exclude_pattern,
             )
+        top_cosine = max(vector_scores.values(), default=None) if vector_scores else None
 
         # Keep conversation turns out of the main code lane. They live in the
         # same index (unified store) but answer a different question ("what did
@@ -695,12 +702,12 @@ class SearchOrchestrator:
             memory_depth = max(retrieval_depth, 50)
             memory_node_types = ["domain_term", "memory_card", "episodic_example", "qa_log"]
             if len(project_infos) == 1:
-                mem_bm25_ids, mem_vector_ids, _, _, _ = self._search_single(
+                mem_bm25_ids, mem_vector_ids, _, _, _, _ = self._search_single(
                     project_infos[0], query, query_vector, memory_depth,
                     file_pattern, memory_node_types, exclude_pattern,
                 )
             else:
-                mem_bm25_ids, mem_vector_ids, _, _, _ = self._search_cross_project(
+                mem_bm25_ids, mem_vector_ids, _, _, _, _ = self._search_cross_project(
                     project_infos, query, query_vector, memory_depth,
                     file_pattern, memory_node_types,
                     primary_project_id=primary_project_id,
@@ -736,12 +743,12 @@ class SearchOrchestrator:
             conv_depth = max(retrieval_depth, 50)
             conv_node_types = [_CONV_NODE_TYPE]
             if len(project_infos) == 1:
-                conv_bm25_ids, conv_vector_ids, _, _, _ = self._search_single(
+                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_single(
                     project_infos[0], query, query_vector, conv_depth,
                     file_pattern, conv_node_types, exclude_pattern,
                 )
             else:
-                conv_bm25_ids, conv_vector_ids, _, _, _ = self._search_cross_project(
+                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_cross_project(
                     project_infos, query, query_vector, conv_depth,
                     file_pattern, conv_node_types,
                     primary_project_id=primary_project_id,
@@ -801,6 +808,7 @@ class SearchOrchestrator:
             total_chunks_searched=total,
             skipped_projects=skipped,
             reranked=reranking_cfg.enabled,
+            top_cosine=top_cosine,
         )
 
     def _make_response(
@@ -814,6 +822,7 @@ class SearchOrchestrator:
         total_chunks_searched: int,
         skipped_projects: list[str] | None = None,
         reranked: bool = False,
+        top_cosine: float | None = None,
     ) -> HybridSearchResponse:
         ranked = sorted(
             (r for r in results if r.rrf_score > 0),
@@ -833,6 +842,20 @@ class SearchOrchestrator:
             top_score, effective_gap, thresholds, coherent=coherent
         )
         if confidence == "weak" and _has_quality_anchor(query, results, top_score, thresholds):
+            confidence = "mixed"
+        # Cosine anchor: RRF-based weak with a semantic match above the
+        # calibrated bar is a low-rank-consensus hit, not a miss. Disabled
+        # (0.0) until `recalibrate` derives the bar from real queries —
+        # a hardcoded cosine would be exactly the false precision the
+        # confidence contract is criticised for.
+        cosine_anchor = thresholds.get("cosine_anchor", 0.0)
+        if (
+            confidence == "weak"
+            and ranked
+            and cosine_anchor > 0
+            and top_cosine is not None
+            and top_cosine >= cosine_anchor
+        ):
             confidence = "mixed"
         hint = (
             fallback_hint(query, top_hit=ranked[0].file_path if ranked else None)
@@ -859,6 +882,8 @@ class SearchOrchestrator:
             skipped_projects=skipped_projects or [],
             reranked=reranked,
             generated_ratio=generated_ratio,
+            top_cosine=top_cosine,
+            effective_gap=effective_gap,
         )
 
     def _module_results_for_query(
@@ -1067,8 +1092,14 @@ class SearchOrchestrator:
         file_pattern: str | None,
         node_types: list[str] | None,
         exclude_pattern: str | None = None,
-    ) -> tuple[list[str], list[str], int, list[str], dict[str, float]]:
-        """Search a single project, return (bm25_ids, vector_ids, total, skipped, authority)."""
+    ) -> tuple[list[str], list[str], int, list[str], dict[str, float], dict[str, float]]:
+        """Search a single project.
+
+        Returns (bm25_ids, vector_ids, total, skipped, authority,
+        vector_scores). ``vector_scores`` maps chunk_id → cosine similarity;
+        unlike RRF scores, cosine has absolute meaning, so the caller can use
+        the lane's top similarity as a calibrated confidence anchor.
+        """
         project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
         idx_paths = IndexPaths(project_dir)
 
@@ -1096,13 +1127,14 @@ class SearchOrchestrator:
             # Vector search
             vec_results = vec_eng.search(query_vector, limit=depth, chunk_ids_filter=chunk_filter)
             vector_ids = [r.chunk_id for r in vec_results]
+            vector_scores = {r.chunk_id: r.score for r in vec_results}
 
             total = vec_eng.count
             authority = db.get_chunk_authority_scores(pinfo.id)
         finally:
             db.close()
 
-        return bm25_ids, vector_ids, total, [], authority
+        return bm25_ids, vector_ids, total, [], authority, vector_scores
 
     @staticmethod
     def _detect_primary_project(
@@ -1134,7 +1166,7 @@ class SearchOrchestrator:
         node_types: list[str] | None,
         primary_project_id: str | None = None,
         exclude_pattern: str | None = None,
-    ) -> tuple[list[str], list[str], int, list[str], dict[str, float]]:
+    ) -> tuple[list[str], list[str], int, list[str], dict[str, float], dict[str, float]]:
         """Cross-project search: interleave BM25 ranks, merge vector by cosine (§13).
 
         When primary_project_id is set (from cwd detection), primary project
@@ -1208,6 +1240,10 @@ class SearchOrchestrator:
         else:
             merged_bm25 = _interleave_round_robin(per_project_bm25)
 
+        # Raw (unboosted) cosines — the confidence anchor needs absolute
+        # similarity, not the ranking-only CWD nudge applied below.
+        vector_scores = {cid: sim for cid, sim in all_vector}
+
         # Vector: sort by cosine similarity, with boost for primary project
         if primary_project_id and primary_chunk_ids:
             # Boost primary project results by 5% cosine similarity
@@ -1219,7 +1255,7 @@ class SearchOrchestrator:
         all_vector.sort(key=lambda x: x[1], reverse=True)
         merged_vector = [cid for cid, _ in all_vector]
 
-        return merged_bm25, merged_vector, total, skipped, merged_authority
+        return merged_bm25, merged_vector, total, skipped, merged_authority, vector_scores
 
     def _enrich_results(
         self,

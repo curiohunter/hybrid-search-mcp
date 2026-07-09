@@ -13,7 +13,10 @@ from hybrid_search.search.in_flight import InFlightFile, InFlightOverlay
 from hybrid_search.search.orchestrator import HybridResult, SearchOrchestrator
 
 
-def _make_orchestrator(authority_map: dict[str, float]) -> SearchOrchestrator:
+def _make_orchestrator(
+    authority_map: dict[str, float],
+    cosine_anchor: float = 0.0,
+) -> SearchOrchestrator:
     config = MagicMock()
     config.search.rrf_k = 60
     config.search.reranking.enabled = False
@@ -22,6 +25,7 @@ def _make_orchestrator(authority_map: dict[str, float]) -> SearchOrchestrator:
         "strong_score": 0.02,
         "strong_gap": 0.001,
         "weak_score": 0.01,
+        "cosine_anchor": cosine_anchor,
     }
 
     pinfo = ProjectInfo(
@@ -37,7 +41,7 @@ def _make_orchestrator(authority_map: dict[str, float]) -> SearchOrchestrator:
 
     orch = SearchOrchestrator(config, registry, embedder)
     orch._search_single = MagicMock(
-        return_value=(["a", "b"], ["b", "a"], 2, [], authority_map)
+        return_value=(["a", "b"], ["b", "a"], 2, [], authority_map, {"b": 0.7, "a": 0.6})
     )
     orch._enrich_results = MagicMock(return_value=[])
     # Module injection would try to open a StoreDB with a mock path — stub it.
@@ -103,6 +107,43 @@ class TestAuthorityGating:
         assert response.top_score == 0.02
         assert response.score_gap == 0.005
         assert response.confidence == "strong"
+
+    def test_cosine_anchor_rescues_weak_to_mixed(self):
+        # Low RRF top (below weak_score=0.01) → weak; but the vector lane's
+        # best cosine (0.7 in the mock) clears the calibrated anchor.
+        orch = _make_orchestrator({}, cosine_anchor=0.65)
+        weak_hit = HybridResult(
+            chunk_id="a", rrf_score=0.005, bm25_rank=1, vector_rank=1,
+            file_path="src/a.py", project="test", name="a", qualified_name="a",
+            node_type="function", start_line=1, end_line=2, content="", snippet="",
+        )
+        orch._enrich_results = MagicMock(return_value=[weak_hit])
+
+        response = orch.hybrid_search(query="흐름이 어떻게 되나", project="test")
+
+        assert response.top_cosine == 0.7
+        assert response.confidence == "mixed"
+
+    def test_cosine_anchor_disabled_keeps_weak(self):
+        orch = _make_orchestrator({}, cosine_anchor=0.0)
+        weak_hit = HybridResult(
+            chunk_id="a", rrf_score=0.005, bm25_rank=1, vector_rank=1,
+            file_path="src/a.py", project="test", name="a", qualified_name="a",
+            node_type="function", start_line=1, end_line=2, content="", snippet="",
+        )
+        orch._enrich_results = MagicMock(return_value=[weak_hit])
+
+        response = orch.hybrid_search(query="흐름이 어떻게 되나", project="test")
+
+        assert response.confidence == "weak"
+
+    def test_cosine_anchor_ignores_empty_results(self):
+        orch = _make_orchestrator({}, cosine_anchor=0.65)
+        orch._enrich_results = MagicMock(return_value=[])
+
+        response = orch.hybrid_search(query="흐름이 어떻게 되나", project="test")
+
+        assert response.confidence == "weak"
 
     def test_snake_case_symbol_disables_authority(self):
         auth = {"a": 1.0}
@@ -285,7 +326,7 @@ class TestInFlightOverlay:
             last_indexed_at=None, file_count=1, chunk_count=1,
         )
         orch._registry.list_all.return_value = [orch._registry.get_by_name.return_value, p2]
-        orch._search_cross_project = MagicMock(return_value=(["a"], ["a"], 1, [], {}))
+        orch._search_cross_project = MagicMock(return_value=(["a"], ["a"], 1, [], {}, {"a": 0.6}))
 
         with patch("hybrid_search.search.orchestrator.collect_in_flight_overlay") as collect:
             orch.hybrid_search(query="dirty content")
