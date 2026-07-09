@@ -21,7 +21,7 @@ first-class search result for every future query, in either agent.
 
 **Trade-offs you should know up-front** (we've measured them):
 - First-query latency adds **~400 ms** of pre-fetch overhead (vs ~50 ms `grep`). Worth it for exploratory questions; not for `grep`-shaped lookups (and the router knows the difference).
-- Embedder = **OpenAI `text-embedding-3-small`** (API key required). **There is no local embedding backend yet** — if zero-API-key is a hard constraint, this tool isn't for you today. (A `backend` config field is reserved; local ONNX/Ollama support is the top roadmap item.)
+- Embedder = **OpenAI `text-embedding-3-small`** (API key required). **No local embedding backend — by choice, not neglect.** The first version ran local models; bulk-embedding tens of thousands of chunks pinned an M3 MacBook's fans for the entire run and made the machine unusable (CPU path was no better). A full reindex of a 2,000-file project via the API costs cents. If zero-API-key is a hard constraint, this tool isn't for you today; a `backend` config field is reserved and a local ONNX contribution is welcome.
 - "0-config" is *almost* true: one `pip install` + one `setup` command after, but you also need `OPENAI_API_KEY` and (for Codex) a separate `install-codex-hook`.
 
 **Who this is for:** 1인 개발자가 Claude Code를 주력으로 + 가끔 Codex도 쓰면서, 같은 코드베이스에서 반복 질문을 줄이고 싶은 사람. Korean + English 코드베이스에서 검증됨 (valuein_homepage 708-commit, 1,307 files).
@@ -119,9 +119,12 @@ loop work. Everything below is local, plain-text, and opt-out.
 **What leaves your machine:** chunk text (code, docs, qa logs, conversation
 turns) is sent to the **OpenAI embeddings API** for embedding — nothing
 else. No telemetry, no other network calls. There is currently **no local
-embedding backend**; if sending chunk text to OpenAI is unacceptable, do
-not install this tool yet (local ONNX/Ollama support is the top roadmap
-item).
+embedding backend** — the first version ran locally, and bulk-embedding a
+real codebase on laptop hardware proved unusable (sustained fan-pinning
+load on an M3 MacBook; CPU path no better), so the API is a deliberate
+trade-off. If sending chunk text to OpenAI is unacceptable, do not install
+this tool yet; a local ONNX contribution is welcome (`[embedding] backend`
+field is reserved for it).
 
 **Safety rails built in:**
 - A sensitive-query regex drops password/token/secret-shaped queries before
