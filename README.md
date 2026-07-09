@@ -1,5 +1,9 @@
 # Hybrid Search MCP
 
+[![tests](https://github.com/curiohunter/hybrid-search-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/curiohunter/hybrid-search-mcp/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
+
 **One memory. Claude Code or Codex — doesn't matter.**
 Questions you ask in one agent become context the other agent sees tomorrow.
 Auto-save, auto-recall, Korean + English.
