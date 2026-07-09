@@ -29,7 +29,13 @@ allowed-tools: Bash, Read
 
 ```bash
 PROJECT_ROOT=$(git rev-parse --show-toplevel)
-VENV=/Users/ian/project/claude_project/hybrid-search-mcp/.venv/bin/python
+# hybrid-search-mcp 파이썬 경로: setup이 기록한 MCP 등록에서 읽는다.
+VENV=$(python3 -c "import json,pathlib;print(json.load(open(pathlib.Path.home()/'.claude.json'))['mcpServers']['hybrid-search']['command'])" 2>/dev/null)
+if [ -z "$VENV" ]; then
+  for dir in ~/project/claude_project/hybrid-search-mcp ~/projects/hybrid-search-mcp ~/hybrid-search-mcp; do
+    [ -f "$dir/.venv/bin/python" ] && VENV="$dir/.venv/bin/python" && break
+  done
+fi
 "$VENV" -m hybrid_search.cli status --cwd "$PROJECT_ROOT"
 ```
 
