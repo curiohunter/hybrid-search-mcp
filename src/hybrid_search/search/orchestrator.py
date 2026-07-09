@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field, replace as _dc_replace
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from hybrid_search.config import Config
 from hybrid_search.index.embedder import Embedder
@@ -169,6 +169,10 @@ class HybridSearchResponse:
     fallback_hint: str | None = None
     skipped_projects: list[str] = field(default_factory=list)
     reranked: bool = False
+    # Fraction of results that are self-generated memory-layer content
+    # (qa logs, cards, conv turns, .hybrid-search/ files). High values on
+    # topical queries signal index pollution / retrieval collapse.
+    generated_ratio: float = 0.0
 
 
 # --- Memory Layer boost ------------------------------------------------
@@ -305,6 +309,67 @@ _MEMORY_NODE_TYPES = {"qa_log", "memory_card", "domain_term", "episodic_example"
 _CONV_NODE_TYPE = "conv_turn"
 _CONV_ID_PREFIX = "conv:"
 
+# Self-generated content — memory-layer output that lives in the index for
+# retrieval but is not code. Feeds the code-lane guard and the
+# ``generated_ratio`` quality signal.
+_GENERATED_PATH_PREFIXES = (".hybrid-search/", ".conversations/")
+_WIKI_PATH_PREFIX = ".hybrid-search/wiki/"
+
+# Max memory-lane chunks allowed in the code lane on a topical (no
+# memory-intent) query. Ambient recall stays (the compounding contract) but
+# near-duplicate Q&A can no longer crowd code out of the head.
+_MEMORY_HEAD_CAP = 2
+
+
+def _guard_code_lane(
+    results: list[HybridResult],
+    qtype: "QueryType",
+    memory_intent: bool,
+) -> list[HybridResult]:
+    """Keep the code lane answerable by code.
+
+    Wiki-derived chunks only exist in indexes built before the scanner
+    self-pollution fix — drop them unconditionally. Memory chunks (qa logs,
+    cards, domain terms) stay ambient but capped; exact-symbol queries drop
+    them entirely — the user is naming code, not recalling a conversation.
+    Memory-intent queries bypass the cap: the dedicated memory lane is about
+    to promote these results on purpose.
+    """
+    guarded: list[HybridResult] = []
+    memory_kept = 0
+    for r in results:
+        if (r.file_path or "").startswith(_WIKI_PATH_PREFIX):
+            continue
+        if r.node_type in _MEMORY_NODE_TYPES and not memory_intent:
+            if qtype == QueryType.EXACT_SYMBOL:
+                continue
+            if memory_kept >= _MEMORY_HEAD_CAP:
+                continue
+            memory_kept += 1
+        guarded.append(r)
+    return guarded
+
+
+def _generated_ratio(results: list[HybridResult]) -> float:
+    """Fraction of results that are self-generated memory-layer content.
+
+    Early-warning signal for retrieval collapse: answer accuracy looks fine
+    while the index homogenises, so source diversity has to be watched
+    directly. Module cards/members are navigation aids, not content — they
+    don't count.
+    """
+    pool = [r for r in results if r.node_type not in ("module_card", "module_member")]
+    if not pool:
+        return 0.0
+    generated = sum(
+        1
+        for r in pool
+        if r.node_type in _MEMORY_NODE_TYPES
+        or r.node_type == _CONV_NODE_TYPE
+        or (r.file_path or "").startswith(_GENERATED_PATH_PREFIXES)
+    )
+    return round(generated / len(pool), 3)
+
 
 def _apply_memory_boost(
     results: list[HybridResult],
@@ -425,6 +490,41 @@ def _merge_conv_results(
             merged.append(r)
             seen.add(r.chunk_id)
     return merged
+
+
+def _effective_gap_and_coherence(
+    ranked: list[HybridResult],
+) -> tuple[float | None, bool]:
+    """Near-dup-aware confidence inputs from a score-sorted result list.
+
+    Effective gap: distance from the top hit to the first result anchored in
+    a *different file*. Sibling chunks of the same file near-tying with the
+    top hit are corroboration, not ambiguity — the old raw top1-top2 gap read
+    them as a tie and forced weak confidence on large corpora.
+
+    Coherence: the top-3 share one parent directory (or one module). A
+    near-tie inside one subsystem is several good answers to an exploratory
+    question, not a confused ranking.
+    """
+    if not ranked:
+        return None, False
+    top = ranked[0]
+    effective_gap: float | None = None
+    for r in ranked[1:]:
+        if r.file_path != top.file_path:
+            effective_gap = round(top.rrf_score - r.rrf_score, 6)
+            break
+    if effective_gap is None and len(ranked) >= 2:
+        # Every runner-up lives in the top hit's file — maximal separation.
+        effective_gap = round(top.rrf_score, 6)
+
+    head = ranked[:3]
+    coherent = False
+    if len(head) >= 2:
+        parents = {str(PurePosixPath(r.file_path or "").parent) for r in head}
+        modules = {r.module_id for r in head}
+        coherent = len(parents) == 1 or (None not in modules and len(modules) == 1)
+    return effective_gap, coherent
 
 
 def _has_quality_anchor(
@@ -621,6 +721,7 @@ class SearchOrchestrator:
         # runs on the already-enriched list so file_mtime is available
         # to compute age; the list is re-sorted by the adjusted score.
         chunk_results = _apply_memory_boost(chunk_results, memory_intent)
+        chunk_results = _guard_code_lane(chunk_results, qtype, memory_intent)
         if memory_results:
             memory_results = _apply_memory_boost(memory_results, memory_intent)
             chunk_results = _merge_memory_results(chunk_results, memory_results, limit)
@@ -714,21 +815,37 @@ class SearchOrchestrator:
         skipped_projects: list[str] | None = None,
         reranked: bool = False,
     ) -> HybridSearchResponse:
-        ranked_scores = sorted(
-            (r.rrf_score for r in results if r.rrf_score > 0),
-            reverse=True,
+        ranked = sorted(
+            (r for r in results if r.rrf_score > 0),
+            key=lambda r: -r.rrf_score,
         )
-        top_score = ranked_scores[0] if ranked_scores else 0.0
+        top_score = ranked[0].rrf_score if ranked else 0.0
+        # Public field keeps its raw top1-top2 meaning; classification uses
+        # the effective (different-file) gap below.
         score_gap = (
-            round(ranked_scores[0] - ranked_scores[1], 6)
-            if len(ranked_scores) >= 2
+            round(ranked[0].rrf_score - ranked[1].rrf_score, 6)
+            if len(ranked) >= 2
             else None
         )
+        effective_gap, coherent = _effective_gap_and_coherence(ranked)
         thresholds = self._config.router.confidence.as_dict()
-        confidence = classify_confidence(top_score, score_gap, thresholds)
+        confidence = classify_confidence(
+            top_score, effective_gap, thresholds, coherent=coherent
+        )
         if confidence == "weak" and _has_quality_anchor(query, results, top_score, thresholds):
             confidence = "mixed"
-        hint = fallback_hint(query) if confidence == "weak" else None
+        hint = (
+            fallback_hint(query, top_hit=ranked[0].file_path if ranked else None)
+            if confidence == "weak"
+            else None
+        )
+        generated_ratio = _generated_ratio(results)
+        if generated_ratio >= 0.5 and len(results) >= 4:
+            logger.warning(
+                "generated_ratio=%.2f — self-generated content dominates results "
+                "for %r; index may need a rebuild (rebuild-index skill)",
+                generated_ratio, query,
+            )
         return HybridSearchResponse(
             results=results,
             query_type=query_type,
@@ -741,6 +858,7 @@ class SearchOrchestrator:
             fallback_hint=hint,
             skipped_projects=skipped_projects or [],
             reranked=reranked,
+            generated_ratio=generated_ratio,
         )
 
     def _module_results_for_query(
