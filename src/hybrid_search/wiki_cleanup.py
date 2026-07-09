@@ -28,6 +28,11 @@ _FILES_HEADING_RE = re.compile(r"^##\s+Files\s*$", re.MULTILINE)
 _FILE_BULLET_RE = re.compile(r"^- `([^`]+)`\s*$", re.MULTILINE)
 _NEXT_HEADING_RE = re.compile(r"^##\s", re.MULTILINE)
 
+# Memory-lane trees are retrieval content, never wiki material (see
+# index/dag.py) — pages derived from them can no longer be regenerated, so
+# they are orphans even while their source files stay indexed.
+_MEMORY_LANE_PREFIXES = (".hybrid-search/", ".conversations/")
+
 
 def extract_file_refs(body: str) -> list[str]:
     """Pull relative-path bullets from the ``## Files`` section of a wiki page."""
@@ -61,9 +66,10 @@ def find_orphans(
     """Return ``(orphans, scanned_count)`` over ``wiki_dir``.
 
     A page is an **orphan** when *every* ``## Files`` bullet references a
-    path that is not in ``indexed_paths``. Pages with no ``## Files``
-    section (e.g. the root ``index.md``) are preserved — they're structural
-    metadata, not module-derived.
+    path that is not in ``indexed_paths`` — or a memory-lane path (qa logs,
+    memory cards, conversations), which the wiki planner no longer covers.
+    Pages with no ``## Files`` section (e.g. the root ``index.md``) are
+    preserved — they're structural metadata, not module-derived.
     """
     if not wiki_dir.is_dir():
         return [], 0
@@ -79,9 +85,16 @@ def find_orphans(
         refs = extract_file_refs(body)
         if not refs:
             continue
-        if all(_normalise_ref(r) not in indexed_paths for r in refs):
+        if not any(_is_wiki_source(r, indexed_paths) for r in refs):
             orphans.append(page)
     return orphans, scanned
+
+
+def _is_wiki_source(ref: str, indexed_paths: set[str]) -> bool:
+    path = _normalise_ref(ref)
+    if path.startswith(_MEMORY_LANE_PREFIXES):
+        return False
+    return path in indexed_paths
 
 
 def cleanup_orphans(
