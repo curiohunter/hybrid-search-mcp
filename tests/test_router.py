@@ -19,8 +19,23 @@ class TestClassifyConfidence:
     def test_single_hit_can_be_mixed(self) -> None:
         assert classify_confidence(0.03, None, THRESHOLDS) == "mixed"
 
-    def test_tie_is_weak(self) -> None:
-        assert classify_confidence(0.08, 0.0009, THRESHOLDS) == "weak"
+    def test_tie_with_modest_top_is_weak(self) -> None:
+        # Relative tie (gap/top < 2%) with a top below strong_score → weak.
+        assert classify_confidence(0.03, 0.0004, THRESHOLDS) == "weak"
+
+    def test_tie_with_excellent_top_is_mixed(self) -> None:
+        # A near-tie under an excellent top hit is not a failed ranking —
+        # the old absolute floor (gap < 0.001) forced weak here.
+        assert classify_confidence(0.08, 0.0009, THRESHOLDS) == "mixed"
+
+    def test_coherent_tie_is_mixed(self) -> None:
+        # Near-tie among one subsystem = several good answers.
+        assert classify_confidence(0.03, 0.0004, THRESHOLDS, coherent=True) == "mixed"
+
+    def test_gap_is_relative_not_absolute(self) -> None:
+        # gap 0.0009 is 3% of top 0.03 — above the 2% tie ratio, so the old
+        # absolute floor must not fire.
+        assert classify_confidence(0.03, 0.0009, THRESHOLDS) == "mixed"
 
     def test_normal_strong(self) -> None:
         assert classify_confidence(0.08, 0.02, THRESHOLDS) == "strong"
