@@ -21,6 +21,12 @@
     {"id": "V17", "type": "flow", "query": "선생님 급여 정산 흐름"},
     {"id": "V18", "type": "logic", "query": "미납 학원비 표시 조건"},
     {"id": "V19", "type": "structure", "query": "학생 상세 페이지 탭 구성"},
-    {"id": "V20", "type": "flow", "query": "퇴원 처리 절차가 어떻게 되나"}
+    {"id": "V20", "type": "flow", "query": "퇴원 처리 절차가 어떻게 되나"},
+
+    {"id": "K01", "type": "keyword-bag", "query": "환불 기능 퇴원 refund 워크플로우 정산"},
+    {"id": "K02", "type": "keyword-bag", "query": "학원비 tuition 청구서 invoice 생성 스케줄"},
+    {"id": "K03", "type": "keyword-bag", "query": "상담 consultation 등록 테이블 저장"},
+    {"id": "K04", "type": "keyword-bag", "query": "출결 attendance 기록 세션 체크"},
+    {"id": "K05", "type": "keyword-bag", "query": "크레딧 credit 정산 차감 잔액"}
   ]
 }
