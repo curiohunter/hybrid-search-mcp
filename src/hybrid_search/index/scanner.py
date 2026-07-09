@@ -365,9 +365,11 @@ def _walk_files(
     def _keep_dir(rel_dir: Path, name: str) -> bool:
         if name.startswith("."):
             # Opt-in: walk into .hybrid-search so qa/card subtrees are reachable.
-            # Everything else under the dotdir is still blocked by ignore_spec.
-            if not (memory_opt_in and rel_dir == Path(".") and name == ".hybrid-search"):
-                return False
+            # The dotdir itself is spec-excluded (it must not be broadly
+            # re-included — see _build_ignore_spec), so descend unconditionally
+            # here; each subdirectory and file is still checked against the
+            # spec, which keeps only qa/ and memory/cards/.
+            return memory_opt_in and rel_dir == Path(".") and name == ".hybrid-search"
         return not ignore_spec.match_file(str(rel_dir / name) + "/")
 
     for dirpath, dirnames, filenames in os.walk(project_root, followlinks=False):
@@ -613,12 +615,17 @@ def _build_ignore_spec(
 
     if config.index_qa_logs:
         # Negations must come last — pathspec evaluates patterns in order and
-        # the final match wins.
+        # the final match wins. The re-includes are scoped to qa/ and
+        # memory/cards/ only: a bare "!.hybrid-search/" re-includes the whole
+        # dotdir (wiki/, runtime/, coverage artifacts), feeding generated
+        # output back into the index — a self-pollution feedback loop.
         patterns.extend([
-            "!.hybrid-search/",
+            ".hybrid-search/",
             "!.hybrid-search/qa/",
             "!.hybrid-search/qa/**",
             "!.hybrid-search/memory/",
+            ".hybrid-search/memory/*",
+            ".hybrid-search/memory/*/**",
             "!.hybrid-search/memory/cards/",
             "!.hybrid-search/memory/cards/**",
             ".hybrid-search/qa-archive/",
