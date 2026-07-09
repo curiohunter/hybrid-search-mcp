@@ -283,6 +283,29 @@ def grep_qa(
                 yield GrepHit(index=idx, line=line.rstrip(), lineno=lineno)
 
 
+def grep_qa_queries(
+    project_root: Path,
+    term: str,
+    *,
+    case_insensitive: bool = True,
+) -> Iterator[GrepHit]:
+    """Yield GrepHit only where ``term`` appears in the past *question*.
+
+    Bodies quote tool logs and file paths from unrelated work, so a bare
+    filename matches dozens of entries whose questions have nothing to do
+    with it. Restricting the match to the frontmatter query keeps hook
+    injection relevant: the term must be something the user actually asked
+    about.
+    """
+    if not term:
+        return
+    needle = term.casefold() if case_insensitive else term
+    for idx in iter_qa_indexes(project_root):
+        haystack = idx.query.casefold() if case_insensitive else idx.query
+        if needle in haystack:
+            yield GrepHit(index=idx, line=idx.query.strip(), lineno=1)
+
+
 # ── retention (Sprint 4) ──────────────────────────────────────────────
 
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([dhwm])\s*$", re.IGNORECASE)
