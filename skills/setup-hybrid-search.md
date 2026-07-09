@@ -53,15 +53,20 @@ fi
 
 ### 3. OpenAI API 키 확인
 
-프로젝트 루트의 `.env.local` 또는 환경변수에서 확인:
+홈 디렉토리 `~/.env.local` 또는 환경변수에서 확인:
 ```bash
-grep OPENAI_API_KEY "$HSDIR/.env.local" 2>/dev/null || echo "${OPENAI_API_KEY:+SET}"
+grep OPENAI_API_KEY ~/.env.local 2>/dev/null || echo "${OPENAI_API_KEY:+SET}"
 ```
 
-없으면 사용자에게 키를 물어서 `.env.local`에 저장:
+없으면 사용자에게 키를 물어서 **반드시 홈 디렉토리**에 저장:
 ```bash
-echo "OPENAI_API_KEY=sk-..." > "$HSDIR/.env.local"
+echo "OPENAI_API_KEY=sk-..." >> ~/.env.local
 ```
+
+**주의: `$HSDIR/.env.local`에 저장하면 안 된다.** embedder는 키를 "검색
+대상 프로젝트의 cwd에서 위로" 올라가며 찾으므로, hybrid-search-mcp 레포
+안에 둔 키는 다른 프로젝트를 인덱싱할 때 보이지 않는다. 홈(`~`)은 모든
+프로젝트의 walk-up 종점이라 어디서든 찾는다.
 
 ### 4. setup 실행 (MCP + hook 등록)
 
