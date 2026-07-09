@@ -54,7 +54,7 @@ def collect_in_flight_overlay(
     max_bytes_per_file: int = MAX_BYTES_PER_FILE,
     indexing_config: IndexingConfig | None = None,
 ) -> InFlightOverlay:
-    """Collect tracked dirty files from ``git diff --name-status HEAD``."""
+    """Collect dirty files: tracked (``git diff HEAD``) plus untracked."""
     project_root = project_root.resolve()
     try:
         proc = subprocess.run(
@@ -86,6 +86,27 @@ def collect_in_flight_overlay(
         rel = _norm_rel(new)
         if rel:
             statuses[rel] = "renamed"
+
+    # ``git diff HEAD`` only sees tracked files. Brand-new files (the most
+    # common shape of in-flight work) are untracked until the first ``git
+    # add`` — without this pass they stay invisible to search until commit.
+    # ``--exclude-standard`` honours .gitignore; _is_indexable_path applies
+    # the indexing ignore spec on top.
+    try:
+        untracked_proc = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=str(project_root),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        untracked_proc = None
+    if untracked_proc is not None and untracked_proc.returncode == 0:
+        for line in untracked_proc.stdout.splitlines():
+            rel = _norm_rel(line.strip())
+            if rel and rel not in statuses:
+                statuses[rel] = "added"
 
     config = indexing_config or IndexingConfig()
     ignore_spec = _build_ignore_spec(project_root, config)
