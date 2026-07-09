@@ -35,6 +35,7 @@ from hybrid_search.index.transcript_source import (
     parse_claude_transcript,
     parse_codex_session,
 )
+from hybrid_search.memory.quality import tag_untrusted
 from hybrid_search.project import ProjectRegistry, project_hash
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.vector import VectorEngine
@@ -240,13 +241,18 @@ class ConversationIndexer:
             if to_delete:
                 db.delete_chunks_by_ids(conn, to_delete)  # cascades conversation_meta
             if to_add:
+                # Displayed content gets the untrusted banner when a turn
+                # carries injection-shaped instructions; embeddings and BM25
+                # keep the raw text so retrieval is unaffected. The flag
+                # crosses the trust boundary with the turn instead of the
+                # turn silently gaining memory-layer authority.
                 db.insert_chunks(conn, [
                     ChunkRecord(
                         id=cid, file_id=file_id, project_id=project_id,
                         name=(c.user_prompt or "")[:_NAME_MAX],
                         qualified_name=f"{source}:{session_id}#{c.turn_index}",
                         node_type=CONV_NODE_TYPE,
-                        content=c.text, embedding_input=c.text,
+                        content=tag_untrusted(c.text), embedding_input=c.text,
                     )
                     for cid, c in to_add
                 ])
