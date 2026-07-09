@@ -150,6 +150,24 @@ finalize는 이미 DB에 썼으니 이 단계는 gap 생성 시에만 필요.
 - 있으면: 의도 기반 라우팅 표가 최신인지 확인
 - 없으면: 새 라우팅 표 삽입
 
+## Step 9: Confidence 재캘리브레이션 (인덱스가 크게 변했을 때만)
+
+reindex 결과가 대규모(변경 파일이 수백 개 이상, 또는 force rebuild 직후)이면
+confidence 임계값이 새 점수 분포와 어긋날 수 있다. 프로젝트용 gold 배터리가
+있으면 재캘리브레이션한다:
+
+```bash
+GOLD=$(ls /Users/ian/project/claude_project/hybrid-search-mcp/benchmarks/router_calibration/*_gold.json 2>/dev/null | head -1)
+[ -n "$GOLD" ] && "$VENV" -m hybrid_search.cli recalibrate \
+  --cwd "$PROJECT_ROOT" --gold "$GOLD"
+```
+
+- `strong_score`/`weak_score`/`strong_gap` 백분위와 `cosine_anchor`(중앙값)를
+  `~/.hybrid-search/config.toml`에 갱신한다.
+- 배터리는 실제 사용자가 칠 법한 탐색형 질문이어야 함 — 쉬운 쿼리만 모으면
+  임계값이 과대해져 false-weak이 늘어난다.
+- 소규모 delta reindex 후에는 건너뛴다 (분포가 거의 안 변함).
+
 ## 결과 보고
 
 ```

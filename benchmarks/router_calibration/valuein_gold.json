@@ -1,0 +1,26 @@
+{
+  "_note": "Router-confidence calibration battery for valuein_homepage. Distribution-based: recalibrate runs each query and derives strong/weak percentiles plus the cosine_anchor median — no relevance labels needed, so keep these REPRESENTATIVE of real exploratory usage (domain language a vibe coder actually types), not cherry-picked easy hits. Re-run after major index changes: hybrid-search-mcp recalibrate --cwd <valuein> --project valuein_homepage --gold benchmarks/router_calibration/valuein_gold.json",
+  "project": "valuein_homepage",
+  "queries": [
+    {"id": "V01", "type": "flow", "query": "입학테스트 예약 흐름이 어떻게 되나"},
+    {"id": "V02", "type": "schema", "query": "상담 등록하면 어떤 테이블에 저장돼"},
+    {"id": "V03", "type": "logic", "query": "형제할인 적용 로직"},
+    {"id": "V04", "type": "flow", "query": "학원비 자동 생성 스케줄"},
+    {"id": "V05", "type": "logic", "query": "크레딧 정산 처리 어디서 해"},
+    {"id": "V06", "type": "flow", "query": "학생 출결 체크는 어떻게 기록되나"},
+    {"id": "V07", "type": "structure", "query": "숙제 분석 기능 구성"},
+    {"id": "V08", "type": "flow", "query": "학부모 포털에서 결제 내역 보여주는 흐름"},
+    {"id": "V09", "type": "logic", "query": "수강료 환불 계산 규칙"},
+    {"id": "V10", "type": "schema", "query": "학생과 반 배정 관계 테이블"},
+    {"id": "V11", "type": "flow", "query": "페이쌤 결제 요청 API 호출 경로"},
+    {"id": "V12", "type": "structure", "query": "대시보드 통계 위젯은 어떤 데이터로 채워지나"},
+    {"id": "V13", "type": "flow", "query": "상담 후 입학 전환 처리"},
+    {"id": "V14", "type": "logic", "query": "휴원 처리하면 학원비 어떻게 되나"},
+    {"id": "V15", "type": "structure", "query": "알림 발송 기능 구조"},
+    {"id": "V16", "type": "schema", "query": "레벨테스트 결과 저장 스키마"},
+    {"id": "V17", "type": "flow", "query": "선생님 급여 정산 흐름"},
+    {"id": "V18", "type": "logic", "query": "미납 학원비 표시 조건"},
+    {"id": "V19", "type": "structure", "query": "학생 상세 페이지 탭 구성"},
+    {"id": "V20", "type": "flow", "query": "퇴원 처리 절차가 어떻게 되나"}
+  ]
+}
