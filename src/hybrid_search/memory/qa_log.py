@@ -398,6 +398,43 @@ def record(
 _DEDUP_WINDOW_SECONDS = 5
 
 
+# Near-duplicate window for turn saves: a re-asked question inside this
+# window refreshes nothing — the earlier entry already serves recall, and a
+# second copy only adds gap-collapsing noise to the index.
+_NEAR_DUP_WINDOW_DAYS = 7
+_NEAR_DUP_JACCARD = 0.85
+_NEAR_DUP_SCAN_CAP = 200
+
+
+def _near_dup_qa_exists(project_root: Path, query: str) -> bool:
+    """True when a recent qa entry asks (nearly) the same question.
+
+    Token-Jaccard on the frontmatter query — no embeddings, so it is cheap
+    enough for the fire-and-forget hook path. Scans newest-first, capped.
+    """
+    from hybrid_search.memory import quality, reader
+
+    tokens = quality.query_tokens(query)
+    if not tokens:
+        return False
+    now = datetime.now(timezone.utc)
+    scanned = 0
+    try:
+        for idx in reader.iter_qa_indexes(project_root):
+            scanned += 1
+            if scanned > _NEAR_DUP_SCAN_CAP:
+                break
+            if idx.timestamp is not None:
+                age_days = (now - idx.timestamp).total_seconds() / 86400.0
+                if age_days > _NEAR_DUP_WINDOW_DAYS:
+                    break  # newest-first: everything after is older
+            if quality.jaccard(tokens, quality.query_tokens(idx.query)) >= _NEAR_DUP_JACCARD:
+                return True
+    except Exception:  # pragma: no cover — never block a save on read errors
+        return False
+    return False
+
+
 def _recent_qa_hash_exists(
     project_root: Path,
     query_hash: str,
@@ -458,12 +495,18 @@ def record_turn(
         return None
     if is_sensitive_query(query):
         return None
+    from hybrid_search.memory.quality import is_junk_query
+
+    if is_junk_query(query):
+        return None
     try:
         root = _resolve_project_root(cwd, project_infos)
         if root is None:
             return None
 
         if dedup and _recent_qa_hash_exists(root, _hash_query(query)):
+            return None
+        if dedup and _near_dup_qa_exists(root, query):
             return None
 
         excerpt = _truncate_answer_excerpt(answer_excerpt)
