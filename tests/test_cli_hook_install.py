@@ -69,6 +69,7 @@ class TestRecalibrate:
                 global_dir=tmp_path / "g",
                 embedding=None,
                 models_dir=tmp_path / "m",
+                data_dir=tmp_path,
             ),
         )
         monkeypatch.setattr("hybrid_search.cli.ProjectRegistry", lambda global_dir: object())
@@ -77,11 +78,13 @@ class TestRecalibrate:
 
         cmd_recalibrate(SimpleNamespace(cwd=str(tmp_path), gold=str(gold), project=None, limit=10))
 
+        # Written to the data dir — where load_config reads — not the cwd.
         content = (tmp_path / "config.toml").read_text(encoding="utf-8")
         assert "[router.confidence]" in content
         assert "strong_score = 0.036800" in content
         assert "strong_gap = 0.003680" in content
         assert "weak_score = 0.023200" in content
+        assert "cosine_anchor = 0.000000" in content
 
     def test_rerun_is_byte_identical(self, tmp_path: Path, monkeypatch) -> None:
         gold = tmp_path / "gold.json"
@@ -104,6 +107,7 @@ class TestRecalibrate:
                 global_dir=tmp_path / "g",
                 embedding=None,
                 models_dir=tmp_path / "m",
+                data_dir=tmp_path,
             ),
         )
         monkeypatch.setattr("hybrid_search.cli.ProjectRegistry", lambda global_dir: object())
