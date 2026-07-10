@@ -1,5 +1,8 @@
 [project]
-name = "hybrid-search-mcp"
+# PyPI distribution name. "hybrid-search-mcp" is taken by an unrelated
+# project (krishna1306/mcp-server-hybrid-search) — the repo, CLI command,
+# and import package keep the hybrid-search name.
+name = "memory-layer-mcp"
 version = "0.5.0"
 description = "Memory Layer MCP for Claude Code — hybrid BM25 + vector search that compounds with usage (Korean ↔ English)"
 requires-python = ">=3.11"
@@ -33,6 +36,7 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [project.scripts]
 hybrid-search-mcp = "hybrid_search.cli:main"
+memory-layer-mcp = "hybrid_search.cli:main"
 
 [build-system]
 requires = ["hatchling"]
