@@ -78,6 +78,8 @@ markdown, grep-able and git-able.
 | Run `hybrid_search` | Query + top-10 results saved to `.hybrid-search/qa/YYYY/MM/*.md` |
 | Run `git commit` | post-commit hook reindexes changed files **and the commit message itself** (with changed-file anchors) |
 | Ask "how was X built / why did X change" | History-intent detection pulls past conversations, plan docs, **and the commits that changed it** into one answer |
+| Ask "who calls X / where is X used" | A call-graph card (callers + callees with file:line) rides along with the top code hit |
+| Want to see what's been captured | `hybrid-search-mcp viewer --open` — local single-file dashboard, nothing leaves the machine |
 | Ask a related question later | Past qa logs compete for top-10 like any chunk |
 | Say "지난번에…" or "previously…" | Memory-intent detection → 2× boost on qa logs |
 | Let time pass | 30-day half-life decay — stale answers quietly fade |
@@ -87,22 +89,43 @@ markdown, grep-able and git-able.
 
 ### How it compares (honestly)
 
-`⚠️` means "claim is partly true." We won't pretend everything is `✅`.
+Star counts verified via GitHub API on 2026-07-10. `⚠️` means "claim is
+partly true." We won't pretend everything is `✅` — several of these
+projects are excellent and far more popular than this one.
 
-| Project | Claude Code | Codex | 한글 | Q&A auto-save | Wiki auto-gen | Hooks | Setup | Embedding | 1st-query latency |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Mem0 | API only | API only | ❌ | manual | ❌ | ❌ | complex | external | n/a |
-| Letta (MemGPT) | ❌ | ❌ | ❌ | ⚠️ | ❌ | ❌ | complex | external | n/a |
-| Aider repo map | ❌ | ❌ | ❌ | ❌ | ❌ | self | ✅ | none | <50 ms |
-| `@mcp/server-memory` (official) | ✅ key-val | ✅ key-val | ❌ | ❌ | ❌ | ❌ | ✅ | none | <10 ms |
-| Continue.dev context | VS Code only | ❌ | ⚠️ | ❌ | ❌ | ⚠️ | ⚠️ | mixed | varies |
-| **hybrid-search-mcp** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ 1-command after install | ⚠️ OpenAI only (no local yet) | **~400 ms** |
+| Project (⭐) | Conversations auto-captured | Code index | Git commits indexed | Codex + Claude Code | 한↔영 code search | No vector-DB signup |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| claude-mem (86.7k) | ✅ hooks | ❌ | ❌ | ✅ many | ❌ | ✅ |
+| agentmemory (24.9k) | ✅ hooks | ❌ | ❌ | ✅ many | ❌ | ✅ |
+| mem0 / OpenMemory (60k) | ⚠️ agent-decides | ❌ | ❌ | ⚠️ | ❌ | ⚠️ cloud-leaning |
+| claude-context (12.1k) | ❌ | ✅ hybrid | ❌ | ✅ | ❌ | ❌ Zilliz/Milvus required |
+| Serena (26.3k) | ❌ | ⚠️ LSP symbols | ❌ | ✅ | ❌ | ✅ |
+| **memory-layer-mcp** | ✅ hooks + per-turn index | ✅ hybrid BM25+vector | **✅** | ✅ transcript-level | **✅** | ✅ (embedding API key only) |
 
 What this table says, plainly:
 
-- **Strict wins:** `Q&A auto-save`, `wiki auto-gen`, dual-agent (Claude Code **and** Codex), Korean, hooks. No other OSS combines all five.
-- **Honest concessions:** setup needs a Python install + API key; default embedder is OpenAI; pre-fetch adds ~400 ms.
-- **Where we're not best:** if you only use one agent, `grep`-shaped queries, or zero-API-key constraint → Aider or `@mcp/server-memory` may serve you better.
+- **The one thing nobody else does:** one index over your **code +
+  conversations + commit messages + docs**, so "how was this feature
+  built?" returns the discussion, the plan, the commit, and the code in a
+  single query. Conversation-memory tools stop at conversations;
+  code-index tools stop at code; git-search tools stop at git.
+- **Where others are ahead:** claude-mem/agentmemory have far more users
+  and integrations; Serena adds symbol-level *editing* we don't do (it
+  composes well alongside this tool); claude-context scales to
+  multi-million-LOC monorepos.
+- **Honest concessions:** OpenAI embedding key required (no local
+  backend — tried, laptop couldn't take the bulk load); pre-fetch adds
+  ~400 ms per prompt; and for exact-symbol lookups plain `grep` is still
+  faster — our router sends those to grep on purpose.
+
+**Built-in guardrails** (the parts that make automatic capture safe):
+secret-shaped queries never touch disk; files that look like credentials
+are never indexed; junk turns are gated and re-asked questions aren't
+stored twice; memories fade on a 30-day half-life instead of going stale
+silently; every result carries provenance (`trust_meta`) and each
+response reports how much of it is self-generated content
+(`generated_ratio`) — our retrieval-collapse early warning. Inspect
+everything captured at any time: `hybrid-search-mcp viewer --open`.
 
 ---
 
@@ -691,6 +714,7 @@ pre-fetch entirely.
 | `reindex --cwd .` | Delta reindex |
 | `reindex --force --cwd .` | Full reindex |
 | `stale --cwd .` | Check stale wiki pages |
+| `viewer --cwd . [--open]` | Local memory dashboard (`.hybrid-search/viewer.html`) |
 | `install-hook --cwd .` | Install post-commit + post-checkout hooks + `.gitignore` entries |
 | `install-codex-hook --cwd .` | Install Codex hooks + Codex TOML MCP config |
 | `annotate-wiki --cwd .` | Inject god-nodes Top-N into wiki/index.md (idempotent) |
