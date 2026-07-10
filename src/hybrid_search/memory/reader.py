@@ -53,6 +53,7 @@ class QAIndex:
     tools_used: tuple[str, ...] = ()
     answer_chars: int | None = None
     answer_excerpt_chars: int | None = None
+    client: str | None = None
 
     @property
     def id(self) -> str:
@@ -215,6 +216,7 @@ def parse_qa_index(path: Path) -> QAIndex | None:
         answer_excerpt_chars=(
             _safe_int(answer_excerpt_chars_raw) if answer_excerpt_chars_raw else None
         ),
+        client=fm.get("client") or None,
     )
 
 

@@ -170,13 +170,19 @@ class TestToolHandlerRerankHint:
             total_chunks_searched=100,
         )
         orch = _MockOrchestrator(resp)
-        result = handle_hybrid_search(orch, query="funcName")
+        # detail="full" — compact mode intentionally omits code content
+        # (progressive disclosure; the agent Reads the file instead).
+        result = handle_hybrid_search(orch, query="funcName", detail="full")
         r = result["results"][0]
         assert r["chunk_id"] == "chunk_0"
         assert r["name"] == "func_0"
         assert r["file_path"] == "src/mod_0.py"
         assert r["content"] == "def func_0(): pass"
         assert r["snippet"] == "def func_0(): pass"
+
+        compact = handle_hybrid_search(orch, query="funcName")
+        assert compact["results"][0]["content"] is None
+        assert compact["results"][0]["snippet"] == "def func_0(): pass"
 
 
 # -- Config TOML parsing --

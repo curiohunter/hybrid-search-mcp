@@ -292,7 +292,9 @@ class TestHandleHybridSearchIntegration:
             content="def foo():\x1b[31m\n    pass\x00",
             snippet="def\x07 foo",
         )
-        out = handle_hybrid_search(orch, query="x")
+        # detail="full" so content survives compact-mode omission — the point
+        # here is sanitization, which must apply whenever content is emitted.
+        out = handle_hybrid_search(orch, query="x", detail="full")
         r = out["results"][0]
         assert "\x00" not in r["content"]
         assert "\x1b" not in r["content"]
