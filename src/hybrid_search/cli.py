@@ -4381,7 +4381,11 @@ def cmd_setup(args: argparse.Namespace) -> None:
         print(f"Hooks registered: {settings_path}")
 
     # --- Step 3: ~/.claude/skills/ — install portable skills ---
+    # Repo checkout first (editable/dev installs), then the copy packaged
+    # inside the wheel — a plain `pip install` has no skills/ directory.
     skills_src = Path(__file__).resolve().parents[2] / "skills"
+    if not skills_src.is_dir():
+        skills_src = Path(__file__).resolve().parent / "_skills"
     skills_dst = Path.home() / ".claude" / "skills"
 
     if skills_src.is_dir():
