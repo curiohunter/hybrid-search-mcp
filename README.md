@@ -163,12 +163,17 @@ export HYBRID_SEARCH_ROUTER=0     # stop per-prompt pre-fetch injection
 ### Three commands
 
 ```bash
-pip install "hybrid-search-mcp>=0.5"        # older PyPI builds predate the Memory Layer
+pip install memory-layer-mcp                 # PyPI name; the CLI is `hybrid-search-mcp`
 
 echo "OPENAI_API_KEY=sk-..." >> ~/.env.local # once per machine — shared by all projects
 
 cd your-project/ && hybrid-search-mcp setup  # once per project
 ```
+
+> Why two names? `hybrid-search-mcp` on PyPI belongs to an unrelated
+> project, so the distribution is published as `memory-layer-mcp` — which
+> also happens to be the more accurate name. Both `hybrid-search-mcp` and
+> `memory-layer-mcp` work as the CLI command.
 
 `setup` wires everything in one shot: MCP server registration, Claude Code
 hooks, the `/search` · `/maintain` skills, this project's memory hooks,
