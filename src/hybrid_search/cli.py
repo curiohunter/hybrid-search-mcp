@@ -1496,6 +1496,54 @@ def cmd_drift(args: argparse.Namespace) -> None:
         db.close()
 
 
+def cmd_viewer(args: argparse.Namespace) -> None:
+    """Render the local memory viewer (.hybrid-search/viewer.html)."""
+    import sqlite3
+
+    from hybrid_search.viewer import write_viewer
+
+    config = load_config()
+    registry = ProjectRegistry(config.global_dir)
+    cwd = str(Path(args.cwd).resolve())
+    match = _detect_project(registry, cwd)
+    name = match[0] if match else Path(cwd).name
+    project_root = Path(match[1]) if match else Path(cwd)
+
+    stats: dict = {}
+    pinfo = registry.get_by_name(name) if match else None
+    if pinfo:
+        store = IndexPaths(get_project_dir(config.projects_dir, pinfo.id)).store_db
+        if store.exists():
+            conn = sqlite3.connect(str(store))
+            try:
+                rows = conn.execute(
+                    "SELECT node_type, COUNT(*) FROM chunks WHERE project_id = ? "
+                    "GROUP BY node_type",
+                    (pinfo.id,),
+                ).fetchall()
+            finally:
+                conn.close()
+            by_type = dict(rows)
+            memory_types = {"qa_log", "memory_card", "domain_term", "episodic_example"}
+            stats = {
+                "코드 청크": sum(
+                    v for k, v in by_type.items()
+                    if k not in memory_types and k not in ("conv_turn", "commit")
+                ),
+                "대화 턴": by_type.get("conv_turn", 0),
+                "커밋": by_type.get("commit", 0),
+                "Q&A": by_type.get("qa_log", 0),
+                "메모리 카드": by_type.get("memory_card", 0),
+            }
+
+    out = write_viewer(project_root, name, stats)
+    print(f"Memory viewer written: {out}")
+    if getattr(args, "open", False):
+        import webbrowser
+
+        webbrowser.open(out.as_uri())
+
+
 def cmd_stale(args: argparse.Namespace) -> None:
     """Check wiki staleness for a project."""
     config = load_config()
@@ -4820,6 +4868,12 @@ def main() -> None:
     p_stale = sub.add_parser("stale", help="Check wiki staleness")
     p_stale.add_argument("--cwd", default=".", help="Project directory")
 
+    p_viewer = sub.add_parser(
+        "viewer", help="Render the local memory viewer (.hybrid-search/viewer.html)"
+    )
+    p_viewer.add_argument("--cwd", default=".", help="Project directory")
+    p_viewer.add_argument("--open", action="store_true", help="Open in the default browser")
+
     p_drift = sub.add_parser(
         "drift",
         help="Check filesystem drift vs. index (Phase 6 L4 watchdog)",
@@ -5169,6 +5223,8 @@ def main() -> None:
         cmd_status(args)
     elif args.command == "stale":
         cmd_stale(args)
+    elif args.command == "viewer":
+        cmd_viewer(args)
     elif args.command == "drift":
         cmd_drift(args)
     elif args.command == "install-hook":
