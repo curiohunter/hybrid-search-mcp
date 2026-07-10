@@ -42,6 +42,11 @@ class TestMemoryIntent:
         "Codex hook 저장 구조 어떻게 결정했지?",
         "Claude와 Codex memory hook 차이가 뭐였지?",
         "메모리 레이어에서 qa_log와 memory card는 어떻게 달라?",
+        # History-shaped feature-genesis questions (2026-07-10 gap A)
+        "in-flight overlay 기능은 어떻게 만들었어",
+        "confidence weak 판정 로직은 어떻게 바뀌었어",
+        "이 기능 왜 만들게 됐어",
+        "레인 분리 경위가 궁금해",
     ])
     def test_korean_recall_phrases_trigger(self, query: str) -> None:
         assert _has_memory_intent(query) is True
@@ -53,6 +58,9 @@ class TestMemoryIntent:
         "before, I searched for admission_results",
         "last time you mentioned consultations",
         "WHAT DID WE ASK ABOUT portal",  # case-insensitive
+        "how was the overlay feature built",
+        "why did the confidence logic change",
+        "history of the routing hook",
     ])
     def test_english_recall_phrases_trigger(self, query: str) -> None:
         assert _has_memory_intent(query) is True

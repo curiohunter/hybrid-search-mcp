@@ -413,6 +413,10 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # Memory Layer auto-prune — journald-style two-ceiling policy.
     _run_auto_prune(config, Path(project_path))
 
+    # Feature genesis: index new commit messages (delta by hash — only
+    # commits not yet in the store get embedded).
+    _run_commit_indexing(config, registry, project_name, project_path)
+
     # Orphan wiki cleanup — delete pages whose source files are no longer
     # in the DB (gitignore drift or real removal).
     _run_wiki_cleanup(Path(project_path))
@@ -424,6 +428,28 @@ def cmd_reindex(args: argparse.Namespace) -> None:
         print(f"Errors: {len(result.errors)}")
         for err in result.errors[:5]:
             print(f"  {err}")
+
+
+def _run_commit_indexing(
+    config: Config,
+    registry: ProjectRegistry,
+    project_name: str,
+    project_path: str,
+) -> None:
+    """Index new git commit messages. Silent no-op outside a git repo."""
+    try:
+        from hybrid_search.index.commit_indexer import CommitIndexer
+
+        embedder = Embedder(config.embedding, config.models_dir)
+        indexer = CommitIndexer(config, registry, embedder)
+        result = indexer.index_commits(project_path, project_name)
+        if result.commits_indexed or result.commits_removed:
+            print(
+                f"Commits indexed: +{result.commits_indexed}"
+                + (f", -{result.commits_removed} pruned" if result.commits_removed else "")
+            )
+    except Exception as exc:  # never block reindex on history indexing
+        logger.debug("commit indexing skipped: %s", exc)
 
 
 def _run_memory_integrity(

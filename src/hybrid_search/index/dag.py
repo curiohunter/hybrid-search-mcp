@@ -227,6 +227,7 @@ _DOC_EXTENSIONS = frozenset({".md", ".txt", ".rst", ".adoc"})
 # Memory-lane chunk types — indexed for retrieval, never wiki material.
 _MEMORY_NODE_TYPES = frozenset({
     "qa_log", "memory_card", "domain_term", "episodic_example", "conv_turn",
+    "commit",
 })
 
 
@@ -234,7 +235,9 @@ def _is_memory_layer_file(file_id: str, file_map: dict[str, FileRecord]) -> bool
     file_rec = file_map.get(file_id)
     if not file_rec:
         return False
-    return file_rec.relative_path.startswith((".hybrid-search/", ".conversations/"))
+    return file_rec.relative_path.startswith(
+        (".hybrid-search/", ".conversations/", ".git-history/")
+    )
 
 
 def _group_isolated_by_directory(

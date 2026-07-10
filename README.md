@@ -76,7 +76,8 @@ markdown, grep-able and git-able.
 | When you… | What happens |
 |-----------|--------------|
 | Run `hybrid_search` | Query + top-10 results saved to `.hybrid-search/qa/YYYY/MM/*.md` |
-| Run `git commit` | post-commit hook reindexes, including new qa logs |
+| Run `git commit` | post-commit hook reindexes changed files **and the commit message itself** (with changed-file anchors) |
+| Ask "how was X built / why did X change" | History-intent detection pulls past conversations, plan docs, **and the commits that changed it** into one answer |
 | Ask a related question later | Past qa logs compete for top-10 like any chunk |
 | Say "지난번에…" or "previously…" | Memory-intent detection → 2× boost on qa logs |
 | Let time pass | 30-day half-life decay — stale answers quietly fade |
