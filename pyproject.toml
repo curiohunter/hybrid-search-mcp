@@ -5,7 +5,11 @@
 name = "memory-layer-mcp"
 version = "0.5.0"
 description = "Memory Layer MCP for Claude Code — hybrid BM25 + vector search that compounds with usage (Korean ↔ English)"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
+authors = [{ name = "curiohunter" }]
+keywords = ["mcp", "claude-code", "memory", "hybrid-search", "bm25", "vector-search", "codex"]
 dependencies = [
     "mcp[cli]>=1.0",
     "tantivy>=0.22",
@@ -29,6 +33,10 @@ dependencies = [
     "tiktoken>=0.7",
     "pathspec>=0.12",
 ]
+
+[project.urls]
+Homepage = "https://github.com/curiohunter/hybrid-search-mcp"
+Repository = "https://github.com/curiohunter/hybrid-search-mcp"
 
 [project.optional-dependencies]
 gpu = []
