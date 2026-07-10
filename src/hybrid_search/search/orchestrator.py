@@ -214,9 +214,20 @@ _MEMORY_INTENT_BOOST = 1.00
 _MEMORY_INTENT_KO = (
     "지난번", "이전에", "아까", "방금", "전에", "저번에", "그때",
     "뭐였지", "했지", "결정했지", "정했지", "기억", "메모리",
+    # History-shaped questions. "How was this built / why did it change"
+    # is answered by past conversations, plans, and commits — the same
+    # lanes recall questions use. Without these tokens the conv lane never
+    # ran for feature-genesis questions (2026-07-10 field check).
+    "어떻게 만들", "왜 만들", "만들게 된", "만들게 됐",
+    "어떻게 바뀌", "왜 바뀌", "바뀌었", "어떻게 변경", "변경됐",
+    "히스토리", "경위", "변천",
 )
 _MEMORY_INTENT_EN_RE = re.compile(
-    r"\b(previously|earlier|before|last\s+time|the\s+other\s+day|what\s+did\s+(?:i|we|you)\s+(?:ask|say))\b",
+    r"\b(previously|earlier|before|last\s+time|the\s+other\s+day"
+    r"|what\s+did\s+(?:i|we|you)\s+(?:ask|say)"
+    r"|how\s+(?:was|did)\s+\w+.*\s(?:built|made|implemented|changed?|evolve)"
+    r"|why\s+(?:was|did)\s+\w+.*\s(?:added|built|changed?|removed)"
+    r"|history\s+of)\b",
     re.IGNORECASE,
 )
 
@@ -286,6 +297,7 @@ def _trust_meta(
         "domain_term": "domain_term",
         "episodic_example": "example",
         "qa_log": "qa",
+        "commit": "commit",
     }.get(node_type or "", "code")
     parts = [kind]
     if confidence and kind in {"card", "domain_term", "example"}:
@@ -307,7 +319,8 @@ def _trust_meta(
     return "[" + " - ".join(parts) + "]"
 
 
-_MEMORY_NODE_TYPES = {"qa_log", "memory_card", "domain_term", "episodic_example"}
+_MEMORY_NODE_TYPES = {"qa_log", "memory_card", "domain_term", "episodic_example", "commit"}
+_COMMIT_NODE_TYPE = "commit"
 
 # Conversation turns (A4/A5). They share the unified index but form their own
 # retrieval lane: excluded from the main code lane (id prefix below), surfaced
@@ -700,7 +713,7 @@ class SearchOrchestrator:
         memory_results: list[HybridResult] = []
         if memory_intent and node_types is None:
             memory_depth = max(retrieval_depth, 50)
-            memory_node_types = ["domain_term", "memory_card", "episodic_example", "qa_log"]
+            memory_node_types = ["domain_term", "memory_card", "episodic_example", "qa_log", "commit"]
             if len(project_infos) == 1:
                 mem_bm25_ids, mem_vector_ids, _, _, _, _ = self._search_single(
                     project_infos[0], query, query_vector, memory_depth,
@@ -809,6 +822,7 @@ class SearchOrchestrator:
             skipped_projects=skipped,
             reranked=reranking_cfg.enabled,
             top_cosine=top_cosine,
+            memory_intent=memory_intent,
         )
 
     def _make_response(
@@ -823,6 +837,7 @@ class SearchOrchestrator:
         skipped_projects: list[str] | None = None,
         reranked: bool = False,
         top_cosine: float | None = None,
+        memory_intent: bool = False,
     ) -> HybridSearchResponse:
         ranked = sorted(
             (r for r in results if r.rrf_score > 0),
@@ -863,7 +878,9 @@ class SearchOrchestrator:
             else None
         )
         generated_ratio = _generated_ratio(results)
-        if generated_ratio >= 0.5 and len(results) >= 4:
+        # Recall/history questions legitimately answer from memory content —
+        # a high ratio there is the feature working, not pollution.
+        if generated_ratio >= 0.5 and len(results) >= 4 and not memory_intent:
             logger.warning(
                 "generated_ratio=%.2f — self-generated content dominates results "
                 "for %r; index may need a rebuild (rebuild-index skill)",
@@ -1293,6 +1310,11 @@ class SearchOrchestrator:
                         if (file_rec and chunk.node_type in _MEMORY_NODE_TYPES)
                         else None
                     )
+                    if chunk.node_type == _COMMIT_NODE_TYPE:
+                        # Commits share one virtual file record; each chunk's
+                        # own date rides in its frontmatter so decay works
+                        # per commit, not per batch.
+                        mtime = _frontmatter_value(chunk.content, "date")
                     if chunk.node_type == _CONV_NODE_TYPE:
                         # qualified_name is "{source}:{session}#{turn}"
                         source = (chunk.qualified_name or "").split(":", 1)[0] or "agent"
