@@ -232,6 +232,31 @@ _MEMORY_INTENT_EN_RE = re.compile(
 )
 
 
+# Structural questions ("who calls this", "where is X used") are answered
+# by the call graph the index already holds — surface it as a synthetic
+# card instead of making the agent run the graph CLI.
+_GRAPH_INTENT_KO = (
+    "누가 호출", "어디서 호출", "호출하는 곳", "호출하는지", "어디서 쓰",
+    "어디서 사용", "사용하는 곳", "의존",
+)
+_GRAPH_INTENT_EN_RE = re.compile(
+    r"\b(who\s+calls|callers?\s+of|called\s+by|call\s+sites?"
+    r"|depends?\s+on|usages?\s+of|where\s+is\s+\w+\s+used)\b",
+    re.IGNORECASE,
+)
+_GRAPH_CODE_NODE_TYPES = {"function", "method", "class", "interface"}
+_GRAPH_EDGE_DISPLAY_CAP = 8
+
+
+def _has_graph_intent(query: str) -> bool:
+    q = (query or "").strip()
+    if not q:
+        return False
+    if any(tok in q for tok in _GRAPH_INTENT_KO):
+        return True
+    return bool(_GRAPH_INTENT_EN_RE.search(q))
+
+
 def _has_memory_intent(query: str) -> bool:
     """True when the query asks for a past exchange.
 
@@ -377,7 +402,10 @@ def _generated_ratio(results: list[HybridResult]) -> float:
     directly. Module cards/members are navigation aids, not content — they
     don't count.
     """
-    pool = [r for r in results if r.node_type not in ("module_card", "module_member")]
+    pool = [
+        r for r in results
+        if r.node_type not in ("module_card", "module_member", "graph_card")
+    ]
     if not pool:
         return 0.0
     generated = sum(
@@ -811,6 +839,14 @@ class SearchOrchestrator:
             members=module_members,
         )
 
+        # Graph card: on "who calls / where used" questions, attach the call
+        # graph of the best code hit right below it. Derived from call_edges
+        # already in the store — no extra indexing, no separate tool.
+        if _has_graph_intent(query) and len(project_infos) == 1:
+            graph_card = self._build_graph_card(project_infos[0], results)
+            if graph_card is not None:
+                results = [*results[:1], graph_card, *results[1:]][:max(limit, 2)]
+
         elapsed_ms = (time.monotonic() - start) * 1000
         return self._make_response(
             query=query,
@@ -901,6 +937,76 @@ class SearchOrchestrator:
             generated_ratio=generated_ratio,
             top_cosine=top_cosine,
             effective_gap=effective_gap,
+        )
+
+    def _build_graph_card(
+        self,
+        pinfo: "ProjectInfo",
+        results: list[HybridResult],
+    ) -> HybridResult | None:
+        """Call-graph summary for the best code hit. None when inapplicable."""
+        target = next(
+            (r for r in results if (r.node_type or "") in _GRAPH_CODE_NODE_TYPES),
+            None,
+        )
+        if target is None:
+            return None
+
+        project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
+        idx_paths = IndexPaths(project_dir)
+        if not idx_paths.store_db.exists():
+            return None
+
+        db = StoreDB(idx_paths.store_db)
+        try:
+            callers = db.get_callers(target.chunk_id, pinfo.id, min_confidence="inferred")
+            callees = db.get_callees(target.chunk_id, pinfo.id, min_confidence="inferred")
+        except Exception:
+            return None
+        finally:
+            db.close()
+
+        if not callers and not callees:
+            return None
+
+        def _fmt(rows: list[dict], name_key: str) -> str:
+            seen: list[str] = []
+            for row in rows:
+                label = row.get("qualified_name") or row.get(name_key) or "?"
+                path = row.get("relative_path")
+                line = row.get("start_line")
+                if path:
+                    label = f"{label} ({path}{':' + str(line) if line else ''})"
+                if label not in seen:
+                    seen.append(label)
+            shown = seen[:_GRAPH_EDGE_DISPLAY_CAP]
+            more = len(seen) - len(shown)
+            return "\n".join(f"  - {s}" for s in shown) + (
+                f"\n  … +{more} more" if more > 0 else ""
+            )
+
+        lines = [f"call graph — {target.qualified_name or target.name}"]
+        if callers:
+            lines.append(f"← called by ({len(callers)}):\n{_fmt(callers, 'name')}")
+        if callees:
+            lines.append(f"→ calls ({len(callees)}):\n{_fmt(callees, 'callee_name')}")
+        content = "\n".join(lines)
+
+        return HybridResult(
+            chunk_id=f"graph:{target.chunk_id}",
+            rrf_score=0.0,
+            bm25_rank=None,
+            vector_rank=None,
+            file_path=target.file_path,
+            project=target.project,
+            name=f"call graph: {target.name}",
+            qualified_name=f"graph:{target.qualified_name or target.name}",
+            node_type="graph_card",
+            start_line=target.start_line,
+            end_line=target.end_line,
+            content=content,
+            snippet="[graph - call edges from index]\n" + content,
+            trust_meta="[graph - call edges from index]",
         )
 
     def _module_results_for_query(

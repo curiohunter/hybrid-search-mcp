@@ -123,6 +123,17 @@ def create_server(config: Config, config_path: Path | None = None) -> Server:
                             "type": "string",
                             "description": "Current working directory. Auto-scopes search to the matching project.",
                         },
+                        "detail": {
+                            "type": "string",
+                            "enum": ["compact", "full"],
+                            "default": "compact",
+                            "description": (
+                                "compact (default): snippets only for code/doc hits "
+                                "(Read the file for full text), capped content for "
+                                "memory hits (conversations/commits/qa have no file to "
+                                "Read). full: complete chunk content for every hit."
+                            ),
+                        },
                     },
                     "required": ["query"],
                 },
@@ -152,6 +163,7 @@ def create_server(config: Config, config_path: Path | None = None) -> Server:
                     node_types=args.get("node_types"),
                     bm25_weight=args.get("bm25_weight"),
                     cwd=args.get("cwd"),
+                    detail=args.get("detail", "compact"),
                 )
             case _:
                 return {"error": f"Unknown tool: {name}"}

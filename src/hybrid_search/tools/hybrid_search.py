@@ -36,6 +36,26 @@ _RERANK_HINT = (
 _LIMIT_LO, _LIMIT_HI = 1, 50
 _BM25_LO, _BM25_HI = 0.0, 1.0
 
+# Progressive disclosure (compact mode). Code/doc hits ship snippet-only —
+# the agent can Read file_path:start_line for depth. Memory-lane hits
+# (conversations, commits, qa) have no readable file behind them, so they
+# keep their content up to a cap instead.
+_MEMORY_CONTENT_CAP = 900
+_UNREADABLE_NODE_TYPES = {
+    "qa_log", "memory_card", "domain_term", "episodic_example",
+    "conv_turn", "commit", "module_card", "module_member", "graph_card",
+}
+
+
+def _compact_content(node_type: str | None, content: str | None) -> str | None:
+    if content is None:
+        return None
+    if node_type in _UNREADABLE_NODE_TYPES:
+        if len(content) <= _MEMORY_CONTENT_CAP:
+            return content
+        return content[:_MEMORY_CONTENT_CAP] + " …[truncated — full text via detail=\"full\"]"
+    return None  # readable on disk — snippet + file_path:line is enough
+
 
 def handle_hybrid_search(
     orchestrator: SearchOrchestrator,
@@ -47,6 +67,7 @@ def handle_hybrid_search(
     bm25_weight: float | None = None,
     cwd: str | None = None,
     exclude_pattern: str | None = None,
+    detail: str = "compact",
 ) -> dict:
     """Handle hybrid_search tool call — sanitizes all inputs and outputs."""
     safe_query = sanitize_query(query)
@@ -72,6 +93,7 @@ def handle_hybrid_search(
         exclude_pattern=safe_exclude_pattern,
     )
 
+    full_detail = detail == "full"
     result: dict = {
         "results": [
             {
@@ -86,7 +108,12 @@ def handle_hybrid_search(
                 "node_type": r.node_type,
                 "start_line": r.start_line,
                 "end_line": r.end_line,
-                "content": sanitize_snippet(r.content),
+                "content": (
+                    sanitize_snippet(c)
+                    if (c := (r.content if full_detail else _compact_content(r.node_type, r.content)))
+                    is not None
+                    else None
+                ),
                 "snippet": sanitize_snippet(r.snippet),
                 "trust_meta": sanitize_snippet(getattr(r, "trust_meta", None)),
             }
