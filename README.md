@@ -25,6 +25,13 @@ Korean ↔ English codebases).
 and PyPI package are Memory Layer MCP / `memory-layer-mcp`. Both work as
 the CLI command.)*
 
+!["how was the withdrawal-reversal feature built?" — one query returns the conversations where it was decided, the past Q&A from the day it was built, the merge commit that shipped it, and the design doc (real search output; student names redacted)](docs/assets/genesis-search.png)
+
+*Real output, June feature on a 2,100-file production app: the
+conversations where it was decided (1–3), the working Q&A from build day
+(4–7), **the merge commit that shipped it (8)**, and the March design
+doc (9) — one query. Asked in Korean, found across an English codebase.*
+
 ```
 Day 1 (Claude Code): "portal-v3 인증 흐름이 어떻게 되지?"
                      → answers from code, saves Q&A to .hybrid-search/qa/
