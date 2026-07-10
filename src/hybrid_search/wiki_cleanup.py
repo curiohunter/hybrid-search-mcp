@@ -31,7 +31,7 @@ _NEXT_HEADING_RE = re.compile(r"^##\s", re.MULTILINE)
 # Memory-lane trees are retrieval content, never wiki material (see
 # index/dag.py) — pages derived from them can no longer be regenerated, so
 # they are orphans even while their source files stay indexed.
-_MEMORY_LANE_PREFIXES = (".hybrid-search/", ".conversations/")
+_MEMORY_LANE_PREFIXES = (".hybrid-search/", ".conversations/", ".git-history/")
 
 
 def extract_file_refs(body: str) -> list[str]:
