@@ -4269,25 +4269,33 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     hooks = settings.setdefault("hooks", {})
 
-    # Check if our hooks already exist
+    # Check if our hooks already exist. The `"|| true"` requirement doubles
+    # as a migration marker: hooks written before it exit non-zero whenever
+    # their gate condition is unmet (non-git folder, no STALE.md, …) and
+    # Claude Code surfaces that as a "hook error" on every Read/Edit — so
+    # legacy entries must be detected as missing and rewritten.
+    def _is_current(h: dict, needle: str) -> bool:
+        cmd = str(h.get("hooks", [{}])[0].get("command", ""))
+        return needle in cmd and "|| true" in cmd
+
     pre_hooks = hooks.get("PreToolUse", [])
     has_auto_index = any(
-        "hybrid-search/wiki" in str(h.get("hooks", [{}])[0].get("command", ""))
+        _is_current(h, "hybrid-search/wiki")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Read"
     )
     has_stale_check = any(
-        "STALE.md" in str(h.get("hooks", [{}])[0].get("command", ""))
+        _is_current(h, "STALE.md")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Edit|Write"
     )
     has_gaps_check = any(
-        "wiki-gaps" in str(h.get("hooks", [{}])[0].get("command", ""))
+        _is_current(h, "wiki-gaps")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Read|Edit|Write"
     )
     has_route_hook = any(
-        "wiki/index.md" in str(h.get("hooks", [{}])[0].get("command", ""))
+        _is_current(h, "wiki/index.md")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Glob|Grep"
     )
@@ -4308,7 +4316,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
                     f'nohup sh -c \'"$1" -m hybrid_search.cli reindex --synthesize --cwd "$2" && '
                     f'"$1" -m hybrid_search.cli install-hook --cwd "$2"\' _ "$VENV" "$ROOT" '
                     f'> /dev/null 2>&1 & '
-                    f'echo "hybrid-search: first-time indexing started in background for $ROOT"'
+                    f'echo "hybrid-search: first-time indexing started in background for $ROOT" '
+                    f'|| true'
                 ),
             }],
         }
@@ -4320,7 +4329,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
                     'ROOT=$(git rev-parse --show-toplevel 2>/dev/null) && '
                     '[ -n "$ROOT" ] && [ -f "$ROOT/.hybrid-search/wiki/STALE.md" ] && '
                     "echo 'STALE wiki pages detected — update them BEFORE editing code:' && "
-                    'cat "$ROOT/.hybrid-search/wiki/STALE.md"'
+                    'cat "$ROOT/.hybrid-search/wiki/STALE.md" || true'
                 ),
             }],
         }
@@ -4334,7 +4343,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
                     '{ [ ! -f "$ROOT/.hybrid-search/.gaps-shown" ] || '
                     '[ "$ROOT/.hybrid-search/wiki-gaps.txt" -nt "$ROOT/.hybrid-search/.gaps-shown" ]; } && '
                     'cat "$ROOT/.hybrid-search/wiki-gaps.txt" && '
-                    'touch "$ROOT/.hybrid-search/.gaps-shown"'
+                    'touch "$ROOT/.hybrid-search/.gaps-shown" || true'
                 ),
             }],
         }
@@ -4352,7 +4361,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
                     '"additionalContext":"hybrid-search: 이 프로젝트에 wiki 인덱스가 있습니다. '
                     '구조/관계/설계 질문은 .hybrid-search/wiki/index.md 먼저 확인하세요. '
                     '한국어 자연어 질의는 mcp__hybrid-search__hybrid_search 도구 사용. '
-                    '다른 프로젝트 참조 시 project 파라미터 지원."}}\''
+                    '다른 프로젝트 참조 시 project 파라미터 지원."}}\' || true'
                 ),
             }],
         }

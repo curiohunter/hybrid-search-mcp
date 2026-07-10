@@ -140,6 +140,11 @@ field is reserved for it).
 - `setup` writes `.gitignore` entries so `.hybrid-search/qa/` and memory
   never end up in your repo — teammates don't see your conversation log
   unless you deliberately commit it.
+- Sensitive subfolders (patient records, contracts, HR docs, …) can be
+  kept out of indexing entirely: list them in a `.hybrid-search-ignore`
+  file at the project root (gitignore syntax) and re-run
+  `hybrid-search-mcp index . --force`. Excluded files are never chunked,
+  never embedded, never sent anywhere.
 - Retention: 90-day / 2,000-file auto-prune with a dry-run first pass;
   archived entries live 30 more days and are restorable (`qa-restore`).
 
@@ -163,12 +168,17 @@ export HYBRID_SEARCH_ROUTER=0     # stop per-prompt pre-fetch injection
 ### Three commands
 
 ```bash
-pip install memory-layer-mcp                 # PyPI name; the CLI is `hybrid-search-mcp`
+pipx install memory-layer-mcp                # PyPI name; the CLI is `hybrid-search-mcp`
 
 echo "OPENAI_API_KEY=sk-..." >> ~/.env.local # once per machine — shared by all projects
 
 cd your-project/ && hybrid-search-mcp setup  # once per project
 ```
+
+`pip install memory-layer-mcp` works too — but Homebrew/system Pythons
+reject it with `externally-managed-environment`, so
+[`pipx`](https://pipx.pypa.io) (`brew install pipx`) is the reliable
+default for a CLI tool like this.
 
 > Why two names? `hybrid-search-mcp` on PyPI belongs to an unrelated
 > project, so the distribution is published as `memory-layer-mcp` — which
@@ -701,6 +711,8 @@ pre-fetch entirely.
 | Problem | Solution |
 |---------|----------|
 | `OPENAI_API_KEY not found` | Set env var or create `~/.env.local` |
+| `externally-managed-environment` on pip install | Homebrew/system Python blocks global pip — use `pipx install memory-layer-mcp` |
+| "hook error (non-blocking)" on every Read/Edit | Pre-0.5.1 hooks exited non-zero when idle — upgrade, then re-run `hybrid-search-mcp setup` |
 | Results from wrong project | Use `--cwd` or `--project` to scope |
 | Too few results | `hybrid-search-mcp index . --force` |
 | Rate limit errors | Auto-retry with 0.2s batch interval |
