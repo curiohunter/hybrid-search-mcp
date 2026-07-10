@@ -1,15 +1,29 @@
-# Hybrid Search MCP
+# Memory Layer MCP
 
 [![tests](https://github.com/curiohunter/hybrid-search-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/curiohunter/hybrid-search-mcp/actions/workflows/tests.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
+![tests count](https://img.shields.io/badge/tests-1%2C093%20passed-brightgreen)
+
+> Most memory tools remember conversations. Most code-search tools index
+> code. **Memory Layer MCP does both — plus commits and docs — so Claude
+> Code and Codex can answer not just "where is this code?" but "why was
+> it built this way?"**
 
 **One memory. Claude Code or Codex — doesn't matter.**
 Questions you ask in one agent become context the other agent sees tomorrow.
-Auto-save, auto-recall, Korean + English.
+Auto-save, auto-recall. Cross-language code search (tested heavily on
+Korean ↔ English codebases).
 
-Hybrid BM25 + Vector + Memory Layer. Cross-language (Korean ↔ English)
-across code, docs, and your own past exchanges.
+**Local by default:**
+- Q&A, memory, and indexes stay on your machine (`.hybrid-search/`, auto-gitignored)
+- Secret-shaped prompts are dropped; credential-shaped files never indexed
+- Only chunk text sent for embedding (OpenAI API) — no telemetry, nothing else
+- Kill switch: `HYBRID_SEARCH_QA_LOG=0`
+
+*(Repo is named `hybrid-search-mcp` for historical reasons; the product
+and PyPI package are Memory Layer MCP / `memory-layer-mcp`. Both work as
+the CLI command.)*
 
 ```
 Day 1 (Claude Code): "portal-v3 인증 흐름이 어떻게 되지?"
@@ -110,9 +124,9 @@ What this table says, plainly:
   single query. Conversation-memory tools stop at conversations;
   code-index tools stop at code; git-search tools stop at git.
 - **Where others are ahead:** claude-mem/agentmemory have far more users
-  and integrations; Serena adds symbol-level *editing* we don't do (it
-  composes well alongside this tool); claude-context scales to
-  multi-million-LOC monorepos.
+  and integrations; Serena adds symbol-level *editing* we don't do —
+  **install both; they compose well** (Serena edits symbols, this
+  remembers why); claude-context scales to multi-million-LOC monorepos.
 - **Honest concessions:** OpenAI embedding key required (no local
   backend — tried, laptop couldn't take the bulk load); pre-fetch adds
   ~400 ms per prompt; and for exact-symbol lookups plain `grep` is still
@@ -645,6 +659,21 @@ authority_alpha = 0.3  # god-node boost weight. 0.0 disables.
                        # Validated on n=60 (NDCG +0.061, P=1.00).
                        # Externally-weighted workloads may prefer 0.5.
 ```
+
+---
+
+## Roadmap
+
+Ordered by how often people ask:
+
+1. **OpenAI-compatible embedding endpoint** — point `[embedding]` at any
+   `base_url` (Ollama, vLLM, LM Studio, Voyage/Jina proxies). Unblocks
+   local-only and no-OpenAI users without us shipping a model.
+2. **Local ONNX embedding backend** — small multilingual model for
+   privacy-hard environments (recall trade-off documented honestly).
+3. **Per-folder embedding policy** — mark subtrees (patient data,
+   contracts) as never-embed at config level, on top of the existing
+   `.hybrid-search-ignore`.
 
 ---
 
