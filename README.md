@@ -160,42 +160,45 @@ export HYBRID_SEARCH_ROUTER=0     # stop per-prompt pre-fetch injection
 - Python 3.11+
 - OpenAI API key ([get one here](https://platform.openai.com/api-keys))
 
-### Install
+### Three commands
 
 ```bash
-pip install hybrid-search-mcp
+pip install "hybrid-search-mcp>=0.5"        # older PyPI builds predate the Memory Layer
+
+echo "OPENAI_API_KEY=sk-..." >> ~/.env.local # once per machine — shared by all projects
+
+cd your-project/ && hybrid-search-mcp setup  # once per project
 ```
 
-Or from source:
-```bash
-git clone https://github.com/curiohunter/hybrid-search-mcp.git
-cd hybrid-search-mcp
-pip install -e .
-```
+`setup` wires everything in one shot: MCP server registration, Claude Code
+hooks, the `/search` · `/maintain` skills, this project's memory hooks,
+Codex hooks, a `CLAUDE.md` routing block, and `.gitignore` entries.
+**Restart Claude Code** — the first file you open triggers background
+indexing, and from then on every `git commit` re-indexes just the changed
+files. Nothing else to run.
 
-### Set API key
+Adding another project later is one command: `cd other-project/ &&
+hybrid-search-mcp setup` (global pieces are detected and skipped; each
+project gets its own isolated index, wiki, and Q&A memory).
 
-```bash
-export OPENAI_API_KEY=sk-...
-```
+### CLI-only (no Claude Code)
 
-Or create `~/.env.local`:
-```
-OPENAI_API_KEY=sk-...
-```
-
-### First search
-
-After `pip install` + API key (≈5–10 min on first machine):
+The search engine works standalone:
 
 ```bash
 cd your-project/
-hybrid-search-mcp index .
+hybrid-search-mcp index .                       # ~165s for 1,776 files, ~$0.04
 hybrid-search-mcp search "authentication flow"
 ```
 
-Your project is indexed and searchable. Indexing time scales with codebase
-size (~165s for 1,776 files; see [Performance](#performance)).
+### From source (contributors)
+
+```bash
+git clone https://github.com/curiohunter/hybrid-search-mcp.git
+cd hybrid-search-mcp
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m pytest tests/ -q
+```
 
 ---
 
