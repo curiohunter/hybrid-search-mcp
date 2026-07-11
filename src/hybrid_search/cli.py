@@ -4347,29 +4347,31 @@ def cmd_setup(args: argparse.Namespace) -> None:
     # as a migration marker: hooks written before it exit non-zero whenever
     # their gate condition is unmet (non-git folder, no STALE.md, …) and
     # Claude Code surfaces that as a "hook error" on every Read/Edit — so
-    # legacy entries must be detected as missing and rewritten.
+    # legacy entries must be detected as missing and rewritten. Detection
+    # needles are the distinctive `.hybrid-search/...` paths, never bare
+    # filenames — same ownership rule the reinstall filter and teardown use.
     def _is_current(h: dict, needle: str) -> bool:
         cmd = str(h.get("hooks", [{}])[0].get("command", ""))
         return needle in cmd and "|| true" in cmd
 
     pre_hooks = hooks.get("PreToolUse", [])
     has_auto_index = any(
-        _is_current(h, "hybrid-search/wiki")
+        _is_current(h, ".hybrid-search/wiki")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Read"
     )
     has_stale_check = any(
-        _is_current(h, "STALE.md")
+        _is_current(h, ".hybrid-search/wiki/STALE.md")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Edit|Write"
     )
     has_gaps_check = any(
-        _is_current(h, "wiki-gaps")
+        _is_current(h, ".hybrid-search/wiki-gaps")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Read|Edit|Write"
     )
     has_route_hook = any(
-        _is_current(h, "wiki/index.md")
+        _is_current(h, ".hybrid-search/wiki/index.md")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Glob|Grep"
     )
@@ -4440,24 +4442,17 @@ def cmd_setup(args: argparse.Namespace) -> None:
             }],
         }
 
-        # Remove old hybrid-search hooks, keep others
-        new_pre = [h for h in pre_hooks if not (
-            isinstance(h, dict) and (
-                "hybrid-search/wiki" in str(h.get("hooks", [{}])[0].get("command", ""))
-                or "STALE.md" in str(h.get("hooks", [{}])[0].get("command", ""))
-                or "wiki-gaps" in str(h.get("hooks", [{}])[0].get("command", ""))
-                or "wiki/index.md" in str(h.get("hooks", [{}])[0].get("command", ""))
-            )
-        )]
+        # Remove OUR old hooks before reinstalling, keep everything else.
+        # Ownership goes through _is_memory_layer_hook — the broad needles
+        # this filter used before ("STALE.md", "wiki-gaps") deleted a user's
+        # own hook that merely referenced a file of the same name.
+        new_pre = [h for h in pre_hooks if not _is_memory_layer_hook(h)]
         new_pre.extend([auto_index_hook, stale_hook, gaps_hook, route_hook])
         hooks["PreToolUse"] = new_pre
 
-        # Remove old PostToolUse wiki-gaps hook (moved to PreToolUse)
+        # Remove our old PostToolUse wiki-gaps hook (moved to PreToolUse)
         post_hooks = hooks.get("PostToolUse", [])
-        new_post = [h for h in post_hooks if not (
-            isinstance(h, dict)
-            and "wiki-gaps.txt" in str(h.get("hooks", [{}])[0].get("command", ""))
-        )]
+        new_post = [h for h in post_hooks if not _is_memory_layer_hook(h)]
         hooks["PostToolUse"] = new_post
 
         settings_path.write_text(_json.dumps(settings, indent=2, ensure_ascii=False))
@@ -4553,6 +4548,33 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
 _SKILL_MANIFEST_NAME = ".memory-layer-manifest.json"
 
+# Ownership needles for hook entries — the DISTINCTIVE substrings of the
+# exact commands setup writes (full `.hybrid-search/...` paths and module
+# invocations), never bare filenames: a user's own hook that happens to
+# `cat docs/STALE.md` is not ours. Shared by setup's reinstall filter and
+# teardown so the two can never disagree about what we own.
+_MEMORY_LAYER_HOOK_NEEDLES = (
+    ".hybrid-search/wiki",
+    ".hybrid-search/wiki-gaps",
+    "hybrid_search.cli qa-hook",
+    "hybrid_search.cli reindex",
+)
+
+
+def _is_memory_layer_hook(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    commands = [
+        str(h.get("command", ""))
+        for h in entry.get("hooks", [])
+        if isinstance(h, dict)
+    ]
+    return any(
+        needle in command
+        for needle in _MEMORY_LAYER_HOOK_NEEDLES
+        for command in commands
+    )
+
 
 def _sha256_text(text: str) -> str:
     import hashlib
@@ -4604,11 +4626,13 @@ def cmd_teardown(args: argparse.Namespace) -> None:
             data = None
         if isinstance(data, dict) and "hybrid-search" in data.get("mcpServers", {}):
             srv = data["mcpServers"]["hybrid-search"]
-            # Ownership check: only remove a registration that actually runs
-            # our server — a user's unrelated entry under the same key stays.
-            ours = isinstance(srv, dict) and (
-                "hybrid_search.server" in " ".join(str(a) for a in srv.get("args", []))
-                or "hybrid_search" in str(srv.get("command", ""))
+            # Ownership check: setup always writes exactly
+            # {"command": <python>, "args": ["-m", "hybrid_search.server"]}.
+            # Exact-args match — substring tests would also claim a user's
+            # unrelated /opt/tools/hybrid_search_proxy entry.
+            ours = (
+                isinstance(srv, dict)
+                and [str(a) for a in srv.get("args", [])] == ["-m", "hybrid_search.server"]
             )
             if ours:
                 del data["mcpServers"]["hybrid-search"]
@@ -4624,28 +4648,13 @@ def cmd_teardown(args: argparse.Namespace) -> None:
         except ValueError:
             settings = None
         if isinstance(settings, dict) and isinstance(settings.get("hooks"), dict):
-            # Ownership needles are the DISTINCTIVE substrings of the exact
-            # commands setup writes — full `.hybrid-search/...` paths and the
-            # module invocation — never bare filenames: a user's own hook
-            # that happens to `cat docs/STALE.md` must survive teardown.
-            needles = (
-                ".hybrid-search/wiki",
-                ".hybrid-search/wiki-gaps",
-                "hybrid_search.cli qa-hook",
-                "hybrid_search.cli reindex",
-            )
-
-            def _is_ours(entry: object) -> bool:
-                if not isinstance(entry, dict):
-                    return False
-                cmds = [str(h.get("command", "")) for h in entry.get("hooks", []) if isinstance(h, dict)]
-                return any(n in c for n in needles for c in cmds)
-
+            # Same ownership function setup's reinstall filter uses — the
+            # two must never disagree about which hook entries are ours.
             dropped = 0
             for event, entries in list(settings["hooks"].items()):
                 if not isinstance(entries, list):
                     continue
-                kept = [e for e in entries if not _is_ours(e)]
+                kept = [e for e in entries if not _is_memory_layer_hook(e)]
                 dropped += len(entries) - len(kept)
                 settings["hooks"][event] = kept
             if dropped:

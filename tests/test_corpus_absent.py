@@ -98,8 +98,9 @@ class TestCorpusAbsentCap:
     def test_korean_query_english_source_with_strong_vector_anchor_is_not_forced_weak(self) -> None:
         # Korean query, English-only corpus: the vector lane can be right
         # while no Korean token ever appears literally. Literal absence is
-        # not evidence here — the cross-language guard must suppress both
-        # the corpus-absent cap and the strong demotion.
+        # not evidence here — the cross-language guard suppresses the
+        # corpus-absent weak cap (the strong→mixed demotion still applies;
+        # see test_korean_query_on_english_source_never_reads_strong).
         calls: list[list[str]] = []
 
         def spy(terms):

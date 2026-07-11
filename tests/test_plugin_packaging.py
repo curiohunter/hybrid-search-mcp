@@ -324,6 +324,45 @@ class TestTeardown:
         assert "USER EDIT" in skill_md.read_text(encoding="utf-8")
         assert "Kept skill 'search'" in capsys.readouterr().out
 
+    def test_preexisting_user_hook_mentioning_stale_md_survives_setup_and_teardown(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The user hook exists BEFORE setup: the reinstall filter in
+        # cmd_setup must not sweep it away on the broad "STALE.md" needle
+        # (the teardown-only test never exercised that path), and teardown
+        # must keep it too — both go through _is_memory_layer_hook.
+        from hybrid_search.cli import cmd_setup, cmd_teardown
+
+        fakehome = tmp_path / "home"
+        settings_path = fakehome / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True)
+        user_hook = {
+            "matcher": "Edit",
+            "hooks": [{"type": "command", "command": 'cat "$PROJECT/docs/STALE.md"'}],
+        }
+        settings_path.write_text(
+            json.dumps({"hooks": {"PreToolUse": [user_hook]}}), encoding="utf-8"
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(fakehome))
+
+        def _user_hook_present() -> bool:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            return any(
+                'docs/STALE.md' in str(h.get("hooks", [{}])[0].get("command", ""))
+                for entries in settings.get("hooks", {}).values()
+                if isinstance(entries, list)
+                for h in entries
+                if isinstance(h, dict)
+            )
+
+        cmd_setup(SimpleNamespace(cwd=str(project), dry_run=False, force=False, global_only=True))
+        assert _user_hook_present(), "setup deleted the user's pre-existing hook"
+
+        cmd_teardown(SimpleNamespace())
+        assert _user_hook_present(), "teardown deleted the user's pre-existing hook"
+
     def test_user_hook_mentioning_stale_md_survives_teardown(self, tmp_path: Path, monkeypatch) -> None:
         # Ownership must key on OUR distinctive command substrings
         # (.hybrid-search/... paths, module invocations) — a user's own hook
