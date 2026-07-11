@@ -21,6 +21,8 @@ def _make_orchestrator(
     config.search.rrf_k = 60
     config.search.reranking.enabled = False
     config.search.reranking.max_candidates = 20
+    config.search.reranking.lexical = False
+    config.search.reranking.lexical_weight = 0.6
     config.router.confidence.as_dict.return_value = {
         "strong_score": 0.02,
         "strong_gap": 0.001,
@@ -61,7 +63,7 @@ class TestAuthorityGating:
             fusion.return_value = []
             resp = orch.hybrid_search(query="FusedResult", project="test")
 
-        _, kwargs = fusion.call_args
+        _, kwargs = fusion.call_args_list[0]  # first call = main lane (ambient memory lane fuses after)
         assert kwargs["chunk_authority_scores"] is None
         assert resp.query_type == "EXACT_SYMBOL"
 
@@ -154,7 +156,7 @@ class TestAuthorityGating:
             fusion.return_value = []
             orch.hybrid_search(query="compute_file_hash", project="test")
 
-        _, kwargs = fusion.call_args
+        _, kwargs = fusion.call_args_list[0]  # first call = main lane (ambient memory lane fuses after)
         assert kwargs["chunk_authority_scores"] is None
 
     def test_korean_nl_keeps_authority(self):
@@ -166,7 +168,7 @@ class TestAuthorityGating:
             fusion.return_value = []
             orch.hybrid_search(query="저신뢰 엣지가 검색에 미치는 영향", project="test")
 
-        _, kwargs = fusion.call_args
+        _, kwargs = fusion.call_args_list[0]  # first call = main lane (ambient memory lane fuses after)
         assert kwargs["chunk_authority_scores"] == auth
 
     def test_english_nl_keeps_authority(self):
@@ -180,7 +182,7 @@ class TestAuthorityGating:
                 query="how does wiki staleness detection work", project="test"
             )
 
-        _, kwargs = fusion.call_args
+        _, kwargs = fusion.call_args_list[0]  # first call = main lane (ambient memory lane fuses after)
         assert kwargs["chunk_authority_scores"] == auth
 
     def test_mixed_korean_symbol_keeps_authority(self):
@@ -195,7 +197,7 @@ class TestAuthorityGating:
                 query="resolve_call_edges 함수 역할", project="test"
             )
 
-        _, kwargs = fusion.call_args
+        _, kwargs = fusion.call_args_list[0]  # first call = main lane (ambient memory lane fuses after)
         assert kwargs["chunk_authority_scores"] == auth
         assert resp.query_type == "KOREAN_NL"
 
@@ -208,7 +210,7 @@ class TestAuthorityGating:
             fusion.return_value = []
             orch.hybrid_search(query="HybridResult", project="test")
 
-        _, kwargs = fusion.call_args
+        _, kwargs = fusion.call_args_list[0]  # first call = main lane (ambient memory lane fuses after)
         assert kwargs["chunk_authority_scores"] is None
 
     def test_natural_language_with_empty_authority_passes_none(self):
@@ -220,7 +222,7 @@ class TestAuthorityGating:
             fusion.return_value = []
             orch.hybrid_search(query="로그인 처리 흐름", project="test")
 
-        _, kwargs = fusion.call_args
+        _, kwargs = fusion.call_args_list[0]  # first call = main lane (ambient memory lane fuses after)
         assert kwargs["chunk_authority_scores"] is None
 
 

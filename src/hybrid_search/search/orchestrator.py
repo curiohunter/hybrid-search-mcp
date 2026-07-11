@@ -30,6 +30,7 @@ from hybrid_search.search.in_flight import (
     score_in_flight_files,
 )
 from hybrid_search.search.modules_search import search_modules
+from hybrid_search.search.rerank import lexical_rerank
 from hybrid_search.search.snippet import make_snippet
 from hybrid_search.search.vector import VectorEngine
 from hybrid_search.storage.db import ModuleRecord, StoreDB
@@ -467,6 +468,9 @@ def _merge_memory_results(
     chunk_results: list[HybridResult],
     memory_results: list[HybridResult],
     limit: int,
+    *,
+    head_limit: int = 3,
+    insert_at: int = 0,
 ) -> list[HybridResult]:
     """Promote explicit memory-lane hits without duplicating chunk IDs.
 
@@ -474,28 +478,71 @@ def _merge_memory_results(
     match the same topical words. For explicit recall queries, curated
     memory cards are the primary answer unit, so we splice a small memory
     head before the regular chunk stream and preserve all other ordering.
+
+    Head selection is by relevance (type priority, then score), but the
+    selected qa_log entries are then reordered newest-first among
+    themselves: two Q&As matching the same probe are usually the same
+    topic at different times, and the newer fact supersedes — BM25 liking
+    the stale text is not a reason to show it first.
+
+    ``insert_at`` positions the head inside the chunk stream (0 = lead).
+    The ambient lane uses a deeper slot so a topical Q&A is guaranteed
+    exposure without displacing the best code hits.
     """
     if not memory_results:
         return chunk_results
     memory_head = [r for r in memory_results if r.node_type in _MEMORY_NODE_TYPES]
     if not memory_head:
         return chunk_results
-    memory_head.sort(key=lambda r: (
-        {"domain_term": 0, "memory_card": 1, "episodic_example": 2, "qa_log": 3}.get(r.node_type or "", 9),
-        -r.rrf_score,
-    ))
-    head_limit = min(3, max(1, limit))
-    merged: list[HybridResult] = []
+
+    def _head_key(r: HybridResult) -> tuple:
+        prio = {"domain_term": 0, "memory_card": 1, "episodic_example": 2, "qa_log": 3}.get(
+            r.node_type or "", 9
+        )
+        if r.node_type == "qa_log":
+            # qa candidates already cleared the lane's relevance gate; among
+            # them the newest answer is the one worth a guaranteed slot — a
+            # lexical score preferring the stale text is how bench v2 U6
+            # kept resurfacing a superseded fact. Cards stay score-ordered
+            # (curated, no supersession-by-time semantics).
+            days = _parse_mtime_days_ago(r.file_mtime)
+            return (prio, days is None, days if days is not None else 0.0)
+        return (prio, False, -r.rrf_score)
+
+    memory_head.sort(key=_head_key)
+    head_limit = min(head_limit, max(1, limit))
+    head: list[HybridResult] = []
     seen: set[str] = set()
     for r in memory_head[:head_limit]:
         if r.chunk_id not in seen:
-            merged.append(r)
+            head.append(r)
             seen.add(r.chunk_id)
-    for r in chunk_results:
-        if r.chunk_id not in seen:
-            merged.append(r)
-            seen.add(r.chunk_id)
-    return merged
+
+    body = [r for r in chunk_results if r.chunk_id not in seen]
+    insert_at = max(0, min(insert_at, len(body)))
+    return body[:insert_at] + head + body[insert_at:]
+
+
+def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
+    """Newest-first among the qa_log positions of the final list.
+
+    Multiple past Q&As matching one query are almost always the same
+    topic asked at different times, and the newer answer supersedes the
+    older — no lexical score is a reason to show a stale fact first
+    (bench v2 U3/U6). Only which qa occupies which qa slot changes;
+    every non-qa result keeps its exact position, so code relevance
+    ordering and spliced heads are preserved. Undated qa sorts last.
+    """
+    qa = [r for r in results if r.node_type == "qa_log"]
+    if len(qa) < 2:
+        return results
+
+    def _age(r: HybridResult) -> tuple[bool, float]:
+        days = _parse_mtime_days_ago(r.file_mtime)
+        return (days is None, days if days is not None else 0.0)
+
+    qa_iter = iter(sorted(qa, key=_age))
+    return [next(qa_iter) if r.node_type == "qa_log" else r for r in results]
 
 
 def _merge_conv_results(
@@ -739,9 +786,19 @@ class SearchOrchestrator:
                 )
 
         memory_results: list[HybridResult] = []
-        if memory_intent and node_types is None:
-            memory_depth = max(retrieval_depth, 50)
-            memory_node_types = ["domain_term", "memory_card", "episodic_example", "qa_log", "commit"]
+        if node_types is None:
+            if memory_intent:
+                memory_depth = max(retrieval_depth, 50)
+                memory_node_types = ["domain_term", "memory_card", "episodic_example", "qa_log", "commit"]
+            else:
+                # Ambient memory lane. Plain topical questions ("몇시에 돌아?")
+                # are answered by past Q&A too, but qa chunks lose the main
+                # RRF to code on lexical volume alone and never surface
+                # (bench v2 U1/U2). A shallow qa-only lane with a 1-slot
+                # splice guarantees exposure without displacing code hits.
+                # Cost: one extra node-typed BM25+vector pass per query.
+                memory_depth = 30
+                memory_node_types = ["qa_log", "memory_card"]
             if len(project_infos) == 1:
                 mem_bm25_ids, mem_vector_ids, _, _, _, _ = self._search_single(
                     project_infos[0], query, query_vector, memory_depth,
@@ -760,6 +817,15 @@ class SearchOrchestrator:
                 bm25_weight=effective_weight,
             )
             memory_results = self._enrich_results(mem_fused[:max(100, limit)], project_infos, query)
+            if not memory_intent:
+                # Ambient gate: only splice a Q&A that at least one retriever
+                # ranked well within its own lane. Keeps junk qa out of the
+                # guaranteed slot on projects with noisy memory.
+                memory_results = [
+                    r for r in memory_results
+                    if (r.bm25_rank is not None and r.bm25_rank <= 10)
+                    or (r.vector_rank is not None and r.vector_rank <= 10)
+                ]
 
         # Memory Layer — time-decay & intent boost for qa_log chunks.
         # A past Q&A should surface in future searches (that's the whole
@@ -770,9 +836,32 @@ class SearchOrchestrator:
         # to compute age; the list is re-sorted by the adjusted score.
         chunk_results = _apply_memory_boost(chunk_results, memory_intent)
         chunk_results = _guard_code_lane(chunk_results, qtype, memory_intent)
+        # Second-stage lexical rerank: RRF fuses ranks, so a chunk mediocre
+        # in both retrievers can sit above one that covers exactly the terms
+        # the user asked about. Re-score the head by query-term coverage.
+        # Runs before the memory/conv splices so their positional
+        # guarantees are not disturbed.
+        if reranking_cfg.lexical:
+            chunk_results = lexical_rerank(
+                query, chunk_results,
+                top_n=reranking_cfg.max_candidates,
+                weight=reranking_cfg.lexical_weight,
+            )
         if memory_results:
+            if reranking_cfg.lexical:
+                memory_results = lexical_rerank(
+                    query, memory_results,
+                    top_n=reranking_cfg.max_candidates,
+                    weight=reranking_cfg.lexical_weight,
+                )
             memory_results = _apply_memory_boost(memory_results, memory_intent)
-            chunk_results = _merge_memory_results(chunk_results, memory_results, limit)
+            if memory_intent:
+                chunk_results = _merge_memory_results(chunk_results, memory_results, limit)
+            else:
+                chunk_results = _merge_memory_results(
+                    chunk_results, memory_results, limit,
+                    head_limit=1, insert_at=2,
+                )
 
         # Conversation lane (A5). On recall-shaped queries, retrieve conv_turn
         # chunks separately and splice a small head ahead of code. Kept a
@@ -817,6 +906,10 @@ class SearchOrchestrator:
                     chunk_results, conv_results, limit,
                     in_flight_head=in_flight_conv,
                 )
+
+        # Stale-fact guard: whatever lane a qa arrived from, among the qa
+        # slots of the final list the newest answer shows first.
+        chunk_results = _order_qa_by_recency(chunk_results)
 
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
@@ -1421,6 +1514,13 @@ class SearchOrchestrator:
                         # own date rides in its frontmatter so decay works
                         # per commit, not per batch.
                         mtime = _frontmatter_value(chunk.content, "date")
+                    elif chunk.node_type in {"qa_log", "memory_card"}:
+                        # Filesystem mtime lies after a git clone or backup
+                        # restore (every qa file reads as freshly written, so
+                        # decay treats years-old answers as current). The
+                        # record's own frontmatter timestamp is the truth;
+                        # fs mtime stays as fallback for legacy files.
+                        mtime = _frontmatter_value(chunk.content, "timestamp") or mtime
                     if chunk.node_type == _CONV_NODE_TYPE:
                         # qualified_name is "{source}:{session}#{turn}"
                         source = (chunk.qualified_name or "").split(":", 1)[0] or "agent"

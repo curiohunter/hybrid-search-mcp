@@ -80,8 +80,15 @@ class EmbeddingConfig:
 
 @dataclass(frozen=True)
 class RerankingConfig:
+    # Legacy switch: return max_candidates results so the *agent* can
+    # rerank. Distinct from the in-process lexical rerank below.
     enabled: bool = False
     max_candidates: int = 20
+    # In-process second stage: re-score the top max_candidates by query
+    # term coverage (substring match — survives Korean agglutination) on
+    # top of the fused score. Deterministic, no API, no model.
+    lexical: bool = True
+    lexical_weight: float = 0.6
 
 
 @dataclass(frozen=True)
@@ -257,6 +264,8 @@ def load_config(config_path: Path | None = None) -> Config:
     reranking = RerankingConfig(
         enabled=rerank_raw.get("enabled", False),
         max_candidates=rerank_raw.get("max_candidates", 20),
+        lexical=rerank_raw.get("lexical", True),
+        lexical_weight=float(rerank_raw.get("lexical_weight", 0.6)),
     )
     search = SearchConfig(
         default_limit=search_raw.get("default_limit", 10),
