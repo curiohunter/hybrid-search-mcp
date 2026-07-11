@@ -7,18 +7,18 @@
 
 | metric | value |
 |---|---:|
-| newer_found_rate (new qa in top-10) | 66.67% |
-| newer_first_rate (new above old) | 50.00% |
+| newer_found_rate (new qa in top-10) | 100.00% |
+| newer_first_rate (new above old) | 100.00% |
 | stale_only_rate (old surfaced, new missed — worst case) | 0.00% |
 
 | id | topic | new rank | old rank | newer first |
 |---|---|---:|---:|---|
-| U1 | 정산 배치 시각 | — | — | ❌ |
-| U2 | 포털 세션 만료 | — | — | ❌ |
-| U3 | 결제 PG사 | 4 | 2 | ❌ |
-| U4 | 출결 알림 채널 | 2 | 4 | ✅ |
-| U5 | 테스트 러너 | 2 | 4 | ✅ |
-| U6 | 숙제 제출 저장소 | 2 | 4 | ✅ |
+| U1 | 정산 배치 시각 | 4 | 6 | ✅ |
+| U2 | 포털 세션 만료 | 6 | — | ✅ |
+| U3 | 결제 PG사 | 2 | 4 | ✅ |
+| U4 | 출결 알림 채널 | 2 | 6 | ✅ |
+| U5 | 테스트 러너 | 2 | — | ✅ |
+| U6 | 숙제 제출 저장소 | 2 | 6 | ✅ |
 
 ## Abstention (confidence contract on absent topics)
 
@@ -44,7 +44,7 @@
 
 | detail | mean | median |
 |---|---:|---:|
-| compact (default) | 3339 | 3257 |
-| full | 4518 | 4207 |
+| compact (default) | 3447 | 3365 |
+| full | 4565 | 4471 |
 
-compact/full ratio: **0.74** — progressive disclosure saving.
+compact/full ratio: **0.76** — progressive disclosure saving.
