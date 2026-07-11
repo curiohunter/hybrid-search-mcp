@@ -4496,6 +4496,14 @@ def cmd_setup(args: argparse.Namespace) -> None:
         print(f"Skills source not found: {skills_src} (skipped)")
 
     # --- Step 4: project-local memory product surface ---
+    if getattr(args, "global_only", False):
+        # Plugin-bootstrap path: the global surface above is everything the
+        # session needs; per-project onboarding happens via the auto_index
+        # PreToolUse hook the first time a project file is Read.
+        print()
+        print("Setup complete (global only). Restart Claude/Codex to apply changes.")
+        return
+
     try:
         from hybrid_search import codex_hooks, hooks as memory_hooks
 
@@ -4825,6 +4833,11 @@ def main() -> None:
     p_setup.add_argument("--cwd", default=".", help="Project directory")
     p_setup.add_argument("--dry-run", action="store_true", help="Preview setup changes without writing")
     p_setup.add_argument("--force", action="store_true", help="Recover from corrupted routing markers")
+    p_setup.add_argument(
+        "--global-only",
+        action="store_true",
+        help="Register only the global surface (MCP, hooks, skills); skip project files",
+    )
 
     p_doctor = sub.add_parser("doctor", help="Diagnose Memory Layer setup and corpus health")
     p_doctor.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
