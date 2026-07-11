@@ -25,6 +25,7 @@ from hybrid_search.search.orchestrator import (
     _has_memory_intent,
     _merge_memory_results,
     _order_qa_by_recency,
+    _unanchored_terms,
     _parse_mtime_days_ago,
 )
 
@@ -316,3 +317,24 @@ class TestMergeMemoryPlacement:
         qa = _mk("qa", "qa_log", rrf=0.5, mtime="2026-07-01T00:00:00+00:00")
         out = _merge_memory_results([], [qa], limit=10, head_limit=1, insert_at=2)
         assert [r.chunk_id for r in out] == ["qa"]
+
+
+class TestUnanchoredTerms:
+    def test_absent_head_noun_is_unanchored(self) -> None:
+        # A7: a 쿠폰 query whose hits only share generic process words.
+        hit = _mk("doc", "section", 1.0, content="수강료 고지서 발급과 처리 흐름")
+        missing = _unanchored_terms("쿠폰 발급과 사용 처리 흐름 정리해줘", [hit])
+        assert "쿠폰" in missing
+        assert "정리해줘" not in missing  # instruction suffix filtered
+
+    def test_hangul_prefix_sheds_josa(self) -> None:
+        hit = _mk("doc", "section", 1.0, content="시스템 구성 개요")
+        assert _unanchored_terms("시스템은 어떻게 구성되어 있나", [hit]) == []
+
+    def test_ascii_prefix_needs_four_chars(self) -> None:
+        hit = _mk("doc", "section", 1.0, content="카프카 아님: kaboom architecture")
+        missing = _unanchored_terms("kafka consumer group", [hit])
+        assert "kafka" in missing  # "kabo" != "kafk"
+
+    def test_empty_results_returns_nothing(self) -> None:
+        assert _unanchored_terms("쿠폰 발급", []) == []
