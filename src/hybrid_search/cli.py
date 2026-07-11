@@ -4347,29 +4347,31 @@ def cmd_setup(args: argparse.Namespace) -> None:
     # as a migration marker: hooks written before it exit non-zero whenever
     # their gate condition is unmet (non-git folder, no STALE.md, …) and
     # Claude Code surfaces that as a "hook error" on every Read/Edit — so
-    # legacy entries must be detected as missing and rewritten.
+    # legacy entries must be detected as missing and rewritten. Detection
+    # needles are the distinctive `.hybrid-search/...` paths, never bare
+    # filenames — same ownership rule the reinstall filter and teardown use.
     def _is_current(h: dict, needle: str) -> bool:
         cmd = str(h.get("hooks", [{}])[0].get("command", ""))
         return needle in cmd and "|| true" in cmd
 
     pre_hooks = hooks.get("PreToolUse", [])
     has_auto_index = any(
-        _is_current(h, "hybrid-search/wiki")
+        _is_current(h, ".hybrid-search/wiki")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Read"
     )
     has_stale_check = any(
-        _is_current(h, "STALE.md")
+        _is_current(h, ".hybrid-search/wiki/STALE.md")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Edit|Write"
     )
     has_gaps_check = any(
-        _is_current(h, "wiki-gaps")
+        _is_current(h, ".hybrid-search/wiki-gaps")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Read|Edit|Write"
     )
     has_route_hook = any(
-        _is_current(h, "wiki/index.md")
+        _is_current(h, ".hybrid-search/wiki/index.md")
         for h in pre_hooks
         if isinstance(h, dict) and h.get("matcher") == "Glob|Grep"
     )
@@ -4440,24 +4442,17 @@ def cmd_setup(args: argparse.Namespace) -> None:
             }],
         }
 
-        # Remove old hybrid-search hooks, keep others
-        new_pre = [h for h in pre_hooks if not (
-            isinstance(h, dict) and (
-                "hybrid-search/wiki" in str(h.get("hooks", [{}])[0].get("command", ""))
-                or "STALE.md" in str(h.get("hooks", [{}])[0].get("command", ""))
-                or "wiki-gaps" in str(h.get("hooks", [{}])[0].get("command", ""))
-                or "wiki/index.md" in str(h.get("hooks", [{}])[0].get("command", ""))
-            )
-        )]
+        # Remove OUR old hooks before reinstalling, keep everything else.
+        # Ownership goes through _is_memory_layer_hook — the broad needles
+        # this filter used before ("STALE.md", "wiki-gaps") deleted a user's
+        # own hook that merely referenced a file of the same name.
+        new_pre = [h for h in pre_hooks if not _is_memory_layer_hook(h)]
         new_pre.extend([auto_index_hook, stale_hook, gaps_hook, route_hook])
         hooks["PreToolUse"] = new_pre
 
-        # Remove old PostToolUse wiki-gaps hook (moved to PreToolUse)
+        # Remove our old PostToolUse wiki-gaps hook (moved to PreToolUse)
         post_hooks = hooks.get("PostToolUse", [])
-        new_post = [h for h in post_hooks if not (
-            isinstance(h, dict)
-            and "wiki-gaps.txt" in str(h.get("hooks", [{}])[0].get("command", ""))
-        )]
+        new_post = [h for h in post_hooks if not _is_memory_layer_hook(h)]
         hooks["PostToolUse"] = new_post
 
         settings_path.write_text(_json.dumps(settings, indent=2, ensure_ascii=False))
@@ -4473,21 +4468,35 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     if skills_src.is_dir():
         installed = 0
+        manifest = _load_skill_manifest(skills_dst)
         for skill_file in sorted(skills_src.glob("*.md")):
             skill_name = skill_file.stem
             dst_dir = skills_dst / skill_name
             dst_dir.mkdir(parents=True, exist_ok=True)
             dst_file = dst_dir / "skill.md"
             src_content = skill_file.read_text(encoding="utf-8")
+            src_sha = _sha256_text(src_content)
 
             if dst_file.exists():
                 existing = dst_file.read_text(encoding="utf-8")
                 if existing == src_content:
+                    manifest[skill_name] = src_sha
                     continue  # identical, skip
+                # A skill.md we did NOT write (no manifest match) is the
+                # user's own — back it up so teardown can restore it. These
+                # are generic names ("search", "maintain"); clobbering a
+                # user's skill silently is not acceptable.
+                if _sha256_text(existing) != manifest.get(skill_name):
+                    backup = dst_dir / "skill.md.pre-memory-layer"
+                    if not backup.exists():
+                        backup.write_text(existing, encoding="utf-8")
+                        print(f"Skill '{skill_name}': existing user skill backed up → {backup.name}")
 
             dst_file.write_text(src_content, encoding="utf-8")
+            manifest[skill_name] = src_sha
             installed += 1
 
+        _save_skill_manifest(skills_dst, manifest)
         if installed > 0:
             print(f"Skills installed: {installed} skill(s) → {skills_dst}")
         else:
@@ -4535,6 +4544,170 @@ def cmd_setup(args: argparse.Namespace) -> None:
         f"Codex hooks: {'ready' if health['codex_ready'] else 'incomplete'}"
     )
     print("Setup complete. Restart Claude/Codex to apply changes.")
+
+
+_SKILL_MANIFEST_NAME = ".memory-layer-manifest.json"
+
+# Ownership needles for hook entries — the DISTINCTIVE substrings of the
+# exact commands setup writes (full `.hybrid-search/...` paths and module
+# invocations), never bare filenames: a user's own hook that happens to
+# `cat docs/STALE.md` is not ours. Shared by setup's reinstall filter and
+# teardown so the two can never disagree about what we own.
+_MEMORY_LAYER_HOOK_NEEDLES = (
+    ".hybrid-search/wiki",
+    ".hybrid-search/wiki-gaps",
+    "hybrid_search.cli qa-hook",
+    "hybrid_search.cli reindex",
+)
+
+
+def _is_memory_layer_hook(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    commands = [
+        str(h.get("command", ""))
+        for h in entry.get("hooks", [])
+        if isinstance(h, dict)
+    ]
+    return any(
+        needle in command
+        for needle in _MEMORY_LAYER_HOOK_NEEDLES
+        for command in commands
+    )
+
+
+def _sha256_text(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _load_skill_manifest(skills_dst: Path) -> dict:
+    import json as _json
+
+    path = skills_dst / _SKILL_MANIFEST_NAME
+    if not path.exists():
+        return {}
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (ValueError, OSError):
+        return {}
+
+
+def _save_skill_manifest(skills_dst: Path, manifest: dict) -> None:
+    import json as _json
+
+    skills_dst.mkdir(parents=True, exist_ok=True)
+    (skills_dst / _SKILL_MANIFEST_NAME).write_text(
+        _json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+
+def cmd_teardown(args: argparse.Namespace) -> None:
+    """Remove the global surface ``setup`` installed.
+
+    Plugin uninstall has no cleanup lifecycle hook, so the thin-installer
+    design leaves the MCP registration, global hooks, and skills behind —
+    this command is the documented removal path. Project-local files
+    (CLAUDE.md blocks, .claude/settings.local.json, .hybrid-search/) are
+    left alone: they belong to each project and are removed per-project
+    with ``setup``'s project tooling.
+    """
+    import json as _json
+
+    removed: list[str] = []
+
+    claude_json = Path.home() / ".claude.json"
+    if claude_json.exists():
+        try:
+            data = _json.loads(claude_json.read_text())
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and "hybrid-search" in data.get("mcpServers", {}):
+            srv = data["mcpServers"]["hybrid-search"]
+            # Ownership check: setup always writes exactly
+            # {"command": <python>, "args": ["-m", "hybrid_search.server"]}.
+            # Exact-args match — substring tests would also claim a user's
+            # unrelated /opt/tools/hybrid_search_proxy entry.
+            ours = (
+                isinstance(srv, dict)
+                and [str(a) for a in srv.get("args", [])] == ["-m", "hybrid_search.server"]
+            )
+            if ours:
+                del data["mcpServers"]["hybrid-search"]
+                claude_json.write_text(_json.dumps(data, indent=2, ensure_ascii=False))
+                removed.append(f"MCP server registration ({claude_json})")
+            else:
+                print("Kept mcpServers['hybrid-search'] — it does not point at our server.")
+
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if settings_path.exists():
+        try:
+            settings = _json.loads(settings_path.read_text())
+        except ValueError:
+            settings = None
+        if isinstance(settings, dict) and isinstance(settings.get("hooks"), dict):
+            # Same ownership function setup's reinstall filter uses — the
+            # two must never disagree about which hook entries are ours.
+            dropped = 0
+            for event, entries in list(settings["hooks"].items()):
+                if not isinstance(entries, list):
+                    continue
+                kept = [e for e in entries if not _is_memory_layer_hook(e)]
+                dropped += len(entries) - len(kept)
+                settings["hooks"][event] = kept
+            if dropped:
+                settings_path.write_text(
+                    _json.dumps(settings, indent=2, ensure_ascii=False)
+                )
+                removed.append(f"{dropped} hook entr{'y' if dropped == 1 else 'ies'} ({settings_path})")
+
+    skills_dst = Path.home() / ".claude" / "skills"
+    our_skills = (
+        "bootstrap-wiki", "maintain", "rebuild-index",
+        "save-wiki", "search", "setup-hybrid-search",
+    )
+    manifest = _load_skill_manifest(skills_dst)
+    for name in our_skills:
+        skill_dir = skills_dst / name
+        skill_md = skill_dir / "skill.md"
+        if not skill_md.exists():
+            continue
+        current_sha = _sha256_text(skill_md.read_text(encoding="utf-8"))
+        # Ownership check: these are generic names — only delete content we
+        # installed (manifest SHA). A user's own "search" skill survives.
+        if manifest.get(name) != current_sha:
+            print(f"Kept skill '{name}' — content is not ours (no manifest match).")
+            continue
+        backup = skill_dir / "skill.md.pre-memory-layer"
+        if backup.exists():
+            # The user had a skill of this name before setup — restore it.
+            skill_md.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
+            backup.unlink()
+            removed.append(f"skill {name} (user's original restored)")
+        else:
+            # Delete only the file we own; the directory goes only when
+            # empty — anything else the user parked next to skill.md stays.
+            skill_md.unlink()
+            try:
+                skill_dir.rmdir()
+            except OSError:
+                print(f"Kept directory of skill '{name}' — it holds files we did not install.")
+            removed.append(f"skill {name}")
+        manifest.pop(name, None)
+    if manifest:
+        _save_skill_manifest(skills_dst, manifest)
+    else:
+        (skills_dst / _SKILL_MANIFEST_NAME).unlink(missing_ok=True)
+
+    if removed:
+        for item in removed:
+            print(f"Removed: {item}")
+        print("Teardown complete. Restart Claude Code to apply.")
+        print("Per-project files (.hybrid-search/, CLAUDE.md block) are untouched.")
+    else:
+        print("Nothing to remove — global surface not installed.")
 
 
 def _git_hooks_dir(repo_root: Path) -> Path:
@@ -4837,6 +5010,11 @@ def main() -> None:
         "--global-only",
         action="store_true",
         help="Register only the global surface (MCP, hooks, skills); skip project files",
+    )
+
+    sub.add_parser(
+        "teardown",
+        help="Remove the global surface setup installed (MCP, hooks, skills)",
     )
 
     p_doctor = sub.add_parser("doctor", help="Diagnose Memory Layer setup and corpus health")
@@ -5226,6 +5404,8 @@ def main() -> None:
         cmd_serve(args)
     elif args.command == "setup":
         cmd_setup(args)
+    elif args.command == "teardown":
+        cmd_teardown(args)
     elif args.command == "doctor":
         cmd_doctor(args)
     elif args.command == "maintain":

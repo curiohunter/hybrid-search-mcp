@@ -1,6 +1,6 @@
 # Memory bench v2 — valuein_homepage
 
-- Date: 2026-07-11
+- Date: 2026-07-12
 - Scope: ONE production codebase; update/adversarial cases are synthetic
   and hand-authored (n=6 / n=3) — treat rates as case counts,
   not population estimates.
@@ -29,7 +29,7 @@ Recency must never beat relevance across topics: the old answer that
 exactly matches the probe has to stay above a fresher Q&A that merely
 shares generic nouns.
 
-exact_first: **3/3**
+exact_first: **3/3** — decomposed: exact found 3/3, both found 1/3, exact first given both 1/1, adjacent not retrieved 2/3
 
 | id | exact (old) rank | adjacent (fresh) rank | exact first |
 |---|---:|---:|---|
@@ -63,15 +63,15 @@ the matrix is what keeps the claim honest.
 
 | metric | value |
 |---|---:|
-| search latency p50 | 539 ms |
-| search latency p95 | 659 ms |
-| embedding API calls (whole run) | 44 (1 per search; compact+full = 2/case) |
+| end-to-end search latency p50 | 567 ms |
+| end-to-end search latency p95 | 863 ms |
+| expected embedding API calls (derived, whole run) | 44 (1 per search; compact+full = 2/case) |
 
 ## Tokens per answer (MCP wire payload, o200k_base)
 
 | detail | mean | median |
 |---|---:|---:|
-| compact (default) | 3526 | 3577 |
-| full | 4628 | 4543 |
+| compact (default) | 3525 | 3576 |
+| full | 4627 | 4542 |
 
 compact/full ratio: **0.76** — progressive disclosure saving.
