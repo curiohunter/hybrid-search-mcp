@@ -104,8 +104,9 @@ markdown, grep-able and git-able.
 | Ask a related question later | Past qa logs compete for top-10 like any chunk |
 | Say "지난번에…" or "previously…" | Memory-intent detection → 2× boost on qa logs |
 | Let time pass | 30-day half-life decay — stale answers quietly fade |
-| Ask again after the fact changed | Newest Q&A outranks the stale one — knowledge-update **100 %** on [memory bench v2](#memory-bench-v2-2026-07-11) |
-| Ask about something the project never had | Confidence contract answers `weak` and points at a fallback — never sells adjacency as an answer |
+| Ask again after the fact changed | Same-topic supersession: the newest answer takes the earlier slot — **6/6** synthetic update cases on [memory bench v2](#memory-bench-v2-2026-07-11) |
+| Ask about something the project never had | Confidence contract refuses instead of bluffing — 0 `strong` on nine verified-absent probes (8 `weak`, 1 `mixed`) |
+| Uninstall | pip installs: `hybrid-search-mcp teardown`. Plugin installs: `/memory-layer:teardown` (the CLI lives in the plugin's own venv, not on PATH), then `/plugin uninstall memory-layer@curiohunter` |
 | Paste a secret by accident | Regex filter drops sensitive queries before they touch disk |
 
 **Turn it off anytime:** `export HYBRID_SEARCH_QA_LOG=0`.
@@ -141,9 +142,9 @@ What this table says, plainly:
   ~400 ms per prompt; and for exact-symbol lookups plain `grep` is still
   faster — our router sends those to grep on purpose.
 - **Numbers you can re-run, not vendor slides:** stale-fact supersession
-  100 %, zero false-`strong` on absent topics, ≈ 3.4 k tokens per
-  answer — measured on a real production codebase, scripts in
-  `benchmarks/`, failures published alongside the wins (see
+  6/6, zero false-`strong` on nine verified-absent probes, ≈ 3.4 k
+  tokens per answer — one production codebase, synthetic update cases,
+  scripts in `benchmarks/`, failures published alongside the wins (see
   [Memory bench v2](#memory-bench-v2-2026-07-11)).
 
 **Built-in guardrails** (the parts that make automatic capture safe):
@@ -525,26 +526,41 @@ production codebase — conflicting Q&A pairs planted 90 days apart,
 absent-topic probes verified by grep against the corpus, and the exact
 MCP wire payload counted with o200k.
 
+Scope disclaimer: **one** production codebase; the update/adversarial
+cases are synthetic and hand-authored. Read the rates as case counts,
+not population estimates.
+
 | Axis | Metric | Result |
 |---|---|---:|
-| **Knowledge-update** | newer answer shown before the stale one | **100 %** (6/6) |
-| | stale answer shown while newer missed (worst case) | **0 %** |
-| **Abstention** | `weak` on verified-absent topics | 89 % |
-| | `strong` on verified-absent topics (false confidence) | **0 %** |
-| | `weak` on verified-present controls (over-pessimism) | **0 %** |
-| **Tokens per answer** | MCP payload, `detail=compact` (default) | **≈ 3.4 k** |
+| **Knowledge-update** | newer answer shown before the stale one | **6/6** |
+| | stale answer shown while newer missed (worst case) | **0/6** |
+| **Adversarial recency** | old *exact-topic* answer stays above a fresh *adjacent-topic* one | **3/3** (both retrieved in 1/3; exact-first given both: 1/1) |
+| **Tokens per answer** | MCP payload, `detail=compact` (default) | **≈ 3.5 k** |
 | | `detail=full` | ≈ 4.6 k |
+| **Latency** | end-to-end search p50 / p95 (incl. confidence pipeline) | 567 ms / 863 ms |
+
+Abstention — the full confidence distribution, because headline rates
+alone can be gamed (an all-`mixed` classifier scores 0 % on both error
+rates while being useless):
+
+| probes | strong | mixed | weak |
+|---|---:|---:|---:|
+| verified-absent (n=9) | **0** | 1 | 8 |
+| verified-present (n=4) | 0 | 4 | 0 |
 
 Honest notes: knowledge-update started at **50 %** — the first run of
 this bench is what exposed that qa recency read filesystem mtime (which
 lies after a `git clone`) and that plain topical questions never
-surfaced memory at all. The fixes (frontmatter timestamps, an ambient
-memory lane, newest-first qa ordering, a score-preserving lexical
-rerank) are in `f139993`. The one absent-topic probe (of nine) that
-still reads `mixed` instead of `weak` asks about a *combination* the
-project lacks ("구독 결제 갱신") while every individual word exists in
-the source — capping that to `weak` would require phrase-level
-reasoning, and pretending otherwise is how false precision starts.
+surfaced memory at all. Supersession is topic-aware, not global: recency
+reorders only Q&As whose question *and answer* text overlap, so it can
+miss weakly-worded update pairs, and the adversarial track exists to
+prove the reverse failure (fresh-but-adjacent displacing old-but-exact)
+stays at zero. The absent probe that reads `mixed` asks about a
+*combination* the project lacks ("구독 결제 갱신") while every
+individual word exists in the source — capping that to `weak` would
+require phrase-level reasoning. And yes, the present controls currently
+top out at `mixed`, not `strong` — the calibrated `strong` bar is
+strict; that trade-off is visible above instead of averaged away.
 
 ```bash
 python benchmarks/run_memory_bench_v2.py
