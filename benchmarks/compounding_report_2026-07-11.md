@@ -18,7 +18,7 @@ Upper bound for memory recall — no wording variation.
 | primary_hit_rate | 70.00% | 65.00% | -5.00% |
 | primary_top1 | 45.00% | 35.00% | -10.00% |
 | primary_top5 | 70.00% | 65.00% | -5.00% |
-| recall_at_10_mean | 0.542 | 0.483 | -0.058 |
+| recall_at_10_mean | 0.542 | 0.500 | -0.042 |
 | mrr_mean | 0.531 | 0.462 | -0.069 |
 
 ## Track B: paraphrased follow-up (same topic, different wording)
@@ -34,7 +34,7 @@ Realistic follow-up scenario. Measures whether the memory boost can surface a pa
 | primary_hit_rate | 65.00% | 60.00% | -5.00% |
 | primary_top1 | 40.00% | 30.00% | -10.00% |
 | primary_top5 | 60.00% | 55.00% | -5.00% |
-| recall_at_10_mean | 0.433 | 0.433 | 0.000 |
+| recall_at_10_mean | 0.433 | 0.450 | 0.017 |
 | mrr_mean | 0.469 | 0.377 | -0.092 |
 
 ## Paraphrase — non-leaky subset
@@ -46,7 +46,7 @@ Realistic follow-up scenario. Measures whether the memory boost can surface a pa
 | primary_hit_rate | 60.00% | 53.33% | -6.67% |
 | primary_top1 | 33.33% | 33.33% | +0.00% |
 | primary_top5 | 53.33% | 46.67% | -6.67% |
-| recall_at_10_mean | 0.311 | 0.311 | 0.000 |
+| recall_at_10_mean | 0.311 | 0.333 | 0.022 |
 | mrr_mean | 0.392 | 0.336 | -0.056 |
 
 ## Paraphrase — leaky subset (transparency)
@@ -71,7 +71,7 @@ Realistic follow-up scenario. Measures whether the memory boost can surface a pa
 | S4 | low | 7 | 3 | +4 | 0.33 | 0.33 | 1 |
 | S5 | low | 5 | — | lost | 0.33 | 0.00 | 0 |
 | F1 | low | 1 | 1 | +0 | 1.00 | 1.00 | 1 |
-| F2 | low | 1 | 1 | +0 | 0.67 | 0.33 | 1 |
+| F2 | low | 1 | 1 | +0 | 0.67 | 0.67 | 1 |
 | F3 | low | 1 | 1 | +0 | 0.50 | 0.50 | 2 |
 | F4 | low | 1 | 1 | +0 | 0.33 | 1.00 | 0 |
 | F5 | low | 5 | 6 | -1 | 1.00 | 1.00 | 1 |

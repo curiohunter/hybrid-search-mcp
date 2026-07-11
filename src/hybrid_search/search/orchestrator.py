@@ -565,26 +565,117 @@ def _merge_memory_results(
     return body[:insert_at] + head + body[insert_at:]
 
 
-def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
-    """Newest-first among the qa_log positions of the final list.
+# Same-topic thresholds, measured on the bench v2 planted pairs vs
+# adversarial adjacent-topic pairs (2026-07-11): update pairs score
+# query≥0.40 AND answer≥0.33; adjacent pairs score answer≤0.09 even when
+# their query overlap hits 0.40 on generic nouns ("학생/파일"). Both
+# signals are required because questions share vocabulary cheaply but
+# *answers carry the facts* — same-topic answers share domain terms
+# (파일 크기/10MB), adjacent-topic answers don't. Without an answer
+# excerpt on both sides the query bar rises instead. Conservative on
+# purpose: wrongly grouping lets a fresh adjacent-topic answer displace
+# an old exact-topic one (the worse failure); missing a group merely
+# keeps relevance order, which is the default contract anyway.
+_QA_TOPIC_QUERY_OVERLAP = 0.4
+_QA_TOPIC_ANSWER_OVERLAP = 0.2
+_QA_TOPIC_QUERY_ONLY_OVERLAP = 0.6
 
-    Multiple past Q&As matching one query are almost always the same
-    topic asked at different times, and the newer answer supersedes the
-    older — no lexical score is a reason to show a stale fact first
-    (bench v2 U3/U6). Only which qa occupies which qa slot changes;
-    every non-qa result keeps its exact position, so code relevance
-    ordering and spliced heads are preserved. Undated qa sorts last.
+
+def _normalized_tokens(text: str) -> set[str]:
+    """Content-bearing tokens, josa-normalized (Hangul → 2-char prefix).
+
+    Pure-digit tokens are dropped: they're timestamps/line numbers, and a
+    shared "045318" must never count as topical overlap.
     """
-    qa = [r for r in results if r.node_type == "qa_log"]
+    from hybrid_search.memory.quality import query_tokens
+
+    return {
+        (t[:2] if any("가" <= c <= "힣" for c in t) else t)
+        for t in query_tokens(text)
+        if t not in _INSTRUCTION_TOKENS
+        and not t.endswith("해줘")
+        and not t.isdigit()
+    }
+
+
+def _qa_topic_tokens(r: HybridResult) -> tuple[set[str], set[str]]:
+    """(question tokens, answer-excerpt tokens) for topic comparison."""
+    # The frontmatter query is the question; r.name is the qa FILE STEM
+    # ("12-045318-f4f257fb") — hash fragments there dilute the overlap
+    # denominator, so the name is only a fallback when frontmatter is gone.
+    question = _normalized_tokens(
+        _frontmatter_value(r.content, "query") or r.name or ""
+    )
+    answer: set[str] = set()
+    content = r.content or ""
+    if "## Answer excerpt" in content:
+        excerpt = content.split("## Answer excerpt", 1)[1]
+        excerpt = excerpt.split("## Top results", 1)[0]
+        answer = _normalized_tokens(excerpt)
+    return question, answer
+
+
+def _same_qa_topic(a: tuple[set[str], set[str]], b: tuple[set[str], set[str]]) -> bool:
+    def _overlap(x: set[str], y: set[str]) -> float:
+        if not x or not y:
+            return 0.0
+        return len(x & y) / min(len(x), len(y))
+
+    q_ov = _overlap(a[0], b[0])
+    if a[1] and b[1]:
+        return q_ov >= _QA_TOPIC_QUERY_OVERLAP and _overlap(a[1], b[1]) >= _QA_TOPIC_ANSWER_OVERLAP
+    return q_ov >= _QA_TOPIC_QUERY_ONLY_OVERLAP
+
+
+def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
+    """Topic-aware supersession over the qa_log slots of the final list.
+
+    Two Q&As about the *same topic* at different times are one fact and
+    its update — the newer answer supersedes, whatever the lexical score
+    says (bench v2 U3/U6). But recency must never beat relevance across
+    topics: an old exact-topic answer outranking a fresh adjacent-topic
+    one is correct. So Q&As are grouped by query-token overlap, recency
+    reorders only within a group (over that group's own slots), and
+    groups — like every non-qa result — keep their relevance positions.
+    Undated qa sorts last within its group.
+    """
+    qa = [(i, r) for i, r in enumerate(results) if r.node_type == "qa_log"]
     if len(qa) < 2:
         return results
+
+    toks = {i: _qa_topic_tokens(r) for i, r in qa}
+    parent = {i: i for i, _ in qa}
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    indices = [i for i, _ in qa]
+    for a_pos, a in enumerate(indices):
+        for b in indices[a_pos + 1:]:
+            if _same_qa_topic(toks[a], toks[b]):
+                parent[_find(a)] = _find(b)
+
+    by_result = {i: r for i, r in qa}
 
     def _age(r: HybridResult) -> tuple[bool, float]:
         days = _parse_mtime_days_ago(r.file_mtime)
         return (days is None, days if days is not None else 0.0)
 
-    qa_iter = iter(sorted(qa, key=_age))
-    return [next(qa_iter) if r.node_type == "qa_log" else r for r in results]
+    ordered = list(results)
+    groups: dict[int, list[int]] = {}
+    for i in indices:
+        groups.setdefault(_find(i), []).append(i)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        slots = sorted(members)
+        newest_first = sorted((by_result[i] for i in members), key=_age)
+        for slot, r in zip(slots, newest_first):
+            ordered[slot] = r
+    return ordered
 
 
 def _merge_conv_results(

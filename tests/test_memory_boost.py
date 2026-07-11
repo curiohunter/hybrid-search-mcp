@@ -260,27 +260,68 @@ class TestMergeMemoryResults:
         assert [r.chunk_id for r in out] == ["card", "code"]
 
 
+def _qa(chunk_id: str, query: str, answer: str, mtime: str | None) -> HybridResult:
+    content = (
+        f'---\nquery: "{query}"\ntimestamp: {mtime or ""}\n---\n\n'
+        f"# Q: {query}\n\n## Answer excerpt\n\n{answer}\n\n## Top results\n"
+    )
+    r = _mk(chunk_id, "qa_log", rrf=1.0, mtime=mtime, content=content)
+    return r.__class__(**{**r.__dict__, "name": query})
+
+
 class TestOrderQaByRecency:
-    def test_stale_qa_yields_its_slot_to_newer(self) -> None:
-        # Old qa out-lexicals the new one (bench v2 U6: old@2, new@6);
-        # among qa slots the newer fact must show first.
+    def test_same_topic_stale_qa_yields_slot_to_newer(self) -> None:
+        # Same topic, conflicting facts (bench v2 U6 shape): the older qa
+        # out-lexicals the newer one, but within a topic group the newer
+        # fact must take the earlier slot.
         code = _mk("code", "function", 1.0)
-        old_qa = _mk("old", "qa_log", rrf=0.9, mtime="2026-04-01T00:00:00+00:00")
-        new_qa = _mk("new", "qa_log", rrf=0.5, mtime="2026-07-09T00:00:00+00:00")
+        old_qa = _qa(
+            "old", "학생 숙제 제출 파일은 어디 저장되나",
+            "숙제 제출 파일은 Supabase Storage homework 버킷, 최대 파일 크기 10MB입니다.",
+            "2026-04-01T00:00:00+00:00",
+        )
+        new_qa = _qa(
+            "new", "숙제 파일 크기 제한 상향",
+            "숙제 파일 최대 크기를 10MB에서 100MB로 올렸습니다. 대용량은 resumable upload.",
+            "2026-07-09T00:00:00+00:00",
+        )
         out = _order_qa_by_recency([old_qa, code, new_qa])
         assert [r.chunk_id for r in out] == ["new", "code", "old"]
 
+    def test_adversarial_fresh_adjacent_topic_does_not_displace_exact(self) -> None:
+        # The failure topic-awareness exists to prevent: an OLD qa exactly
+        # matching the probe topic vs a FRESH qa on an adjacent topic that
+        # shares generic nouns. Relevance order must survive.
+        exact_old = _qa(
+            "exact", "학생 숙제 제출 파일은 어디 저장되나",
+            "숙제 제출 파일은 Supabase Storage homework 버킷에 저장됩니다.",
+            "2026-04-01T00:00:00+00:00",
+        )
+        adjacent_new = _qa(
+            "adjacent", "학생 출결 파일 업로드 오류",
+            "출결 명단 CSV 업로드가 인코딩 문제로 실패, EUC-KR을 UTF-8로 변환해 해결.",
+            "2026-07-09T00:00:00+00:00",
+        )
+        out = _order_qa_by_recency([exact_old, adjacent_new])
+        assert [r.chunk_id for r in out] == ["exact", "adjacent"]
+
+    def test_missing_excerpts_need_strong_query_overlap(self) -> None:
+        # No answer text on either side → only a near-identical question
+        # groups (0.6 bar); two-generic-noun overlap must not.
+        a = _mk("a", "qa_log", rrf=1.0, mtime="2026-04-01T00:00:00+00:00")
+        b = _mk("b", "qa_log", rrf=0.5, mtime="2026-07-09T00:00:00+00:00")
+        a = a.__class__(**{**a.__dict__, "name": "학생 숙제 파일 저장 위치"})
+        b = b.__class__(**{**b.__dict__, "name": "학생 출결 파일 업로드"})
+        out = _order_qa_by_recency([a, b])
+        assert [r.chunk_id for r in out] == ["a", "b"]
+
     def test_non_qa_positions_untouched(self) -> None:
         card = _mk("card", "memory_card", rrf=0.4, mtime="2026-01-01T00:00:00+00:00")
-        qa = _mk("qa", "qa_log", rrf=0.9, mtime="2026-07-01T00:00:00+00:00")
-        out = _order_qa_by_recency([card, qa])
-        assert [r.chunk_id for r in out] == ["card", "qa"]
-
-    def test_undated_qa_sorts_last(self) -> None:
-        dated = _mk("dated", "qa_log", rrf=0.1, mtime="2026-07-01T00:00:00+00:00")
-        undated = _mk("undated", "qa_log", rrf=0.9, mtime=None)
-        out = _order_qa_by_recency([undated, dated])
-        assert [r.chunk_id for r in out] == ["dated", "undated"]
+        old_qa = _qa("old", "정산 배치 시각", "새벽 2시 실행", "2026-04-01T00:00:00+00:00")
+        new_qa = _qa("new", "정산 배치 시각 변경", "새벽 2시에서 4시로 변경, 실행 스케줄 조정", "2026-07-01T00:00:00+00:00")
+        out = _order_qa_by_recency([old_qa, card, new_qa])
+        assert out[1].chunk_id == "card"
+        assert [out[0].chunk_id, out[2].chunk_id] == ["new", "old"]
 
     def test_single_qa_passthrough(self) -> None:
         results = [_mk("qa", "qa_log", rrf=0.9), _mk("c", "function", 1.0)]
