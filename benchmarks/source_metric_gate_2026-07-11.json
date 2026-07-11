@@ -1,0 +1,98 @@
+{
+  "date": "2026-07-11",
+  "purpose": "Source-of-truth retrieval gate: the memory features must not degrade code/doc ranking. Controlled A/B \u2014 same corpus, same day, only the search code differs.",
+  "baseline": {
+    "sha": "6842f5d",
+    "how": "git worktree at the pre-quality-changes commit, benchmarks/run_compounding_bench.py"
+  },
+  "head": {
+    "sha": "5ac3a35",
+    "branch": "release-readiness-audit"
+  },
+  "corpus": {
+    "project": "valuein_homepage",
+    "pairs": 20,
+    "warm_qa_chunks": 20
+  },
+  "command": "python benchmarks/run_compounding_bench.py",
+  "gate": {
+    "rule": "warm primary_top5 and mrr_mean must not drop more than 2pp/0.02 vs baseline",
+    "result": "PASS"
+  },
+  "warm_metrics": {
+    "identity": {
+      "answer_found_rate": {
+        "baseline": 0.95,
+        "head": 0.95,
+        "delta": 0.0
+      },
+      "primary_hit_rate": {
+        "baseline": 0.65,
+        "head": 0.65,
+        "delta": 0.0
+      },
+      "primary_top1": {
+        "baseline": 0.3,
+        "head": 0.35,
+        "delta": 0.05
+      },
+      "primary_top5": {
+        "baseline": 0.6,
+        "head": 0.65,
+        "delta": 0.05
+      },
+      "mrr_mean": {
+        "baseline": 0.435,
+        "head": 0.4617,
+        "delta": 0.0267
+      },
+      "recall_at_10_mean": {
+        "baseline": 0.5,
+        "head": 0.5,
+        "delta": 0.0
+      },
+      "memory_primary_rate": {
+        "baseline": 0.75,
+        "head": 0.7,
+        "delta": -0.05
+      }
+    },
+    "paraphrase": {
+      "answer_found_rate": {
+        "baseline": 0.9,
+        "head": 0.9,
+        "delta": 0.0
+      },
+      "primary_hit_rate": {
+        "baseline": 0.6,
+        "head": 0.6,
+        "delta": 0.0
+      },
+      "primary_top1": {
+        "baseline": 0.3,
+        "head": 0.3,
+        "delta": 0.0
+      },
+      "primary_top5": {
+        "baseline": 0.55,
+        "head": 0.55,
+        "delta": 0.0
+      },
+      "mrr_mean": {
+        "baseline": 0.3767,
+        "head": 0.3767,
+        "delta": 0.0
+      },
+      "recall_at_10_mean": {
+        "baseline": 0.475,
+        "head": 0.45,
+        "delta": -0.025
+      },
+      "memory_primary_rate": {
+        "baseline": 0.7,
+        "head": 0.7,
+        "delta": 0.0
+      }
+    }
+  }
+}

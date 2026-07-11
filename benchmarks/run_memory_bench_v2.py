@@ -70,6 +70,16 @@ def _payload(orch, project: str, query: str, detail: str) -> dict:
     )
 
 
+def _timed_payload(orch, project: str, query: str, detail: str) -> tuple[dict, float]:
+    """Payload plus END-TO-END wall time. The response's own query_time_ms
+    stops before _make_response, so it excludes the confidence pipeline —
+    including the corpus-absent LIKE scan (~150 ms on a genuine miss).
+    Latency headlines must come from this outer clock."""
+    started = time.perf_counter()
+    payload = _payload(orch, project, query, detail)
+    return payload, (time.perf_counter() - started) * 1000
+
+
 def _mcp_wire_tokens(payload: dict) -> int:
     """Token count of the payload exactly as the MCP server serializes it."""
     return _count_tokens(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -115,7 +125,7 @@ def plant_qa(project_path: Path, query: str, answer: str, ts: datetime) -> str |
 def run_update_track(orch, project: str, cases: list[dict], planted: dict) -> list[dict]:
     rows = []
     for case in cases:
-        payload = _payload(orch, project, case["probe"], "compact")
+        payload, e2e_ms = _timed_payload(orch, project, case["probe"], "compact")
         paths = _result_paths(payload)
         old_rank = _rank_of_tail(paths, planted[case["id"]]["old"])
         new_rank = _rank_of_tail(paths, planted[case["id"]]["new"])
@@ -129,6 +139,7 @@ def run_update_track(orch, project: str, cases: list[dict], planted: dict) -> li
             "newer_first": newer_first,
             "stale_only": old_rank is not None and new_rank is None,
             "confidence": payload.get("confidence"),
+            "query_time_ms": e2e_ms,
             "compact_tokens": _mcp_wire_tokens(payload),
             "full_tokens": _mcp_wire_tokens(_payload(orch, project, case["probe"], "full")),
             "top_paths": paths[:5],
@@ -143,16 +154,44 @@ def run_update_track(orch, project: str, cases: list[dict], planted: dict) -> li
 def run_confidence_track(orch, project: str, cases: list[dict], label: str) -> list[dict]:
     rows = []
     for case in cases:
-        payload = _payload(orch, project, case["query"], "compact")
+        payload, e2e_ms = _timed_payload(orch, project, case["query"], "compact")
         rows.append({
             "id": case["id"],
             "query": case["query"],
             "confidence": payload.get("confidence", "?"),
             "result_count": len(payload.get("results", [])),
+            "query_time_ms": e2e_ms,
             "compact_tokens": _mcp_wire_tokens(payload),
             "full_tokens": _mcp_wire_tokens(_payload(orch, project, case["query"], "full")),
         })
         print(f"  [{case['id']} {label}] confidence={rows[-1]['confidence']}")
+    return rows
+
+
+def run_adversarial_track(orch, project: str, cases: list[dict], planted: dict) -> list[dict]:
+    """Old EXACT-topic qa vs fresh ADJACENT-topic qa sharing generic nouns.
+
+    The probe asks about the exact topic. Success = the old exact answer
+    is NOT displaced below the fresh adjacent one — recency must never
+    beat relevance across topics.
+    """
+    rows = []
+    for case in cases:
+        payload, e2e_ms = _timed_payload(orch, project, case["probe"], "compact")
+        paths = _result_paths(payload)
+        exact_rank = _rank_of_tail(paths, planted[case["id"]]["exact"])
+        adjacent_rank = _rank_of_tail(paths, planted[case["id"]]["adjacent"])
+        ok = exact_rank is not None and (adjacent_rank is None or exact_rank < adjacent_rank)
+        rows.append({
+            "id": case["id"],
+            "exact_rank": exact_rank,
+            "adjacent_rank": adjacent_rank,
+            "exact_first": ok,
+            "query_time_ms": e2e_ms,
+            "compact_tokens": _mcp_wire_tokens(payload),
+            "full_tokens": _mcp_wire_tokens(_payload(orch, project, case["probe"], "full")),
+        })
+        print(f"  [{case['id']} adversarial] exact@{exact_rank} adjacent@{adjacent_rank} {'OK' if ok else 'DISPLACED'}")
     return rows
 
 
@@ -162,10 +201,26 @@ def _rate(rows: list[dict], key: str, value) -> float:
     return sum(1 for r in rows if r[key] == value) / len(rows)
 
 
-def aggregate(update_rows, absent_rows, present_rows) -> dict:
-    all_rows = update_rows + absent_rows + present_rows
+def _confidence_counts(rows: list[dict]) -> dict:
+    return {
+        level: sum(1 for r in rows if r["confidence"] == level)
+        for level in ("strong", "mixed", "weak")
+    }
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, max(0, round(pct / 100 * (len(ordered) - 1))))
+    return ordered[idx]
+
+
+def aggregate(update_rows, absent_rows, present_rows, adversarial_rows) -> dict:
+    all_rows = update_rows + absent_rows + present_rows + adversarial_rows
     compact = [r["compact_tokens"] for r in all_rows]
     full = [r["full_tokens"] for r in all_rows]
+    latencies = [r["query_time_ms"] for r in all_rows if r.get("query_time_ms")]
     return {
         "update": {
             "n": len(update_rows),
@@ -173,12 +228,44 @@ def aggregate(update_rows, absent_rows, present_rows) -> dict:
             "newer_first_rate": sum(1 for r in update_rows if r["newer_first"]) / max(1, len(update_rows)),
             "stale_only_rate": sum(1 for r in update_rows if r["stale_only"]) / max(1, len(update_rows)),
         },
+        "adversarial": {
+            "n": len(adversarial_rows),
+            "exact_first_rate": sum(1 for r in adversarial_rows if r["exact_first"]) / max(1, len(adversarial_rows)),
+            # Decomposition — "3/3 exact first" alone overstates: ranking
+            # competition only happens when BOTH are retrieved.
+            "exact_found": sum(1 for r in adversarial_rows if r["exact_rank"] is not None),
+            "both_found": sum(1 for r in adversarial_rows if r["exact_rank"] is not None and r["adjacent_rank"] is not None),
+            "exact_first_given_both": sum(
+                1 for r in adversarial_rows
+                if r["exact_rank"] is not None and r["adjacent_rank"] is not None
+                and r["exact_rank"] < r["adjacent_rank"]
+            ),
+            "adjacent_not_retrieved": sum(1 for r in adversarial_rows if r["adjacent_rank"] is None),
+        },
         "abstention": {
             "n_absent": len(absent_rows),
+            "n_present": len(present_rows),
+            # Full distribution, not cherry-picked rates: an all-mixed
+            # classifier scores 0% strong_on_absent AND 0% weak_on_present
+            # while being useless — the matrix keeps us honest.
+            "confidence_matrix": {
+                "absent": _confidence_counts(absent_rows),
+                "present": _confidence_counts(present_rows),
+            },
             "weak_on_absent_rate": _rate(absent_rows, "confidence", "weak"),
             "strong_on_absent_rate": _rate(absent_rows, "confidence", "strong"),
-            "n_present": len(present_rows),
             "weak_on_present_rate": _rate(present_rows, "confidence", "weak"),
+            "strong_on_present_rate": _rate(present_rows, "confidence", "strong"),
+        },
+        "latency": {
+            "n_queries": len(latencies),
+            # End-to-end (outer perf_counter around the handler), so the
+            # confidence pipeline incl. corpus-absent scans is included.
+            "p50_ms": _percentile(latencies, 50),
+            "p95_ms": _percentile(latencies, 95),
+            # Derived, not instrumented: each hybrid_search call embeds the
+            # query once; every case runs compact + full -> 2 calls/case.
+            "expected_embedding_calls": 2 * len(all_rows),
         },
         "tokens_per_answer": {
             "compact_mean": mean(compact) if compact else 0,
@@ -193,19 +280,25 @@ def aggregate(update_rows, absent_rows, present_rows) -> dict:
 def format_markdown(report: dict) -> str:
     agg = report["aggregate"]
     u, a, t = agg["update"], agg["abstention"], agg["tokens_per_answer"]
+    adv, lat = agg["adversarial"], agg["latency"]
+    matrix = a["confidence_matrix"]
     lines = [
         f"# Memory bench v2 — {report['project']}",
         "",
         f"- Date: {report['date']}",
-        f"- Axes: knowledge-update ({u['n']} cases), abstention ({a['n_absent']} absent + {a['n_present']} present), tokens-per-answer",
+        f"- Scope: ONE production codebase; update/adversarial cases are synthetic",
+        f"  and hand-authored (n={u['n']} / n={adv['n']}) — treat rates as case counts,",
+        "  not population estimates.",
+        f"- Axes: knowledge-update ({u['n']}), adversarial recency ({adv['n']}), "
+        f"abstention ({a['n_absent']} absent + {a['n_present']} present), tokens, latency",
         "",
         "## Knowledge-update (stale fact superseded by newer qa log)",
         "",
         "| metric | value |",
         "|---|---:|",
-        f"| newer_found_rate (new qa in top-10) | {u['newer_found_rate']:.2%} |",
-        f"| newer_first_rate (new above old) | {u['newer_first_rate']:.2%} |",
-        f"| stale_only_rate (old surfaced, new missed — worst case) | {u['stale_only_rate']:.2%} |",
+        f"| newer_found_rate (new qa in top-10) | {sum(1 for r in report['update_rows'] if r['newer_found'])}/{u['n']} |",
+        f"| newer_first_rate (new above old) | {sum(1 for r in report['update_rows'] if r['newer_first'])}/{u['n']} |",
+        f"| stale_only_rate (old surfaced, new missed — worst case) | {sum(1 for r in report['update_rows'] if r['stale_only'])}/{u['n']} |",
         "",
         "| id | topic | new rank | old rank | newer first |",
         "|---|---|---:|---:|---|",
@@ -217,13 +310,36 @@ def format_markdown(report: dict) -> str:
         )
     lines += [
         "",
-        "## Abstention (confidence contract on absent topics)",
+        "## Adversarial recency (old exact-topic vs fresh adjacent-topic)",
         "",
-        "| metric | value | target |",
-        "|---|---:|---|",
-        f"| weak_on_absent_rate | {a['weak_on_absent_rate']:.2%} | high (correct refusal) |",
-        f"| strong_on_absent_rate | {a['strong_on_absent_rate']:.2%} | 0% (false confidence) |",
-        f"| weak_on_present_rate | {a['weak_on_present_rate']:.2%} | low (not just pessimistic) |",
+        "Recency must never beat relevance across topics: the old answer that",
+        "exactly matches the probe has to stay above a fresher Q&A that merely",
+        "shares generic nouns.",
+        "",
+        f"exact_first: **{sum(1 for r in report['adversarial_rows'] if r['exact_first'])}/{adv['n']}** — decomposed: "
+        f"exact found {adv['exact_found']}/{adv['n']}, both found {adv['both_found']}/{adv['n']}, "
+        f"exact first given both {adv['exact_first_given_both']}/{max(1, adv['both_found'])}, "
+        f"adjacent not retrieved {adv['adjacent_not_retrieved']}/{adv['n']}",
+        "",
+        "| id | exact (old) rank | adjacent (fresh) rank | exact first |",
+        "|---|---:|---:|---|",
+    ]
+    for r in report["adversarial_rows"]:
+        lines.append(
+            f"| {r['id']} | {r['exact_rank'] or '—'} | {r['adjacent_rank'] or '—'} | "
+            f"{'✅' if r['exact_first'] else '❌'} |"
+        )
+    lines += [
+        "",
+        "## Abstention — full confidence distribution",
+        "",
+        "An all-mixed classifier would score 0% on both headline error rates;",
+        "the matrix is what keeps the claim honest.",
+        "",
+        "| probes | strong | mixed | weak |",
+        "|---|---:|---:|---:|",
+        f"| verified-absent (n={a['n_absent']}) | {matrix['absent']['strong']} | {matrix['absent']['mixed']} | {matrix['absent']['weak']} |",
+        f"| verified-present (n={a['n_present']}) | {matrix['present']['strong']} | {matrix['present']['mixed']} | {matrix['present']['weak']} |",
         "",
         "| id | absent query | confidence |",
         "|---|---|---|",
@@ -231,6 +347,14 @@ def format_markdown(report: dict) -> str:
     for r in report["absent_rows"]:
         lines.append(f"| {r['id']} | {r['query']} | {r['confidence']} |")
     lines += [
+        "",
+        "## Latency & cost",
+        "",
+        "| metric | value |",
+        "|---|---:|",
+        f"| end-to-end search latency p50 | {lat['p50_ms']:.0f} ms |",
+        f"| end-to-end search latency p95 | {lat['p95_ms']:.0f} ms |",
+        f"| expected embedding API calls (derived, whole run) | {lat['expected_embedding_calls']} (1 per search; compact+full = 2/case) |",
         "",
         "## Tokens per answer (MCP wire payload, o200k_base)",
         "",
@@ -294,18 +418,31 @@ def main() -> None:
                 "old": plant_qa(project_path, case["old"]["query"], case["old"]["answer"], now - timedelta(days=90)),
                 "new": plant_qa(project_path, case["new"]["query"], case["new"]["answer"], now - timedelta(days=2)),
             }
-        print(f"[plant] planted {sum(1 for v in planted.values() for p in v.values() if p)} qa files")
+        adv_planted: dict[str, dict[str, str | None]] = {}
+        for case in spec.get("adversarial_recency_cases", []):
+            adv_planted[case["id"]] = {
+                "exact": plant_qa(project_path, case["exact"]["query"], case["exact"]["answer"], now - timedelta(days=90)),
+                "adjacent": plant_qa(project_path, case["adjacent"]["query"], case["adjacent"]["answer"], now - timedelta(days=2)),
+            }
+        n_planted = sum(1 for v in (*planted.values(), *adv_planted.values()) for p in v.values() if p)
+        print(f"[plant] planted {n_planted} qa files")
 
         print("\n[update] reindex + probes …")
         reindex(project_path)
         orch, _ = rebuild_orchestrator()
         update_rows = run_update_track(orch, project, spec["update_cases"], planted)
 
+        print("\n[adversarial] exact-old vs adjacent-fresh probes …")
+        adversarial_rows = run_adversarial_track(
+            orch, project, spec.get("adversarial_recency_cases", []), adv_planted
+        )
+
         report = {
             "date": time.strftime("%Y-%m-%d"),
             "project": project,
-            "aggregate": aggregate(update_rows, absent_rows, present_rows),
+            "aggregate": aggregate(update_rows, absent_rows, present_rows, adversarial_rows),
             "update_rows": update_rows,
+            "adversarial_rows": adversarial_rows,
             "absent_rows": absent_rows,
             "present_rows": present_rows,
         }
@@ -317,9 +454,20 @@ def main() -> None:
         print(f"\nJSON → {out_json}\nMarkdown → {out_md}")
 
         agg = report["aggregate"]
-        print("\n── Headline ──")
-        print(f"knowledge-update: newer_first {agg['update']['newer_first_rate']:.0%}, stale_only {agg['update']['stale_only_rate']:.0%}")
-        print(f"abstention: weak_on_absent {agg['abstention']['weak_on_absent_rate']:.0%}, strong_on_absent {agg['abstention']['strong_on_absent_rate']:.0%}, weak_on_present {agg['abstention']['weak_on_present_rate']:.0%}")
+        u, adv, a = agg["update"], agg["adversarial"], agg["abstention"]
+        m = a["confidence_matrix"]
+        print("\n── Headline (one codebase; synthetic update/adversarial cases) ──")
+        print(f"knowledge-update: newer_first {u['newer_first_rate']:.0%} (n={u['n']}), stale_only {u['stale_only_rate']:.0%}")
+        print(f"adversarial recency: exact_first {adv['exact_first_rate']:.0%} (n={adv['n']})")
+        print(
+            f"abstention matrix — absent(n={a['n_absent']}): "
+            f"strong {m['absent']['strong']} / mixed {m['absent']['mixed']} / weak {m['absent']['weak']}; "
+            f"present(n={a['n_present']}): "
+            f"strong {m['present']['strong']} / mixed {m['present']['mixed']} / weak {m['present']['weak']}"
+        )
+        lat = agg["latency"]
+        print(f"latency (e2e): p50 {lat['p50_ms']:.0f}ms p95 {lat['p95_ms']:.0f}ms, expected embedding calls {lat['expected_embedding_calls']}")
+        print(f"adversarial decomposed: both_found {adv['both_found']}/{adv['n']}, exact_first_given_both {adv['exact_first_given_both']}/{max(1, adv['both_found'])}")
         t = agg["tokens_per_answer"]
         print(f"tokens/answer: compact {t['compact_mean']:.0f} vs full {t['full_mean']:.0f} (ratio {t['compact_vs_full_ratio']:.2f})")
     finally:

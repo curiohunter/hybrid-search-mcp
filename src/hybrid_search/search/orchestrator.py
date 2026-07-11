@@ -320,6 +320,30 @@ _INSTRUCTION_TOKENS = {
 }
 
 
+def _cross_language_mismatch(terms: list[str], results: list[HybridResult]) -> bool:
+    """True when literal term absence carries no signal: the unanchored
+    terms are Korean but the retrieved texts are essentially Hangul-free.
+
+    A Korean query over an English-only codebase legitimately matches
+    through the vector lane — 결제 승인 흐름 → payment authorization flow —
+    and no Korean token will ever appear literally. Punishing that with an
+    unanchored/corpus-absent demotion would fight the product's own
+    Korean ↔ English selling point. When the corpus itself contains Korean
+    (this repo's bench codebase does), the guard stays out of the way.
+    """
+    if not terms or not results:
+        return False
+    if not all(any("가" <= c <= "힣" for c in t) for t in terms):
+        return False
+    haystack = " ".join(
+        " ".join(p for p in (r.name, r.snippet, r.content) if p) for r in results
+    )
+    if not haystack:
+        return False
+    hangul = sum(1 for c in haystack if "가" <= c <= "힣")
+    return (hangul / len(haystack)) < 0.01
+
+
 def _unanchored_terms(query: str, results: list[HybridResult]) -> list[str]:
     """Content-bearing query tokens absent from every result text.
 
@@ -537,21 +561,32 @@ def _merge_memory_results(
     if not memory_head:
         return chunk_results
 
-    def _head_key(r: HybridResult) -> tuple:
-        prio = {"domain_term": 0, "memory_card": 1, "episodic_example": 2, "qa_log": 3}.get(
+    # qa head selection is topic-grouped: within a topic the newest answer
+    # represents the group (supersession), but ACROSS topics the group's
+    # best retrieval score decides — a fresh adjacent-topic Q&A must not
+    # take the guaranteed slot from an old exact-topic one. Cards stay
+    # score-ordered (curated, no supersession-by-time semantics).
+    qa_candidates = [r for r in memory_head if r.node_type == "qa_log"]
+    others = [r for r in memory_head if r.node_type != "qa_log"]
+
+    def _prio(r: HybridResult) -> int:
+        return {"domain_term": 0, "memory_card": 1, "episodic_example": 2, "qa_log": 3}.get(
             r.node_type or "", 9
         )
-        if r.node_type == "qa_log":
-            # qa candidates already cleared the lane's relevance gate; among
-            # them the newest answer is the one worth a guaranteed slot — a
-            # lexical score preferring the stale text is how bench v2 U6
-            # kept resurfacing a superseded fact. Cards stay score-ordered
-            # (curated, no supersession-by-time semantics).
-            days = _parse_mtime_days_ago(r.file_mtime)
-            return (prio, days is None, days if days is not None else 0.0)
-        return (prio, False, -r.rrf_score)
 
-    memory_head.sort(key=_head_key)
+    def _age(r: HybridResult) -> tuple[bool, float]:
+        days = _parse_mtime_days_ago(r.file_mtime)
+        return (days is None, days if days is not None else 0.0)
+
+    candidates: list[tuple[int, float, int, HybridResult]] = [
+        (_prio(r), -r.rrf_score, seq, r) for seq, r in enumerate(others)
+    ]
+    for seq, group in enumerate(_qa_topic_groups(qa_candidates)):
+        representative = min(group, key=_age)  # newest of the topic
+        group_relevance = max(r.rrf_score for r in group)
+        candidates.append((3, -group_relevance, len(others) + seq, representative))
+    candidates.sort()
+    memory_head = [r for _, _, _, r in candidates]
     head_limit = min(head_limit, max(1, limit))
     head: list[HybridResult] = []
     seen: set[str] = set()
@@ -565,26 +600,123 @@ def _merge_memory_results(
     return body[:insert_at] + head + body[insert_at:]
 
 
-def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
-    """Newest-first among the qa_log positions of the final list.
+# Same-topic thresholds, measured on the bench v2 planted pairs vs
+# adversarial adjacent-topic pairs (2026-07-11): update pairs score
+# query≥0.40 AND answer≥0.33; adjacent pairs score answer≤0.09 even when
+# their query overlap hits 0.40 on generic nouns ("학생/파일"). Both
+# signals are required because questions share vocabulary cheaply but
+# *answers carry the facts* — same-topic answers share domain terms
+# (파일 크기/10MB), adjacent-topic answers don't. Without an answer
+# excerpt on both sides the query bar rises instead. Conservative on
+# purpose: wrongly grouping lets a fresh adjacent-topic answer displace
+# an old exact-topic one (the worse failure); missing a group merely
+# keeps relevance order, which is the default contract anyway.
+_QA_TOPIC_QUERY_OVERLAP = 0.4
+_QA_TOPIC_ANSWER_OVERLAP = 0.2
+_QA_TOPIC_QUERY_ONLY_OVERLAP = 0.6
 
-    Multiple past Q&As matching one query are almost always the same
-    topic asked at different times, and the newer answer supersedes the
-    older — no lexical score is a reason to show a stale fact first
-    (bench v2 U3/U6). Only which qa occupies which qa slot changes;
-    every non-qa result keeps its exact position, so code relevance
-    ordering and spliced heads are preserved. Undated qa sorts last.
+
+def _normalized_tokens(text: str) -> set[str]:
+    """Content-bearing tokens, josa-normalized (Hangul → 2-char prefix).
+
+    Pure-digit tokens are dropped: they're timestamps/line numbers, and a
+    shared "045318" must never count as topical overlap.
     """
-    qa = [r for r in results if r.node_type == "qa_log"]
+    from hybrid_search.memory.quality import query_tokens
+
+    return {
+        (t[:2] if any("가" <= c <= "힣" for c in t) else t)
+        for t in query_tokens(text)
+        if t not in _INSTRUCTION_TOKENS
+        and not t.endswith("해줘")
+        and not t.isdigit()
+    }
+
+
+def _qa_topic_tokens(r: HybridResult) -> tuple[set[str], set[str]]:
+    """(question tokens, answer-excerpt tokens) for topic comparison."""
+    # The frontmatter query is the question; r.name is the qa FILE STEM
+    # ("12-045318-f4f257fb") — hash fragments there dilute the overlap
+    # denominator, so the name is only a fallback when frontmatter is gone.
+    question = _normalized_tokens(
+        _frontmatter_value(r.content, "query") or r.name or ""
+    )
+    answer: set[str] = set()
+    content = r.content or ""
+    if "## Answer excerpt" in content:
+        excerpt = content.split("## Answer excerpt", 1)[1]
+        excerpt = excerpt.split("## Top results", 1)[0]
+        answer = _normalized_tokens(excerpt)
+    return question, answer
+
+
+def _same_qa_topic(a: tuple[set[str], set[str]], b: tuple[set[str], set[str]]) -> bool:
+    def _overlap(x: set[str], y: set[str]) -> float:
+        if not x or not y:
+            return 0.0
+        return len(x & y) / min(len(x), len(y))
+
+    q_ov = _overlap(a[0], b[0])
+    if a[1] and b[1]:
+        return q_ov >= _QA_TOPIC_QUERY_OVERLAP and _overlap(a[1], b[1]) >= _QA_TOPIC_ANSWER_OVERLAP
+    return q_ov >= _QA_TOPIC_QUERY_ONLY_OVERLAP
+
+
+def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
+    """Topic-aware supersession over the qa_log slots of the final list.
+
+    Two Q&As about the *same topic* at different times are one fact and
+    its update — the newer answer supersedes, whatever the lexical score
+    says (bench v2 U3/U6). But recency must never beat relevance across
+    topics: an old exact-topic answer outranking a fresh adjacent-topic
+    one is correct. So Q&As are grouped by query-token overlap, recency
+    reorders only within a group (over that group's own slots), and
+    groups — like every non-qa result — keep their relevance positions.
+    Undated qa sorts last within its group.
+    """
+    qa = [(i, r) for i, r in enumerate(results) if r.node_type == "qa_log"]
     if len(qa) < 2:
         return results
+
+    position = {id(r): i for i, r in qa}
 
     def _age(r: HybridResult) -> tuple[bool, float]:
         days = _parse_mtime_days_ago(r.file_mtime)
         return (days is None, days if days is not None else 0.0)
 
-    qa_iter = iter(sorted(qa, key=_age))
-    return [next(qa_iter) if r.node_type == "qa_log" else r for r in results]
+    ordered = list(results)
+    for group in _qa_topic_groups([r for _, r in qa]):
+        if len(group) < 2:
+            continue
+        slots = sorted(position[id(r)] for r in group)
+        newest_first = sorted(group, key=_age)
+        for slot, r in zip(slots, newest_first):
+            ordered[slot] = r
+    return ordered
+
+
+def _qa_topic_groups(qa: list[HybridResult]) -> list[list[HybridResult]]:
+    """Partition qa_log results into same-topic groups (union-find)."""
+    if not qa:
+        return []
+    toks = [_qa_topic_tokens(r) for r in qa]
+    parent = list(range(len(qa)))
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a in range(len(qa)):
+        for b in range(a + 1, len(qa)):
+            if _same_qa_topic(toks[a], toks[b]):
+                parent[_find(a)] = _find(b)
+
+    groups: dict[int, list[HybridResult]] = {}
+    for i, r in enumerate(qa):
+        groups.setdefault(_find(i), []).append(r)
+    return list(groups.values())
 
 
 def _merge_conv_results(
@@ -1008,8 +1140,8 @@ class SearchOrchestrator:
         checks are ~1 ms; only genuinely absent terms pay a content scan,
         and the first hit short-circuits — the caller needs one witness.
         """
+        dbs: list[tuple[StoreDB, str]] = []
         try:
-            dbs: list[tuple[StoreDB, str]] = []
             for pinfo in project_infos:
                 idx_paths = IndexPaths(get_project_dir(self._config.projects_dir, pinfo.id))
                 if idx_paths.store_db.exists():
@@ -1026,6 +1158,13 @@ class SearchOrchestrator:
                     return term
         except Exception:  # pragma: no cover — never fail a search on this probe
             return None
+        finally:
+            # Don't leave sqlite connection lifetime to the GC.
+            for db, _ in dbs:
+                try:
+                    db.close()
+                except Exception:  # pragma: no cover
+                    pass
         return None
 
     def _make_response(
@@ -1061,11 +1200,18 @@ class SearchOrchestrator:
             top_score, effective_gap, thresholds, coherent=coherent
         )
         unanchored = _unanchored_terms(query, ranked[:10])
+        cross_language = bool(unanchored) and _cross_language_mismatch(
+            unanchored, ranked[:10]
+        )
         if confidence == "strong" and unanchored:
             # "strong" claims the top hit answers the query. When the query's
             # content words never even appear (by prefix) in the top texts,
             # the match is generic-token adjacency — never sell it as strong.
             # Demote-only: mixed/weak results are not upgraded or touched.
+            # Applies EVEN on cross-language hits: a KO→EN vector match may
+            # be right, but without literal grounding it earns mixed, not
+            # strong — promoting those needs a calibrated bilingual cosine
+            # bar, not an exemption.
             confidence = "mixed"
         if confidence == "weak" and _has_quality_anchor(query, results, top_score, thresholds):
             confidence = "mixed"
@@ -1090,7 +1236,20 @@ class SearchOrchestrator:
         # Distinct from the unanchored rule above: "시스템/구성" are often
         # missing from a top-10 yet common in the corpus (legit mixed),
         # while "쿠폰" is missing from the corpus itself (bench v2 A7).
-        if confidence != "weak" and unanchored and corpus_lacks is not None:
+        # Skipped on memory-intent queries: history questions are answered
+        # from Q&A/commits/conversations — content the source-only probe
+        # deliberately can't see, so "absent from code" proves nothing.
+        # Skipped on cross-language queries (Korean terms, Hangul-free
+        # sources): a correct KO→EN vector match leaves no literal trace,
+        # so absence must not force weak — but only THIS cap is skipped;
+        # the strong demotion above still applies.
+        if (
+            confidence != "weak"
+            and unanchored
+            and corpus_lacks is not None
+            and not memory_intent
+            and not cross_language
+        ):
             if corpus_lacks(unanchored) is not None:
                 confidence = "weak"
         hint = (

@@ -4,6 +4,52 @@ All notable changes to hybrid-search-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.1 — release-readiness audit
+
+### Fixed
+
+- **Plugin upgrade path**: bootstrap fast-path keyed on git commit SHA
+  (content-hash fallback), not `pyproject.toml` diff — source-only
+  changes now trigger reinstall. Revision lock written only after a
+  fully successful install, so failures retry next session.
+- **Bootstrap lock hygiene**: `.installing` always clears via
+  EXIT/HUP/INT/TERM trap; stale locks (dead PID or >30 min) are
+  reclaimed instead of wedging every future session; concurrent
+  SessionStarts no longer double-install.
+- **qa ordering**: global newest-first replaced by topic-aware
+  supersession — recency reorders only same-topic Q&A groups; an old
+  exact-topic answer is no longer displaced by a fresh adjacent-topic
+  one.
+
+### Added
+
+- `teardown`: removes the MCP registration, hooks, and skills that
+  `setup` installed (plugin uninstall does not run cleanup hooks).
+  Ownership-checked: skills are deleted only when their content matches
+  the install manifest SHA (a pre-existing user skill of the same name
+  is backed up by setup and restored by teardown), and the MCP entry is
+  removed only when it points at our server.
+- Bench v2: full confidence distribution on present/absent probes
+  (incl. strong_on_present), end-to-end latency p50/p95 (includes the
+  confidence pipeline), derived embedding-call counts, and an
+  adversarial recency track (old exact-topic vs fresh adjacent-topic)
+  reported decomposed (both-found / exact-first-given-both).
+
+### Changed (review follow-ups on the audit PR)
+
+- Bootstrap lock acquisition is atomic (`mkdir`), closing the
+  check-then-write race between concurrent SessionStarts; the non-git
+  revision hash now covers skills/hooks/scripts/.claude-plugin too.
+- Ambient memory-head selection is topic-grouped: newest-of-topic
+  represents the group, groups rank by their best retrieval score — a
+  fresh adjacent-topic Q&A can no longer take the guaranteed slot from
+  an old exact-topic one at selection time.
+- Corpus-absent confidence cap is skipped for memory-intent queries
+  (history answers live in the lanes the source probe excludes) and for
+  Korean queries over Hangul-free sources (cross-language matches leave
+  no literal trace); the probe's sqlite connections are closed
+  explicitly.
+
 ## Unreleased
 
 ### Added

@@ -84,6 +84,44 @@
       "probe": "숙제 제출 파일 크기 제한이 얼마야?"
     }
   ],
+  "adversarial_recency_cases": [
+    {
+      "id": "ADV1",
+      "probe": "학생 숙제 제출 파일은 어디에 저장돼?",
+      "exact": {
+        "query": "학생 숙제 제출 파일은 어디 저장되나",
+        "answer": "숙제 제출 파일은 Supabase Storage의 homework 버킷에 저장됩니다. 경로는 studentId/assignmentId 규칙입니다."
+      },
+      "adjacent": {
+        "query": "학생 출결 파일 업로드 오류",
+        "answer": "출결 명단 CSV 업로드가 인코딩 문제로 실패했습니다. EUC-KR을 UTF-8로 변환하는 전처리를 추가해 해결했습니다."
+      }
+    },
+    {
+      "id": "ADV2",
+      "probe": "포털 세션 만료 시간이 얼마였지?",
+      "exact": {
+        "query": "학부모 포털 세션 만료 시간이 어떻게 되나",
+        "answer": "학부모/학생 포털의 세션 만료는 24시간입니다. Supabase auth의 기본 JWT 만료를 그대로 사용합니다."
+      },
+      "adjacent": {
+        "query": "학부모 알림톡 발송 시간 설정",
+        "answer": "학부모 알림톡은 매일 오후 6시에 발송되도록 스케줄러에 등록했습니다. 발송 채널은 카카오 비즈메시지입니다."
+      }
+    },
+    {
+      "id": "ADV3",
+      "probe": "수강료 정산 배치 언제 돌지?",
+      "exact": {
+        "query": "수강료 정산 배치는 언제 도나요",
+        "answer": "수강료 정산 배치는 매일 새벽 2시(KST)에 실행됩니다. cron 스케줄은 0 2 * * * 입니다."
+      },
+      "adjacent": {
+        "query": "정산 리포트 이메일 발송 추가",
+        "answer": "월간 정산 리포트를 원장 이메일로 발송하는 기능을 추가했습니다. Resend API를 사용하고 매월 1일 발송됩니다."
+      }
+    }
+  ],
   "abstention_cases": [
     { "id": "A1", "query": "우리 GraphQL 스키마는 어떻게 구성돼 있어?", "absent_topic": "graphql" },
     { "id": "A2", "query": "Kafka 컨슈머 그룹 설정 알려줘", "absent_topic": "kafka" },
