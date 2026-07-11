@@ -1,0 +1,21 @@
+{
+  "name": "curiohunter",
+  "owner": {
+    "name": "curiohunter",
+    "email": "karw79@gmail.com"
+  },
+  "description": "Memory Layer for Claude Code — searchable project memory: code, commits, conversations.",
+  "plugins": [
+    {
+      "name": "memory-layer",
+      "displayName": "Memory Layer",
+      "source": "./",
+      "description": "The memory that answers why — code, commits, and past conversations in one recall.",
+      "version": "0.7.0",
+      "author": {
+        "name": "curiohunter"
+      },
+      "strict": true
+    }
+  ]
+}
