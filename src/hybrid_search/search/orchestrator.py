@@ -994,7 +994,39 @@ class SearchOrchestrator:
             reranked=reranking_cfg.enabled,
             top_cosine=top_cosine,
             memory_intent=memory_intent,
+            corpus_lacks=lambda terms: self._first_corpus_absent_term(project_infos, terms),
         )
+
+    def _first_corpus_absent_term(
+        self, project_infos: list["ProjectInfo"], terms: list[str]
+    ) -> str | None:
+        """First term whose probe string no source chunk contains, or None.
+
+        Probe: full token for ASCII ("grap" would false-hit inside
+        "graph"), 2-char prefix for Hangul (sheds josa/endings). A term
+        counts absent only when every searched project lacks it. Presence
+        checks are ~1 ms; only genuinely absent terms pay a content scan,
+        and the first hit short-circuits — the caller needs one witness.
+        """
+        try:
+            dbs: list[tuple[StoreDB, str]] = []
+            for pinfo in project_infos:
+                idx_paths = IndexPaths(get_project_dir(self._config.projects_dir, pinfo.id))
+                if idx_paths.store_db.exists():
+                    dbs.append((StoreDB(idx_paths.store_db), pinfo.id))
+            if not dbs:
+                # No searchable store — absence can't be witnessed.
+                return None
+            for term in terms:
+                is_hangul = any("가" <= c <= "힣" for c in term)
+                probe = term[:2] if is_hangul else term
+                if not any(
+                    db.source_contains_substring(pid, probe) for db, pid in dbs
+                ):
+                    return term
+        except Exception:  # pragma: no cover — never fail a search on this probe
+            return None
+        return None
 
     def _make_response(
         self,
@@ -1009,6 +1041,7 @@ class SearchOrchestrator:
         reranked: bool = False,
         top_cosine: float | None = None,
         memory_intent: bool = False,
+        corpus_lacks: "Callable[[list[str]], str | None] | None" = None,
     ) -> HybridSearchResponse:
         ranked = sorted(
             (r for r in results if r.rrf_score > 0),
@@ -1027,7 +1060,8 @@ class SearchOrchestrator:
         confidence = classify_confidence(
             top_score, effective_gap, thresholds, coherent=coherent
         )
-        if confidence == "strong" and _unanchored_terms(query, ranked[:10]):
+        unanchored = _unanchored_terms(query, ranked[:10])
+        if confidence == "strong" and unanchored:
             # "strong" claims the top hit answers the query. When the query's
             # content words never even appear (by prefix) in the top texts,
             # the match is generic-token adjacency — never sell it as strong.
@@ -1049,6 +1083,16 @@ class SearchOrchestrator:
             and top_cosine >= cosine_anchor
         ):
             confidence = "mixed"
+        # Corpus-absent cap — runs LAST so no anchor can re-upgrade it. A
+        # query term unanchored in the top hits AND absent from every source
+        # (code/doc) chunk means the project has never seen the concept; the
+        # hits are neighbours, not answers → weak, with a fallback hint.
+        # Distinct from the unanchored rule above: "시스템/구성" are often
+        # missing from a top-10 yet common in the corpus (legit mixed),
+        # while "쿠폰" is missing from the corpus itself (bench v2 A7).
+        if confidence != "weak" and unanchored and corpus_lacks is not None:
+            if corpus_lacks(unanchored) is not None:
+                confidence = "weak"
         hint = (
             fallback_hint(query, top_hit=ranked[0].file_path if ranked else None)
             if confidence == "weak"
