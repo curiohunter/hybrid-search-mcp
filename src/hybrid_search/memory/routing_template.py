@@ -30,6 +30,7 @@ ROUTING_BODY = """## 검색 전략 — 반드시 이 순서로
 
 **운영 규칙**:
 - **탐색형 질문에 Grep 먼저 호출 금지** — 반드시 `mcp__hybrid-search__hybrid_search` 먼저.
+- MCP 서버가 많은 환경에선 이 도구가 **deferred**(스키마 미로드)일 수 있다 — 직접 호출이 실패하면 `ToolSearch`(query `select:mcp__hybrid-search__hybrid_search`)로 로드한 뒤 다시 호출할 것. Grep으로 이탈 금지.
 - **쿼리는 사용자의 자연어 문장을 그대로** 쓸 것 — 키워드 뭉치로 재작성 금지.
   (예: "우리 환불 기능에 대해 알려줘" ⭕ / "환불 퇴원 refund 워크플로우 정산" ❌)
   자연어 문장이 벡터 매칭 품질이 더 좋고, 분류기가 가중치를 자동 조정한다.

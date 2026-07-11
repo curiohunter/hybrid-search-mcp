@@ -128,7 +128,7 @@ def classify_prompt_for_memory(prompt: str) -> bool:
     return False
 
 
-def _format_session_start_context(indexes: list) -> str:
+def _format_session_start_context(indexes: list, *, client: str = "claude") -> str:
     if not indexes:
         return ""
     recent = []
@@ -138,16 +138,29 @@ def _format_session_start_context(indexes: list) -> str:
             q = q[:39] + "..."
         if q:
             recent.append(q)
+    tool_line = "Use mcp__hybrid-search__hybrid_search for recall/context."
+    if client == "claude":
+        # Tool Search (default-on) defers MCP schemas in tool-heavy setups;
+        # without this hint a direct call fails and the agent drifts to Grep.
+        tool_line = (
+            "Use mcp__hybrid-search__hybrid_search for recall/context"
+            ' (if deferred, ToolSearch "select:mcp__hybrid-search__hybrid_search" first).'
+        )
     lines = [
         f"[hybrid-search memory] {len(indexes)} past turns available.",
-        "Use mcp__hybrid-search__hybrid_search for recall/context.",
+        tool_line,
     ]
     if recent:
         lines.append("Recent: " + " | ".join(recent))
     return "\n".join(lines)
 
 
-def build_session_context(project_root: Path, *, limit: int = _SESSION_TOPIC_LIMIT) -> str:
+def build_session_context(
+    project_root: Path,
+    *,
+    limit: int = _SESSION_TOPIC_LIMIT,
+    client: str = "claude",
+) -> str:
     """Build recent-memory context for a session-start hook."""
     try:
         from hybrid_search.memory import reader
@@ -155,7 +168,7 @@ def build_session_context(project_root: Path, *, limit: int = _SESSION_TOPIC_LIM
         indexes = list(reader.iter_qa_indexes(project_root))
     except Exception:
         return ""
-    return _format_session_start_context(indexes[:limit])[:_MAX_CONTEXT_CHARS]
+    return _format_session_start_context(indexes[:limit], client=client)[:_MAX_CONTEXT_CHARS]
 
 
 def _router_enabled() -> bool:

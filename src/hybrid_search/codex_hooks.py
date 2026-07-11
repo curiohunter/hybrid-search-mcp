@@ -84,7 +84,7 @@ def _handle_session_start(event: dict[str, Any]) -> dict[str, Any]:
     root = hook_runtime.resolve_project_root(event)
     if root is None:
         return codex_noop_response()
-    ctx = hook_runtime.build_session_context(root)
+    ctx = hook_runtime.build_session_context(root, client="codex")
     if not ctx:
         return codex_noop_response()
     return codex_context_response("SessionStart", ctx)
