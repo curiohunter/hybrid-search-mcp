@@ -24,6 +24,7 @@ from hybrid_search.search.orchestrator import (
     _apply_memory_boost,
     _has_memory_intent,
     _merge_memory_results,
+    _order_qa_by_recency,
     _parse_mtime_days_ago,
 )
 
@@ -256,3 +257,62 @@ class TestMergeMemoryResults:
         out = _merge_memory_results([card, code], [card], limit=10)
 
         assert [r.chunk_id for r in out] == ["card", "code"]
+
+
+class TestOrderQaByRecency:
+    def test_stale_qa_yields_its_slot_to_newer(self) -> None:
+        # Old qa out-lexicals the new one (bench v2 U6: old@2, new@6);
+        # among qa slots the newer fact must show first.
+        code = _mk("code", "function", 1.0)
+        old_qa = _mk("old", "qa_log", rrf=0.9, mtime="2026-04-01T00:00:00+00:00")
+        new_qa = _mk("new", "qa_log", rrf=0.5, mtime="2026-07-09T00:00:00+00:00")
+        out = _order_qa_by_recency([old_qa, code, new_qa])
+        assert [r.chunk_id for r in out] == ["new", "code", "old"]
+
+    def test_non_qa_positions_untouched(self) -> None:
+        card = _mk("card", "memory_card", rrf=0.4, mtime="2026-01-01T00:00:00+00:00")
+        qa = _mk("qa", "qa_log", rrf=0.9, mtime="2026-07-01T00:00:00+00:00")
+        out = _order_qa_by_recency([card, qa])
+        assert [r.chunk_id for r in out] == ["card", "qa"]
+
+    def test_undated_qa_sorts_last(self) -> None:
+        dated = _mk("dated", "qa_log", rrf=0.1, mtime="2026-07-01T00:00:00+00:00")
+        undated = _mk("undated", "qa_log", rrf=0.9, mtime=None)
+        out = _order_qa_by_recency([undated, dated])
+        assert [r.chunk_id for r in out] == ["dated", "undated"]
+
+    def test_single_qa_passthrough(self) -> None:
+        results = [_mk("qa", "qa_log", rrf=0.9), _mk("c", "function", 1.0)]
+        assert _order_qa_by_recency(results) is results
+
+
+class TestMergeMemoryPlacement:
+    def test_ambient_head_inserted_at_third_slot(self) -> None:
+        code1 = _mk("c1", "function", 1.0)
+        code2 = _mk("c2", "function", 0.9)
+        code3 = _mk("c3", "function", 0.8)
+        qa = _mk("qa", "qa_log", rrf=0.5, mtime="2026-07-01T00:00:00+00:00")
+        out = _merge_memory_results(
+            [code1, code2, code3], [qa], limit=10, head_limit=1, insert_at=2
+        )
+        assert [r.chunk_id for r in out] == ["c1", "c2", "qa", "c3"]
+
+    def test_ambient_head_limit_caps_selection(self) -> None:
+        code = _mk("c1", "function", 1.0)
+        qa1 = _mk("q1", "qa_log", rrf=0.9, mtime="2026-07-01T00:00:00+00:00")
+        qa2 = _mk("q2", "qa_log", rrf=0.8, mtime="2026-07-02T00:00:00+00:00")
+        out = _merge_memory_results([code], [qa1, qa2], limit=10, head_limit=1, insert_at=2)
+        # qa selection is newest-first (q2), not score-first — a gated stale
+        # answer must not hold the guaranteed slot against a fresher one.
+        assert [r.chunk_id for r in out] == ["c1", "q2"]
+
+    def test_head_cards_stay_score_ordered_over_qa_recency(self) -> None:
+        card = _mk("card", "memory_card", rrf=0.4, mtime="2026-01-01T00:00:00+00:00")
+        qa = _mk("qa", "qa_log", rrf=0.9, mtime="2026-07-01T00:00:00+00:00")
+        out = _merge_memory_results([], [qa, card], limit=10)
+        assert [r.chunk_id for r in out] == ["card", "qa"]
+
+    def test_insert_at_beyond_body_appends(self) -> None:
+        qa = _mk("qa", "qa_log", rrf=0.5, mtime="2026-07-01T00:00:00+00:00")
+        out = _merge_memory_results([], [qa], limit=10, head_limit=1, insert_at=2)
+        assert [r.chunk_id for r in out] == ["qa"]
