@@ -64,10 +64,19 @@ acquire_lock() {
     fi
     lock_pid=$(cut -d' ' -f1 "$LOCKDIR/owner" 2>/dev/null)
     lock_ts=$(cut -d' ' -f2 "$LOCKDIR/owner" 2>/dev/null)
+    if [ -z "$lock_ts" ]; then
+        # Owner file not stamped yet — the winner is between mkdir and its
+        # first write. Age from a missing timestamp must come from the
+        # lockdir's own mtime, NOT default to epoch: computing "age = now"
+        # here made every concurrent loser judge a brand-new lock stale,
+        # rm -rf it, and re-acquire (5 installers on one CI runner).
+        lock_ts=$(stat -f %m "$LOCKDIR" 2>/dev/null || stat -c %Y "$LOCKDIR" 2>/dev/null)
+    fi
+    [ -n "$lock_ts" ] || return 1
     now_ts=$(date +%s)
-    age=$(( now_ts - ${lock_ts:-0} ))
+    age=$(( now_ts - lock_ts ))
     # Within a 120 s grace window the lock is trusted unconditionally (the
-    # owner file may not be stamped yet); after that the installer PID must
+    # owner PID may not be final yet); after that the installer PID must
     # be alive, and nothing survives past STALE_SECONDS.
     if [ "$age" -lt 120 ] || { [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null && [ "$age" -lt "$STALE_SECONDS" ]; }; then
         return 1
