@@ -179,6 +179,22 @@ class TestRunHook:
         ctx = parsed["hookSpecificOutput"]["additionalContext"]
         assert "first question" in ctx or "second question" in ctx
 
+    def test_session_start_hints_toolsearch_recovery(self, project_root: Path) -> None:
+        # Tool Search defers MCP schemas in tool-heavy environments; the
+        # Claude session context must say how to load the tool, not just name it.
+        _write_log(project_root, "first question about things")
+        payload = json.dumps({
+            "hook_event_name": "SessionStart",
+            "cwd": str(project_root),
+        })
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hooks.run_hook(payload)
+        assert rc == 0
+        ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
+        assert 'ToolSearch "select:mcp__hybrid-search__hybrid_search"' in ctx
+
     def test_session_start_empty_project_is_silent(self, project_root: Path) -> None:
         payload = json.dumps({
             "hook_event_name": "SessionStart",
