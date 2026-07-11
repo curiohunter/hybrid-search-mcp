@@ -4,8 +4,8 @@
   "aggregate": {
     "update": {
       "n": 6,
-      "newer_found_rate": 0.6666666666666666,
-      "newer_first_rate": 0.5,
+      "newer_found_rate": 1.0,
+      "newer_first_rate": 1.0,
       "stale_only_rate": 0.0
     },
     "abstention": {
@@ -16,30 +16,30 @@
       "weak_on_present_rate": 0.0
     },
     "tokens_per_answer": {
-      "compact_mean": 3338.7368421052633,
-      "compact_median": 3257,
-      "full_mean": 4517.526315789473,
-      "full_median": 4207,
-      "compact_vs_full_ratio": 0.73906306432258
+      "compact_mean": 3447.2631578947367,
+      "compact_median": 3365,
+      "full_mean": 4564.578947368421,
+      "full_median": 4471,
+      "compact_vs_full_ratio": 0.7552204042570364
     }
   },
   "update_rows": [
     {
       "id": "U1",
       "topic": "정산 배치 시각",
-      "old_rank": null,
-      "new_rank": null,
-      "newer_found": false,
-      "newer_first": false,
+      "old_rank": 6,
+      "new_rank": 4,
+      "newer_found": true,
+      "newer_first": true,
       "stale_only": false,
       "confidence": "mixed",
-      "compact_tokens": 3110,
-      "full_tokens": 4170,
+      "compact_tokens": 3633,
+      "full_tokens": 4439,
       "top_paths": [
         "components/tuition/tuition-row.tsx",
         "docs/features/2026-04-08-tuition-withdrawal-refund.md",
         "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx",
-        "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+        ".hybrid-search/qa/2026/07/09-034654-71bb8838.md",
         "supabase/migrations/20260421130000_l2_1_tuition_fees_ledger_flag_and_soft_delete.sql"
       ]
     },
@@ -47,13 +47,13 @@
       "id": "U2",
       "topic": "포털 세션 만료",
       "old_rank": null,
-      "new_rank": null,
-      "newer_found": false,
-      "newer_first": false,
+      "new_rank": 6,
+      "newer_found": true,
+      "newer_first": true,
       "stale_only": false,
       "confidence": "mixed",
-      "compact_tokens": 3429,
-      "full_tokens": 4509,
+      "compact_tokens": 3732,
+      "full_tokens": 4471,
       "top_paths": [
         "archive/portal-v2/PortalHome.tsx",
         "docs/archive/remote-finish-room.md",
@@ -65,76 +65,76 @@
     {
       "id": "U3",
       "topic": "결제 PG사",
-      "old_rank": 2,
-      "new_rank": 4,
+      "old_rank": 4,
+      "new_rank": 2,
       "newer_found": true,
-      "newer_first": false,
+      "newer_first": true,
       "stale_only": false,
-      "confidence": "mixed",
-      "compact_tokens": 3371,
-      "full_tokens": 4641,
+      "confidence": "strong",
+      "compact_tokens": 3971,
+      "full_tokens": 5874,
       "top_paths": [
         "app/auth/confirm/route.ts",
-        ".hybrid-search/qa/2026/04/12-030327-c7fdf6e0.md",
+        ".hybrid-search/qa/2026/07/09-034654-9a5c404c.md",
         "services/withdrawal/index.ts",
-        ".hybrid-search/qa/2026/07/09-030327-9a5c404c.md",
+        ".hybrid-search/qa/2026/04/12-034654-c7fdf6e0.md",
         "app/(portal)/portal/learning/test/page.tsx"
       ]
     },
     {
       "id": "U4",
       "topic": "출결 알림 채널",
-      "old_rank": 4,
+      "old_rank": 6,
       "new_rank": 2,
       "newer_found": true,
       "newer_first": true,
       "stale_only": false,
       "confidence": "strong",
-      "compact_tokens": 3257,
-      "full_tokens": 3607,
+      "compact_tokens": 3276,
+      "full_tokens": 3626,
       "top_paths": [
         "components/learning/attendance/attendance-table.tsx",
-        ".hybrid-search/qa/2026/07/09-030327-0c8b4ce4.md",
+        ".hybrid-search/qa/2026/07/09-034654-0c8b4ce4.md",
         "components/dashboard/attendance-overview/attendance-dialogs.tsx",
-        ".hybrid-search/qa/2026/04/12-030327-7da1b8ad.md",
+        "docs/archive/superclaude-valuein-optimization-guide.md",
         "app/(dashboard)/learning/attendance/page.tsx"
       ]
     },
     {
       "id": "U5",
       "topic": "테스트 러너",
-      "old_rank": 4,
+      "old_rank": null,
       "new_rank": 2,
       "newer_found": true,
       "newer_first": true,
       "stale_only": false,
       "confidence": "strong",
-      "compact_tokens": 3758,
-      "full_tokens": 4175,
+      "compact_tokens": 3941,
+      "full_tokens": 4573,
       "top_paths": [
         "app/(portal)/portal/learning/test/page.tsx",
-        ".hybrid-search/qa/2026/07/09-030327-f2b5d39d.md",
+        ".hybrid-search/qa/2026/07/09-034654-f2b5d39d.md",
         "archive/portal-preview/(portal-preview)/dashboard/portal-preview/[studentId]/test/page.tsx",
-        ".hybrid-search/qa/2026/04/12-030327-008c1c59.md",
+        "docs/guides/learning-system-guide.md",
         "components/students/entrance-tests/concept-search.tsx"
       ]
     },
     {
       "id": "U6",
       "topic": "숙제 제출 저장소",
-      "old_rank": 4,
+      "old_rank": 6,
       "new_rank": 2,
       "newer_found": true,
       "newer_first": true,
       "stale_only": false,
-      "confidence": "mixed",
-      "compact_tokens": 3349,
-      "full_tokens": 3843,
+      "confidence": "strong",
+      "compact_tokens": 3365,
+      "full_tokens": 3859,
       "top_paths": [
         "components/learning/homework-analysis/HomeworkTab.tsx",
-        ".hybrid-search/qa/2026/07/09-030327-614b42cb.md",
+        ".hybrid-search/qa/2026/07/09-034654-614b42cb.md",
         "supabase/migrations/20260130_mathflat_homework_cron.sql",
-        ".hybrid-search/qa/2026/04/12-030327-f4f257fb.md",
+        "lib/school-exam-client.ts",
         "docs/features/2026-04-08-learning-homework-analysis.md"
       ]
     }
@@ -153,8 +153,8 @@
       "query": "Kafka 컨슈머 그룹 설정 알려줘",
       "confidence": "weak",
       "result_count": 10,
-      "compact_tokens": 2881,
-      "full_tokens": 3652
+      "compact_tokens": 2884,
+      "full_tokens": 3659
     },
     {
       "id": "A3",
@@ -169,40 +169,40 @@
       "query": "Firebase 푸시 토큰 관리 로직 설명해줘",
       "confidence": "weak",
       "result_count": 10,
-      "compact_tokens": 4705,
-      "full_tokens": 7484
+      "compact_tokens": 4599,
+      "full_tokens": 5572
     },
     {
       "id": "A5",
       "query": "gRPC 서비스 정의 파일 어디 있어?",
       "confidence": "weak",
       "result_count": 10,
-      "compact_tokens": 2954,
-      "full_tokens": 3374
+      "compact_tokens": 2826,
+      "full_tokens": 3591
     },
     {
       "id": "A6",
       "query": "배송 추적 기능은 어떻게 구현돼 있나?",
       "confidence": "weak",
       "result_count": 10,
-      "compact_tokens": 2561,
-      "full_tokens": 4119
+      "compact_tokens": 2620,
+      "full_tokens": 3837
     },
     {
       "id": "A7",
       "query": "쿠폰 발급과 사용 처리 흐름 정리해줘",
       "confidence": "strong",
       "result_count": 10,
-      "compact_tokens": 3142,
-      "full_tokens": 5398
+      "compact_tokens": 3682,
+      "full_tokens": 5314
     },
     {
       "id": "A8",
       "query": "포인트 적립 정책이 어떻게 되지?",
       "confidence": "weak",
       "result_count": 10,
-      "compact_tokens": 3959,
-      "full_tokens": 4923
+      "compact_tokens": 3876,
+      "full_tokens": 4714
     },
     {
       "id": "A9",
@@ -219,16 +219,16 @@
       "query": "수강료 정산 시스템은 어떻게 구성되어 있나",
       "confidence": "mixed",
       "result_count": 10,
-      "compact_tokens": 3042,
-      "full_tokens": 5270
+      "compact_tokens": 3060,
+      "full_tokens": 6163
     },
     {
       "id": "P2",
       "query": "학부모 학생 포털 인증 흐름 설명해줘",
-      "confidence": "mixed",
+      "confidence": "strong",
       "result_count": 10,
-      "compact_tokens": 3450,
-      "full_tokens": 4447
+      "compact_tokens": 3484,
+      "full_tokens": 4618
     },
     {
       "id": "P3",
@@ -243,8 +243,8 @@
       "query": "출결 관리 기능 정리해줘",
       "confidence": "strong",
       "result_count": 10,
-      "compact_tokens": 4415,
-      "full_tokens": 5907
+      "compact_tokens": 4496,
+      "full_tokens": 6103
     }
   ]
 }
