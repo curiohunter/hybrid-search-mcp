@@ -48,6 +48,9 @@ def _make_orchestrator(
     orch._enrich_results = MagicMock(return_value=[])
     # Module injection would try to open a StoreDB with a mock path — stub it.
     orch._module_results_for_query = MagicMock(return_value=([], []))
+    # Same for the corpus-absent probe: a MagicMock projects_dir would make
+    # sqlite3.connect create a literal "<MagicMock ...>" file on disk.
+    orch._first_corpus_absent_term = MagicMock(return_value=None)
     return orch
 
 

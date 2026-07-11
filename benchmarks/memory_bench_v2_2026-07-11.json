@@ -10,17 +10,17 @@
     },
     "abstention": {
       "n_absent": 9,
-      "weak_on_absent_rate": 0.7777777777777778,
+      "weak_on_absent_rate": 0.8888888888888888,
       "strong_on_absent_rate": 0.0,
       "n_present": 4,
       "weak_on_present_rate": 0.0
     },
     "tokens_per_answer": {
-      "compact_mean": 3447.7894736842104,
-      "compact_median": 3371,
-      "full_mean": 4565,
-      "full_median": 4469,
-      "compact_vs_full_ratio": 0.755266040237505
+      "compact_mean": 3448.1052631578946,
+      "compact_median": 3328,
+      "full_mean": 4575.315789473684,
+      "full_median": 4491,
+      "compact_vs_full_ratio": 0.7536321910480726
     }
   },
   "update_rows": [
@@ -32,14 +32,14 @@
       "newer_found": true,
       "newer_first": true,
       "stale_only": false,
-      "confidence": "mixed",
-      "compact_tokens": 3637,
-      "full_tokens": 4443,
+      "confidence": "weak",
+      "compact_tokens": 3685,
+      "full_tokens": 4491,
       "top_paths": [
         "components/tuition/tuition-row.tsx",
         "docs/features/2026-04-08-tuition-withdrawal-refund.md",
         "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx",
-        ".hybrid-search/qa/2026/07/09-040115-71bb8838.md",
+        ".hybrid-search/qa/2026/07/09-042535-71bb8838.md",
         "supabase/migrations/20260421130000_l2_1_tuition_fees_ledger_flag_and_soft_delete.sql"
       ]
     },
@@ -52,8 +52,8 @@
       "newer_first": true,
       "stale_only": false,
       "confidence": "mixed",
-      "compact_tokens": 3730,
-      "full_tokens": 4469,
+      "compact_tokens": 3734,
+      "full_tokens": 4474,
       "top_paths": [
         "archive/portal-v2/PortalHome.tsx",
         "docs/archive/remote-finish-room.md",
@@ -72,12 +72,12 @@
       "stale_only": false,
       "confidence": "mixed",
       "compact_tokens": 3969,
-      "full_tokens": 5872,
+      "full_tokens": 5871,
       "top_paths": [
         "app/auth/confirm/route.ts",
-        ".hybrid-search/qa/2026/07/09-040115-9a5c404c.md",
+        ".hybrid-search/qa/2026/07/09-042535-9a5c404c.md",
         "services/withdrawal/index.ts",
-        ".hybrid-search/qa/2026/04/12-040115-c7fdf6e0.md",
+        ".hybrid-search/qa/2026/04/12-042535-c7fdf6e0.md",
         "app/(portal)/portal/learning/test/page.tsx"
       ]
     },
@@ -90,11 +90,11 @@
       "newer_first": true,
       "stale_only": false,
       "confidence": "mixed",
-      "compact_tokens": 3278,
-      "full_tokens": 3628,
+      "compact_tokens": 3275,
+      "full_tokens": 3625,
       "top_paths": [
         "components/learning/attendance/attendance-table.tsx",
-        ".hybrid-search/qa/2026/07/09-040115-0c8b4ce4.md",
+        ".hybrid-search/qa/2026/07/09-042535-0c8b4ce4.md",
         "components/dashboard/attendance-overview/attendance-dialogs.tsx",
         "docs/archive/superclaude-valuein-optimization-guide.md",
         "app/(dashboard)/learning/attendance/page.tsx"
@@ -109,11 +109,11 @@
       "newer_first": true,
       "stale_only": false,
       "confidence": "mixed",
-      "compact_tokens": 3942,
-      "full_tokens": 4574,
+      "compact_tokens": 3944,
+      "full_tokens": 4576,
       "top_paths": [
         "app/(portal)/portal/learning/test/page.tsx",
-        ".hybrid-search/qa/2026/07/09-040115-f2b5d39d.md",
+        ".hybrid-search/qa/2026/07/09-042535-f2b5d39d.md",
         "archive/portal-preview/(portal-preview)/dashboard/portal-preview/[studentId]/test/page.tsx",
         "docs/guides/learning-system-guide.md",
         "components/students/entrance-tests/concept-search.tsx"
@@ -122,19 +122,19 @@
     {
       "id": "U6",
       "topic": "숙제 제출 저장소",
-      "old_rank": 6,
-      "new_rank": 2,
+      "old_rank": null,
+      "new_rank": 6,
       "newer_found": true,
       "newer_first": true,
       "stale_only": false,
-      "confidence": "mixed",
-      "compact_tokens": 3371,
-      "full_tokens": 3865,
+      "confidence": "weak",
+      "compact_tokens": 3267,
+      "full_tokens": 3949,
       "top_paths": [
         "components/learning/homework-analysis/HomeworkTab.tsx",
-        ".hybrid-search/qa/2026/07/09-040115-614b42cb.md",
-        "supabase/migrations/20260130_mathflat_homework_cron.sql",
         "lib/school-exam-client.ts",
+        "supabase/migrations/20260130_mathflat_homework_cron.sql",
+        "docs/archive/github-cli-guide.md",
         "docs/features/2026-04-08-learning-homework-analysis.md"
       ]
     }
@@ -145,8 +145,8 @@
       "query": "우리 GraphQL 스키마는 어떻게 구성돼 있어?",
       "confidence": "weak",
       "result_count": 10,
-      "compact_tokens": 2491,
-      "full_tokens": 3046
+      "compact_tokens": 2507,
+      "full_tokens": 3062
     },
     {
       "id": "A2",
@@ -191,10 +191,10 @@
     {
       "id": "A7",
       "query": "쿠폰 발급과 사용 처리 흐름 정리해줘",
-      "confidence": "mixed",
+      "confidence": "weak",
       "result_count": 10,
-      "compact_tokens": 3682,
-      "full_tokens": 5314
+      "compact_tokens": 3726,
+      "full_tokens": 5358
     },
     {
       "id": "A8",
@@ -219,8 +219,8 @@
       "query": "수강료 정산 시스템은 어떻게 구성되어 있나",
       "confidence": "mixed",
       "result_count": 10,
-      "compact_tokens": 3061,
-      "full_tokens": 6162
+      "compact_tokens": 3060,
+      "full_tokens": 6163
     },
     {
       "id": "P2",

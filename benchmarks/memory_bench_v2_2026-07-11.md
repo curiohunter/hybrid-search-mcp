@@ -18,13 +18,13 @@
 | U3 | 결제 PG사 | 2 | 4 | ✅ |
 | U4 | 출결 알림 채널 | 2 | 6 | ✅ |
 | U5 | 테스트 러너 | 2 | — | ✅ |
-| U6 | 숙제 제출 저장소 | 2 | 6 | ✅ |
+| U6 | 숙제 제출 저장소 | 6 | — | ✅ |
 
 ## Abstention (confidence contract on absent topics)
 
 | metric | value | target |
 |---|---:|---|
-| weak_on_absent_rate | 77.78% | high (correct refusal) |
+| weak_on_absent_rate | 88.89% | high (correct refusal) |
 | strong_on_absent_rate | 0.00% | 0% (false confidence) |
 | weak_on_present_rate | 0.00% | low (not just pessimistic) |
 
@@ -36,7 +36,7 @@
 | A4 | Firebase 푸시 토큰 관리 로직 설명해줘 | weak |
 | A5 | gRPC 서비스 정의 파일 어디 있어? | weak |
 | A6 | 배송 추적 기능은 어떻게 구현돼 있나? | weak |
-| A7 | 쿠폰 발급과 사용 처리 흐름 정리해줘 | mixed |
+| A7 | 쿠폰 발급과 사용 처리 흐름 정리해줘 | weak |
 | A8 | 포인트 적립 정책이 어떻게 되지? | weak |
 | A9 | 구독 결제 갱신 로직 설명해줘 | mixed |
 
@@ -44,7 +44,7 @@
 
 | detail | mean | median |
 |---|---:|---:|
-| compact (default) | 3448 | 3371 |
-| full | 4565 | 4469 |
+| compact (default) | 3448 | 3328 |
+| full | 4575 | 4491 |
 
-compact/full ratio: **0.76** — progressive disclosure saving.
+compact/full ratio: **0.75** — progressive disclosure saving.
