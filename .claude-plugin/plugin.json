@@ -1,0 +1,16 @@
+{
+  "name": "memory-layer",
+  "displayName": "Memory Layer",
+  "version": "0.7.0",
+  "description": "The memory that answers why — code, commits, and past conversations in one recall. Hybrid BM25+vector search over your repo, its git history, and every past Q&A.",
+  "author": {
+    "name": "curiohunter",
+    "email": "karw79@gmail.com",
+    "url": "https://github.com/curiohunter/hybrid-search-mcp"
+  },
+  "homepage": "https://github.com/curiohunter/hybrid-search-mcp",
+  "repository": "https://github.com/curiohunter/hybrid-search-mcp",
+  "license": "MIT",
+  "keywords": ["memory", "search", "rag", "hybrid-search", "knowledge", "genesis", "commit-history"],
+  "hooks": "./hooks/hooks.json"
+}

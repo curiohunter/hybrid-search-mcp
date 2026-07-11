@@ -210,7 +210,21 @@ export HYBRID_SEARCH_ROUTER=0     # stop per-prompt pre-fetch injection
 - Python 3.11+
 - OpenAI API key ([get one here](https://platform.openai.com/api-keys))
 
-### Three commands
+### Claude Code plugin (two commands)
+
+```
+/plugin marketplace add curiohunter/hybrid-search-mcp
+/plugin install memory-layer@curiohunter
+```
+
+On the next session start the plugin provisions its own Python venv in
+the background (~1–2 min, once), installs the package, and registers the
+same global surface as the pip path below — MCP server, hooks, and
+skills. Restart Claude Code when it reports done, add your OpenAI key
+(`echo "OPENAI_API_KEY=sk-..." >> ~/.env.local`), and you're set.
+Don't combine with the pip setup below — pick one.
+
+### pip (three commands)
 
 ```bash
 pipx install memory-layer-mcp                # PyPI name; the CLI is `hybrid-search-mcp`
