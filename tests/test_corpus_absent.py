@@ -53,24 +53,32 @@ class TestSourceContainsSubstring:
 
 
 class TestCorpusAbsentCap:
-    def _response(self, corpus_lacks):
+    def _response(
+        self,
+        corpus_lacks,
+        *,
+        query: str = "쿠폰 발급과 사용 처리 흐름 정리해줘",
+        content: str = "고지서 발급 처리 흐름",
+        memory_intent: bool = False,
+    ):
         from tests.test_orchestrator import _make_orchestrator
         from hybrid_search.search.orchestrator import HybridResult
 
         orch = _make_orchestrator({})
         hit = HybridResult(
             chunk_id="a", rrf_score=0.016, bm25_rank=1, vector_rank=1,
-            file_path="docs/billing.md", project="test", name="처리 흐름",
+            file_path="docs/billing.md", project="test", name="doc",
             qualified_name="a", node_type="section", start_line=1, end_line=2,
-            content="고지서 발급 처리 흐름", snippet="",
+            content=content, snippet="",
         )
         return orch._make_response(
-            query="쿠폰 발급과 사용 처리 흐름 정리해줘",
+            query=query,
             results=[hit],
             query_type="KOREAN_NL",
             effective_bm25_weight=0.15,
             query_time_ms=1.0,
             total_chunks_searched=10,
+            memory_intent=memory_intent,
             corpus_lacks=corpus_lacks,
         )
 
@@ -85,4 +93,35 @@ class TestCorpusAbsentCap:
 
     def test_no_callable_keeps_confidence(self) -> None:
         resp = self._response(corpus_lacks=None)
+        assert resp.confidence == "mixed"
+
+    def test_korean_query_english_source_with_strong_vector_anchor_is_not_forced_weak(self) -> None:
+        # Korean query, English-only corpus: the vector lane can be right
+        # while no Korean token ever appears literally. Literal absence is
+        # not evidence here — the cross-language guard must suppress both
+        # the corpus-absent cap and the strong demotion.
+        calls: list[list[str]] = []
+
+        def spy(terms):
+            calls.append(terms)
+            return terms[0]
+
+        resp = self._response(
+            spy,
+            query="결제 승인 흐름 설명해줘",
+            content="payment authorization flow: charge() validates then captures",
+        )
+        assert resp.confidence == "mixed"
+        assert calls == []  # the probe wasn't even consulted
+
+    def test_history_query_answered_by_commit_only_is_not_forced_weak(self) -> None:
+        # Memory-intent queries are answered from Q&A/commits/conversations —
+        # exactly the lanes the source-only probe excludes, so "absent from
+        # code" proves nothing and the cap must not fire.
+        resp = self._response(
+            corpus_lacks=lambda terms: terms[0],
+            query="쿠폰 정책 변경 경위 알려줘",
+            content="정책 변경은 2월 회의에서 논의되었습니다",
+            memory_intent=True,
+        )
         assert resp.confidence == "mixed"

@@ -70,6 +70,16 @@ def _payload(orch, project: str, query: str, detail: str) -> dict:
     )
 
 
+def _timed_payload(orch, project: str, query: str, detail: str) -> tuple[dict, float]:
+    """Payload plus END-TO-END wall time. The response's own query_time_ms
+    stops before _make_response, so it excludes the confidence pipeline —
+    including the corpus-absent LIKE scan (~150 ms on a genuine miss).
+    Latency headlines must come from this outer clock."""
+    started = time.perf_counter()
+    payload = _payload(orch, project, query, detail)
+    return payload, (time.perf_counter() - started) * 1000
+
+
 def _mcp_wire_tokens(payload: dict) -> int:
     """Token count of the payload exactly as the MCP server serializes it."""
     return _count_tokens(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -115,7 +125,7 @@ def plant_qa(project_path: Path, query: str, answer: str, ts: datetime) -> str |
 def run_update_track(orch, project: str, cases: list[dict], planted: dict) -> list[dict]:
     rows = []
     for case in cases:
-        payload = _payload(orch, project, case["probe"], "compact")
+        payload, e2e_ms = _timed_payload(orch, project, case["probe"], "compact")
         paths = _result_paths(payload)
         old_rank = _rank_of_tail(paths, planted[case["id"]]["old"])
         new_rank = _rank_of_tail(paths, planted[case["id"]]["new"])
@@ -129,7 +139,7 @@ def run_update_track(orch, project: str, cases: list[dict], planted: dict) -> li
             "newer_first": newer_first,
             "stale_only": old_rank is not None and new_rank is None,
             "confidence": payload.get("confidence"),
-            "query_time_ms": payload.get("query_time_ms"),
+            "query_time_ms": e2e_ms,
             "compact_tokens": _mcp_wire_tokens(payload),
             "full_tokens": _mcp_wire_tokens(_payload(orch, project, case["probe"], "full")),
             "top_paths": paths[:5],
@@ -144,13 +154,13 @@ def run_update_track(orch, project: str, cases: list[dict], planted: dict) -> li
 def run_confidence_track(orch, project: str, cases: list[dict], label: str) -> list[dict]:
     rows = []
     for case in cases:
-        payload = _payload(orch, project, case["query"], "compact")
+        payload, e2e_ms = _timed_payload(orch, project, case["query"], "compact")
         rows.append({
             "id": case["id"],
             "query": case["query"],
             "confidence": payload.get("confidence", "?"),
             "result_count": len(payload.get("results", [])),
-            "query_time_ms": payload.get("query_time_ms"),
+            "query_time_ms": e2e_ms,
             "compact_tokens": _mcp_wire_tokens(payload),
             "full_tokens": _mcp_wire_tokens(_payload(orch, project, case["query"], "full")),
         })
@@ -167,7 +177,7 @@ def run_adversarial_track(orch, project: str, cases: list[dict], planted: dict) 
     """
     rows = []
     for case in cases:
-        payload = _payload(orch, project, case["probe"], "compact")
+        payload, e2e_ms = _timed_payload(orch, project, case["probe"], "compact")
         paths = _result_paths(payload)
         exact_rank = _rank_of_tail(paths, planted[case["id"]]["exact"])
         adjacent_rank = _rank_of_tail(paths, planted[case["id"]]["adjacent"])
@@ -177,7 +187,7 @@ def run_adversarial_track(orch, project: str, cases: list[dict], planted: dict) 
             "exact_rank": exact_rank,
             "adjacent_rank": adjacent_rank,
             "exact_first": ok,
-            "query_time_ms": payload.get("query_time_ms"),
+            "query_time_ms": e2e_ms,
             "compact_tokens": _mcp_wire_tokens(payload),
             "full_tokens": _mcp_wire_tokens(_payload(orch, project, case["probe"], "full")),
         })
@@ -221,6 +231,16 @@ def aggregate(update_rows, absent_rows, present_rows, adversarial_rows) -> dict:
         "adversarial": {
             "n": len(adversarial_rows),
             "exact_first_rate": sum(1 for r in adversarial_rows if r["exact_first"]) / max(1, len(adversarial_rows)),
+            # Decomposition — "3/3 exact first" alone overstates: ranking
+            # competition only happens when BOTH are retrieved.
+            "exact_found": sum(1 for r in adversarial_rows if r["exact_rank"] is not None),
+            "both_found": sum(1 for r in adversarial_rows if r["exact_rank"] is not None and r["adjacent_rank"] is not None),
+            "exact_first_given_both": sum(
+                1 for r in adversarial_rows
+                if r["exact_rank"] is not None and r["adjacent_rank"] is not None
+                and r["exact_rank"] < r["adjacent_rank"]
+            ),
+            "adjacent_not_retrieved": sum(1 for r in adversarial_rows if r["adjacent_rank"] is None),
         },
         "abstention": {
             "n_absent": len(absent_rows),
@@ -239,11 +259,13 @@ def aggregate(update_rows, absent_rows, present_rows, adversarial_rows) -> dict:
         },
         "latency": {
             "n_queries": len(latencies),
+            # End-to-end (outer perf_counter around the handler), so the
+            # confidence pipeline incl. corpus-absent scans is included.
             "p50_ms": _percentile(latencies, 50),
             "p95_ms": _percentile(latencies, 95),
-            # Each hybrid_search call embeds the query once; every case
-            # runs compact + full → 2 embedding calls per case.
-            "embedding_calls": 2 * len(all_rows),
+            # Derived, not instrumented: each hybrid_search call embeds the
+            # query once; every case runs compact + full -> 2 calls/case.
+            "expected_embedding_calls": 2 * len(all_rows),
         },
         "tokens_per_answer": {
             "compact_mean": mean(compact) if compact else 0,
@@ -294,7 +316,10 @@ def format_markdown(report: dict) -> str:
         "exactly matches the probe has to stay above a fresher Q&A that merely",
         "shares generic nouns.",
         "",
-        f"exact_first: **{sum(1 for r in report['adversarial_rows'] if r['exact_first'])}/{adv['n']}**",
+        f"exact_first: **{sum(1 for r in report['adversarial_rows'] if r['exact_first'])}/{adv['n']}** — decomposed: "
+        f"exact found {adv['exact_found']}/{adv['n']}, both found {adv['both_found']}/{adv['n']}, "
+        f"exact first given both {adv['exact_first_given_both']}/{max(1, adv['both_found'])}, "
+        f"adjacent not retrieved {adv['adjacent_not_retrieved']}/{adv['n']}",
         "",
         "| id | exact (old) rank | adjacent (fresh) rank | exact first |",
         "|---|---:|---:|---|",
@@ -327,9 +352,9 @@ def format_markdown(report: dict) -> str:
         "",
         "| metric | value |",
         "|---|---:|",
-        f"| search latency p50 | {lat['p50_ms']:.0f} ms |",
-        f"| search latency p95 | {lat['p95_ms']:.0f} ms |",
-        f"| embedding API calls (whole run) | {lat['embedding_calls']} (1 per search; compact+full = 2/case) |",
+        f"| end-to-end search latency p50 | {lat['p50_ms']:.0f} ms |",
+        f"| end-to-end search latency p95 | {lat['p95_ms']:.0f} ms |",
+        f"| expected embedding API calls (derived, whole run) | {lat['expected_embedding_calls']} (1 per search; compact+full = 2/case) |",
         "",
         "## Tokens per answer (MCP wire payload, o200k_base)",
         "",
@@ -441,7 +466,8 @@ def main() -> None:
             f"strong {m['present']['strong']} / mixed {m['present']['mixed']} / weak {m['present']['weak']}"
         )
         lat = agg["latency"]
-        print(f"latency: p50 {lat['p50_ms']:.0f}ms p95 {lat['p95_ms']:.0f}ms, embedding calls {lat['embedding_calls']}")
+        print(f"latency (e2e): p50 {lat['p50_ms']:.0f}ms p95 {lat['p95_ms']:.0f}ms, expected embedding calls {lat['expected_embedding_calls']}")
+        print(f"adversarial decomposed: both_found {adv['both_found']}/{adv['n']}, exact_first_given_both {adv['exact_first_given_both']}/{max(1, adv['both_found'])}")
         t = agg["tokens_per_answer"]
         print(f"tokens/answer: compact {t['compact_mean']:.0f} vs full {t['full_mean']:.0f} (ratio {t['compact_vs_full_ratio']:.2f})")
     finally:

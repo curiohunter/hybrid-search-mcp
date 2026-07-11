@@ -339,14 +339,58 @@ class TestMergeMemoryPlacement:
         )
         assert [r.chunk_id for r in out] == ["c1", "c2", "qa", "c3"]
 
-    def test_ambient_head_limit_caps_selection(self) -> None:
+    def test_ambient_head_different_topics_ranked_by_relevance(self) -> None:
         code = _mk("c1", "function", 1.0)
+        # No excerpts + unrelated names → different topic groups; the
+        # HIGHER-SCORING group wins the slot regardless of age.
         qa1 = _mk("q1", "qa_log", rrf=0.9, mtime="2026-07-01T00:00:00+00:00")
         qa2 = _mk("q2", "qa_log", rrf=0.8, mtime="2026-07-02T00:00:00+00:00")
         out = _merge_memory_results([code], [qa1, qa2], limit=10, head_limit=1, insert_at=2)
-        # qa selection is newest-first (q2), not score-first — a gated stale
-        # answer must not hold the guaranteed slot against a fresher one.
-        assert [r.chunk_id for r in out] == ["c1", "q2"]
+        assert [r.chunk_id for r in out] == ["c1", "q1"]
+
+    def test_ambient_head_prefers_old_exact_topic_over_fresh_adjacent_topic(self) -> None:
+        # The review's blocking case: a fresh adjacent-topic Q&A must not
+        # win the guaranteed slot from an old exact-topic one during HEAD
+        # SELECTION — the final reorder cannot resurrect a dropped result.
+        exact_old = _qa(
+            "exact", "학생 숙제 제출 파일은 어디 저장되나",
+            "숙제 제출 파일은 Supabase Storage homework 버킷에 저장됩니다.",
+            "2026-04-01T00:00:00+00:00",
+        )
+        exact_old = exact_old.__class__(**{**exact_old.__dict__, "rrf_score": 0.9})
+        adjacent_new = _qa(
+            "adjacent", "학생 출결 파일 업로드 오류",
+            "출결 명단 CSV 업로드가 인코딩 문제로 실패, EUC-KR을 UTF-8로 변환해 해결.",
+            "2026-07-09T00:00:00+00:00",
+        )
+        adjacent_new = adjacent_new.__class__(**{**adjacent_new.__dict__, "rrf_score": 0.5})
+        out = _merge_memory_results([], [exact_old, adjacent_new], limit=10, head_limit=1, insert_at=0)
+        assert [r.chunk_id for r in out] == ["exact"]
+
+    def test_ambient_head_same_topic_group_represented_by_newest(self) -> None:
+        # Same topic: the group's relevance is its best score (old, 0.9) but
+        # the NEWEST member represents it — supersession at selection time.
+        old = _qa(
+            "old", "학생 숙제 제출 파일은 어디 저장되나",
+            "숙제 제출 파일은 Supabase Storage homework 버킷, 최대 파일 크기 10MB입니다.",
+            "2026-04-01T00:00:00+00:00",
+        )
+        old = old.__class__(**{**old.__dict__, "rrf_score": 0.9})
+        new = _qa(
+            "new", "숙제 파일 크기 제한 상향",
+            "숙제 파일 최대 크기를 10MB에서 100MB로 올렸습니다. 대용량은 resumable upload.",
+            "2026-07-09T00:00:00+00:00",
+        )
+        new = new.__class__(**{**new.__dict__, "rrf_score": 0.5})
+        unrelated = _qa(
+            "unrelated", "알림톡 발송 채널 구성",
+            "알림톡은 카카오 비즈메시지 단일 채널로 발송됩니다.",
+            "2026-07-08T00:00:00+00:00",
+        )
+        unrelated = unrelated.__class__(**{**unrelated.__dict__, "rrf_score": 0.7})
+        out = _merge_memory_results([], [old, new, unrelated], limit=10, head_limit=1, insert_at=0)
+        # Group(old,new) relevance 0.9 beats unrelated 0.7; newest represents.
+        assert [r.chunk_id for r in out] == ["new"]
 
     def test_head_cards_stay_score_ordered_over_qa_recency(self) -> None:
         card = _mk("card", "memory_card", rrf=0.4, mtime="2026-01-01T00:00:00+00:00")

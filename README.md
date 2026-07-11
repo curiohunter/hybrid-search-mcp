@@ -534,10 +534,10 @@ not population estimates.
 |---|---|---:|
 | **Knowledge-update** | newer answer shown before the stale one | **6/6** |
 | | stale answer shown while newer missed (worst case) | **0/6** |
-| **Adversarial recency** | old *exact-topic* answer stays above a fresh *adjacent-topic* one | **3/3** |
+| **Adversarial recency** | old *exact-topic* answer stays above a fresh *adjacent-topic* one | **3/3** (both retrieved in 1/3; exact-first given both: 1/1) |
 | **Tokens per answer** | MCP payload, `detail=compact` (default) | **≈ 3.5 k** |
 | | `detail=full` | ≈ 4.6 k |
-| **Latency** | search p50 / p95 | 539 ms / 659 ms |
+| **Latency** | end-to-end search p50 / p95 (incl. confidence pipeline) | 567 ms / 863 ms |
 
 Abstention — the full confidence distribution, because headline rates
 alone can be gamed (an all-`mixed` classifier scores 0 % on both error

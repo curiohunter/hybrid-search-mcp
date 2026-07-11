@@ -320,6 +320,30 @@ _INSTRUCTION_TOKENS = {
 }
 
 
+def _cross_language_mismatch(terms: list[str], results: list[HybridResult]) -> bool:
+    """True when literal term absence carries no signal: the unanchored
+    terms are Korean but the retrieved texts are essentially Hangul-free.
+
+    A Korean query over an English-only codebase legitimately matches
+    through the vector lane — 결제 승인 흐름 → payment authorization flow —
+    and no Korean token will ever appear literally. Punishing that with an
+    unanchored/corpus-absent demotion would fight the product's own
+    Korean ↔ English selling point. When the corpus itself contains Korean
+    (this repo's bench codebase does), the guard stays out of the way.
+    """
+    if not terms or not results:
+        return False
+    if not all(any("가" <= c <= "힣" for c in t) for t in terms):
+        return False
+    haystack = " ".join(
+        " ".join(p for p in (r.name, r.snippet, r.content) if p) for r in results
+    )
+    if not haystack:
+        return False
+    hangul = sum(1 for c in haystack if "가" <= c <= "힣")
+    return (hangul / len(haystack)) < 0.01
+
+
 def _unanchored_terms(query: str, results: list[HybridResult]) -> list[str]:
     """Content-bearing query tokens absent from every result text.
 
@@ -537,21 +561,32 @@ def _merge_memory_results(
     if not memory_head:
         return chunk_results
 
-    def _head_key(r: HybridResult) -> tuple:
-        prio = {"domain_term": 0, "memory_card": 1, "episodic_example": 2, "qa_log": 3}.get(
+    # qa head selection is topic-grouped: within a topic the newest answer
+    # represents the group (supersession), but ACROSS topics the group's
+    # best retrieval score decides — a fresh adjacent-topic Q&A must not
+    # take the guaranteed slot from an old exact-topic one. Cards stay
+    # score-ordered (curated, no supersession-by-time semantics).
+    qa_candidates = [r for r in memory_head if r.node_type == "qa_log"]
+    others = [r for r in memory_head if r.node_type != "qa_log"]
+
+    def _prio(r: HybridResult) -> int:
+        return {"domain_term": 0, "memory_card": 1, "episodic_example": 2, "qa_log": 3}.get(
             r.node_type or "", 9
         )
-        if r.node_type == "qa_log":
-            # qa candidates already cleared the lane's relevance gate; among
-            # them the newest answer is the one worth a guaranteed slot — a
-            # lexical score preferring the stale text is how bench v2 U6
-            # kept resurfacing a superseded fact. Cards stay score-ordered
-            # (curated, no supersession-by-time semantics).
-            days = _parse_mtime_days_ago(r.file_mtime)
-            return (prio, days is None, days if days is not None else 0.0)
-        return (prio, False, -r.rrf_score)
 
-    memory_head.sort(key=_head_key)
+    def _age(r: HybridResult) -> tuple[bool, float]:
+        days = _parse_mtime_days_ago(r.file_mtime)
+        return (days is None, days if days is not None else 0.0)
+
+    candidates: list[tuple[int, float, int, HybridResult]] = [
+        (_prio(r), -r.rrf_score, seq, r) for seq, r in enumerate(others)
+    ]
+    for seq, group in enumerate(_qa_topic_groups(qa_candidates)):
+        representative = min(group, key=_age)  # newest of the topic
+        group_relevance = max(r.rrf_score for r in group)
+        candidates.append((3, -group_relevance, len(others) + seq, representative))
+    candidates.sort()
+    memory_head = [r for _, _, _, r in candidates]
     head_limit = min(head_limit, max(1, limit))
     head: list[HybridResult] = []
     seen: set[str] = set()
@@ -643,8 +678,29 @@ def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
     if len(qa) < 2:
         return results
 
-    toks = {i: _qa_topic_tokens(r) for i, r in qa}
-    parent = {i: i for i, _ in qa}
+    position = {id(r): i for i, r in qa}
+
+    def _age(r: HybridResult) -> tuple[bool, float]:
+        days = _parse_mtime_days_ago(r.file_mtime)
+        return (days is None, days if days is not None else 0.0)
+
+    ordered = list(results)
+    for group in _qa_topic_groups([r for _, r in qa]):
+        if len(group) < 2:
+            continue
+        slots = sorted(position[id(r)] for r in group)
+        newest_first = sorted(group, key=_age)
+        for slot, r in zip(slots, newest_first):
+            ordered[slot] = r
+    return ordered
+
+
+def _qa_topic_groups(qa: list[HybridResult]) -> list[list[HybridResult]]:
+    """Partition qa_log results into same-topic groups (union-find)."""
+    if not qa:
+        return []
+    toks = [_qa_topic_tokens(r) for r in qa]
+    parent = list(range(len(qa)))
 
     def _find(x: int) -> int:
         while parent[x] != x:
@@ -652,30 +708,15 @@ def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
             x = parent[x]
         return x
 
-    indices = [i for i, _ in qa]
-    for a_pos, a in enumerate(indices):
-        for b in indices[a_pos + 1:]:
+    for a in range(len(qa)):
+        for b in range(a + 1, len(qa)):
             if _same_qa_topic(toks[a], toks[b]):
                 parent[_find(a)] = _find(b)
 
-    by_result = {i: r for i, r in qa}
-
-    def _age(r: HybridResult) -> tuple[bool, float]:
-        days = _parse_mtime_days_ago(r.file_mtime)
-        return (days is None, days if days is not None else 0.0)
-
-    ordered = list(results)
-    groups: dict[int, list[int]] = {}
-    for i in indices:
-        groups.setdefault(_find(i), []).append(i)
-    for members in groups.values():
-        if len(members) < 2:
-            continue
-        slots = sorted(members)
-        newest_first = sorted((by_result[i] for i in members), key=_age)
-        for slot, r in zip(slots, newest_first):
-            ordered[slot] = r
-    return ordered
+    groups: dict[int, list[HybridResult]] = {}
+    for i, r in enumerate(qa):
+        groups.setdefault(_find(i), []).append(r)
+    return list(groups.values())
 
 
 def _merge_conv_results(
@@ -1099,8 +1140,8 @@ class SearchOrchestrator:
         checks are ~1 ms; only genuinely absent terms pay a content scan,
         and the first hit short-circuits — the caller needs one witness.
         """
+        dbs: list[tuple[StoreDB, str]] = []
         try:
-            dbs: list[tuple[StoreDB, str]] = []
             for pinfo in project_infos:
                 idx_paths = IndexPaths(get_project_dir(self._config.projects_dir, pinfo.id))
                 if idx_paths.store_db.exists():
@@ -1117,6 +1158,13 @@ class SearchOrchestrator:
                     return term
         except Exception:  # pragma: no cover — never fail a search on this probe
             return None
+        finally:
+            # Don't leave sqlite connection lifetime to the GC.
+            for db, _ in dbs:
+                try:
+                    db.close()
+                except Exception:  # pragma: no cover
+                    pass
         return None
 
     def _make_response(
@@ -1152,6 +1200,10 @@ class SearchOrchestrator:
             top_score, effective_gap, thresholds, coherent=coherent
         )
         unanchored = _unanchored_terms(query, ranked[:10])
+        if unanchored and _cross_language_mismatch(unanchored, ranked[:10]):
+            # Korean query, Hangul-free sources: literal absence is not
+            # evidence of anything — neither demotion may fire.
+            unanchored = []
         if confidence == "strong" and unanchored:
             # "strong" claims the top hit answers the query. When the query's
             # content words never even appear (by prefix) in the top texts,
@@ -1181,7 +1233,15 @@ class SearchOrchestrator:
         # Distinct from the unanchored rule above: "시스템/구성" are often
         # missing from a top-10 yet common in the corpus (legit mixed),
         # while "쿠폰" is missing from the corpus itself (bench v2 A7).
-        if confidence != "weak" and unanchored and corpus_lacks is not None:
+        # Skipped on memory-intent queries: history questions are answered
+        # from Q&A/commits/conversations — content the source-only probe
+        # deliberately can't see, so "absent from code" proves nothing.
+        if (
+            confidence != "weak"
+            and unanchored
+            and corpus_lacks is not None
+            and not memory_intent
+        ):
             if corpus_lacks(unanchored) is not None:
                 confidence = "weak"
         hint = (

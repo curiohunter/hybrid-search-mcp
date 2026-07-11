@@ -16,28 +16,33 @@
 #   - Slow path (first run / upgrade) backgrounds the pip install so the
 #     session is never blocked; the user restarts once when it finishes.
 #   - Upgrade detection is by git commit SHA (falling back to a content
-#     hash of pyproject + src), NOT pyproject.toml alone: a marketplace
-#     update that changes source without bumping the version must still
-#     reinstall.
-#   - The .installing lock always clears (trap on EXIT/HUP/INT/TERM in
-#     the installer) and a stale lock — dead PID or older than 30 min —
-#     is reclaimed instead of wedging every future session.
+#     hash of everything the plugin ships), NOT pyproject.toml alone: a
+#     marketplace update that changes source without bumping the version
+#     must still reinstall.
+#   - Lock acquisition is ATOMIC (mkdir) — two concurrent SessionStarts
+#     race the directory creation and exactly one wins; check-then-write
+#     on a lock file would let both through.
+#   - The lock always clears (trap on EXIT/HUP/INT/TERM in the installer)
+#     and a stale lock — dead PID or older than 30 min — is reclaimed
+#     instead of wedging every future session.
 
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.hybrid-search/plugin-data}"
 VENV="$DATA/venv"
 PY="$VENV/bin/python"
 LOCK="$DATA/revision.lock"
-INSTALLING="$DATA/.installing"
+LOCKDIR="$DATA/.installing.lock"
 LOG="$DATA/bootstrap.log"
 STALE_SECONDS=1800
 
 current_revision() {
     git -C "$ROOT" rev-parse HEAD 2>/dev/null && return 0
-    # Not a git checkout (e.g. tarball source): hash the shipped content.
+    # Not a git checkout (e.g. tarball source): hash everything the plugin
+    # ships — a hooks/skills/scripts-only update must still reinstall.
     {
         cat "$ROOT/pyproject.toml" 2>/dev/null
-        find "$ROOT/src" -type f -name '*.py' -exec shasum -a 256 {} + 2>/dev/null | sort
+        find "$ROOT/src" "$ROOT/skills" "$ROOT/hooks" "$ROOT/scripts" "$ROOT/.claude-plugin" \
+            -type f -exec shasum -a 256 {} + 2>/dev/null | sort
     } | shasum -a 256 | cut -d' ' -f1
 }
 
@@ -51,30 +56,40 @@ fi
 
 mkdir -p "$DATA" 2>/dev/null || exit 0
 
-# Another bootstrap already running? Reclaim only if it is provably stale:
-# within a 120 s grace window the lock is trusted unconditionally (the
-# installer subshell may not have stamped its PID yet); after that the
-# installer PID must be alive, and nothing survives past STALE_SECONDS.
-if [ -f "$INSTALLING" ]; then
-    lock_pid=$(cut -d' ' -f1 "$INSTALLING" 2>/dev/null)
-    lock_ts=$(cut -d' ' -f2 "$INSTALLING" 2>/dev/null)
+acquire_lock() {
+    # mkdir is atomic: of N concurrent bootstraps exactly one succeeds.
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        echo "$$ $(date +%s)" > "$LOCKDIR/owner"
+        return 0
+    fi
+    lock_pid=$(cut -d' ' -f1 "$LOCKDIR/owner" 2>/dev/null)
+    lock_ts=$(cut -d' ' -f2 "$LOCKDIR/owner" 2>/dev/null)
     now_ts=$(date +%s)
     age=$(( now_ts - ${lock_ts:-0} ))
+    # Within a 120 s grace window the lock is trusted unconditionally (the
+    # owner file may not be stamped yet); after that the installer PID must
+    # be alive, and nothing survives past STALE_SECONDS.
     if [ "$age" -lt 120 ] || { [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null && [ "$age" -lt "$STALE_SECONDS" ]; }; then
-        echo "memory-layer: install still running in background (log: $LOG)"
-        exit 0
+        return 1
     fi
-    rm -f "$INSTALLING"
+    rm -rf "$LOCKDIR"
+    # Stale reclaim also races; only the mkdir winner proceeds.
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        echo "$$ $(date +%s)" > "$LOCKDIR/owner"
+        return 0
+    fi
+    return 1
+}
+
+if ! acquire_lock; then
+    echo "memory-layer: install still running in background (log: $LOG)"
+    exit 0
 fi
 
-# Claim the lock before backgrounding so two concurrent SessionStarts
-# don't both spawn installers; the subshell re-stamps with its own PID.
-echo "0 $(date +%s)" > "$INSTALLING"
-
 nohup sh -c '
-    ROOT="$1"; DATA="$2"; VENV="$3"; PY="$4"; LOCK="$5"; REV="$6"
-    echo "$$ $(date +%s)" > "$DATA/.installing"
-    trap "rm -f \"$DATA/.installing\"" EXIT HUP INT TERM
+    ROOT="$1"; DATA="$2"; VENV="$3"; PY="$4"; LOCK="$5"; REV="$6"; LOCKDIR="$7"
+    echo "$$ $(date +%s)" > "$LOCKDIR/owner"
+    trap "rm -rf \"$LOCKDIR\"" EXIT HUP INT TERM
     set -e
     if [ ! -x "$PY" ]; then
         python3.12 -m venv "$VENV" 2>/dev/null \
@@ -87,7 +102,7 @@ nohup sh -c '
     # Revision lock is written only after a fully successful install, so a
     # failed attempt retries on the next SessionStart.
     printf "%s" "$REV" > "$LOCK"
-' _ "$ROOT" "$DATA" "$VENV" "$PY" "$LOCK" "$CUR_REV" >"$LOG" 2>&1 &
+' _ "$ROOT" "$DATA" "$VENV" "$PY" "$LOCK" "$CUR_REV" "$LOCKDIR" >"$LOG" 2>&1 &
 
 if [ -x "$PY" ]; then
     echo "memory-layer: updating to new revision in background (~1 min)."

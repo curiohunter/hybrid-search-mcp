@@ -4473,21 +4473,35 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     if skills_src.is_dir():
         installed = 0
+        manifest = _load_skill_manifest(skills_dst)
         for skill_file in sorted(skills_src.glob("*.md")):
             skill_name = skill_file.stem
             dst_dir = skills_dst / skill_name
             dst_dir.mkdir(parents=True, exist_ok=True)
             dst_file = dst_dir / "skill.md"
             src_content = skill_file.read_text(encoding="utf-8")
+            src_sha = _sha256_text(src_content)
 
             if dst_file.exists():
                 existing = dst_file.read_text(encoding="utf-8")
                 if existing == src_content:
+                    manifest[skill_name] = src_sha
                     continue  # identical, skip
+                # A skill.md we did NOT write (no manifest match) is the
+                # user's own — back it up so teardown can restore it. These
+                # are generic names ("search", "maintain"); clobbering a
+                # user's skill silently is not acceptable.
+                if _sha256_text(existing) != manifest.get(skill_name):
+                    backup = dst_dir / "skill.md.pre-memory-layer"
+                    if not backup.exists():
+                        backup.write_text(existing, encoding="utf-8")
+                        print(f"Skill '{skill_name}': existing user skill backed up → {backup.name}")
 
             dst_file.write_text(src_content, encoding="utf-8")
+            manifest[skill_name] = src_sha
             installed += 1
 
+        _save_skill_manifest(skills_dst, manifest)
         if installed > 0:
             print(f"Skills installed: {installed} skill(s) → {skills_dst}")
         else:
@@ -4537,6 +4551,37 @@ def cmd_setup(args: argparse.Namespace) -> None:
     print("Setup complete. Restart Claude/Codex to apply changes.")
 
 
+_SKILL_MANIFEST_NAME = ".memory-layer-manifest.json"
+
+
+def _sha256_text(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _load_skill_manifest(skills_dst: Path) -> dict:
+    import json as _json
+
+    path = skills_dst / _SKILL_MANIFEST_NAME
+    if not path.exists():
+        return {}
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (ValueError, OSError):
+        return {}
+
+
+def _save_skill_manifest(skills_dst: Path, manifest: dict) -> None:
+    import json as _json
+
+    skills_dst.mkdir(parents=True, exist_ok=True)
+    (skills_dst / _SKILL_MANIFEST_NAME).write_text(
+        _json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+
 def cmd_teardown(args: argparse.Namespace) -> None:
     """Remove the global surface ``setup`` installed.
 
@@ -4558,9 +4603,19 @@ def cmd_teardown(args: argparse.Namespace) -> None:
         except ValueError:
             data = None
         if isinstance(data, dict) and "hybrid-search" in data.get("mcpServers", {}):
-            del data["mcpServers"]["hybrid-search"]
-            claude_json.write_text(_json.dumps(data, indent=2, ensure_ascii=False))
-            removed.append(f"MCP server registration ({claude_json})")
+            srv = data["mcpServers"]["hybrid-search"]
+            # Ownership check: only remove a registration that actually runs
+            # our server — a user's unrelated entry under the same key stays.
+            ours = isinstance(srv, dict) and (
+                "hybrid_search.server" in " ".join(str(a) for a in srv.get("args", []))
+                or "hybrid_search" in str(srv.get("command", ""))
+            )
+            if ours:
+                del data["mcpServers"]["hybrid-search"]
+                claude_json.write_text(_json.dumps(data, indent=2, ensure_ascii=False))
+                removed.append(f"MCP server registration ({claude_json})")
+            else:
+                print("Kept mcpServers['hybrid-search'] — it does not point at our server.")
 
     settings_path = Path.home() / ".claude" / "settings.json"
     if settings_path.exists():
@@ -4601,11 +4656,32 @@ def cmd_teardown(args: argparse.Namespace) -> None:
         "save-wiki", "search", "setup-hybrid-search",
     )
     import shutil as _shutil
+    manifest = _load_skill_manifest(skills_dst)
     for name in our_skills:
         skill_dir = skills_dst / name
-        if (skill_dir / "skill.md").exists():
+        skill_md = skill_dir / "skill.md"
+        if not skill_md.exists():
+            continue
+        current_sha = _sha256_text(skill_md.read_text(encoding="utf-8"))
+        # Ownership check: these are generic names — only delete content we
+        # installed (manifest SHA). A user's own "search" skill survives.
+        if manifest.get(name) != current_sha:
+            print(f"Kept skill '{name}' — content is not ours (no manifest match).")
+            continue
+        backup = skill_dir / "skill.md.pre-memory-layer"
+        if backup.exists():
+            # The user had a skill of this name before setup — restore it.
+            skill_md.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
+            backup.unlink()
+            removed.append(f"skill {name} (user's original restored)")
+        else:
             _shutil.rmtree(skill_dir)
             removed.append(f"skill {name}")
+        manifest.pop(name, None)
+    if manifest:
+        _save_skill_manifest(skills_dst, manifest)
+    else:
+        (skills_dst / _SKILL_MANIFEST_NAME).unlink(missing_ok=True)
 
     if removed:
         for item in removed:

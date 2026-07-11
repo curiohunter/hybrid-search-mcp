@@ -106,38 +106,38 @@ class TestBootstrapFastPath:
         assert "updating to new revision" in result.stdout
         import time
         for _ in range(50):
-            if not (data / ".installing").exists():
+            if not (data / ".installing.lock").exists():
                 break
             time.sleep(0.2)
 
     def test_exit_zero_while_install_in_flight(self, tmp_path: Path) -> None:
         import time
         data = tmp_path / "data"
-        data.mkdir()
-        (data / ".installing").write_text(f"0 {int(time.time())}", encoding="utf-8")
+        (data / ".installing.lock").mkdir(parents=True)
+        (data / ".installing.lock" / "owner").write_text(f"0 {int(time.time())}", encoding="utf-8")
         result = self._run(tmp_path, data)
         assert result.returncode == 0
         assert "still running" in result.stdout
-        assert (data / ".installing").exists()  # fresh lock not reclaimed
+        assert (data / ".installing.lock").exists()  # fresh lock not reclaimed
 
     def test_stale_lock_is_reclaimed_and_failure_clears_lock(self, tmp_path: Path) -> None:
         import time
         data = tmp_path / "data"
-        data.mkdir()
+        (data / ".installing.lock").mkdir(parents=True)
         # Dead PID + ancient timestamp = stale; must be reclaimed instead of
         # wedging every future session.
-        (data / ".installing").write_text("999999 1", encoding="utf-8")
+        (data / ".installing.lock" / "owner").write_text("999999 1", encoding="utf-8")
         result = self._run(tmp_path, data, broken_python=True)
         assert result.returncode == 0
         assert "install started" in result.stdout or "updating" in result.stdout
         # The spawned installer fails fast (venv creation stub) — the trap
-        # must clear .installing and NOT write revision.lock, so the next
+        # must clear the lockdir and NOT write revision.lock, so the next
         # SessionStart retries.
         for _ in range(50):
-            if not (data / ".installing").exists():
+            if not (data / ".installing.lock").exists():
                 break
             time.sleep(0.2)
-        assert not (data / ".installing").exists()
+        assert not (data / ".installing.lock").exists()
         assert not (data / "revision.lock").exists()
 
     def test_failed_install_retries_on_next_run(self, tmp_path: Path) -> None:
@@ -147,12 +147,54 @@ class TestBootstrapFastPath:
         first = self._run(tmp_path, data, broken_python=True)
         assert first.returncode == 0
         for _ in range(50):
-            if not (data / ".installing").exists():
+            if not (data / ".installing.lock").exists():
                 break
             time.sleep(0.2)
         second = self._run(tmp_path, data, broken_python=True)
         assert second.returncode == 0
         assert "install started" in second.stdout  # retried, not "still running"
+
+    def test_concurrent_bootstraps_spawn_exactly_one_installer(self, tmp_path: Path) -> None:
+        # mkdir-based acquisition: of N simultaneous SessionStarts exactly
+        # one wins the lock; check-then-write on a plain file lets several
+        # through. The python3 stub sleeps so the winner holds the lock for
+        # the whole race window.
+        import concurrent.futures
+        import time
+
+        data = tmp_path / "data"
+        data.mkdir(parents=True)
+        stubs = tmp_path / "stubs"
+        stubs.mkdir()
+        for name in ("python3", "python3.11", "python3.12"):
+            stub = stubs / name
+            stub.write_text("#!/bin/sh\nsleep 4\nexit 1\n", encoding="utf-8")
+            stub.chmod(0o755)
+        env = {
+            "CLAUDE_PLUGIN_ROOT": str(REPO),
+            "CLAUDE_PLUGIN_DATA": str(data),
+            "HOME": str(tmp_path),
+            "PATH": f"{stubs}:/usr/bin:/bin",
+        }
+
+        def run_one(_):
+            return subprocess.run(
+                ["sh", str(REPO / "scripts" / "plugin-bootstrap.sh")],
+                capture_output=True, text=True, timeout=20, env=env,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(run_one, range(8)))
+
+        assert all(r.returncode == 0 for r in results)
+        started = sum(1 for r in results if "install started" in r.stdout or "updating" in r.stdout)
+        waiting = sum(1 for r in results if "still running" in r.stdout)
+        assert started == 1, [r.stdout for r in results]
+        assert waiting == 7
+        for _ in range(60):
+            if not (data / ".installing.lock").exists():
+                break
+            time.sleep(0.2)
 
 
 class TestSetupGlobalOnly:
@@ -224,3 +266,62 @@ class TestTeardown:
         monkeypatch.setenv("HOME", str(tmp_path))
         cmd_teardown(SimpleNamespace())
         assert "Nothing to remove" in capsys.readouterr().out
+
+    def test_preexisting_user_skill_is_backed_up_and_restored(self, tmp_path: Path, monkeypatch) -> None:
+        # "search" is a generic name. If the user already had their own
+        # ~/.claude/skills/search/skill.md, setup must back it up and
+        # teardown must restore it — not delete it.
+        from hybrid_search.cli import cmd_setup, cmd_teardown
+
+        fakehome = tmp_path / "home"
+        skill_dir = fakehome / ".claude" / "skills" / "search"
+        skill_dir.mkdir(parents=True)
+        user_content = "---\nname: search\n---\nMY OWN SEARCH SKILL\n"
+        (skill_dir / "skill.md").write_text(user_content, encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(fakehome))
+
+        cmd_setup(SimpleNamespace(cwd=str(project), dry_run=False, force=False, global_only=True))
+        installed = (skill_dir / "skill.md").read_text(encoding="utf-8")
+        assert installed != user_content  # ours is active
+        assert (skill_dir / "skill.md.pre-memory-layer").exists()
+
+        cmd_teardown(SimpleNamespace())
+        assert (skill_dir / "skill.md").read_text(encoding="utf-8") == user_content
+        assert not (skill_dir / "skill.md.pre-memory-layer").exists()
+
+    def test_user_modified_skill_is_kept_on_teardown(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        # The user edited our installed skill afterwards — content no longer
+        # matches the manifest SHA, so teardown must not delete their work.
+        from hybrid_search.cli import cmd_setup, cmd_teardown
+
+        fakehome = tmp_path / "home"
+        fakehome.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(fakehome))
+        cmd_setup(SimpleNamespace(cwd=str(project), dry_run=False, force=False, global_only=True))
+
+        skill_md = fakehome / ".claude" / "skills" / "search" / "skill.md"
+        skill_md.write_text(skill_md.read_text(encoding="utf-8") + "\nUSER EDIT\n", encoding="utf-8")
+
+        cmd_teardown(SimpleNamespace())
+        assert skill_md.exists()
+        assert "USER EDIT" in skill_md.read_text(encoding="utf-8")
+        assert "Kept skill 'search'" in capsys.readouterr().out
+
+    def test_foreign_mcp_registration_is_kept(self, tmp_path: Path, monkeypatch) -> None:
+        import json as _json
+        from hybrid_search.cli import cmd_teardown
+
+        fakehome = tmp_path / "home"
+        fakehome.mkdir()
+        monkeypatch.setenv("HOME", str(fakehome))
+        (fakehome / ".claude.json").write_text(_json.dumps({
+            "mcpServers": {"hybrid-search": {"command": "someone-elses-binary", "args": []}}
+        }), encoding="utf-8")
+
+        cmd_teardown(SimpleNamespace())
+        data = _json.loads((fakehome / ".claude.json").read_text(encoding="utf-8"))
+        assert "hybrid-search" in data["mcpServers"]
