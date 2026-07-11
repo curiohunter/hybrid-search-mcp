@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "created": "2026-07-11",
+  "project": "valuein_homepage",
+  "project_path": "/Users/ian/project/claude_project/valuein_homepage",
+  "description": "Memory bench v2 cases — LongMemEval-style axes the compounding bench doesn't cover. update_cases: two qa logs on the same topic with conflicting facts (old backdated ~90d, new ~2d); the probe must surface the NEW one above the OLD one. Probes run against the full valuein index so distractor pressure is real. abstention_cases: topics verified ABSENT from valuein (grep 0 hits, 2026-07-11) — the confidence contract should answer weak, never strong. present_controls: topics verified PRESENT — weak here would mean the contract is just pessimistic.",
+  "update_cases": [
+    {
+      "id": "U1",
+      "topic": "정산 배치 시각",
+      "old": {
+        "query": "수강료 정산 배치는 언제 도나요",
+        "answer": "수강료 정산 배치는 매일 새벽 2시(KST)에 실행됩니다. cron 스케줄은 0 2 * * * 로 설정돼 있고, 실패 시 재시도는 30분 간격 3회입니다."
+      },
+      "new": {
+        "query": "정산 배치 시각 변경 확인",
+        "answer": "정산 배치 시각이 새벽 2시에서 새벽 4시(KST)로 변경됐습니다. DB 백업 윈도우와 겹치는 문제 때문이며, cron은 0 4 * * * 로 업데이트됐습니다. 이전의 새벽 2시 스케줄은 더 이상 유효하지 않습니다."
+      },
+      "probe": "수강료 정산 배치 몇시에 돌아?"
+    },
+    {
+      "id": "U2",
+      "topic": "포털 세션 만료",
+      "old": {
+        "query": "학부모 포털 세션 만료 시간이 어떻게 되나",
+        "answer": "학부모/학생 포털의 세션 만료는 24시간입니다. Supabase auth의 기본 JWT 만료를 그대로 사용합니다."
+      },
+      "new": {
+        "query": "포털 세션 만료 정책 재확인",
+        "answer": "보안 감사 후 포털 세션 만료를 24시간에서 2시간으로 단축했습니다. refresh token rotation을 켜서 활성 사용자는 끊기지 않습니다. 24시간 만료는 폐기된 정책입니다."
+      },
+      "probe": "포털 로그인 세션은 얼마나 유지돼?"
+    },
+    {
+      "id": "U3",
+      "topic": "결제 PG사",
+      "old": {
+        "query": "수강료 결제 PG는 어디를 쓰나",
+        "answer": "수강료 결제는 페이민트(paymint) 단일 PG로 처리합니다. 결제선생 연동은 검토만 하고 도입하지 않았습니다."
+      },
+      "new": {
+        "query": "결제 PG 이중화 결정",
+        "answer": "페이민트 장애 대응으로 결제선생을 보조 PG로 추가했습니다. 이제 주 PG 페이민트 + 폴백 결제선생 이중화 구성입니다. 단일 PG 구성은 과거 정보입니다."
+      },
+      "probe": "우리 결제는 어떤 PG로 처리하지?"
+    },
+    {
+      "id": "U4",
+      "topic": "출결 알림 채널",
+      "old": {
+        "query": "출결 알림은 어떤 채널로 나가나",
+        "answer": "출결 알림은 알림톡(카카오)으로만 발송됩니다. SMS 폴백은 없습니다."
+      },
+      "new": {
+        "query": "출결 알림 SMS 폴백 추가",
+        "answer": "알림톡 발송 실패 시 SMS로 폴백하도록 변경했습니다. 이제 출결 알림은 알림톡 우선 + SMS 폴백 2채널입니다. 알림톡 단일 채널이라는 답은 더 이상 맞지 않습니다."
+      },
+      "probe": "출결 알림 발송 채널 구성이 어떻게 돼?"
+    },
+    {
+      "id": "U5",
+      "topic": "테스트 러너",
+      "old": {
+        "query": "프론트 테스트는 뭘로 돌리나",
+        "answer": "프론트엔드 테스트는 Jest로 돌립니다. jsdom 환경이고 커버리지 목표는 60%입니다."
+      },
+      "new": {
+        "query": "테스트 러너 Vitest 전환",
+        "answer": "Jest에서 Vitest로 전환 완료했습니다. 실행 속도가 3배 빨라졌고 설정은 vitest.config.ts로 통합됐습니다. Jest 설정은 삭제됐습니다."
+      },
+      "probe": "지금 테스트 러너 뭐 쓰고 있어?"
+    },
+    {
+      "id": "U6",
+      "topic": "숙제 제출 저장소",
+      "old": {
+        "query": "학생 숙제 제출 파일은 어디 저장되나",
+        "answer": "숙제 제출 파일은 Supabase Storage의 homework 버킷에 저장됩니다. 최대 파일 크기는 10MB입니다."
+      },
+      "new": {
+        "query": "숙제 파일 크기 제한 상향",
+        "answer": "동영상 제출 요구로 숙제 파일 최대 크기를 10MB에서 100MB로 올렸습니다. 대용량은 resumable upload를 사용합니다. 10MB 제한은 과거 값입니다."
+      },
+      "probe": "숙제 제출 파일 크기 제한이 얼마야?"
+    }
+  ],
+  "abstention_cases": [
+    { "id": "A1", "query": "우리 GraphQL 스키마는 어떻게 구성돼 있어?", "absent_topic": "graphql" },
+    { "id": "A2", "query": "Kafka 컨슈머 그룹 설정 알려줘", "absent_topic": "kafka" },
+    { "id": "A3", "query": "Elasticsearch 인덱스 매핑이 어떻게 되지?", "absent_topic": "elasticsearch" },
+    { "id": "A4", "query": "Firebase 푸시 토큰 관리 로직 설명해줘", "absent_topic": "firebase" },
+    { "id": "A5", "query": "gRPC 서비스 정의 파일 어디 있어?", "absent_topic": "grpc" },
+    { "id": "A6", "query": "배송 추적 기능은 어떻게 구현돼 있나?", "absent_topic": "배송" },
+    { "id": "A7", "query": "쿠폰 발급과 사용 처리 흐름 정리해줘", "absent_topic": "쿠폰" },
+    { "id": "A8", "query": "포인트 적립 정책이 어떻게 되지?", "absent_topic": "포인트 적립" },
+    { "id": "A9", "query": "구독 결제 갱신 로직 설명해줘", "absent_topic": "구독 결제" }
+  ],
+  "present_controls": [
+    { "id": "P1", "query": "수강료 정산 시스템은 어떻게 구성되어 있나" },
+    { "id": "P2", "query": "학부모 학생 포털 인증 흐름 설명해줘" },
+    { "id": "P3", "query": "학생 숙제 제출 기능 어떻게 동작해?" },
+    { "id": "P4", "query": "출결 관리 기능 정리해줘" }
+  ]
+}
