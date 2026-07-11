@@ -47,38 +47,112 @@ class TestManifests:
 
 
 class TestBootstrapFastPath:
-    def test_silent_exit_zero_when_up_to_date(self, tmp_path: Path) -> None:
-        data = tmp_path / "data"
+    @staticmethod
+    def _fake_venv(data: Path) -> None:
         (data / "venv" / "bin").mkdir(parents=True)
         py = data / "venv" / "bin" / "python"
         py.write_text("#!/bin/sh\n", encoding="utf-8")
         py.chmod(0o755)
-        (data / "pyproject.lock").write_text(
-            (REPO / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8"
-        )
-        result = subprocess.run(
+
+    @staticmethod
+    def _run(tmp_path: Path, data: Path, *, root: Path = REPO, broken_python: bool = False):
+        env = {
+            "CLAUDE_PLUGIN_ROOT": str(root),
+            "CLAUDE_PLUGIN_DATA": str(data),
+            "HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin",
+        }
+        if broken_python:
+            # Fail venv creation instantly so the installer subshell dies on
+            # set -e without ever touching pip or the network — what we're
+            # testing is the lock/trap lifecycle, not pip.
+            stubs = tmp_path / "stubs"
+            stubs.mkdir(exist_ok=True)
+            for name in ("python3", "python3.11", "python3.12"):
+                stub = stubs / name
+                stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+                stub.chmod(0o755)
+            env["PATH"] = f"{stubs}:{env['PATH']}"
+        return subprocess.run(
             ["sh", str(REPO / "scripts" / "plugin-bootstrap.sh")],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env={"CLAUDE_PLUGIN_ROOT": str(REPO), "CLAUDE_PLUGIN_DATA": str(data), "HOME": str(tmp_path)},
+            capture_output=True, text=True, timeout=15, env=env,
         )
+
+    @staticmethod
+    def _repo_revision() -> str:
+        return subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+
+    def test_silent_exit_zero_when_at_current_revision(self, tmp_path: Path) -> None:
+        data = tmp_path / "data"
+        self._fake_venv(data)
+        (data / "revision.lock").write_text(self._repo_revision(), encoding="utf-8")
+        result = self._run(tmp_path, data)
         assert result.returncode == 0
         assert result.stdout == ""
 
+    def test_source_change_invalidates_lock(self, tmp_path: Path) -> None:
+        # An upgrade that changes source but not pyproject must reinstall —
+        # the lock is the commit SHA, so any stale value goes slow-path.
+        data = tmp_path / "data"
+        self._fake_venv(data)
+        (data / "revision.lock").write_text("deadbeef-stale-revision", encoding="utf-8")
+        # broken_python keeps the spawned installer from doing real pip work;
+        # the assertion is that the fast path was NOT taken.
+        result = self._run(tmp_path, data, broken_python=True)
+        assert result.returncode == 0
+        assert "updating to new revision" in result.stdout
+        import time
+        for _ in range(50):
+            if not (data / ".installing").exists():
+                break
+            time.sleep(0.2)
+
     def test_exit_zero_while_install_in_flight(self, tmp_path: Path) -> None:
+        import time
         data = tmp_path / "data"
         data.mkdir()
-        (data / ".installing").touch()
-        result = subprocess.run(
-            ["sh", str(REPO / "scripts" / "plugin-bootstrap.sh")],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env={"CLAUDE_PLUGIN_ROOT": str(REPO), "CLAUDE_PLUGIN_DATA": str(data), "HOME": str(tmp_path)},
-        )
+        (data / ".installing").write_text(f"0 {int(time.time())}", encoding="utf-8")
+        result = self._run(tmp_path, data)
         assert result.returncode == 0
-        assert "background" in result.stdout
+        assert "still running" in result.stdout
+        assert (data / ".installing").exists()  # fresh lock not reclaimed
+
+    def test_stale_lock_is_reclaimed_and_failure_clears_lock(self, tmp_path: Path) -> None:
+        import time
+        data = tmp_path / "data"
+        data.mkdir()
+        # Dead PID + ancient timestamp = stale; must be reclaimed instead of
+        # wedging every future session.
+        (data / ".installing").write_text("999999 1", encoding="utf-8")
+        result = self._run(tmp_path, data, broken_python=True)
+        assert result.returncode == 0
+        assert "install started" in result.stdout or "updating" in result.stdout
+        # The spawned installer fails fast (venv creation stub) — the trap
+        # must clear .installing and NOT write revision.lock, so the next
+        # SessionStart retries.
+        for _ in range(50):
+            if not (data / ".installing").exists():
+                break
+            time.sleep(0.2)
+        assert not (data / ".installing").exists()
+        assert not (data / "revision.lock").exists()
+
+    def test_failed_install_retries_on_next_run(self, tmp_path: Path) -> None:
+        import time
+        data = tmp_path / "data"
+        data.mkdir(parents=True)
+        first = self._run(tmp_path, data, broken_python=True)
+        assert first.returncode == 0
+        for _ in range(50):
+            if not (data / ".installing").exists():
+                break
+            time.sleep(0.2)
+        second = self._run(tmp_path, data, broken_python=True)
+        assert second.returncode == 0
+        assert "install started" in second.stdout  # retried, not "still running"
 
 
 class TestSetupGlobalOnly:
@@ -101,3 +175,52 @@ class TestSetupGlobalOnly:
         assert not (project / "CLAUDE.md").exists()
         assert not (project / ".claude").exists()
         assert not (project / ".gitignore").exists()
+
+
+class TestTeardown:
+    def test_setup_then_teardown_leaves_no_global_surface(self, tmp_path: Path, monkeypatch) -> None:
+        # Plugin uninstall runs no cleanup hooks, so `teardown` is the
+        # documented removal path — the full roundtrip must be clean.
+        from hybrid_search.cli import cmd_setup, cmd_teardown
+
+        fakehome = tmp_path / "home"
+        fakehome.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(fakehome))
+
+        cmd_setup(SimpleNamespace(cwd=str(project), dry_run=False, force=False, global_only=True))
+        # A hook the user added themselves must survive teardown.
+        settings_path = fakehome / ".claude" / "settings.json"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        settings["hooks"].setdefault("PreToolUse", []).append(
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user-hook"}]}
+        )
+        settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+        cmd_teardown(SimpleNamespace())
+
+        claude_json = json.loads((fakehome / ".claude.json").read_text(encoding="utf-8"))
+        assert "hybrid-search" not in claude_json.get("mcpServers", {})
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        remaining = [
+            str(h.get("hooks", [{}])[0].get("command", ""))
+            for entries in settings.get("hooks", {}).values()
+            if isinstance(entries, list)
+            for h in entries
+            if isinstance(h, dict)
+        ]
+        assert all("hybrid" not in c and "wiki" not in c and "qa-hook" not in c for c in remaining)
+        assert any("user-hook" in c for c in remaining)
+        skills = fakehome / ".claude" / "skills"
+        assert not any(
+            (skills / n / "skill.md").exists()
+            for n in ("search", "maintain", "rebuild-index", "save-wiki", "bootstrap-wiki", "setup-hybrid-search")
+        )
+
+    def test_teardown_on_clean_machine_is_noop(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        from hybrid_search.cli import cmd_teardown
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cmd_teardown(SimpleNamespace())
+        assert "Nothing to remove" in capsys.readouterr().out

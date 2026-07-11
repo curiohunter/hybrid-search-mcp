@@ -4537,6 +4537,85 @@ def cmd_setup(args: argparse.Namespace) -> None:
     print("Setup complete. Restart Claude/Codex to apply changes.")
 
 
+def cmd_teardown(args: argparse.Namespace) -> None:
+    """Remove the global surface ``setup`` installed.
+
+    Plugin uninstall has no cleanup lifecycle hook, so the thin-installer
+    design leaves the MCP registration, global hooks, and skills behind —
+    this command is the documented removal path. Project-local files
+    (CLAUDE.md blocks, .claude/settings.local.json, .hybrid-search/) are
+    left alone: they belong to each project and are removed per-project
+    with ``setup``'s project tooling.
+    """
+    import json as _json
+
+    removed: list[str] = []
+
+    claude_json = Path.home() / ".claude.json"
+    if claude_json.exists():
+        try:
+            data = _json.loads(claude_json.read_text())
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and "hybrid-search" in data.get("mcpServers", {}):
+            del data["mcpServers"]["hybrid-search"]
+            claude_json.write_text(_json.dumps(data, indent=2, ensure_ascii=False))
+            removed.append(f"MCP server registration ({claude_json})")
+
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if settings_path.exists():
+        try:
+            settings = _json.loads(settings_path.read_text())
+        except ValueError:
+            settings = None
+        if isinstance(settings, dict) and isinstance(settings.get("hooks"), dict):
+            # Same needles setup writes: the wiki/product hooks plus the
+            # qa-hook memory entries. Anything else is the user's.
+            needles = (
+                "hybrid-search/wiki", "STALE.md", "wiki-gaps",
+                "wiki/index.md", "hybrid_search.cli qa-hook",
+            )
+
+            def _is_ours(entry: object) -> bool:
+                if not isinstance(entry, dict):
+                    return False
+                cmds = [str(h.get("command", "")) for h in entry.get("hooks", []) if isinstance(h, dict)]
+                return any(n in c for n in needles for c in cmds)
+
+            dropped = 0
+            for event, entries in list(settings["hooks"].items()):
+                if not isinstance(entries, list):
+                    continue
+                kept = [e for e in entries if not _is_ours(e)]
+                dropped += len(entries) - len(kept)
+                settings["hooks"][event] = kept
+            if dropped:
+                settings_path.write_text(
+                    _json.dumps(settings, indent=2, ensure_ascii=False)
+                )
+                removed.append(f"{dropped} hook entr{'y' if dropped == 1 else 'ies'} ({settings_path})")
+
+    skills_dst = Path.home() / ".claude" / "skills"
+    our_skills = (
+        "bootstrap-wiki", "maintain", "rebuild-index",
+        "save-wiki", "search", "setup-hybrid-search",
+    )
+    import shutil as _shutil
+    for name in our_skills:
+        skill_dir = skills_dst / name
+        if (skill_dir / "skill.md").exists():
+            _shutil.rmtree(skill_dir)
+            removed.append(f"skill {name}")
+
+    if removed:
+        for item in removed:
+            print(f"Removed: {item}")
+        print("Teardown complete. Restart Claude Code to apply.")
+        print("Per-project files (.hybrid-search/, CLAUDE.md block) are untouched.")
+    else:
+        print("Nothing to remove — global surface not installed.")
+
+
 def _git_hooks_dir(repo_root: Path) -> Path:
     """Resolve the git hooks directory, respecting ``core.hooksPath`` (Husky compat).
 
@@ -4837,6 +4916,11 @@ def main() -> None:
         "--global-only",
         action="store_true",
         help="Register only the global surface (MCP, hooks, skills); skip project files",
+    )
+
+    sub.add_parser(
+        "teardown",
+        help="Remove the global surface setup installed (MCP, hooks, skills)",
     )
 
     p_doctor = sub.add_parser("doctor", help="Diagnose Memory Layer setup and corpus health")
@@ -5226,6 +5310,8 @@ def main() -> None:
         cmd_serve(args)
     elif args.command == "setup":
         cmd_setup(args)
+    elif args.command == "teardown":
+        cmd_teardown(args)
     elif args.command == "doctor":
         cmd_doctor(args)
     elif args.command == "maintain":

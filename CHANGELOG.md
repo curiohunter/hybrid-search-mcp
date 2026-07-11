@@ -4,6 +4,32 @@ All notable changes to hybrid-search-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.1 — release-readiness audit
+
+### Fixed
+
+- **Plugin upgrade path**: bootstrap fast-path keyed on git commit SHA
+  (content-hash fallback), not `pyproject.toml` diff — source-only
+  changes now trigger reinstall. Revision lock written only after a
+  fully successful install, so failures retry next session.
+- **Bootstrap lock hygiene**: `.installing` always clears via
+  EXIT/HUP/INT/TERM trap; stale locks (dead PID or >30 min) are
+  reclaimed instead of wedging every future session; concurrent
+  SessionStarts no longer double-install.
+- **qa ordering**: global newest-first replaced by topic-aware
+  supersession — recency reorders only same-topic Q&A groups; an old
+  exact-topic answer is no longer displaced by a fresh adjacent-topic
+  one.
+
+### Added
+
+- `teardown --global`: removes the MCP registration, hooks, and skills
+  that `setup` installed (plugin uninstall does not run cleanup hooks).
+- Bench v2: full confidence distribution on present/absent probes
+  (incl. strong_on_present), latency p50/p95, embedding-call counts,
+  and an adversarial recency case (old exact-topic vs fresh
+  adjacent-topic).
+
 ## Unreleased
 
 ### Added
