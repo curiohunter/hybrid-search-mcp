@@ -3,7 +3,7 @@
 # project (krishna1306/mcp-server-hybrid-search) — the repo, CLI command,
 # and import package keep the hybrid-search name.
 name = "memory-layer-mcp"
-version = "0.7.0"
+version = "0.7.1"
 description = "Memory Layer MCP for Claude Code — hybrid BM25 + vector search that compounds with usage (Korean ↔ English)"
 readme = "README.md"
 license = { file = "LICENSE" }
