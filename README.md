@@ -529,7 +529,7 @@ MCP wire payload counted with o200k.
 |---|---|---:|
 | **Knowledge-update** | newer answer shown before the stale one | **100 %** (6/6) |
 | | stale answer shown while newer missed (worst case) | **0 %** |
-| **Abstention** | `weak` on verified-absent topics | 78 % |
+| **Abstention** | `weak` on verified-absent topics | 89 % |
 | | `strong` on verified-absent topics (false confidence) | **0 %** |
 | | `weak` on verified-present controls (over-pessimism) | **0 %** |
 | **Tokens per answer** | MCP payload, `detail=compact` (default) | **≈ 3.4 k** |
@@ -540,8 +540,11 @@ this bench is what exposed that qa recency read filesystem mtime (which
 lies after a `git clone`) and that plain topical questions never
 surfaced memory at all. The fixes (frontmatter timestamps, an ambient
 memory lane, newest-first qa ordering, a score-preserving lexical
-rerank) are in `f139993`; the 22 % of absent-topic probes that still
-read `mixed` instead of `weak` are the current known gap.
+rerank) are in `f139993`. The one absent-topic probe (of nine) that
+still reads `mixed` instead of `weak` asks about a *combination* the
+project lacks ("구독 결제 갱신") while every individual word exists in
+the source — capping that to `weak` would require phrase-level
+reasoning, and pretending otherwise is how false precision starts.
 
 ```bash
 python benchmarks/run_memory_bench_v2.py

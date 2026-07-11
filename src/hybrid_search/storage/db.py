@@ -652,6 +652,39 @@ class StoreDB:
         row = cur.fetchone()
         return self._row_to_chunk(row) if row else None
 
+    # Memory/derived lanes are excluded on purpose: a past *question* about
+    # an absent topic echoes the topic word into qa/conv chunks, and the
+    # whole point of this probe is "has the project's own source ever seen
+    # this term". Source of truth = code + docs only.
+    _SOURCE_EXCLUDED_NODE_TYPES = (
+        "qa_log", "memory_card", "domain_term", "episodic_example",
+        "commit", "conv_turn",
+    )
+
+    def source_contains_substring(self, project_id: str, needle: str) -> bool:
+        """True when any code/doc chunk's content contains ``needle``.
+
+        Case-insensitive for ASCII (SQLite LIKE default), exact for
+        Hangul. Present terms return in ~1 ms (LIKE stops at the first
+        hit); a genuinely absent term costs one full content scan
+        (~150 ms on an 8k-chunk store) — callers should short-circuit.
+        """
+        escaped = (
+            needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        placeholders = ",".join("?" for _ in self._SOURCE_EXCLUDED_NODE_TYPES)
+        cur = self._conn.execute(
+            f"""SELECT 1 FROM chunks c JOIN files f ON f.id = c.file_id
+                WHERE c.project_id = ?
+                  AND c.node_type NOT IN ({placeholders})
+                  AND f.relative_path NOT LIKE '.hybrid-search/%'
+                  AND f.relative_path NOT LIKE '.conversations/%'
+                  AND c.content LIKE ? ESCAPE '\\'
+                LIMIT 1""",
+            (project_id, *self._SOURCE_EXCLUDED_NODE_TYPES, f"%{escaped}%"),
+        )
+        return cur.fetchone() is not None
+
     def search_chunks_by_name(
         self, name_pattern: str, project_id: str | None = None
     ) -> list[ChunkRecord]:
