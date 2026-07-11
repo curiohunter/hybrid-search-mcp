@@ -104,6 +104,8 @@ markdown, grep-able and git-able.
 | Ask a related question later | Past qa logs compete for top-10 like any chunk |
 | Say "지난번에…" or "previously…" | Memory-intent detection → 2× boost on qa logs |
 | Let time pass | 30-day half-life decay — stale answers quietly fade |
+| Ask again after the fact changed | Newest Q&A outranks the stale one — knowledge-update **100 %** on [memory bench v2](#memory-bench-v2-2026-07-11) |
+| Ask about something the project never had | Confidence contract answers `weak` and points at a fallback — never sells adjacency as an answer |
 | Paste a secret by accident | Regex filter drops sensitive queries before they touch disk |
 
 **Turn it off anytime:** `export HYBRID_SEARCH_QA_LOG=0`.
@@ -138,6 +140,11 @@ What this table says, plainly:
   backend — tried, laptop couldn't take the bulk load); pre-fetch adds
   ~400 ms per prompt; and for exact-symbol lookups plain `grep` is still
   faster — our router sends those to grep on purpose.
+- **Numbers you can re-run, not vendor slides:** stale-fact supersession
+  100 %, zero false-`strong` on absent topics, ≈ 3.4 k tokens per
+  answer — measured on a real production codebase, scripts in
+  `benchmarks/`, failures published alongside the wins (see
+  [Memory bench v2](#memory-bench-v2-2026-07-11)).
 
 **Built-in guardrails** (the parts that make automatic capture safe):
 secret-shaped queries never touch disk; files that look like credentials
@@ -506,6 +513,40 @@ python benchmarks/run_compounding_bench.py
 
 The script backs up and restores your existing qa directory around the
 experiment, so it's safe to run against a project you actively use.
+
+### Memory bench v2 (2026-07-11)
+
+The compounding bench measures *recall*. Memory products fail in three
+other ways that LongMemEval scores and most tools never report: serving a
+**stale fact** after it changed, **hallucinating confidence** on topics
+the project never had, and burning tokens per answer. Bench v2
+(`benchmarks/run_memory_bench_v2.py`) measures all three on the same
+production codebase — conflicting Q&A pairs planted 90 days apart,
+absent-topic probes verified by grep against the corpus, and the exact
+MCP wire payload counted with o200k.
+
+| Axis | Metric | Result |
+|---|---|---:|
+| **Knowledge-update** | newer answer shown before the stale one | **100 %** (6/6) |
+| | stale answer shown while newer missed (worst case) | **0 %** |
+| **Abstention** | `weak` on verified-absent topics | 78 % |
+| | `strong` on verified-absent topics (false confidence) | **0 %** |
+| | `weak` on verified-present controls (over-pessimism) | **0 %** |
+| **Tokens per answer** | MCP payload, `detail=compact` (default) | **≈ 3.4 k** |
+| | `detail=full` | ≈ 4.6 k |
+
+Honest notes: knowledge-update started at **50 %** — the first run of
+this bench is what exposed that qa recency read filesystem mtime (which
+lies after a `git clone`) and that plain topical questions never
+surfaced memory at all. The fixes (frontmatter timestamps, an ambient
+memory lane, newest-first qa ordering, a score-preserving lexical
+rerank) are in `f139993`; the 22 % of absent-topic probes that still
+read `mixed` instead of `weak` are the current known gap.
+
+```bash
+python benchmarks/run_memory_bench_v2.py
+# → benchmarks/memory_bench_v2_YYYY-MM-DD.md
+```
 
 ### Memory integrity (v0.4.0) — consolidation beyond FIFO
 
