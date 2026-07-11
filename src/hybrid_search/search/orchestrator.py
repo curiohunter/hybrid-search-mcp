@@ -309,6 +309,48 @@ def _memory_status(result: HybridResult) -> str:
     return (_frontmatter_value(result.content, "status") or "active").lower()
 
 
+# Instruction/interrogative query tokens that carry no content: their absence
+# from the result texts says nothing about whether the corpus can answer.
+_INSTRUCTION_TOKENS = {
+    "어떻게", "어디", "언제", "누가", "무엇", "뭐지", "뭐야", "왜",
+    "있나", "있어", "있지", "되지", "되나", "됐지", "인가", "인지",
+    "우리", "설명", "정리", "알려", "보여", "확인",
+    "how", "what", "where", "when", "which", "who", "why",
+    "the", "our", "your", "does", "explain", "show", "tell",
+}
+
+
+def _unanchored_terms(query: str, results: list[HybridResult]) -> list[str]:
+    """Content-bearing query tokens absent from every result text.
+
+    A token counts as anchored when its prefix (2 chars for Hangul — sheds
+    josa/verb endings like "시스템은"/"구성되어" — 4 for ASCII) appears as a
+    substring anywhere in the top results' name/path/snippet/content. A
+    non-empty return means the corpus never even brushes those words: the
+    hits are topical neighbours, not an answer (bench v2 A7 — a "쿠폰"
+    query rated *strong* on a tuition-billing doc that merely shares
+    "발급/처리/흐름").
+    """
+    from hybrid_search.memory.quality import query_tokens
+
+    tokens = [
+        t for t in query_tokens(query)
+        if t not in _INSTRUCTION_TOKENS and not t.endswith("해줘")
+    ]
+    if not tokens or not results:
+        return []
+    haystack = " ".join(
+        " ".join(p for p in (r.name, r.file_path, r.snippet, r.content) if p)
+        for r in results
+    ).casefold()
+
+    def _prefix(t: str) -> str:
+        is_hangul = any("가" <= c <= "힣" for c in t)
+        return t[:2] if is_hangul else t[:4]
+
+    return sorted(t for t in tokens if _prefix(t) not in haystack)
+
+
 def _trust_meta(
     *,
     node_type: str | None,
@@ -985,6 +1027,12 @@ class SearchOrchestrator:
         confidence = classify_confidence(
             top_score, effective_gap, thresholds, coherent=coherent
         )
+        if confidence == "strong" and _unanchored_terms(query, ranked[:10]):
+            # "strong" claims the top hit answers the query. When the query's
+            # content words never even appear (by prefix) in the top texts,
+            # the match is generic-token adjacency — never sell it as strong.
+            # Demote-only: mixed/weak results are not upgraded or touched.
+            confidence = "mixed"
         if confidence == "weak" and _has_quality_anchor(query, results, top_score, thresholds):
             confidence = "mixed"
         # Cosine anchor: RRF-based weak with a semantic match above the

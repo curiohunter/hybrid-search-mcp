@@ -82,7 +82,9 @@ class TestAuthorityGating:
                 node_type="function",
                 start_line=1,
                 end_line=2,
-                content="",
+                # A genuinely strong hit contains the query's content words —
+                # empty text would now (correctly) demote strong to mixed.
+                content="search entrypoint: how work is routed",
                 snippet="",
             ),
             HybridResult(

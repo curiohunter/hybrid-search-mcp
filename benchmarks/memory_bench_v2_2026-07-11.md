@@ -25,7 +25,7 @@
 | metric | value | target |
 |---|---:|---|
 | weak_on_absent_rate | 77.78% | high (correct refusal) |
-| strong_on_absent_rate | 11.11% | 0% (false confidence) |
+| strong_on_absent_rate | 0.00% | 0% (false confidence) |
 | weak_on_present_rate | 0.00% | low (not just pessimistic) |
 
 | id | absent query | confidence |
@@ -36,7 +36,7 @@
 | A4 | Firebase 푸시 토큰 관리 로직 설명해줘 | weak |
 | A5 | gRPC 서비스 정의 파일 어디 있어? | weak |
 | A6 | 배송 추적 기능은 어떻게 구현돼 있나? | weak |
-| A7 | 쿠폰 발급과 사용 처리 흐름 정리해줘 | strong |
+| A7 | 쿠폰 발급과 사용 처리 흐름 정리해줘 | mixed |
 | A8 | 포인트 적립 정책이 어떻게 되지? | weak |
 | A9 | 구독 결제 갱신 로직 설명해줘 | mixed |
 
@@ -44,7 +44,7 @@
 
 | detail | mean | median |
 |---|---:|---:|
-| compact (default) | 3447 | 3365 |
-| full | 4565 | 4471 |
+| compact (default) | 3448 | 3371 |
+| full | 4565 | 4469 |
 
 compact/full ratio: **0.76** — progressive disclosure saving.
