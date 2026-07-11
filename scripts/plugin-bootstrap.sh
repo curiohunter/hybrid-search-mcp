@@ -70,9 +70,15 @@ acquire_lock() {
         # lockdir's own mtime, NOT default to epoch: computing "age = now"
         # here made every concurrent loser judge a brand-new lock stale,
         # rm -rf it, and re-acquire (5 installers on one CI runner).
-        lock_ts=$(stat -f %m "$LOCKDIR" 2>/dev/null || stat -c %Y "$LOCKDIR" 2>/dev/null)
+        # GNU first: on Linux, BSD-style `stat -f %m` is the FILESYSTEM
+        # report and prints the mount point with exit 0 — the fallback
+        # chain would never run and lock_ts would be a path, not a number.
+        lock_ts=$(stat -c %Y "$LOCKDIR" 2>/dev/null) \
+            || lock_ts=$(stat -f %m "$LOCKDIR" 2>/dev/null)
     fi
-    [ -n "$lock_ts" ] || return 1
+    case "$lock_ts" in
+        ""|*[!0-9]*) return 1 ;;  # unreadable/non-numeric → treat as fresh
+    esac
     now_ts=$(date +%s)
     age=$(( now_ts - lock_ts ))
     # Within a 120 s grace window the lock is trusted unconditionally (the

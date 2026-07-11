@@ -1200,15 +1200,18 @@ class SearchOrchestrator:
             top_score, effective_gap, thresholds, coherent=coherent
         )
         unanchored = _unanchored_terms(query, ranked[:10])
-        if unanchored and _cross_language_mismatch(unanchored, ranked[:10]):
-            # Korean query, Hangul-free sources: literal absence is not
-            # evidence of anything — neither demotion may fire.
-            unanchored = []
+        cross_language = bool(unanchored) and _cross_language_mismatch(
+            unanchored, ranked[:10]
+        )
         if confidence == "strong" and unanchored:
             # "strong" claims the top hit answers the query. When the query's
             # content words never even appear (by prefix) in the top texts,
             # the match is generic-token adjacency — never sell it as strong.
             # Demote-only: mixed/weak results are not upgraded or touched.
+            # Applies EVEN on cross-language hits: a KO→EN vector match may
+            # be right, but without literal grounding it earns mixed, not
+            # strong — promoting those needs a calibrated bilingual cosine
+            # bar, not an exemption.
             confidence = "mixed"
         if confidence == "weak" and _has_quality_anchor(query, results, top_score, thresholds):
             confidence = "mixed"
@@ -1236,11 +1239,16 @@ class SearchOrchestrator:
         # Skipped on memory-intent queries: history questions are answered
         # from Q&A/commits/conversations — content the source-only probe
         # deliberately can't see, so "absent from code" proves nothing.
+        # Skipped on cross-language queries (Korean terms, Hangul-free
+        # sources): a correct KO→EN vector match leaves no literal trace,
+        # so absence must not force weak — but only THIS cap is skipped;
+        # the strong demotion above still applies.
         if (
             confidence != "weak"
             and unanchored
             and corpus_lacks is not None
             and not memory_intent
+            and not cross_language
         ):
             if corpus_lacks(unanchored) is not None:
                 confidence = "weak"

@@ -4624,11 +4624,15 @@ def cmd_teardown(args: argparse.Namespace) -> None:
         except ValueError:
             settings = None
         if isinstance(settings, dict) and isinstance(settings.get("hooks"), dict):
-            # Same needles setup writes: the wiki/product hooks plus the
-            # qa-hook memory entries. Anything else is the user's.
+            # Ownership needles are the DISTINCTIVE substrings of the exact
+            # commands setup writes — full `.hybrid-search/...` paths and the
+            # module invocation — never bare filenames: a user's own hook
+            # that happens to `cat docs/STALE.md` must survive teardown.
             needles = (
-                "hybrid-search/wiki", "STALE.md", "wiki-gaps",
-                "wiki/index.md", "hybrid_search.cli qa-hook",
+                ".hybrid-search/wiki",
+                ".hybrid-search/wiki-gaps",
+                "hybrid_search.cli qa-hook",
+                "hybrid_search.cli reindex",
             )
 
             def _is_ours(entry: object) -> bool:
@@ -4655,7 +4659,6 @@ def cmd_teardown(args: argparse.Namespace) -> None:
         "bootstrap-wiki", "maintain", "rebuild-index",
         "save-wiki", "search", "setup-hybrid-search",
     )
-    import shutil as _shutil
     manifest = _load_skill_manifest(skills_dst)
     for name in our_skills:
         skill_dir = skills_dst / name
@@ -4675,7 +4678,13 @@ def cmd_teardown(args: argparse.Namespace) -> None:
             backup.unlink()
             removed.append(f"skill {name} (user's original restored)")
         else:
-            _shutil.rmtree(skill_dir)
+            # Delete only the file we own; the directory goes only when
+            # empty — anything else the user parked next to skill.md stays.
+            skill_md.unlink()
+            try:
+                skill_dir.rmdir()
+            except OSError:
+                print(f"Kept directory of skill '{name}' — it holds files we did not install.")
             removed.append(f"skill {name}")
         manifest.pop(name, None)
     if manifest:

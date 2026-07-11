@@ -114,6 +114,41 @@ class TestCorpusAbsentCap:
         assert resp.confidence == "mixed"
         assert calls == []  # the probe wasn't even consulted
 
+    def test_korean_query_on_english_source_never_reads_strong(self) -> None:
+        # The cross-language exemption skips ONLY the weak cap. A raw-strong
+        # score (top 0.03 ≥ 0.02, different-file gap 0.01 ≥ 0.001 in the
+        # mock thresholds) on Hangul-free sources still lacks literal
+        # grounding — it must demote to mixed, or an absent Korean topic
+        # over an English codebase could sail through as strong.
+        from tests.test_orchestrator import _make_orchestrator
+        from hybrid_search.search.orchestrator import HybridResult
+
+        orch = _make_orchestrator({})
+        hits = [
+            HybridResult(
+                chunk_id="a", rrf_score=0.03, bm25_rank=1, vector_rank=1,
+                file_path="src/oauth.ts", project="test", name="oauth",
+                qualified_name="a", node_type="function", start_line=1, end_line=2,
+                content="oauth billing subscription handler", snippet="",
+            ),
+            HybridResult(
+                chunk_id="b", rrf_score=0.02, bm25_rank=2, vector_rank=2,
+                file_path="src/billing.ts", project="test", name="billing",
+                qualified_name="b", node_type="function", start_line=1, end_line=2,
+                content="billing renewal charge", snippet="",
+            ),
+        ]
+        resp = orch._make_response(
+            query="쿠폰 발급 정책 정리해줘",
+            results=hits,
+            query_type="KOREAN_NL",
+            effective_bm25_weight=0.15,
+            query_time_ms=1.0,
+            total_chunks_searched=10,
+            corpus_lacks=lambda terms: None,
+        )
+        assert resp.confidence == "mixed"
+
     def test_history_query_answered_by_commit_only_is_not_forced_weak(self) -> None:
         # Memory-intent queries are answered from Q&A/commits/conversations —
         # exactly the lanes the source-only probe excludes, so "absent from

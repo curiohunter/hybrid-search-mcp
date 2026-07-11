@@ -12,5 +12,6 @@
   "repository": "https://github.com/curiohunter/hybrid-search-mcp",
   "license": "MIT",
   "keywords": ["memory", "search", "rag", "hybrid-search", "knowledge", "genesis", "commit-history"],
-  "hooks": "./hooks/hooks.json"
+  "hooks": "./hooks/hooks.json",
+  "commands": ["./commands/teardown.md"]
 }

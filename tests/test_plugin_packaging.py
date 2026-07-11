@@ -120,6 +120,19 @@ class TestBootstrapFastPath:
         assert "still running" in result.stdout
         assert (data / ".installing.lock").exists()  # fresh lock not reclaimed
 
+    def test_fresh_unstamped_lockdir_is_treated_as_in_flight(self, tmp_path: Path) -> None:
+        # The exact window the CI race lived in: lockdir exists, owner file
+        # not written yet. Age must come from the lockdir's own mtime (GNU
+        # stat -c first — BSD-style `stat -f %m` on Linux prints the
+        # FILESYSTEM report with exit 0, poisoning the arithmetic), so a
+        # brand-new unstamped lock reads as in-flight, never as stale.
+        data = tmp_path / "data"
+        (data / ".installing.lock").mkdir(parents=True)  # no owner file
+        result = self._run(tmp_path, data)
+        assert result.returncode == 0
+        assert "still running" in result.stdout
+        assert (data / ".installing.lock").exists()
+
     def test_stale_lock_is_reclaimed_and_failure_clears_lock(self, tmp_path: Path) -> None:
         import time
         data = tmp_path / "data"
@@ -310,6 +323,61 @@ class TestTeardown:
         assert skill_md.exists()
         assert "USER EDIT" in skill_md.read_text(encoding="utf-8")
         assert "Kept skill 'search'" in capsys.readouterr().out
+
+    def test_user_hook_mentioning_stale_md_survives_teardown(self, tmp_path: Path, monkeypatch) -> None:
+        # Ownership must key on OUR distinctive command substrings
+        # (.hybrid-search/... paths, module invocations) — a user's own hook
+        # that happens to reference a file named STALE.md is not ours.
+        from hybrid_search.cli import cmd_setup, cmd_teardown
+
+        fakehome = tmp_path / "home"
+        fakehome.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(fakehome))
+        cmd_setup(SimpleNamespace(cwd=str(project), dry_run=False, force=False, global_only=True))
+
+        settings_path = fakehome / ".claude" / "settings.json"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        user_hook = {
+            "matcher": "Edit",
+            "hooks": [{"type": "command", "command": 'cat "$PROJECT/docs/STALE.md"'}],
+        }
+        settings["hooks"].setdefault("PreToolUse", []).append(user_hook)
+        settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+        cmd_teardown(SimpleNamespace())
+
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        commands = [
+            str(h.get("hooks", [{}])[0].get("command", ""))
+            for entries in settings.get("hooks", {}).values()
+            if isinstance(entries, list)
+            for h in entries
+            if isinstance(h, dict)
+        ]
+        assert any('docs/STALE.md' in c for c in commands)
+        assert all(".hybrid-search/wiki" not in c and "qa-hook" not in c for c in commands)
+
+    def test_user_files_inside_skill_dir_survive_teardown(self, tmp_path: Path, monkeypatch) -> None:
+        # We own skill.md, not the directory: notes the user parked next to
+        # it must survive, and only the skill.md we installed goes away.
+        from hybrid_search.cli import cmd_setup, cmd_teardown
+
+        fakehome = tmp_path / "home"
+        fakehome.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(fakehome))
+        cmd_setup(SimpleNamespace(cwd=str(project), dry_run=False, force=False, global_only=True))
+
+        skill_dir = fakehome / ".claude" / "skills" / "search"
+        (skill_dir / "my-notes.md").write_text("keep me", encoding="utf-8")
+
+        cmd_teardown(SimpleNamespace())
+
+        assert not (skill_dir / "skill.md").exists()
+        assert (skill_dir / "my-notes.md").read_text(encoding="utf-8") == "keep me"
 
     def test_foreign_mcp_registration_is_kept(self, tmp_path: Path, monkeypatch) -> None:
         import json as _json

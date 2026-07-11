@@ -106,7 +106,7 @@ markdown, grep-able and git-able.
 | Let time pass | 30-day half-life decay — stale answers quietly fade |
 | Ask again after the fact changed | Same-topic supersession: the newest answer takes the earlier slot — **6/6** synthetic update cases on [memory bench v2](#memory-bench-v2-2026-07-11) |
 | Ask about something the project never had | Confidence contract refuses instead of bluffing — 0 `strong` on nine verified-absent probes (8 `weak`, 1 `mixed`) |
-| Uninstall | `hybrid-search-mcp teardown` removes the MCP registration, hooks, and skills |
+| Uninstall | pip installs: `hybrid-search-mcp teardown`. Plugin installs: `/memory-layer:teardown` (the CLI lives in the plugin's own venv, not on PATH), then `/plugin uninstall memory-layer@curiohunter` |
 | Paste a secret by accident | Regex filter drops sensitive queries before they touch disk |
 
 **Turn it off anytime:** `export HYBRID_SEARCH_QA_LOG=0`.
