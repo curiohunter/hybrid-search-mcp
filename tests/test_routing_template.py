@@ -162,3 +162,11 @@ def test_plan_version_mismatch() -> None:
         "<!-- END hybrid-search-mcp routing v2 -->"
     )
     assert plan_update(existing, claude_block()).status == "version_mismatch"
+
+
+def test_routing_body_covers_deferred_tool_recovery() -> None:
+    # Tool Search (default-on since 2026-01) can defer the MCP tool schema in
+    # tool-heavy environments; the routing block must tell the agent how to
+    # load it instead of drifting to Grep.
+    assert "ToolSearch" in ROUTING_BODY
+    assert "select:mcp__hybrid-search__hybrid_search" in ROUTING_BODY
