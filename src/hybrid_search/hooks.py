@@ -131,25 +131,6 @@ def _format_pretooluse_context(term: str, hits: list) -> str:
     return "\n".join(lines)
 
 
-def _format_session_start_context(indexes: list) -> str:
-    """Summarize the 20 most recent qa logs for one-time session injection."""
-    if not indexes:
-        return ""
-    lines = [
-        f"[hybrid-search memory] You have {len(indexes)} recent past Q&A in this project.",
-        "Before running Grep/Read for information you might have asked about,",
-        "call `mcp__hybrid-search__hybrid_search` — it searches past Q&A alongside code/docs.",
-        "Recent topics:",
-    ]
-    for idx in indexes[:20]:
-        ts = idx.timestamp.date().isoformat() if idx.timestamp else "?"
-        q = (idx.query or "").strip()
-        if len(q) > 80:
-            q = q[:77] + "…"
-        lines.append(f"- {ts} — {q}")
-    return "\n".join(lines)
-
-
 def _resolve_project_root(event: dict) -> Path | None:
     """Pick the project root from the hook event's ``cwd``. None if missing."""
     from hybrid_search.memory import hook_runtime

@@ -61,6 +61,8 @@ def test_codex_hook_session_start_injects_recent_memory(tmp_path: Path) -> None:
     assert "past turns available" in ctx
     assert "parseConfig" in ctx
     assert len(ctx) <= 360
+    # ToolSearch is a Claude Code facility; the codex context must not mention it.
+    assert "ToolSearch" not in ctx
 
 
 def test_codex_hook_session_start_skips_clear_source(tmp_path: Path) -> None:
