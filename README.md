@@ -104,7 +104,7 @@ markdown, grep-able and git-able.
 | Ask a related question later | Past qa logs compete for top-10 like any chunk |
 | Say "지난번에…" or "previously…" | Memory-intent detection → 2× boost on qa logs |
 | Let time pass | 30-day half-life decay — stale answers quietly fade |
-| Ask again after the fact changed | Same-topic supersession: the newest answer takes the earlier slot — **6/6** synthetic update cases on [memory bench v2](#memory-bench-v2-2026-07-11) |
+| Ask again after the fact changed | Same-topic supersession: the newest answer takes the earlier slot — **6/6** on the Korean dev set AND **6/6** synthetic (incl. Korean→English probes) on an untouched English OSS holdout ([memory bench v2](#memory-bench-v2-2026-07-11)) |
 | Ask about something the project never had | Confidence contract refuses instead of bluffing — 0 `strong` on nine verified-absent probes (8 `weak`, 1 `mixed`) |
 | Uninstall | pip installs: `hybrid-search-mcp teardown`. Plugin installs: `/memory-layer:teardown` (the CLI lives in the plugin's own venv, not on PATH), then `/plugin uninstall memory-layer@curiohunter` |
 | Paste a secret by accident | Regex filter drops sensitive queries before they touch disk |
@@ -142,8 +142,10 @@ What this table says, plainly:
   ~400 ms per prompt; and for exact-symbol lookups plain `grep` is still
   faster — our router sends those to grep on purpose.
 - **Numbers you can re-run, not vendor slides:** stale-fact supersession
-  6/6, zero false-`strong` on nine verified-absent probes, ≈ 3.4 k
-  tokens per answer — one production codebase, synthetic update cases,
+  6/6 on the Korean dev set and 6/6 synthetic on an untouched English
+  OSS holdout (ripgrep, single run, published as-is — real-history cases
+  3/5 with the misses diagnosed), zero false-`strong` across 27
+  verified-absent probes on three codebases, ≈ 3 k tokens per answer —
   scripts in `benchmarks/`, failures published alongside the wins (see
   [Memory bench v2](#memory-bench-v2-2026-07-11)).
 
@@ -566,6 +568,31 @@ strict; that trade-off is visible above instead of averaged away.
 python benchmarks/run_memory_bench_v2.py
 # → benchmarks/memory_bench_v2_YYYY-MM-DD.md
 ```
+
+#### Language generality — dev sets vs untouched holdout (2026-07-13)
+
+The numbers above come from a **Korean development set** (valuein). The
+first English holdout (encode/httpx) caught the supersession topic
+matcher over-fit to Korean token statistics — knowledge-update collapsed
+to 1/6 — and that diagnosis burned httpx into a second dev set. After
+the language-general rewrite (`qa_topics.py`: English stemming,
+identifier preservation, weighted overlap, complete-link grouping,
+calibrated on `benchmarks/topic_gold_set.json`), a **fresh untouched
+holdout** was run once on BurntSushi/ripgrep (different org, different
+domain, cases authored after freeze, published as-is):
+
+| set | role | knowledge-update | adversarial | abstention false-strong |
+|---|---|---:|---:|---:|
+| valuein (KO) | dev | 6/6 | 3/3 | 0/9 |
+| httpx (EN) | burned dev | 1/6 → **6/6** | 1/3 → 2/3 | 0/9 |
+| ripgrep (EN) | **holdout** | synthetic **6/6** (incl. 2 KO→EN probes) · real-history 3/5 | 2/3 | 0/9 (incl. 2 KO probes) |
+
+Honest notes from the holdout (`memory_bench_v2_ripgrep_holdout_*.md`):
+one real stale-fact failure remains (R1 — probe wording matches the
+obsolete answer verbatim and the correction gets crowded out of top-10
+by real corpus hits: a qa-lane *exposure* gap, not grouping); Korean
+probes over English memories can miss retrieval entirely (ADV3). Both
+are documented follow-ups, untouched after the holdout run by rule.
 
 ### Memory integrity (v0.4.0) — consolidation beyond FIFO
 
