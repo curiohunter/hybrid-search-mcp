@@ -32,6 +32,9 @@ dependencies = [
     "tree-sitter-sql>=0.3",
     "tiktoken>=0.7",
     "pathspec>=0.12",
+    # Verified English stemmer for language-general qa topic matching
+    # (pure Python, no transitive deps). Korean keeps its prefix rules.
+    "snowballstemmer>=2.2",
 ]
 
 [project.urls]
