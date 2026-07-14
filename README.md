@@ -143,8 +143,8 @@ What this table says, plainly:
   faster — our router sends those to grep on purpose.
 - **Numbers you can re-run, not vendor slides:** stale-fact supersession
   6/6 on the Korean dev set and 6/6 synthetic on an untouched English
-  OSS holdout (ripgrep, single run, published as-is — real-history cases
-  3/5 with the misses diagnosed), zero false-`strong` across 27
+  OSS holdout (ripgrep, single run, published as-is — CHANGELOG-derived
+  planted cases 3/5 with the misses diagnosed), zero false-`strong` across 27
   verified-absent probes on three codebases, ≈ 3 k tokens per answer —
   scripts in `benchmarks/`, failures published alongside the wins (see
   [Memory bench v2](#memory-bench-v2-2026-07-11)).
@@ -585,7 +585,14 @@ domain, cases authored after freeze, published as-is):
 |---|---|---:|---:|---:|
 | valuein (KO) | dev | 6/6 | 3/3 | 0/9 |
 | httpx (EN) | burned dev | 1/6 → **6/6** | 1/3 → 2/3 | 0/9 |
-| ripgrep (EN) | **holdout** | synthetic **6/6** (incl. 2 KO→EN probes) · real-history 3/5 | 2/3 | 0/9 (incl. 2 KO probes) |
+| ripgrep (EN) | **holdout** | synthetic **6/6** (incl. 2 KO→EN probes) · CHANGELOG-derived planted 3/5 | 2/3 | 0/9 (incl. 2 KO probes) |
+
+A precision note on the KO→EN probes: they prove the *end-to-end* flow —
+a Korean question retrieving English Q&A memories whose English old/new
+pair then groups and supersedes. Grouping a Korean Q&A *with* an English
+Q&A is a different capability, exercised by the mixed-language slice of
+`topic_gold_set.json` (7/8, two pure cross-language pairs disclosed as
+known limitations).
 
 Honest notes from the holdout (`memory_bench_v2_ripgrep_holdout_*.md`):
 one real stale-fact failure remains (R1 — probe wording matches the

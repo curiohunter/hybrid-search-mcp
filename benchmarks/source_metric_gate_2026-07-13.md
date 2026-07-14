@@ -1,4 +1,13 @@
-# Source-metric gate — 2026-07-13 (language-general supersession PR)
+# Source-metric gate — 2026-07-13 (SUPERSEDED — see 2026-07-14)
+
+> **Correction (2026-07-14):** this document compared against the
+> previous day's artifact rather than a same-day clean base, and the
+> "every metric is identical" claim only covered the five gate metrics —
+> recall@10 in fact moved (+1.7–2.2pp, an improvement). The runs also
+> executed with a then-uncommitted vector.py fix in the working tree
+> (now commit `fe0f9a2`). The valid gate is
+> `source_metric_gate_2026-07-14.md`: a same-day clean-tree A/B that
+> confirms PASS and attributes every delta. Kept for the audit trail.
 
 Baseline: main head `ae26c94` values (source_metric_gate_2026-07-12.md
 head column, corpus valuein_homepage @ `d65e4fa`, 20 pairs).

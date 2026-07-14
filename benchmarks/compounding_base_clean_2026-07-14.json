@@ -25,7 +25,7 @@
         "primary_hit_rate": 0.6,
         "primary_top1": 0.35,
         "primary_top5": 0.6,
-        "recall_at_10_mean": 0.45,
+        "recall_at_10_mean": 0.43333333333333335,
         "mrr_mean": 0.4033333333333333,
         "qa_hit_rate": 0.55,
         "qa_top1_rate": 0.3,
@@ -51,7 +51,7 @@
         "primary_hit_rate": 0.5333333333333333,
         "primary_top1": 0.3333333333333333,
         "primary_top5": 0.5333333333333333,
-        "recall_at_10_mean": 0.3333333333333333,
+        "recall_at_10_mean": 0.3111111111111111,
         "mrr_mean": 0.3377777777777778,
         "qa_hit_rate": 0.4666666666666667,
         "qa_top1_rate": 0.2,
@@ -105,7 +105,7 @@
         "primary_hit_rate": 0.65,
         "primary_top1": 0.35,
         "primary_top5": 0.65,
-        "recall_at_10_mean": 0.5,
+        "recall_at_10_mean": 0.48333333333333334,
         "mrr_mean": 0.46166666666666667,
         "qa_hit_rate": 0.5,
         "qa_top1_rate": 0.35,
@@ -330,7 +330,7 @@
         "top_paths": [
           "services/campaign/index.ts",
           "docs/archive/withdrawal-operations-agent.md",
-          ".hybrid-search/qa/2026/07/14-093834-6695f1bd.md",
+          ".hybrid-search/qa/2026/07/14-093658-6695f1bd.md",
           "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
           "archive/portal-v2/detail/ConsultationDetail.tsx"
         ]
@@ -368,7 +368,7 @@
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093834-6695f1bd.md",
+          ".hybrid-search/qa/2026/07/14-093658-6695f1bd.md",
           "docs/archive/withdrawal-operations-agent.md",
           "services/campaign/index.ts",
           "docs/plans/_archive/agent-system-plan.md",
@@ -415,7 +415,7 @@
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093834-252e44a6.md",
+          ".hybrid-search/qa/2026/07/14-093659-252e44a6.md",
           "hooks/use-remote-room.ts",
           "components/remote-room/create-room-dialog.tsx",
           ".git-history/commits",
@@ -458,7 +458,7 @@
           "docs/dbdocs/tables/18-remote-room/remote_rooms.md",
           "hooks/use-remote-room.ts",
           "docs/features/2026-04-08-learning-remote-room.md",
-          ".hybrid-search/qa/2026/07/14-093834-252e44a6.md",
+          ".hybrid-search/qa/2026/07/14-093659-252e44a6.md",
           "components/remote-room/create-room-dialog.tsx"
         ]
       }
@@ -669,18 +669,18 @@
         "category": "exploration",
         "primary_hit_rank": 1,
         "any_hit_rank": 1,
-        "recall_at_10": 0.6666666666666666,
+        "recall_at_10": 0.3333333333333333,
         "answer_found": true,
-        "qa_primary_rank": 5,
+        "qa_primary_rank": 3,
         "mrr": 1.0,
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
           "database/migrations/create_academy_monthly_stats.sql",
           "docs/features/2026-04-08-learning-homework-analysis.md",
-          ".hybrid-search/qa/2026/07/14-093835-f40e30fc.md",
+          ".hybrid-search/qa/2026/07/14-093700-60e91ecf.md",
           "docs/dbdocs/database-functions.md",
-          ".hybrid-search/qa/2026/07/14-093836-60e91ecf.md"
+          "docs/dbdocs/tables/06-analytics/academy_monthly_stats.md"
         ]
       },
       "cold_identity": {
@@ -709,18 +709,18 @@
         "category": "exploration",
         "primary_hit_rank": 1,
         "any_hit_rank": 1,
-        "recall_at_10": 0.6666666666666666,
+        "recall_at_10": 0.3333333333333333,
         "answer_found": true,
-        "qa_primary_rank": 5,
+        "qa_primary_rank": 3,
         "mrr": 1.0,
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
           "database/migrations/create_academy_monthly_stats.sql",
           "docs/valueinmath_docs/인사/260107_인사_엄해미-인사평가-2025.md",
-          ".hybrid-search/qa/2026/07/14-093835-f40e30fc.md",
+          ".hybrid-search/qa/2026/07/14-093700-60e91ecf.md",
           "docs/valueinmath_docs/운영/260108_운영_2026년_연간계획서작성_기초분석.md",
-          ".hybrid-search/qa/2026/07/14-093836-60e91ecf.md"
+          "docs/dbdocs/tables/06-analytics/academy_monthly_stats.md"
         ]
       }
     },
@@ -937,7 +937,7 @@
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093838-cfc9ae74.md",
+          ".hybrid-search/qa/2026/07/14-093702-cfc9ae74.md",
           "docs/valueinmath_docs/학습/_tools/README.md",
           "docs/valueinmath_docs/학습/variant-data/problems.json",
           "docs/valueinmath_docs/학습/_tools/validate_problems.py",
@@ -977,7 +977,7 @@
         "qa_hit_count": 0,
         "qa_top1": false,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093838-cfc9ae74.md",
+          ".hybrid-search/qa/2026/07/14-093702-cfc9ae74.md",
           "docs/plans/2026-04-15-variant-problems-plan.md",
           "supabase/functions/mathflat-daily-work-problems/index.ts",
           "docs/valueinmath_docs/학습/variant-data/problems.json",
@@ -1026,7 +1026,7 @@
         "top_paths": [
           "docs/features/tuition-ledger.md",
           "harness/app/dashboard/pages/students.md",
-          ".hybrid-search/qa/2026/07/14-093838-e7e72f8d.md",
+          ".hybrid-search/qa/2026/07/14-093702-e7e72f8d.md",
           "app/(dashboard)/students/tuition-history/[id]/_hooks/use-fee-detail.ts",
           "services/textbook-service.ts"
         ]
@@ -1111,7 +1111,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093839-4b9ba6b9.md",
+          ".hybrid-search/qa/2026/07/14-093703-4b9ba6b9.md",
           "database/migrations/20260327_create_admission_results.sql",
           ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
           "services/admission-service.ts",
@@ -1151,7 +1151,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093839-4b9ba6b9.md",
+          ".hybrid-search/qa/2026/07/14-093703-4b9ba6b9.md",
           "database/migrations/20260327_create_admission_results.sql",
           ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
           "docs/features/2026-04-08-learning-attendance.md",
@@ -1200,7 +1200,7 @@
         "top_paths": [
           "app/(auth)/pending-approval/logout-button.tsx",
           "harness/app/auth/rules.md",
-          ".hybrid-search/qa/2026/07/14-093839-17dcc18b.md",
+          ".hybrid-search/qa/2026/07/14-093703-17dcc18b.md",
           "app/(auth)/pending-approval/pending-approval-client.tsx",
           ".hybrid-search/memory/cards/2026/04/28-035746-2819af91.md"
         ]
@@ -1240,7 +1240,7 @@
         "top_paths": [
           "app/(auth)/pending-approval/logout-button.tsx",
           "harness/app/auth/rules.md",
-          ".hybrid-search/qa/2026/07/14-093839-17dcc18b.md",
+          ".hybrid-search/qa/2026/07/14-093703-17dcc18b.md",
           ".hybrid-search/memory/cards/2026/04/28-035746-5f7fbb82.md",
           "app/(auth)/pending-approval/pending-approval-client.tsx"
         ]
@@ -1286,7 +1286,7 @@
         "qa_top1": false,
         "top_paths": [
           "database/migrations/create_academy_monthly_stats.sql",
-          ".hybrid-search/qa/2026/07/14-093840-e28423ea.md",
+          ".hybrid-search/qa/2026/07/14-093704-e28423ea.md",
           "app/actions/analytics-snapshot.ts",
           "services/analytics/monthly-analytics.ts",
           "components/analytics/_hooks/use-operation-stats.ts"
@@ -1326,7 +1326,7 @@
         "qa_top1": false,
         "top_paths": [
           "database/migrations/create_academy_monthly_stats.sql",
-          ".hybrid-search/qa/2026/07/14-093840-e28423ea.md",
+          ".hybrid-search/qa/2026/07/14-093704-e28423ea.md",
           "app/actions/analytics-snapshot.ts",
           "services/analytics/monthly-analytics.ts",
           "components/analytics/_hooks/use-operation-stats.ts"
@@ -1372,7 +1372,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093840-ab93fd31.md",
+          ".hybrid-search/qa/2026/07/14-093705-ab93fd31.md",
           "database/migrations/20251022_standardize_rls_policies.sql",
           ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
           "docs/archive/saas확장위한변경이력추적마이그레이션.md",
@@ -1412,7 +1412,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093840-ab93fd31.md",
+          ".hybrid-search/qa/2026/07/14-093705-ab93fd31.md",
           "database/migrations/20251022_standardize_rls_policies.sql",
           ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
           "docs/archive/saas확장위한변경이력추적마이그레이션.md",
@@ -1459,7 +1459,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093841-4c44bbd5.md",
+          ".hybrid-search/qa/2026/07/14-093705-4c44bbd5.md",
           "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
           ".hybrid-search/memory/cards/2026/04/28-035746-c3cfb20c.md",
           ".git-history/commits",
@@ -1498,7 +1498,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093841-4c44bbd5.md",
+          ".hybrid-search/qa/2026/07/14-093705-4c44bbd5.md",
           "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
           ".hybrid-search/memory/cards/2026/04/28-035746-c3cfb20c.md",
           ".git-history/commits",
@@ -1545,7 +1545,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093842-b19e6281.md",
+          ".hybrid-search/qa/2026/07/14-093705-b19e6281.md",
           ".git-history/commits",
           ".hybrid-search/memory/cards/2026/04/28-035746-7ff3c39b.md",
           "docs/features/ledger-writepath.md",
@@ -1585,7 +1585,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093842-b19e6281.md",
+          ".hybrid-search/qa/2026/07/14-093705-b19e6281.md",
           ".git-history/commits",
           ".hybrid-search/memory/cards/2026/04/28-035746-7ff3c39b.md",
           "docs/features/ledger-writepath.md",
@@ -1670,7 +1670,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093842-85b04f38.md",
+          ".hybrid-search/qa/2026/07/14-093706-85b04f38.md",
           "docs/plans/2026-04-01-tuition-create-page.md",
           ".hybrid-search/memory/cards/2026/04/28-035746-2819af91.md",
           ".git-history/commits",
@@ -1716,7 +1716,7 @@
         "qa_hit_count": 1,
         "qa_top1": true,
         "top_paths": [
-          ".hybrid-search/qa/2026/07/14-093843-33aa319a.md",
+          ".hybrid-search/qa/2026/07/14-093707-33aa319a.md",
           "harness/app/dashboard/pages/marketing.md",
           ".hybrid-search/memory/cards/2026/04/28-035746-7ff3c39b.md",
           "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
@@ -1758,7 +1758,7 @@
         "top_paths": [
           "harness/app/dashboard/pages/marketing.md",
           "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
-          ".hybrid-search/qa/2026/07/14-093843-33aa319a.md",
+          ".hybrid-search/qa/2026/07/14-093707-33aa319a.md",
           "components/marketing/content-studio/hooks/use-content-posts.ts",
           "docs/features/2026-04-08-ai-blog-content.md"
         ]

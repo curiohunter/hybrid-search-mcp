@@ -1,43 +1,9 @@
-# Memory bench v2 — ripgrep (FRESH HOLDOUT, single run, published as-is)
+# Memory bench v2 — ripgrep
 
-- Date: 2026-07-13, head `ab8505e` (language-general supersession, frozen
-  before case authoring; no code or threshold changes after this run)
-- Corpus: BurntSushi/ripgrep @ `d5b85d44` — different org and domain than
-  the burned httpx dev set. 500 commits + CHANGELOG indexed.
-- Cases: U1–U6 synthetic team-decisions (probes U5/U6 in KOREAN → EN
-  corpus), R1–R5 planted pairs whose facts come from REAL changes verified in CHANGELOG/git history
-  (deprecated flag swaps, hyperlink introduction, MSRV bump, empty -vf
-  semantics). Treat rates as case counts, not population estimates.
-
-## Holdout verdict
-
-- Synthetic update: **6/6 newer-first**, including both KO→EN probes —
-  the language-general matcher generalizes to an unseen English corpus
-  and to cross-language probes.
-- CHANGELOG-derived planted update cases: **3/5** (facts taken from real
-  CHANGELOG changes, but the old/new Q&A pairs are planted synthetics).
-  R1 is the one true stale-fact failure
-  (stale_only): the probe phrasing matches the OBSOLETE answer verbatim
-  (old qa at #1) while the correction gets crowded out of top-10 by real
-  corpus hits — a qa-lane exposure gap, not a grouping error. R5 is a
-  benign double-miss: both planted qa lose to the real CHANGELOG chunk,
-  which itself states the current behavior.
-- Adversarial: 2/3. ADV3 (Korean probe) never retrieved the exact
-  English qa at all (cross-language retrieval gap). No false grouping
-  was observed, but both_found was 0/3 — this slice never actually
-  exercised the grouping decision, so it is evidence of absence of
-  grouping errors only in the weak sense.
-- Abstention: absent 9/9 weak incl. 2 Korean probes, present 4/4 mixed
-  incl. 1 Korean — zero false-strong, fully language-general.
-- Clean-tree reproduction (2026-07-14, after the vector.py fix landed
-  as `fe0f9a2` so the head SHA fully describes the executed code):
-  `memory_bench_v2_ripgrep_cleanrepro_2026-07-14.*` — every update and
-  adversarial row identical down to individual ranks; absent 9/9 weak
-  identical; one borderline flip (present P4, the Korean probe,
-  mixed → weak on embedding nondeterminism).
-- Follow-ups (NOT fixed in this cycle, by holdout rule): qa-lane
-  exposure under corpus crowding (R1), cross-language qa retrieval for
-  KO probes over EN memories (ADV3).
+- Date: 2026-07-14
+- Scope: ONE production codebase; update/adversarial cases are synthetic
+  and hand-authored (n=11 / n=3) — treat rates as case counts,
+  not population estimates.
 - Axes: knowledge-update (11), adversarial recency (3), abstention (9 absent + 4 present), tokens, latency
 
 ## Knowledge-update (stale fact superseded by newer qa log)
@@ -84,7 +50,7 @@ the matrix is what keeps the claim honest.
 | probes | strong | mixed | weak |
 |---|---:|---:|---:|
 | verified-absent (n=9) | 0 | 0 | 9 |
-| verified-present (n=4) | 0 | 4 | 0 |
+| verified-present (n=4) | 0 | 3 | 1 |
 
 | id | absent query | confidence |
 |---|---|---|
@@ -102,15 +68,15 @@ the matrix is what keeps the claim honest.
 
 | metric | value |
 |---|---:|
-| end-to-end search latency p50 | 346 ms |
-| end-to-end search latency p95 | 436 ms |
+| end-to-end search latency p50 | 420 ms |
+| end-to-end search latency p95 | 521 ms |
 | expected embedding API calls (derived, whole run) | 54 (1 per search; compact+full = 2/case) |
 
 ## Tokens per answer (MCP wire payload, o200k_base)
 
 | detail | mean | median |
 |---|---:|---:|
-| compact (default) | 2778 | 3044 |
-| full | 4461 | 4383 |
+| compact (default) | 2798 | 2927 |
+| full | 4558 | 4387 |
 
-compact/full ratio: **0.62** — progressive disclosure saving.
+compact/full ratio: **0.61** — progressive disclosure saving.

@@ -4,6 +4,44 @@ All notable changes to hybrid-search-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.2 — language-general topic-aware supersession
+
+### Fixed
+
+- **English supersession**: the topic matcher was calibrated on Korean
+  token statistics (the Hangul 2-char prefix doubled as a stemmer), so
+  same-topic English Q&A pairs failed to group — knowledge-update
+  collapsed to 1/6 on the first English OSS holdout (encode/httpx).
+  New `qa_topics` module: English Snowball stemming, code-identifier
+  preservation (`max_connections`, `SSLContext`, `http2` at 3× weight
+  plus split parts), mixed-script token handling ("cron이" → `cron`),
+  weighted overlap with generic-token downweighting, a hard ≥2
+  distinctive-shared-tokens requirement, and an answer-driven path for
+  cross-language pairs. httpx: 1/6 → 6/6; Korean dev set unchanged
+  (6/6, 3/3); source-ranking metrics unchanged.
+- **Bridge-topic chaining**: qa topic grouping switched from union-find
+  to complete-link — A≈B and B≈C can no longer pull A and C into one
+  group and let recency reorder across topics.
+- **Vector index stability** (materializes a fix applied to deployments
+  on 2026-06-28 but missed in git): pin USearch scalar kind to f32 —
+  the default BF16 routes cosine through a NEON kernel that SIGBUSes on
+  Apple Silicon (Python 3.14) — and serialize index mutation/search
+  through a lock. Existing indexes must be f32 (dtype persists on
+  disk); rebuilt deployments already are.
+
+### Added
+
+- `benchmarks/topic_gold_set.json` — 84-entry bilingual gold set
+  (ko/en/mixed × same/adjacent/bridge) with per-language recall floors
+  enforced in CI (`tests/test_qa_topics.py`); calibration sweep in
+  `benchmarks/topic_gold_eval.py` under a zero-false-group constraint.
+- Fresh untouched holdout run (BurntSushi/ripgrep, single run,
+  published as-is): synthetic update 6/6 incl. Korean→English probes;
+  CHANGELOG-derived planted update cases 3/5; abstention 0 false-strong
+  across three codebases. Known follow-ups documented: qa-lane exposure
+  under corpus crowding, cross-language qa retrieval.
+- New runtime dependency: `snowballstemmer` (pure Python).
+
 ## 0.7.1 — release-readiness audit
 
 ### Fixed

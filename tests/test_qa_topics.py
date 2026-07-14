@@ -177,11 +177,19 @@ class TestTopicGroupIndices:
 
 
 class TestGoldSetGate:
-    """The full gold set is the regression contract for the matcher."""
+    """The full gold set is the regression contract for the matcher.
+
+    Same-topic recall is floored PER LANGUAGE (matching
+    benchmarks/topic_gold_eval.py) — an aggregate floor would let an
+    English regression hide behind Korean/mixed passes, which is exactly
+    the language-generality failure this PR exists to prevent.
+    """
+
+    SAME_FLOOR = {"ko": 0.90, "en": 0.85, "mixed": 0.85}
 
     def test_gold_set_gate_passes(self) -> None:
         pairs = json.loads(GOLD.read_text())["pairs"]
-        same_pass = same_total = 0
+        same: dict[str, list[int]] = {}
         for p in pairs:
             if p.get("known_limitation"):
                 continue
@@ -195,7 +203,12 @@ class TestGoldSetGate:
                 got = same_topic(_pair(**p["a"]), _pair(**p["b"]))
                 assert not got, f"{p['id']}: adjacent pair falsely grouped"
             else:
-                same_total += 1
-                same_pass += same_topic(_pair(**p["a"]), _pair(**p["b"]))
-        # Recall floor; NOT 100% — the matcher is conservative by design.
-        assert same_pass / same_total >= 0.90, f"same recall {same_pass}/{same_total}"
+                bucket = same.setdefault(p["lang"], [0, 0])
+                bucket[1] += 1
+                bucket[0] += same_topic(_pair(**p["a"]), _pair(**p["b"]))
+        # Per-language recall floors; NOT 100% — conservative by design.
+        for lang, floor in self.SAME_FLOOR.items():
+            passed, total = same[lang]
+            assert passed / total >= floor, (
+                f"{lang}/same recall {passed}/{total} below floor {floor:.0%}"
+            )
