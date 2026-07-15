@@ -1,0 +1,325 @@
+{
+  "date": "2026-07-14",
+  "project": "httpx",
+  "aggregate": {
+    "update": {
+      "n": 6,
+      "newer_found_rate": 1.0,
+      "newer_first_rate": 0.16666666666666666,
+      "stale_only_rate": 0.0
+    },
+    "adversarial": {
+      "n": 3,
+      "exact_first_rate": 0.3333333333333333,
+      "exact_found": 3,
+      "both_found": 3,
+      "exact_first_given_both": 1,
+      "adjacent_not_retrieved": 0
+    },
+    "abstention": {
+      "n_absent": 9,
+      "n_present": 4,
+      "confidence_matrix": {
+        "absent": {
+          "strong": 0,
+          "mixed": 0,
+          "weak": 9
+        },
+        "present": {
+          "strong": 0,
+          "mixed": 4,
+          "weak": 0
+        }
+      },
+      "weak_on_absent_rate": 1.0,
+      "strong_on_absent_rate": 0.0,
+      "weak_on_present_rate": 0.0,
+      "strong_on_present_rate": 0.0
+    },
+    "latency": {
+      "n_queries": 22,
+      "p50_ms": 345.6942909397185,
+      "p95_ms": 408.88158325105906,
+      "expected_embedding_calls": 44
+    },
+    "tokens_per_answer": {
+      "compact_mean": 2730.681818181818,
+      "compact_median": 2576.0,
+      "full_mean": 5191.045454545455,
+      "full_median": 4249.0,
+      "compact_vs_full_ratio": 0.5260369692564993
+    }
+  },
+  "update_rows": [
+    {
+      "id": "U1",
+      "topic": "default request timeout",
+      "old_rank": 2,
+      "new_rank": 5,
+      "newer_found": true,
+      "newer_first": false,
+      "stale_only": false,
+      "confidence": "strong",
+      "query_time_ms": 320.34920901060104,
+      "compact_tokens": 3370,
+      "full_tokens": 4058,
+      "top_paths": [
+        "httpx/_transports/default.py",
+        ".hybrid-search/qa/2026/04/15-093741-25b91d98.md",
+        "CHANGELOG.md",
+        "httpx/_config.py",
+        ".hybrid-search/qa/2026/07/12-093741-bdbd7a2a.md"
+      ]
+    },
+    {
+      "id": "U2",
+      "topic": "connection pool limits",
+      "old_rank": 5,
+      "new_rank": 2,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "mixed",
+      "query_time_ms": 408.88158325105906,
+      "compact_tokens": 2485,
+      "full_tokens": 4019,
+      "top_paths": [
+        "docs/advanced/resource-limits.md",
+        ".hybrid-search/qa/2026/07/12-093741-c5770d4b.md",
+        "tests/test_multipart.py",
+        "docs/advanced/timeouts.md",
+        ".hybrid-search/qa/2026/04/15-093741-84fc97c0.md"
+      ]
+    },
+    {
+      "id": "U3",
+      "topic": "transport retries",
+      "old_rank": 4,
+      "new_rank": 5,
+      "newer_found": true,
+      "newer_first": false,
+      "stale_only": false,
+      "confidence": "mixed",
+      "query_time_ms": 206.06091665104032,
+      "compact_tokens": 3100,
+      "full_tokens": 3727,
+      "top_paths": [
+        "httpx/_transports/base.py",
+        "docs/advanced/transports.md",
+        "httpx/_urls.py",
+        ".hybrid-search/qa/2026/04/15-093741-1f964318.md",
+        ".hybrid-search/qa/2026/07/12-093741-42a09c11.md"
+      ]
+    },
+    {
+      "id": "U4",
+      "topic": "HTTP/2 support",
+      "old_rank": 2,
+      "new_rank": 5,
+      "newer_found": true,
+      "newer_first": false,
+      "stale_only": false,
+      "confidence": "strong",
+      "query_time_ms": 350.0275001861155,
+      "compact_tokens": 3633,
+      "full_tokens": 4635,
+      "top_paths": [
+        "tests/client/test_client.py",
+        ".hybrid-search/qa/2026/04/15-093741-48dbe722.md",
+        "httpx/_client.py",
+        "docs/http2.md",
+        ".hybrid-search/qa/2026/07/12-093741-ad2da576.md"
+      ]
+    },
+    {
+      "id": "U5",
+      "topic": "outbound proxy",
+      "old_rank": 2,
+      "new_rank": 4,
+      "newer_found": true,
+      "newer_first": false,
+      "stale_only": false,
+      "confidence": "strong",
+      "query_time_ms": 338.92112458124757,
+      "compact_tokens": 2850,
+      "full_tokens": 4278,
+      "top_paths": [
+        "tests/test_multipart.py",
+        ".hybrid-search/qa/2026/04/15-093741-d4f96db4.md",
+        "httpx/_utils.py",
+        ".hybrid-search/qa/2026/07/12-093741-877171bc.md",
+        "docs/advanced/proxies.md"
+      ]
+    },
+    {
+      "id": "U6",
+      "topic": "TLS verification in staging",
+      "old_rank": 2,
+      "new_rank": 4,
+      "newer_found": true,
+      "newer_first": false,
+      "stale_only": false,
+      "confidence": "strong",
+      "query_time_ms": 386.0021661967039,
+      "compact_tokens": 2872,
+      "full_tokens": 3718,
+      "top_paths": [
+        "tests/test_multipart.py",
+        ".hybrid-search/qa/2026/04/15-093741-122afed5.md",
+        "docs/advanced/ssl.md",
+        ".hybrid-search/qa/2026/07/12-093741-c5270cc7.md",
+        "docs/advanced/extensions.md"
+      ]
+    }
+  ],
+  "adversarial_rows": [
+    {
+      "id": "ADV1",
+      "exact_rank": 5,
+      "adjacent_rank": 2,
+      "exact_first": false,
+      "query_time_ms": 400.2632908523083,
+      "compact_tokens": 3721,
+      "full_tokens": 4220
+    },
+    {
+      "id": "ADV2",
+      "exact_rank": 2,
+      "adjacent_rank": 4,
+      "exact_first": true,
+      "query_time_ms": 359.4681671820581,
+      "compact_tokens": 3362,
+      "full_tokens": 5015
+    },
+    {
+      "id": "ADV3",
+      "exact_rank": 6,
+      "adjacent_rank": 5,
+      "exact_first": false,
+      "query_time_ms": 322.47212529182434,
+      "compact_tokens": 3023,
+      "full_tokens": 5668
+    }
+  ],
+  "absent_rows": [
+    {
+      "id": "A1",
+      "query": "How does the Kafka consumer group handle rebalancing?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 391.6237079538405,
+      "compact_tokens": 2358,
+      "full_tokens": 6928
+    },
+    {
+      "id": "A2",
+      "query": "Where is the GraphQL schema defined?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 356.330709066242,
+      "compact_tokens": 2553,
+      "full_tokens": 10623
+    },
+    {
+      "id": "A3",
+      "query": "Which gRPC services does the gateway expose?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 335.8527501113713,
+      "compact_tokens": 2248,
+      "full_tokens": 4130
+    },
+    {
+      "id": "A4",
+      "query": "How are Celery background tasks scheduled?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 340.18887486308813,
+      "compact_tokens": 2324,
+      "full_tokens": 5528
+    },
+    {
+      "id": "A5",
+      "query": "What Kubernetes resources does the deployment create?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 463.5390001349151,
+      "compact_tokens": 2291,
+      "full_tokens": 7093
+    },
+    {
+      "id": "A6",
+      "query": "Where is the rate limiting middleware implemented?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 368.24108427390456,
+      "compact_tokens": 2537,
+      "full_tokens": 3170
+    },
+    {
+      "id": "A7",
+      "query": "How does cursor-based pagination work in the list endpoints?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 324.41787514835596,
+      "compact_tokens": 2250,
+      "full_tokens": 7831
+    },
+    {
+      "id": "A8",
+      "query": "Where are JWT tokens validated?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 307.4292908422649,
+      "compact_tokens": 2326,
+      "full_tokens": 8699
+    },
+    {
+      "id": "A9",
+      "query": "Which SQLAlchemy models define the billing tables?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 319.73899994045496,
+      "compact_tokens": 2235,
+      "full_tokens": 3616
+    }
+  ],
+  "present_rows": [
+    {
+      "id": "P1",
+      "query": "How do I set a timeout on requests?",
+      "confidence": "mixed",
+      "result_count": 10,
+      "query_time_ms": 222.47437527403235,
+      "compact_tokens": 2599,
+      "full_tokens": 3663
+    },
+    {
+      "id": "P2",
+      "query": "How does connection pooling work?",
+      "confidence": "mixed",
+      "result_count": 10,
+      "query_time_ms": 345.6942909397185,
+      "compact_tokens": 2403,
+      "full_tokens": 3713
+    },
+    {
+      "id": "P3",
+      "query": "How do I stream a large response body?",
+      "confidence": "mixed",
+      "result_count": 10,
+      "query_time_ms": 364.9655831977725,
+      "compact_tokens": 2936,
+      "full_tokens": 6061
+    },
+    {
+      "id": "P4",
+      "query": "How do I send requests through a proxy?",
+      "confidence": "mixed",
+      "result_count": 10,
+      "query_time_ms": 367.6706668920815,
+      "compact_tokens": 2599,
+      "full_tokens": 3810
+    }
+  ]
+}

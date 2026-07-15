@@ -33,7 +33,7 @@ from hybrid_search.index.scanner import (
 )
 from hybrid_search.project import ProjectRegistry, project_hash
 from hybrid_search.search.bm25 import BM25Engine
-from hybrid_search.search.vector import VectorEngine
+from hybrid_search.search.vector import VectorEngine, VectorMigrationError
 from hybrid_search.storage.db import ChunkRecord, FileRecord, StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
 
@@ -140,6 +140,21 @@ class IndexingPipeline:
                     on_progress=on_progress,
                     update_registry_stats=True,
                 )
+        except VectorMigrationError as e:
+            logger.warning(
+                "Vector dtype migration failed (%s). Rebuilding the project "
+                "atomically in a fresh directory.", e,
+            )
+            result = self._rebuild_project_atomically(
+                abs_path=abs_path,
+                project_name=name,
+                project_id=pid,
+                project_dir=project_dir,
+                on_progress=on_progress,
+            )
+            result.errors.insert(
+                0, "Auto-rebuild triggered: vector dtype migration failed"
+            )
         except _ConsistencyMismatchError as mismatch:
             logger.warning(
                 "Consistency mismatch: SQLite=%d, Tantivy=%d, USearch=%d. "
@@ -191,6 +206,15 @@ class IndexingPipeline:
         result = IndexingResult(project_id=project_id, project_name=project_name)
 
         try:
+            if vector_engine.migration_failed:
+                # The engine is holding an empty index over a full on-disk
+                # one; an incremental pass would persist partial state.
+                # Bail out BEFORE touching SQLite/BM25 — the caller routes
+                # this to a full atomic rebuild in a fresh directory.
+                raise VectorMigrationError(
+                    "vector index dtype migration failed — incremental "
+                    "indexing refused, full rebuild required"
+                )
             if changed_paths is not None:
                 scan = scan_project_subset(
                     abs_path,

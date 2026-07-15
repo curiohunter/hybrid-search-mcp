@@ -29,6 +29,7 @@ from hybrid_search.search.in_flight import (
     merge_in_flight_results,
     score_in_flight_files,
 )
+from hybrid_search.search import qa_topics
 from hybrid_search.search.modules_search import search_modules
 from hybrid_search.search.rerank import lexical_rerank
 from hybrid_search.search.snippet import make_snippet
@@ -600,66 +601,36 @@ def _merge_memory_results(
     return body[:insert_at] + head + body[insert_at:]
 
 
-# Same-topic thresholds, measured on the bench v2 planted pairs vs
-# adversarial adjacent-topic pairs (2026-07-11): update pairs score
-# query≥0.40 AND answer≥0.33; adjacent pairs score answer≤0.09 even when
-# their query overlap hits 0.40 on generic nouns ("학생/파일"). Both
-# signals are required because questions share vocabulary cheaply but
-# *answers carry the facts* — same-topic answers share domain terms
-# (파일 크기/10MB), adjacent-topic answers don't. Without an answer
-# excerpt on both sides the query bar rises instead. Conservative on
-# purpose: wrongly grouping lets a fresh adjacent-topic answer displace
-# an old exact-topic one (the worse failure); missing a group merely
-# keeps relevance order, which is the default contract anyway.
-_QA_TOPIC_QUERY_OVERLAP = 0.4
-_QA_TOPIC_ANSWER_OVERLAP = 0.2
-_QA_TOPIC_QUERY_ONLY_OVERLAP = 0.6
+# Topic matching lives in qa_topics: language-aware normalization
+# (Korean josa prefix, English stemming, identifier preservation),
+# weighted overlap, and a distinctive-shared-token requirement. The
+# 2026-07-13 httpx EN holdout showed the previous raw-overlap matcher
+# was calibrated on Korean token statistics; thresholds are now derived
+# from benchmarks/topic_gold_set.json (ko/en/mixed).
 
 
-def _normalized_tokens(text: str) -> set[str]:
-    """Content-bearing tokens, josa-normalized (Hangul → 2-char prefix).
-
-    Pure-digit tokens are dropped: they're timestamps/line numbers, and a
-    shared "045318" must never count as topical overlap.
-    """
-    from hybrid_search.memory.quality import query_tokens
-
-    return {
-        (t[:2] if any("가" <= c <= "힣" for c in t) else t)
-        for t in query_tokens(text)
-        if t not in _INSTRUCTION_TOKENS
-        and not t.endswith("해줘")
-        and not t.isdigit()
-    }
-
-
-def _qa_topic_tokens(r: HybridResult) -> tuple[set[str], set[str]]:
+def _qa_topic_tokens(r: HybridResult) -> tuple[dict[str, float], dict[str, float]]:
     """(question tokens, answer-excerpt tokens) for topic comparison."""
     # The frontmatter query is the question; r.name is the qa FILE STEM
     # ("12-045318-f4f257fb") — hash fragments there dilute the overlap
     # denominator, so the name is only a fallback when frontmatter is gone.
-    question = _normalized_tokens(
+    question = qa_topics.topic_tokens(
         _frontmatter_value(r.content, "query") or r.name or ""
     )
-    answer: set[str] = set()
+    answer: dict[str, float] = {}
     content = r.content or ""
     if "## Answer excerpt" in content:
         excerpt = content.split("## Answer excerpt", 1)[1]
         excerpt = excerpt.split("## Top results", 1)[0]
-        answer = _normalized_tokens(excerpt)
+        answer = qa_topics.topic_tokens(excerpt)
     return question, answer
 
 
-def _same_qa_topic(a: tuple[set[str], set[str]], b: tuple[set[str], set[str]]) -> bool:
-    def _overlap(x: set[str], y: set[str]) -> float:
-        if not x or not y:
-            return 0.0
-        return len(x & y) / min(len(x), len(y))
-
-    q_ov = _overlap(a[0], b[0])
-    if a[1] and b[1]:
-        return q_ov >= _QA_TOPIC_QUERY_OVERLAP and _overlap(a[1], b[1]) >= _QA_TOPIC_ANSWER_OVERLAP
-    return q_ov >= _QA_TOPIC_QUERY_ONLY_OVERLAP
+def _same_qa_topic(
+    a: tuple[dict[str, float], dict[str, float]],
+    b: tuple[dict[str, float], dict[str, float]],
+) -> bool:
+    return qa_topics.same_topic(a, b)
 
 
 def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
@@ -696,27 +667,19 @@ def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
 
 
 def _qa_topic_groups(qa: list[HybridResult]) -> list[list[HybridResult]]:
-    """Partition qa_log results into same-topic groups (union-find)."""
+    """Partition qa_log results into same-topic groups (complete-link).
+
+    Complete-link, not union-find: A≈B and B≈C must not chain A and C
+    into one group when A≉C — a bridge Q&A sharing vocabulary with two
+    distinct topics would otherwise let recency reorder across topics.
+    """
     if not qa:
         return []
     toks = [_qa_topic_tokens(r) for r in qa]
-    parent = list(range(len(qa)))
-
-    def _find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for a in range(len(qa)):
-        for b in range(a + 1, len(qa)):
-            if _same_qa_topic(toks[a], toks[b]):
-                parent[_find(a)] = _find(b)
-
-    groups: dict[int, list[HybridResult]] = {}
-    for i, r in enumerate(qa):
-        groups.setdefault(_find(i), []).append(r)
-    return list(groups.values())
+    return [
+        [qa[i] for i in group]
+        for group in qa_topics.topic_group_indices(toks)
+    ]
 
 
 def _merge_conv_results(
