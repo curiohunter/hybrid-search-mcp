@@ -277,6 +277,15 @@ def aggregate(update_rows, absent_rows, present_rows, adversarial_rows) -> dict:
     }
 
 
+def _given_both(adv: dict) -> str:
+    """exact-first among cases where BOTH docs were retrieved. With zero
+    both-found cases the grouping decision was never exercised — say so
+    instead of printing a fabricated 0/1 denominator."""
+    if adv["both_found"] == 0:
+        return f"N/A (both found 0/{adv['n']} — grouping competition not exercised)"
+    return f"{adv['exact_first_given_both']}/{adv['both_found']}"
+
+
 def format_markdown(report: dict) -> str:
     agg = report["aggregate"]
     u, a, t = agg["update"], agg["abstention"], agg["tokens_per_answer"]
@@ -318,7 +327,7 @@ def format_markdown(report: dict) -> str:
         "",
         f"exact_first: **{sum(1 for r in report['adversarial_rows'] if r['exact_first'])}/{adv['n']}** — decomposed: "
         f"exact found {adv['exact_found']}/{adv['n']}, both found {adv['both_found']}/{adv['n']}, "
-        f"exact first given both {adv['exact_first_given_both']}/{max(1, adv['both_found'])}, "
+        f"exact first given both {_given_both(adv)}, "
         f"adjacent not retrieved {adv['adjacent_not_retrieved']}/{adv['n']}",
         "",
         "| id | exact (old) rank | adjacent (fresh) rank | exact first |",
@@ -467,7 +476,7 @@ def main() -> None:
         )
         lat = agg["latency"]
         print(f"latency (e2e): p50 {lat['p50_ms']:.0f}ms p95 {lat['p95_ms']:.0f}ms, expected embedding calls {lat['expected_embedding_calls']}")
-        print(f"adversarial decomposed: both_found {adv['both_found']}/{adv['n']}, exact_first_given_both {adv['exact_first_given_both']}/{max(1, adv['both_found'])}")
+        print(f"adversarial decomposed: both_found {adv['both_found']}/{adv['n']}, exact_first_given_both {_given_both(adv)}")
         t = agg["tokens_per_answer"]
         print(f"tokens/answer: compact {t['compact_mean']:.0f} vs full {t['full_mean']:.0f} (ratio {t['compact_vs_full_ratio']:.2f})")
     finally:
