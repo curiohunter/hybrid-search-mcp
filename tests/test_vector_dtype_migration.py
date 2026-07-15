@@ -3,10 +3,16 @@
 USearch persists the scalar kind in the index file header and load()
 adopts it, discarding the constructor dtype — so pinning F32 in code
 does NOT fix existing 0.7.1 (BF16) indexes on disk. VectorEngine._load
-must rewrite the file (atomic, no re-embedding) before serving it.
+must rewrite the file (atomic, no re-embedding) before serving it, and
+a FAILED migration must block every write: the process holds an empty
+in-memory index over a full on-disk one, so an incremental add + save
+would replace the complete index with a partial one.
 """
 
 from __future__ import annotations
+
+import logging
+import threading
 
 import numpy as np
 import pytest
@@ -17,6 +23,7 @@ from hybrid_search.search.vector import (
     HNSW_M,
     INDEX_DTYPE,
     VectorEngine,
+    VectorMigrationError,
 )
 
 DIM = 8
@@ -28,32 +35,42 @@ def _rand_vectors(n: int) -> np.ndarray:
     return vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
 
 
-def _write_bf16_index(index_dir, vectors: np.ndarray) -> list[str]:
-    """Materialize a 0.7.1-style on-disk index: BF16 (the pre-fix
-    usearch default) plus the key_mapping.npz VectorEngine expects."""
+def _write_bf16_index(index_dir, vectors: np.ndarray, extra_keys: int = 0) -> list[str]:
+    """Materialize a 0.7.1-style on-disk index: BF16 (explicit — some CPUs
+    would auto-pick a different default) plus the key_mapping.npz
+    VectorEngine expects. ``extra_keys`` appends mapping entries with no
+    backing vector, simulating a mapping/index disagreement."""
     index_dir.mkdir(parents=True, exist_ok=True)
     old = Index(
         ndim=DIM,
         metric=MetricKind.Cos,
+        dtype=ScalarKind.BF16,
         connectivity=HNSW_M,
         expansion_add=HNSW_EF_CONSTRUCTION,
     )
-    assert old.dtype == ScalarKind.BF16  # the bug's precondition
-    chunk_ids = [f"chunk-{i}" for i in range(len(vectors))]
+    n = len(vectors)
+    chunk_ids = [f"chunk-{i}" for i in range(n + extra_keys)]
     for i, v in enumerate(vectors):
         old.add(i, v)
     old.save(str(index_dir / "vectors.usearch"))
     np.savez(
         str(index_dir / "key_mapping.npz"),
-        keys=np.arange(len(vectors), dtype=np.int64),
+        keys=np.arange(n + extra_keys, dtype=np.int64),
         ids=np.array(chunk_ids, dtype=object),
-        next_key=np.array([len(vectors)]),
+        next_key=np.array([n + extra_keys]),
     )
     return chunk_ids
 
 
 def _disk_scalar_kind(index_dir):
     return Index.metadata(str(index_dir / "vectors.usearch"))["kind_scalar"]
+
+
+def _disk_bytes(index_dir) -> tuple[bytes, bytes]:
+    return (
+        (index_dir / "vectors.usearch").read_bytes(),
+        (index_dir / "key_mapping.npz").read_bytes(),
+    )
 
 
 class TestNewIndexUsesF32:
@@ -87,11 +104,10 @@ class TestBf16Migration:
 
         eng = VectorEngine(tmp_path / "vec", DIM)  # triggers migration in _load
 
+        assert not eng.migration_failed
         assert eng.count == len(chunk_ids)
         assert eng._index.dtype == ScalarKind.F32
         assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.F32
-        # Every original vector survives (BF16 → F32 widening is lossless
-        # relative to the BF16 file, so self-query must return itself).
         for i, cid in enumerate(chunk_ids):
             top = eng.search(vecs[i], limit=1)
             assert top and top[0].chunk_id == cid
@@ -99,7 +115,6 @@ class TestBf16Migration:
     def test_second_startup_does_not_migrate_again(self, tmp_path, caplog) -> None:
         _write_bf16_index(tmp_path / "vec", _rand_vectors(3))
         VectorEngine(tmp_path / "vec", DIM)  # migrates
-        import logging
 
         with caplog.at_level(logging.INFO, logger="hybrid_search.search.vector"):
             VectorEngine(tmp_path / "vec", DIM)
@@ -116,6 +131,70 @@ class TestBf16Migration:
         VectorEngine(tmp_path / "vec", DIM)
         assert (tmp_path / "vec" / "vectors.usearch").stat().st_mtime_ns == mtime
 
+    def test_no_leftover_temp_files_after_migration(self, tmp_path) -> None:
+        _write_bf16_index(tmp_path / "vec", _rand_vectors(3))
+        VectorEngine(tmp_path / "vec", DIM)
+        leftovers = list((tmp_path / "vec").glob("*.migrating*"))
+        assert leftovers == []
+
+
+class TestMigrationValidation:
+    def test_missing_mapped_key_fails_migration(self, tmp_path) -> None:
+        # A mapping key with no backing vector = mapping/index
+        # disagreement. "Lossless" means fail, not skip-and-shrink.
+        _write_bf16_index(tmp_path / "vec", _rand_vectors(5), extra_keys=2)
+        before = _disk_bytes(tmp_path / "vec")
+
+        eng = VectorEngine(tmp_path / "vec", DIM)
+
+        assert eng.migration_failed
+        assert _disk_bytes(tmp_path / "vec") == before
+        assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.BF16
+
+
+class TestFailedMigrationBlocksWrites:
+    def _failed_engine(self, tmp_path, monkeypatch) -> VectorEngine:
+        _write_bf16_index(tmp_path / "vec", _rand_vectors(5))
+
+        def boom(self, path):
+            raise OSError("simulated crash during migration save")
+
+        monkeypatch.setattr(Index, "save", boom)
+        eng = VectorEngine(tmp_path / "vec", DIM)
+        monkeypatch.undo()
+        assert eng.migration_failed
+        return eng
+
+    def test_failed_migration_cannot_overwrite_after_new_vectors_are_added(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The round-3 review scenario: migration fails, an incremental
+        # reindex adds vectors for a few changed files, then save() —
+        # which would replace the FULL on-disk index with a partial one.
+        # Every write must raise instead.
+        eng = self._failed_engine(tmp_path, monkeypatch)
+        before = _disk_bytes(tmp_path / "vec")
+        vec = _rand_vectors(1)[0]
+
+        with pytest.raises(VectorMigrationError):
+            eng.add("new-chunk", vec)
+        with pytest.raises(VectorMigrationError):
+            eng.add_batch(["new-chunk"], vec.reshape(1, -1))
+        with pytest.raises(VectorMigrationError):
+            eng.remove("chunk-0")
+        with pytest.raises(VectorMigrationError):
+            eng.remove_batch(["chunk-0"])
+        with pytest.raises(VectorMigrationError):
+            eng.save()
+
+        assert _disk_bytes(tmp_path / "vec") == before
+        assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.BF16
+
+    def test_failed_migration_serves_empty_reads(self, tmp_path, monkeypatch) -> None:
+        eng = self._failed_engine(tmp_path, monkeypatch)
+        assert eng.count == 0
+        assert eng.search(_rand_vectors(1)[0], limit=5) == []
+
 
 class TestInterruptedMigration:
     def test_interrupted_migration_preserves_the_original_index(
@@ -123,45 +202,122 @@ class TestInterruptedMigration:
     ) -> None:
         vecs = _rand_vectors(5)
         _write_bf16_index(tmp_path / "vec", vecs)
-        original_bytes = (tmp_path / "vec" / "vectors.usearch").read_bytes()
+        before = _disk_bytes(tmp_path / "vec")
 
-        # Crash mid-migration: the new index fails to save (disk full,
-        # SIGKILL, …). The original BF16 file must remain byte-identical.
         def boom(self, path):
             raise OSError("simulated crash during migration save")
 
         monkeypatch.setattr(Index, "save", boom)
-        VectorEngine(tmp_path / "vec", DIM)  # falls back to fresh in-memory
+        failed = VectorEngine(tmp_path / "vec", DIM)
+        assert failed.migration_failed
 
-        assert (tmp_path / "vec" / "vectors.usearch").read_bytes() == original_bytes
+        assert _disk_bytes(tmp_path / "vec") == before
         assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.BF16
+        assert list((tmp_path / "vec").glob("*.migrating*")) == []
 
         # Next startup (no crash) completes the migration.
         monkeypatch.undo()
         eng = VectorEngine(tmp_path / "vec", DIM)
+        assert not eng.migration_failed
         assert eng.count == 5
         assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.F32
 
-    def test_failed_migration_never_clobbers_disk_on_save(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        # After a failed migration the engine starts fresh in memory;
-        # an immediate save() with zero vectors must not overwrite the
-        # original index or mapping files.
-        _write_bf16_index(tmp_path / "vec", _rand_vectors(5))
-        original_bytes = (tmp_path / "vec" / "vectors.usearch").read_bytes()
 
-        def boom(self, path):
-            raise OSError("simulated crash during migration save")
+class TestConcurrentMigration:
+    def test_two_concurrent_engines_migrate_one_bf16_index_safely(self, tmp_path) -> None:
+        # Two sessions open the same project right after an upgrade. Force
+        # both migrations to sit inside the save window simultaneously via
+        # a barrier — with a shared temp path they would truncate each
+        # other; with per-thread temp paths both produce a valid f32 index
+        # and the atomic replaces land sequentially.
+        vecs = _rand_vectors(6)
+        chunk_ids = _write_bf16_index(tmp_path / "vec", vecs)
 
-        monkeypatch.setattr(Index, "save", boom)
-        eng = VectorEngine(tmp_path / "vec", DIM)
-        monkeypatch.undo()
-        eng.save()
+        barrier = threading.Barrier(2, timeout=10)
+        original_save = Index.save
+        crossed = {"count": 0}
 
-        assert (tmp_path / "vec" / "vectors.usearch").read_bytes() == original_bytes
-        data = np.load(str(tmp_path / "vec" / "key_mapping.npz"), allow_pickle=True)
-        assert len(data["keys"]) == 5
+        def synced_save(self, path):
+            if ".migrating." in str(path):
+                try:
+                    barrier.wait()
+                    crossed["count"] += 1
+                except threading.BrokenBarrierError:
+                    pass  # partner already finished — proceed alone
+            return original_save(self, path)
+
+        engines: list[VectorEngine | None] = [None, None]
+        errors: list[Exception] = []
+
+        def construct(slot: int) -> None:
+            try:
+                engines[slot] = VectorEngine(tmp_path / "vec", DIM)
+            except Exception as e:  # pragma: no cover - fail the test below
+                errors.append(e)
+
+        import unittest.mock as mock
+
+        with mock.patch.object(Index, "save", synced_save):
+            threads = [threading.Thread(target=construct, args=(i,)) for i in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+        assert not errors
+        # Both threads actually overlapped inside the migration window.
+        assert crossed["count"] == 2
+        assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.F32
+        assert list((tmp_path / "vec").glob("*.migrating*")) == []
+        fresh = VectorEngine(tmp_path / "vec", DIM)
+        assert fresh.count == len(chunk_ids)
+        top = fresh.search(vecs[2], limit=1)
+        assert top and top[0].chunk_id == chunk_ids[2]
+
+
+class TestPipelineFailureBranch:
+    def test_pipeline_rebuilds_atomically_when_migration_fails(self, tmp_path) -> None:
+        """Migration failure during incremental indexing must never touch
+        the existing stores — the pipeline routes to a full atomic
+        rebuild in a fresh directory and ends healthy (f32, consistent)."""
+        from hybrid_search.config import Config, EmbeddingConfig
+        from hybrid_search.index.pipeline import IndexingPipeline
+        from hybrid_search.project import ProjectRegistry, project_hash
+        from hybrid_search.storage.indexes import get_project_dir
+
+        class _FakeEmbedder:
+            embedding_dim = DIM
+
+            def embed_texts(self, texts):
+                rng = np.random.default_rng(7)
+                return rng.random((len(texts), DIM), dtype=np.float32)
+
+        config = Config(data_dir=tmp_path / "data", embedding=EmbeddingConfig(batch_size=8))
+        registry = ProjectRegistry(config.global_dir)
+        pipeline = IndexingPipeline(config, registry, _FakeEmbedder())
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "app.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+        pipeline.index_project(str(repo))
+
+        # Corrupt the vector store into an unmigratable 0.7.1 state:
+        # BF16 index whose mapping references keys the index lacks.
+        pid = project_hash(str(repo.resolve()))
+        vec_dir = get_project_dir(config.projects_dir, pid) / "vectors"
+        for f in vec_dir.iterdir():
+            f.unlink()
+        _write_bf16_index(vec_dir, _rand_vectors(3), extra_keys=2)
+
+        (repo / "extra.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+        result = pipeline.index_project(str(repo), changed_paths=["extra.py"])
+
+        assert any("vector dtype migration failed" in e for e in result.errors)
+        vec_dir = get_project_dir(config.projects_dir, pid) / "vectors"
+        assert _disk_scalar_kind(vec_dir) == ScalarKind.F32
+        eng = VectorEngine(vec_dir, DIM)
+        assert not eng.migration_failed
+        assert eng.count == result.chunks_total > 0
 
 
 class TestUpgradeE2E:

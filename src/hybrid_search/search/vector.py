@@ -24,6 +24,14 @@ HNSW_EF_CONSTRUCTION = 200
 INDEX_DTYPE = ScalarKind.F32
 
 
+class VectorMigrationError(RuntimeError):
+    """BF16→F32 index migration failed. The engine refuses every write in
+    this state: the process is holding an EMPTY in-memory index while the
+    full (still-BF16) index sits on disk, so any add-then-save would
+    replace the complete index with a partial one. Callers should route
+    to a full atomic rebuild instead."""
+
+
 @dataclass
 class VectorResult:
     chunk_id: str
@@ -49,6 +57,11 @@ class VectorEngine:
         # crashes with SIGBUS. Serialize all index access through this lock.
         self._lock = threading.Lock()
 
+        # Set when the dtype migration fails: reads serve empty results,
+        # writes raise so the on-disk index can never be overwritten with
+        # this session's partial state.
+        self._migration_failed = False
+
         self._index = Index(
             ndim=embedding_dim,
             metric=MetricKind.Cos,
@@ -59,8 +72,22 @@ class VectorEngine:
 
         self._load()
 
+    @property
+    def migration_failed(self) -> bool:
+        """True when the dtype migration failed and writes are blocked."""
+        return self._migration_failed
+
+    def _ensure_writable(self) -> None:
+        if self._migration_failed:
+            raise VectorMigrationError(
+                "Vector index dtype migration failed; refusing writes so the "
+                "existing on-disk index is not overwritten with partial state. "
+                "Run a full reindex (atomic rebuild) to recover."
+            )
+
     def add(self, chunk_id: str, vector: np.ndarray) -> None:
         """Add a single vector to the index."""
+        self._ensure_writable()
         with self._lock:
             if chunk_id in self._id_to_key:
                 # Remove existing before re-adding
@@ -76,11 +103,13 @@ class VectorEngine:
 
     def add_batch(self, chunk_ids: list[str], vectors: np.ndarray) -> None:
         """Add multiple vectors in batch."""
+        self._ensure_writable()
         for i, cid in enumerate(chunk_ids):
             self.add(cid, vectors[i])
 
     def remove(self, chunk_id: str) -> None:
         """Remove a vector by chunk_id."""
+        self._ensure_writable()
         with self._lock:
             if chunk_id not in self._id_to_key:
                 return
@@ -91,6 +120,7 @@ class VectorEngine:
 
     def remove_batch(self, chunk_ids: list[str]) -> None:
         """Remove multiple vectors."""
+        self._ensure_writable()
         for cid in chunk_ids:
             self.remove(cid)
 
@@ -155,6 +185,7 @@ class VectorEngine:
 
     def save(self) -> None:
         """Persist index and mappings to disk."""
+        self._ensure_writable()
         with self._lock:
             if len(self._id_to_key) > 0:
                 self._index.save(str(self._index_path))
@@ -194,18 +225,30 @@ class VectorEngine:
                 # file first, not just construct with f32.
                 self._index.load(str(self._index_path))
                 logger.info("Loaded vector index: %d vectors", self.count)
+            except VectorMigrationError as e:
+                # The full index is still on disk (original preserved) but
+                # this process only holds an empty one. Serving reads as
+                # empty is degraded-but-safe; ACCEPTING WRITES IS NOT — an
+                # incremental reindex would save a partial index over the
+                # complete one. Block writes until a full rebuild.
+                logger.error("Vector index migration failed (writes blocked): %s", e)
+                self._migration_failed = True
+                self._reset_in_memory()
             except Exception:
                 logger.warning("Failed to load vector index, starting fresh")
-                self._key_to_id = {}
-                self._id_to_key = {}
-                self._next_key = 0
-                self._index = Index(
-                    ndim=self._dim,
-                    metric=MetricKind.Cos,
-                    dtype=INDEX_DTYPE,
-                    connectivity=HNSW_M,
-                    expansion_add=HNSW_EF_CONSTRUCTION,
-                )
+                self._reset_in_memory()
+
+    def _reset_in_memory(self) -> None:
+        self._key_to_id = {}
+        self._id_to_key = {}
+        self._next_key = 0
+        self._index = Index(
+            ndim=self._dim,
+            metric=MetricKind.Cos,
+            dtype=INDEX_DTYPE,
+            connectivity=HNSW_M,
+            expansion_add=HNSW_EF_CONSTRUCTION,
+        )
 
     def _migrate_dtype_if_needed(self) -> None:
         """One-time atomic rewrite of a pre-0.7.2 (BF16) index as f32.
@@ -229,21 +272,55 @@ class VectorEngine:
             "Migrating vector index %s → %s (one-time, %d vectors)",
             metadata.get("kind_scalar"), INDEX_DTYPE, len(self._key_to_id),
         )
-        old_index = Index.restore(str(self._index_path))
-        migrated = Index(
-            ndim=self._dim,
-            metric=MetricKind.Cos,
-            dtype=INDEX_DTYPE,
-            connectivity=HNSW_M,
-            expansion_add=HNSW_EF_CONSTRUCTION,
+        # Temp path is unique per process AND thread: VectorEngine is
+        # constructed per search, so two sessions opening the same project
+        # right after an upgrade would otherwise truncate each other's
+        # half-written temp file. Both may still migrate independently —
+        # each produces a valid f32 index and os.replace is atomic, so
+        # whichever lands last wins with identical content.
+        tmp_path = self._index_path.with_name(
+            f"{self._index_path.name}.migrating.{os.getpid()}.{threading.get_ident()}"
         )
-        for key in self._key_to_id:
-            vec = old_index.get(int(key))
-            if vec is None:
-                continue
-            migrated.add(int(key), np.asarray(vec).reshape(-1).astype(np.float32))
+        try:
+            old_index = Index.restore(str(self._index_path))
+            migrated = Index(
+                ndim=self._dim,
+                metric=MetricKind.Cos,
+                dtype=INDEX_DTYPE,
+                connectivity=HNSW_M,
+                expansion_add=HNSW_EF_CONSTRUCTION,
+            )
+            for key in self._key_to_id:
+                # "Lossless" is the contract: a mapped key the old index
+                # does not contain means the mapping and index disagree —
+                # replacing the file would bake that corruption in. NOTE:
+                # usearch get() returns an array even for absent keys, so
+                # containment is the only reliable check.
+                if int(key) not in old_index:
+                    raise VectorMigrationError(
+                        f"mapped vector key {key} missing from the existing index"
+                    )
+                vec = old_index.get(int(key))
+                migrated.add(int(key), np.asarray(vec).reshape(-1).astype(np.float32))
 
-        tmp_path = str(self._index_path) + ".migrating"
-        migrated.save(tmp_path)
-        os.replace(tmp_path, str(self._index_path))
+            if len(migrated) != len(self._key_to_id):
+                raise VectorMigrationError(
+                    f"migrated vector count {len(migrated)} != mapping "
+                    f"count {len(self._key_to_id)}"
+                )
+
+            migrated.save(str(tmp_path))
+            tmp_meta = Index.metadata(str(tmp_path))
+            if not tmp_meta or tmp_meta.get("kind_scalar") != INDEX_DTYPE:
+                kind = tmp_meta.get("kind_scalar") if tmp_meta else None
+                raise VectorMigrationError(
+                    f"temporary index scalar kind is {kind}, expected {INDEX_DTYPE}"
+                )
+            os.replace(tmp_path, self._index_path)
+        except VectorMigrationError:
+            raise
+        except Exception as e:
+            raise VectorMigrationError(f"dtype migration failed: {e}") from e
+        finally:
+            tmp_path.unlink(missing_ok=True)
         logger.info("Vector index migrated to %s", INDEX_DTYPE)
