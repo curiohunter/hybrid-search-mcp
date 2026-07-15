@@ -424,6 +424,14 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # v0.4.0 — Memory integrity pass: stale qa, semantic dedup, archive TTL.
     _run_memory_integrity(config, registry, project_name, Path(project_path))
 
+    # R1 fix — corpus-wide qa supersession mapping. Runs after integrity so
+    # freshly-archived stale qa doesn't participate in grouping.
+    _run_qa_supersession(config, registry, project_name)
+
+    # P1-2 — commit-aware invalidation: qa anchored to files changed by
+    # HEAD gets flagged needs_revalidation.
+    _run_qa_revalidation(config, registry, project_name, Path(project_path))
+
     if result.errors:
         print(f"Errors: {len(result.errors)}")
         for err in result.errors[:5]:
@@ -551,6 +559,131 @@ def _run_memory_integrity(
         parts.append(f"{len(report.archive_purged)} archive entr(ies) purged")
     if parts:
         print("Memory integrity: " + "; ".join(parts) + ".")
+
+
+def _run_qa_supersession(
+    config: Config,
+    registry: ProjectRegistry,
+    project_name: str,
+) -> None:
+    """Recompute the index-time qa supersession mapping (R1 fix).
+
+    Groups the whole qa_log corpus with the calibrated topic matcher and
+    persists "stale chunk -> newest same-topic chunk" so query-time
+    retrieval can splice a correction next to a stale verbatim hit it
+    surfaced on its own. Never blocks a reindex.
+    """
+    try:
+        from hybrid_search.memory.supersession import compute_supersession
+
+        pinfo = registry.get_by_name(project_name)
+        if pinfo is None:
+            return
+        idx = IndexPaths(get_project_dir(config.projects_dir, pinfo.id))
+        if not idx.store_db.exists():
+            return
+        db = StoreDB(idx.store_db)
+        try:
+            qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
+            entries = [(c.id, c.content or "") for c in qa_chunks]
+            mapping = compute_supersession(entries)
+            with db.transaction() as conn:
+                db.replace_qa_supersession(conn, pinfo.id, mapping)
+        finally:
+            db.close()
+        if mapping:
+            print(f"QA supersession: {len(mapping)} stale entr(ies) mapped.")
+    except Exception as exc:  # never block reindex on the mapping pass
+        logger.debug("qa supersession pass skipped: %s", exc)
+
+
+def _run_qa_revalidation(
+    config: Config,
+    registry: ProjectRegistry,
+    project_name: str,
+    project_path: Path,
+) -> None:
+    """Flag qa memories whose anchored files changed in HEAD (P1-2).
+
+    Post-commit reindex is the natural hook: HEAD's changed files are
+    exactly "what just became true". Older qa answered from those files
+    is flagged ``needs_revalidation`` in the side table; search demotes
+    and marks it until a newer answer supersedes. No-op outside git;
+    never blocks a reindex.
+    """
+    import subprocess
+
+    try:
+        from hybrid_search.memory.revalidation import compute_revalidations
+
+        pinfo = registry.get_by_name(project_name)
+        if pinfo is None:
+            return
+        idx = IndexPaths(get_project_dir(config.projects_dir, pinfo.id))
+        if not idx.store_db.exists():
+            return
+
+        def _git(*argv: str) -> str:
+            return subprocess.run(
+                ["git", *argv], cwd=project_path, capture_output=True,
+                text=True, timeout=10, check=True,
+            ).stdout.strip()
+
+        try:
+            head = _git("rev-parse", "HEAD")
+        except Exception:
+            return  # not a git repo / no commits — nothing to anchor against
+
+        db = StoreDB(idx.store_db)
+        try:
+            # Commits are processed exactly once: the range is
+            # (last processed, HEAD]. First run seeds on HEAD only —
+            # flagging against the whole history would mark most of the
+            # corpus at once with no new information.
+            last = db.get_meta("qa_reval_last_commit")
+            if last == head:
+                return
+            try:
+                if last:
+                    commits = _git("rev-list", "--reverse", f"{last}..HEAD").splitlines()
+                else:
+                    commits = [head]
+            except Exception:
+                commits = [head]  # `last` may have been rebased away
+            commits = commits[-50:]  # bound pathological ranges
+
+            qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
+            entries = [(c.id, c.content or "") for c in qa_chunks]
+            rows: list[tuple[str, str, str]] = []
+            for sha in commits:
+                try:
+                    changed = set(
+                        _git("diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+                        .splitlines()
+                    )
+                    commit_iso = _git("show", "-s", "--format=%cI", sha)
+                    commit_time = datetime.fromisoformat(commit_iso)
+                except Exception:
+                    continue
+                rows.extend(compute_revalidations(
+                    entries, changed,
+                    cause_commit=sha[:7],
+                    commit_time=commit_time,
+                ))
+            with db.transaction() as conn:
+                db.add_qa_revalidations(conn, pinfo.id, rows)
+                pruned = db.prune_orphan_qa_revalidations(conn)
+            db.set_meta("qa_reval_last_commit", head)
+        finally:
+            db.close()
+        if rows:
+            print(
+                f"QA revalidation: {len(rows)} memor{'y' if len(rows) == 1 else 'ies'} "
+                f"flagged ({len(commits)} commit(s))."
+                + (f" {pruned} orphan flag(s) pruned." if pruned else "")
+            )
+    except Exception as exc:  # never block reindex on the flagging pass
+        logger.debug("qa revalidation pass skipped: %s", exc)
 
 
 def _run_wiki_cleanup(project_path: Path) -> None:
@@ -3328,15 +3461,30 @@ def cmd_install_memory_hook(args: argparse.Namespace) -> None:
 
 
 def cmd_install_codex_hook(args: argparse.Namespace) -> None:
-    """Install Codex lifecycle hooks and MCP config."""
-    from hybrid_search import codex_hooks
+    """Install Codex lifecycle hooks and MCP config.
+
+    P0-3: also writes the ``.codex-plugin/plugin.json`` manifest so
+    plugin-aware Codex versions get hooks + MCP from one file. This
+    command remains the compatibility alias; ``setup --codex`` is the
+    first-class path (install + smoke test).
+    """
+    from hybrid_search import codex_hooks, codex_plugin
 
     project_root = Path(args.cwd).resolve()
-    result = codex_hooks.install_codex_hook(
-        project_root,
-        user=bool(getattr(args, "user", False)),
-        dry_run=bool(getattr(args, "dry_run", False)),
-    )
+    user = bool(getattr(args, "user", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    if dry_run:
+        result = codex_hooks.install_codex_hook(
+            project_root, user=user, dry_run=True,
+        )
+    else:
+        combined = codex_plugin.install_codex_plugin(project_root, user=user)
+        result = dict(combined["legacy"])
+        result["status"] = combined["status"]
+        print(
+            f"Plugin manifest: {combined['manifest_path']}"
+            + (" (written)" if combined["manifest_changed"] else " (unchanged)")
+        )
     scope = "user" if result.get("user") else "project"
     if result["status"] == "dry-run":
         print(
@@ -3645,7 +3793,31 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     root = _resolve_memory_root(args)
     if root is None:
         sys.exit(1)
+    if getattr(args, "codex", False):
+        _run_codex_smoke(root)
+        return
     _print_doctor_report(_memory_health(root))
+
+
+def _run_codex_smoke(project_root: Path) -> None:
+    """P0-3 smoke test: prove the Codex side works after install."""
+    from hybrid_search import codex_plugin
+
+    checks = codex_plugin.smoke_test(project_root)
+    print("Codex smoke test")
+    print()
+    failed = 0
+    for c in checks:
+        mark = "PASS" if c.ok else "FAIL"
+        if not c.ok:
+            failed += 1
+        print(f"  [{mark}] {c.name}: {c.detail}")
+    print()
+    if failed:
+        print(f"{failed} check(s) failed. Run `hybrid-search-mcp setup --codex --cwd .` "
+              "then restart Codex in this project.")
+        sys.exit(1)
+    print("Codex connected — both agents share the same .hybrid-search/ memory root.")
 
 
 def cmd_memory_refresh(args: argparse.Namespace) -> None:
@@ -4282,6 +4454,28 @@ def cmd_setup(args: argparse.Namespace) -> None:
     dry_run = bool(getattr(args, "dry_run", False))
     force = bool(getattr(args, "force", False))
 
+    # P0-3 — first-class Codex path: manifest + hooks + MCP + smoke test
+    # in one command. The Claude side is the plain `setup`; the goal is
+    # "both agents connected in five minutes", one command each.
+    if getattr(args, "codex", False):
+        from hybrid_search import codex_plugin
+
+        if dry_run:
+            print(f"Would write {codex_plugin.manifest_path(project_path)} "
+                  "plus Codex hooks/config, then run the smoke test.")
+            return
+        result = codex_plugin.install_codex_plugin(project_path, force=force)
+        print(
+            f"Plugin manifest: {result['manifest_path']}"
+            + (" (written)" if result["manifest_changed"] else " (unchanged)")
+        )
+        legacy = result["legacy"]
+        print(f"Hooks: {legacy['hooks_path']}")
+        print(f"Config: {legacy['config_path']}")
+        print()
+        _run_codex_smoke(project_path)
+        return
+
     if dry_run:
         try:
             for path, block in (
@@ -4701,6 +4895,19 @@ def cmd_teardown(args: argparse.Namespace) -> None:
     else:
         (skills_dst / _SKILL_MANIFEST_NAME).unlink(missing_ok=True)
 
+    # P0-3 — user-scoped Codex plugin manifest is global surface too.
+    # Project-scoped .codex-plugin/ stays, same policy as .codex/hooks.json.
+    from hybrid_search import codex_plugin as _codex_plugin
+
+    user_manifest = _codex_plugin.manifest_path(Path("."), user=True)
+    if user_manifest.exists():
+        user_manifest.unlink()
+        try:
+            user_manifest.parent.rmdir()
+        except OSError:
+            pass
+        removed.append(f"Codex plugin manifest ({user_manifest})")
+
     if removed:
         for item in removed:
             print(f"Removed: {item}")
@@ -5011,6 +5218,11 @@ def main() -> None:
         action="store_true",
         help="Register only the global surface (MCP, hooks, skills); skip project files",
     )
+    p_setup.add_argument(
+        "--codex",
+        action="store_true",
+        help="Codex side: write .codex-plugin manifest + hooks + MCP, then smoke test",
+    )
 
     sub.add_parser(
         "teardown",
@@ -5020,6 +5232,11 @@ def main() -> None:
     p_doctor = sub.add_parser("doctor", help="Diagnose Memory Layer setup and corpus health")
     p_doctor.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
     p_doctor.add_argument("--project", help="Project name (overrides --cwd)")
+    p_doctor.add_argument(
+        "--codex",
+        action="store_true",
+        help="Run the Codex smoke test: hooks, Stop-event roundtrip, MCP, shared root",
+    )
 
     p_maintain = sub.add_parser("maintain", help="Codex-friendly index/wiki maintenance")
     p_maintain.add_argument("--cwd", default=".", help="Project directory")

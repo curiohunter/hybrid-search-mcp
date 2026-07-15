@@ -186,6 +186,23 @@ CREATE TABLE IF NOT EXISTS conversation_meta (
 
 CREATE INDEX IF NOT EXISTS idx_conv_meta_project ON conversation_meta(project_id);
 CREATE INDEX IF NOT EXISTS idx_conv_meta_session ON conversation_meta(source, session_id);
+
+CREATE TABLE IF NOT EXISTS qa_supersession (
+    chunk_id TEXT PRIMARY KEY,
+    superseded_by TEXT NOT NULL,
+    project_id TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_qa_supersession_project ON qa_supersession(project_id);
+
+CREATE TABLE IF NOT EXISTS qa_revalidation (
+    chunk_id TEXT PRIMARY KEY,
+    cause_commit TEXT NOT NULL,
+    changed_path TEXT NOT NULL,
+    project_id TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_qa_revalidation_project ON qa_revalidation(project_id);
 """
 
 
@@ -651,6 +668,92 @@ class StoreDB:
         cur = self._conn.execute("SELECT * FROM chunks WHERE id = ?", (chunk_id,))
         row = cur.fetchone()
         return self._row_to_chunk(row) if row else None
+
+    def get_chunks_by_node_type(
+        self, project_id: str, node_type: str
+    ) -> list[ChunkRecord]:
+        cur = self._conn.execute(
+            "SELECT * FROM chunks WHERE project_id = ? AND node_type = ?",
+            (project_id, node_type),
+        )
+        return [self._row_to_chunk(row) for row in cur.fetchall()]
+
+    # --- qa supersession (R1 exposure fix) --------------------------------
+    # Index-time mapping "stale qa chunk -> newest same-topic qa chunk",
+    # computed over the whole qa corpus by memory/supersession.py. The
+    # orchestrator reads it at query time to splice the correction in
+    # next to a stale hit the retrievers surfaced on their own.
+
+    def replace_qa_supersession(
+        self, conn: sqlite3.Connection, project_id: str, mapping: dict[str, str]
+    ) -> None:
+        """Overwrite the project's supersession rows with ``mapping``."""
+        conn.execute(
+            "DELETE FROM qa_supersession WHERE project_id = ?", (project_id,)
+        )
+        if mapping:
+            conn.executemany(
+                "INSERT OR REPLACE INTO qa_supersession "
+                "(chunk_id, superseded_by, project_id) VALUES (?, ?, ?)",
+                [(old, new, project_id) for old, new in mapping.items()],
+            )
+
+    def get_qa_superseding(self, chunk_ids: list[str]) -> dict[str, str]:
+        """``{chunk_id: superseding chunk_id}`` for the ids that have one."""
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" for _ in chunk_ids)
+        cur = self._conn.execute(
+            f"SELECT chunk_id, superseded_by FROM qa_supersession "
+            f"WHERE chunk_id IN ({placeholders})",
+            tuple(chunk_ids),
+        )
+        return {row["chunk_id"]: row["superseded_by"] for row in cur.fetchall()}
+
+    # --- qa revalidation (P1-2 commit-aware invalidation) ------------------
+    # Rows flag qa chunks whose anchored files changed in a later commit.
+    # Side table on purpose: rewriting qa frontmatter would change the
+    # content hash and re-embed every flagged memory.
+
+    def add_qa_revalidations(
+        self,
+        conn: sqlite3.Connection,
+        project_id: str,
+        rows: list[tuple[str, str, str]],
+    ) -> None:
+        """Upsert ``(chunk_id, cause_commit, changed_path)`` flags."""
+        if rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO qa_revalidation "
+                "(chunk_id, cause_commit, changed_path, project_id) "
+                "VALUES (?, ?, ?, ?)",
+                [(c, cause, path, project_id) for c, cause, path in rows],
+            )
+
+    def get_qa_revalidations(
+        self, chunk_ids: list[str]
+    ) -> dict[str, tuple[str, str]]:
+        """``{chunk_id: (cause_commit, changed_path)}`` for flagged ids."""
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" for _ in chunk_ids)
+        cur = self._conn.execute(
+            f"SELECT chunk_id, cause_commit, changed_path FROM qa_revalidation "
+            f"WHERE chunk_id IN ({placeholders})",
+            tuple(chunk_ids),
+        )
+        return {
+            row["chunk_id"]: (row["cause_commit"], row["changed_path"])
+            for row in cur.fetchall()
+        }
+
+    def prune_orphan_qa_revalidations(self, conn: sqlite3.Connection) -> int:
+        """Drop flags whose qa chunk no longer exists in the store."""
+        cur = conn.execute(
+            "DELETE FROM qa_revalidation WHERE NOT EXISTS "
+            "(SELECT 1 FROM chunks c WHERE c.id = qa_revalidation.chunk_id)"
+        )
+        return cur.rowcount
 
     # Memory/derived lanes are excluded on purpose: a past *question* about
     # an absent topic echoes the topic word into qa/conv chunks, and the

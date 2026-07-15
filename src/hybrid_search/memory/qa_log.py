@@ -95,6 +95,9 @@ class QARecord:
     answer_chars: int | None = None         # length of Claude's final text response
     answer_excerpt: str | None = None       # bounded, sanitized final-answer excerpt
     client: str | None = None               # "claude" | "codex" | None for legacy records
+    # v3 (P1-1) — typed memory schema; see memory/memory_types.py.
+    memory_type: str | None = None          # observation|decision|hypothesis|task_state|procedure|review_finding
+    verification: str | None = None         # verified|accepted|inferred|needs_revalidation|superseded
 
 
 def is_enabled() -> bool:
@@ -234,6 +237,10 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"answer_excerpt_chars: {len(record.answer_excerpt)}")
     if record.client:
         lines.append(f"client: {record.client}")
+    if record.memory_type:
+        lines.append(f"memory_type: {record.memory_type}")
+    if record.verification:
+        lines.append(f"verification: {record.verification}")
     lines += [
         "---",
         "",
@@ -371,6 +378,11 @@ def record(
                 "snippet": getattr(r, "snippet", None),
             })
 
+        from hybrid_search.memory import memory_types
+
+        mtype, verification = memory_types.classify(
+            query=query, answer_excerpt=None, trigger=trigger,
+        )
         rec = QARecord(
             query=query,
             query_type=getattr(response, "query_type", "UNKNOWN"),
@@ -381,6 +393,8 @@ def record(
             timestamp=datetime.now(timezone.utc),
             project_root=root,
             trigger=trigger,
+            memory_type=mtype,
+            verification=verification,
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("qa_log prepare failed: %s", exc)
@@ -513,6 +527,15 @@ def record_turn(
         if excerpt and is_sensitive_query(excerpt):
             excerpt = None
 
+        from hybrid_search.memory import memory_types
+
+        mtype, verification = memory_types.classify(
+            query=query,
+            answer_excerpt=excerpt,
+            tools_used=tuple(tools_used),
+            trigger=trigger,
+            client=client,
+        )
         rec = QARecord(
             query=query,
             query_type="TURN",
@@ -527,6 +550,8 @@ def record_turn(
             answer_chars=answer_chars,
             answer_excerpt=excerpt,
             client=client,
+            memory_type=mtype,
+            verification=verification,
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("qa_log record_turn prepare failed: %s", exc)
