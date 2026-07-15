@@ -629,7 +629,9 @@ def _run_qa_revalidation(
         try:
             qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
             entries = [(c.id, c.content or "") for c in qa_chunks]
-            result = project_revalidations(project_path, entries)
+            result = project_revalidations(
+                project_path, entries, project=pinfo.name,
+            )
             if result.head is None:
                 return  # not a git repo / no commits — keep prior state
             if not result.complete:

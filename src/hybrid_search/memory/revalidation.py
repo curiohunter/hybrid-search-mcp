@@ -61,9 +61,32 @@ __all__ = [
     "ProjectionResult",
     "anchor_paths",
     "head_unchanged",
+    "is_source_anchor",
     "project_revalidations",
     "replace_projection_guarded",
 ]
+
+# Anchor identity boundaries (round-2 final P0): only SOURCE-GROUNDED
+# results may anchor git revalidation. Memory/synthetic lanes live at
+# virtual paths that are not in git HEAD — anchoring on them makes every
+# recall-of-a-recall flag itself as renamed/deleted on the next reindex.
+_NON_SOURCE_NODE_TYPES = frozenset({
+    "qa_log", "memory_card", "domain_term", "episodic_example",
+    "commit", "conv_turn", "module", "module_member", "graph_card",
+})
+_VIRTUAL_PATH_PREFIXES = (".hybrid-search/", ".conversations/", ".git-history/")
+
+
+def is_source_anchor(node_type: str | None, file_path: str | None) -> bool:
+    """True when a search result is grounded in an actual source/doc
+    file (indexed chunk or in-flight overlay) — the only results whose
+    content can be meaningfully re-checked against a git HEAD."""
+    if (node_type or "") in _NON_SOURCE_NODE_TYPES:
+        return False
+    path = file_path or ""
+    if not path:
+        return False
+    return not any(path.startswith(p) for p in _VIRTUAL_PATH_PREFIXES)
 
 # A qa's anchors are the TOP results it was answered from. Deeper ranks
 # are incidental co-retrievals — anchoring on all ten would invalidate
@@ -121,9 +144,11 @@ def _default_git_bytes(repo: Path, *argv: str) -> bytes:
     return proc.stdout
 
 
-def _stored_anchor_hashes(content: str) -> dict[str, str] | None:
-    """Evidence hashes, only when the algo marker matches what we know
-    how to compare. Unknown/missing algo → legacy fallback."""
+def _stored_anchor_hashes(content: str) -> dict[str, tuple[str, str | None]] | None:
+    """``{path: (hash, project | None)}``, only when the algo marker
+    matches what we know how to compare. Unknown/missing algo → legacy
+    fallback. Values are either plain hash strings (early records, own
+    project implied) or ``{"h": hash, "p": project}`` objects."""
     if (_frontmatter_value(content, "anchor_hash_algo") or "") != "index":
         return None
     raw = _frontmatter_value(content, "anchor_hashes")
@@ -135,7 +160,16 @@ def _stored_anchor_hashes(content: str) -> dict[str, str] | None:
         return None
     if not isinstance(data, dict) or not data:
         return None
-    return {str(k): str(v) for k, v in data.items()}
+    parsed: dict[str, tuple[str, str | None]] = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            h = value.get("h")
+            if not h:
+                continue
+            parsed[str(key)] = (str(h), str(value["p"]) if value.get("p") else None)
+        else:
+            parsed[str(key)] = (str(value), None)
+    return parsed or None
 
 
 # --- projection ---------------------------------------------------------------
@@ -293,6 +327,7 @@ def project_revalidations(
     repo: Path,
     entries: list[tuple[str, str]],
     *,
+    project: str | None = None,
     run_git: Callable[..., str] = _default_git,
 ) -> ProjectionResult:
     """The full needs_revalidation projection for the pinned HEAD.
@@ -317,7 +352,19 @@ def project_revalidations(
         for chunk_id, content in entries:
             stored = _stored_anchor_hashes(content)
             if stored:
-                for path, stored_hash in list(stored.items())[:_ANCHOR_TOP_N]:
+                for path, (stored_hash, anchor_project) in list(
+                    stored.items()
+                )[:_ANCHOR_TOP_N]:
+                    if (
+                        project is not None
+                        and anchor_project is not None
+                        and anchor_project != project
+                    ):
+                        # Cross-project anchor: its content lives in a
+                        # different repo — comparing it against THIS
+                        # project's HEAD would be meaningless
+                        # (not_locally_revalidatable, round-2 final P0).
+                        continue
                     head_hash = view.content_hash(head, path)
                     if head_hash == stored_hash:
                         continue

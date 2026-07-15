@@ -410,11 +410,25 @@ def record(
         # records what the disk looked like, not what the qa was grounded
         # in — and the git subprocesses blocked the hot path). Zero
         # subprocess calls: the hashes rode in on the results.
-        anchor_hashes: dict[str, str] = {}
+        # Only SOURCE-GROUNDED results anchor (round-2 final P0):
+        # qa_log/conv_turn/commit/memory lanes live at virtual paths that
+        # git HEAD never contains — anchoring on them would flag every
+        # recall-of-a-recall as deleted on the next reindex. Each anchor
+        # keeps its project so the projection never compares another
+        # project's path against this repo's HEAD.
+        from hybrid_search.memory.revalidation import is_source_anchor
+
+        anchor_hashes: dict[str, dict[str, str]] = {}
         for r in results_payload:
             p, h = r.get("file_path"), r.get("indexed_file_hash")
-            if p and h and p not in anchor_hashes:
-                anchor_hashes[p] = h
+            if not (p and h) or p in anchor_hashes:
+                continue
+            if not is_source_anchor(r.get("node_type"), p):
+                continue
+            entry: dict[str, str] = {"h": h}
+            if r.get("project"):
+                entry["p"] = r["project"]
+            anchor_hashes[p] = entry
             if len(anchor_hashes) >= 3:
                 break
         evidence = {"hashes": anchor_hashes} if anchor_hashes else None

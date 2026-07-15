@@ -23,6 +23,7 @@ from hybrid_search.memory.revalidation import (
     ProjectionResult,
     anchor_paths,
     head_unchanged,
+    is_source_anchor,
     project_revalidations,
     replace_projection_guarded,
 )
@@ -255,18 +256,82 @@ class TestAnchorEvidence:
         assert _flags(repo, [("qa-x", content)]) == []
 
 
+class TestAnchorIdentityBoundaries:
+    """Round-2 final P0: anchors need node-type and project boundaries —
+    memory/virtual results must never anchor, and another project's
+    paths must never be checked against this repo's HEAD."""
+
+    @pytest.mark.parametrize("node_type,path,ok", [
+        ("function", "src/auth.py", True),
+        ("section", "docs/readme.md", True),
+        ("in_flight_file", "src/wip.py", True),
+        ("qa_log", ".hybrid-search/qa/2026/07/x.md", False),
+        ("conv_turn", ".conversations/claude/s.jsonl", False),
+        ("commit", ".git-history/commits.md", False),
+        ("memory_card", ".hybrid-search/memory/cards/x.md", False),
+        ("module", "src/hybrid_search/search/orchestrator.py", False),
+        # Virtual path wins even with a source-looking node type.
+        ("section", ".hybrid-search/wiki/index.md", False),
+        ("function", "", False),
+    ])
+    def test_is_source_anchor(self, node_type, path, ok) -> None:
+        assert is_source_anchor(node_type, path) is ok
+
+    def test_virtual_only_results_never_flag(self, repo: Repo) -> None:
+        """Required test 1: a recall qa whose top results were past
+        qa/conversations/commits must not flag itself just because those
+        virtual paths are absent from HEAD."""
+        content = (
+            f'---\nquery: "가장 최근 대화가 뭐였지?"\ntimestamp: {T_QA}\n'
+            "---\n\n## Answer excerpt\n\nrecall answer\n\n## Top results\n\n"
+            "### 1. `.hybrid-search/qa/2026/07/09-x.md:1-10` — old qa\n"
+            "### 2. `.conversations/claude/abc.jsonl:1-5` — turn\n"
+            "### 3. `.git-history/commits-2026-07.md:1-3` — commit\n"
+        )
+        repo.write("src/auth.py", "v2\n")
+        repo.commit("unrelated change", T1)
+        # Legacy path (no evidence): virtual paths never existed at base
+        # → conservative skip, complete pass, zero flags.
+        result = project_revalidations(repo.root, [("qa-recall", content)])
+        assert result.complete is True and result.rows == []
+
+    def test_cross_project_anchor_not_checked_against_local_head(
+        self, repo: Repo,
+    ) -> None:
+        """Required test 2: project B's anchor must not be compared with
+        (or flagged against) project A's HEAD."""
+        entries = [_qa(
+            T_QA, ["src/auth.py"],
+            anchor_hashes={"src/auth.py": {"h": "bogus-b-hash", "p": "project-b"}},
+        )]
+        result = project_revalidations(
+            repo.root, entries, project="project-a",
+        )
+        assert result.complete is True and result.rows == []
+
+    def test_same_project_anchor_still_checked(self, repo: Repo) -> None:
+        entries = [_qa(
+            T_QA, ["src/auth.py"],
+            anchor_hashes={"src/auth.py": {"h": "stale-hash", "p": "project-a"}},
+        )]
+        result = project_revalidations(
+            repo.root, entries, project="project-a",
+        )
+        assert len(result.rows) == 1
+
+
 class TestWriterIntegration:
     """Round-2 3rd-pass required tests: the REAL writer → frontmatter →
     parser → projection, and the hot path making zero subprocess calls."""
 
     class _FakeResult:
-        def __init__(self, path: str, ihash: str | None):
+        def __init__(self, path: str, ihash: str | None, node_type: str = "function"):
             self.chunk_id = "c1"
             self.file_path = path
             self.project = "p"
             self.name = "n"
             self.qualified_name = "q"
-            self.node_type = "function"
+            self.node_type = node_type
             self.start_line = 1
             self.end_line = 2
             self.snippet = "s"
@@ -322,6 +387,59 @@ class TestWriterIntegration:
         entries = [("qa-real", written.read_text(encoding="utf-8"))]
         rows = _flags(repo, entries)
         assert rows and rows[0][0] == "qa-real" and rows[0][2] == "src/auth.py"
+
+    def test_mixed_results_store_only_source_anchors(
+        self, repo: Repo, monkeypatch,
+    ) -> None:
+        """Required test 3: memory-lane hits ahead of code hits must not
+        consume anchor slots or leave virtual paths in the evidence."""
+        from hybrid_search.memory import qa_log
+
+        monkeypatch.setenv(qa_log.ENV_TOGGLE, "1")
+        (repo.root / ".hybrid-search").mkdir(exist_ok=True)
+        code_hash = _index_hash(repo, "src/auth.py")
+        written = qa_log.record(
+            query="auth 어디서 처리해?",
+            response=self._FakeResponse([
+                self._FakeResult(
+                    ".hybrid-search/qa/2026/07/old.md", "qa-file-hash",
+                    node_type="qa_log",
+                ),
+                self._FakeResult(
+                    ".conversations/claude/s.jsonl", "conv-hash",
+                    node_type="conv_turn",
+                ),
+                self._FakeResult("src/auth.py", code_hash),
+            ]),
+            cwd=str(repo.root),
+            async_write=False,
+        )
+        assert written is not None
+        text = written.read_text(encoding="utf-8")
+        assert code_hash in text
+        assert "qa-file-hash" not in text and "conv-hash" not in text
+        assert ".hybrid-search/qa" not in text.split("## Top results")[0]
+
+    def test_virtual_only_results_store_no_evidence(
+        self, repo: Repo, monkeypatch,
+    ) -> None:
+        from hybrid_search.memory import qa_log
+
+        monkeypatch.setenv(qa_log.ENV_TOGGLE, "1")
+        (repo.root / ".hybrid-search").mkdir(exist_ok=True)
+        written = qa_log.record(
+            query="가장 최근 대화가 뭐였지?",
+            response=self._FakeResponse([
+                self._FakeResult(
+                    ".hybrid-search/qa/2026/07/old.md", "qa-file-hash",
+                    node_type="qa_log",
+                ),
+            ]),
+            cwd=str(repo.root),
+            async_write=False,
+        )
+        assert written is not None
+        assert "anchor_hash_algo" not in written.read_text(encoding="utf-8")
 
     def test_record_hot_path_makes_no_subprocess_calls(
         self, repo: Repo, monkeypatch,
