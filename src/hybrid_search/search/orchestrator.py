@@ -231,9 +231,14 @@ _MEMORY_INTENT_KO = (
     # zero of the tokens above, so the conv lane + in-flight overlay —
     # the exact machinery built for the cross-agent handoff loop —
     # never fired and the ambient qa lane served May records
-    # (2026-07-15 Codex field check). The wedge use case lives or dies
-    # on this phrasing class.
-    "최근", "최신",
+    # (2026-07-15 Codex field check). COMPOUND forms only: bare
+    # "최근/최신" false-positives on topical queries ("최근 Python 버전
+    # 차이", "최신 OpenAI API 사용법") — recency must bind to a
+    # work/conversation object to mean recall (round-2 pre-fix).
+    "가장 최근",
+    "최근 작업", "최근 대화", "최근 진행", "최근 세션", "최근 커밋",
+    "최근에 한", "최근에 뭐", "최근에 나눈",
+    "최신 작업", "최신 진행", "최신 상태", "최신 상황", "최신 대화",
     # History-shaped questions. "How was this built / why did it change"
     # is answered by past conversations, plans, and commits — the same
     # lanes recall questions use. Without these tokens the conv lane never
@@ -244,8 +249,15 @@ _MEMORY_INTENT_KO = (
 )
 _MEMORY_INTENT_EN_RE = re.compile(
     r"\b(previously|earlier|before|last\s+time|the\s+other\s+day"
-    r"|recent(?:ly)?|latest|most\s+recent"
-    r"|what\s+did\s+(?:i|we|you)\s+(?:ask|say)"
+    # Recency binds to a work/conversation object — bare "latest"/
+    # "recent" false-positives on topical lookups ("latest schema doc",
+    # "recent Python versions"). "most recent" stays standalone: the
+    # superlative is inherently about OUR timeline.
+    r"|most\s+recent"
+    r"|recent(?:ly)?\s+(?:work|task|progress|conversation|session|chang|commit|activit)"
+    r"|latest\s+(?:progress|work|task|status|state|conversation|session|update)"
+    r"|what\s+did\s+(?:i|we|you)\s+(?:ask|say|do|work)"
+    r"|(?:did|done|worked\s+on)\b.{0,20}\brecently"
     r"|how\s+(?:was|did)\s+\w+.*\s(?:built|made|implemented|changed?|evolve)"
     r"|why\s+(?:was|did)\s+\w+.*\s(?:added|built|changed?|removed)"
     r"|history\s+of)\b",
