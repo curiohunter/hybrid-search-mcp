@@ -11,7 +11,7 @@
       "displayName": "Memory Layer",
       "source": "./",
       "description": "The memory that answers why — code, commits, and past conversations in one recall.",
-      "version": "0.7.1",
+      "version": "0.7.2",
       "author": {
         "name": "curiohunter"
       },

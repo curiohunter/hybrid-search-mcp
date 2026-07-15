@@ -1,0 +1,207 @@
+{
+  "version": 1,
+  "created": "2026-07-13",
+  "project": "ripgrep",
+  "project_path": "/Users/ian/project/claude_project/oss_holdout/ripgrep",
+  "description": "FRESH HOLDOUT — BurntSushi/ripgrep @ d5b85d44 (2026-07-09), Rust CLI text-search tool: different org and different domain than the burned httpx set. Cases authored 2026-07-13 AFTER the language-general supersession PR was frozen at ab8505e; single run, published as-is, no code or threshold changes after seeing results. U1–U6 are synthetic team-decision facts layered on the real corpus (topics collide with real docs: --max-columns, threads, config file, file types). R1–R5 are REAL changes verified in CHANGELOG.md / git history (deprecated flag replacements, hyperlink introduction, MSRV bump, empty -vf semantics) planted as old/new qa pairs — the real corpus (CHANGELOG, docs, 500 indexed commits) provides genuine corroboration and distractor pressure. Probes mix EN→EN and KO→EN (U5, U6, ADV3, A8, A9, P4 are Korean). abstention topics verified grep-absent (0 hits, 2026-07-13); present controls verified present.",
+  "update_cases": [
+    {
+      "id": "U1",
+      "topic": "max-columns default in team config",
+      "old": {
+        "query": "what max columns setting does our shared ripgrep config use",
+        "answer": "Our shared rg config file sets --max-columns=150 so long minified lines get elided in code search results."
+      },
+      "new": {
+        "query": "max columns raised in shared config",
+        "answer": "We raised --max-columns from 150 to 300 in the shared config because SQL fixtures kept getting truncated. The 150 value is obsolete."
+      },
+      "probe": "what is our max-columns setting for rg?"
+    },
+    {
+      "id": "U2",
+      "topic": "case sensitivity alias",
+      "old": {
+        "query": "how is case sensitivity configured in our rg alias",
+        "answer": "The team alias forces --case-sensitive always; smart case was considered too surprising for code review greps."
+      },
+      "new": {
+        "query": "rg alias switched to smart case",
+        "answer": "The alias now uses --smart-case: lowercase patterns match case-insensitively, mixed-case patterns stay sensitive. The forced --case-sensitive alias is retired."
+      },
+      "probe": "does our rg alias use smart case or case sensitive?"
+    },
+    {
+      "id": "U3",
+      "topic": "ripgrep config file location",
+      "old": {
+        "query": "where does RIPGREP_CONFIG_PATH point on our dev boxes",
+        "answer": "RIPGREP_CONFIG_PATH points to ~/.rgrc on every dev machine, provisioned by the dotfiles repo."
+      },
+      "new": {
+        "query": "ripgrep config moved to xdg path",
+        "answer": "The config moved from ~/.rgrc to ~/.config/ripgrep/rc to follow XDG conventions; RIPGREP_CONFIG_PATH now points there. The ~/.rgrc path is dead."
+      },
+      "probe": "where is our ripgrep config file now?"
+    },
+    {
+      "id": "U4",
+      "topic": "custom type filters in search script",
+      "old": {
+        "query": "which file types does the code search script include",
+        "answer": "The search script passes --type rust --type md only; web assets are excluded from indexed greps."
+      },
+      "new": {
+        "query": "web type added to search script",
+        "answer": "We added --type-add 'web:*.{html,css,js}' and --type web to the search script, so web assets are now searched alongside rust and md. The rust+md-only setup is outdated."
+      },
+      "probe": "which file types does our search script cover?"
+    },
+    {
+      "id": "U5",
+      "topic": "thread cap",
+      "old": {
+        "query": "why do we cap ripgrep threads",
+        "answer": "CI runs rg with -j4 to cap CPU usage so the runner does not starve parallel jobs."
+      },
+      "new": {
+        "query": "thread cap removed in ci",
+        "answer": "The -j4 cap was removed after moving CI to dedicated runners; rg now picks thread count automatically. The -j4 setting no longer exists."
+      },
+      "probe": "우리 CI에서 rg 스레드 개수 제한 어떻게 하고 있지?"
+    },
+    {
+      "id": "U6",
+      "topic": "binary file handling",
+      "old": {
+        "query": "how do we handle binary files in repo-wide greps",
+        "answer": "Repo-wide greps pass -a/--text so binary files are searched as text; we needed it for the fixture blobs."
+      },
+      "new": {
+        "query": "text flag dropped from repo greps",
+        "answer": "We dropped -a/--text from repo-wide greps and rely on ripgrep's default binary detection; the fixture blobs got proper .gitattributes instead. Searching binaries as text is no longer done."
+      },
+      "probe": "바이너리 파일 검색 처리 지금 어떻게 하지?"
+    },
+    {
+      "id": "R1",
+      "topic": "REAL: auto PCRE2 fallback flag (CHANGELOG 12.0.0)",
+      "old": {
+        "query": "which flag makes ripgrep fall back to pcre2 automatically",
+        "answer": "Use --auto-hybrid-regex: it automatically falls back to PCRE2 when the pattern needs features the default engine lacks (added in 11.0.0, #1155)."
+      },
+      "new": {
+        "query": "auto hybrid regex flag deprecated",
+        "answer": "--auto-hybrid-regex is deprecated as of 12.0.0. Use --engine auto instead — the --engine flag (#1488) switches between regex engines and its auto value replaces the old flag."
+      },
+      "probe": "what flag gives automatic fallback to PCRE2?"
+    },
+    {
+      "id": "R2",
+      "topic": "REAL: pcre2 unicode flag rename (CHANGELOG 12.0.0)",
+      "old": {
+        "query": "how do i turn off unicode for pcre2 patterns",
+        "answer": "Pass --no-pcre2-unicode to disable Unicode mode in PCRE2 patterns."
+      },
+      "new": {
+        "query": "no pcre2 unicode deprecated",
+        "answer": "--no-pcre2-unicode is deprecated. Use --no-unicode, which applies to both the default regex engine and PCRE2; the old flag remains only as an alias and may be removed."
+      },
+      "probe": "how do I disable unicode matching for pcre2 patterns?"
+    },
+    {
+      "id": "R3",
+      "topic": "REAL: terminal hyperlinks introduced (CHANGELOG 14.0.0)",
+      "old": {
+        "query": "can ripgrep emit clickable file links in the terminal",
+        "answer": "No — ripgrep has no hyperlink support; file paths are plain text in the output."
+      },
+      "new": {
+        "query": "hyperlink support added in 14",
+        "answer": "ripgrep 14.0.0 added opt-in terminal hyperlinks via --hyperlink-format (#665): use --hyperlink-format default, or --hyperlink-format vscode to open results in VS Code. Plain-text-only output is no longer the whole story."
+      },
+      "probe": "does ripgrep support terminal hyperlinks?"
+    },
+    {
+      "id": "R4",
+      "topic": "REAL: minimum supported Rust version bump (CHANGELOG 11.0.0)",
+      "old": {
+        "query": "what rust version do we need to build ripgrep",
+        "answer": "ripgrep compiles with Rust 1.28.0 as the minimum supported version."
+      },
+      "new": {
+        "query": "msrv raised to 1.34",
+        "answer": "The minimum supported Rust version increased from 1.28.0 to 1.34.0 in the 11.0.0 release; 1.28.0 no longer builds it."
+      },
+      "probe": "what is the minimum supported Rust version to build?"
+    },
+    {
+      "id": "R5",
+      "topic": "REAL: empty -vf pattern file semantics (CHANGELOG 15.0.0)",
+      "old": {
+        "query": "what does rg -vf do with an empty pattern file",
+        "answer": "rg -vf file with an empty file matches nothing — no patterns means no lines survive the inverted match."
+      },
+      "new": {
+        "query": "empty vf file behavior changed",
+        "answer": "As of 15.0.0, rg -vf file where the file is empty now matches everything: inverting zero patterns leaves every line. The old matches-nothing behavior is gone."
+      },
+      "probe": "what happens when rg -vf gets an empty pattern file?"
+    }
+  ],
+  "adversarial_recency_cases": [
+    {
+      "id": "ADV1",
+      "probe": "how does gitignore precedence work across nested directories?",
+      "exact": {
+        "query": "how does rg decide gitignore precedence",
+        "answer": "Deeper .gitignore files take precedence over shallower ones, and later rules in a file override earlier ones; global gitignore has the lowest precedence."
+      },
+      "adjacent": {
+        "query": "gitignore memory regression",
+        "answer": "A memory usage regression when handling very large gitignore files was fixed by interning glob patterns."
+      }
+    },
+    {
+      "id": "ADV2",
+      "probe": "how do we exclude the target directory from searches?",
+      "exact": {
+        "query": "how do we exclude target dirs in the search script",
+        "answer": "The search script passes --glob '!target/**' so build output never shows up in results."
+      },
+      "adjacent": {
+        "query": "glob completions improved",
+        "answer": "Shell completions for glob-taking flags were improved in zsh and fish; completion now suggests flag values."
+      }
+    },
+    {
+      "id": "ADV3",
+      "probe": "vscode 터미널에서 rg 하이퍼링크 포맷 뭐로 설정하지?",
+      "exact": {
+        "query": "which hyperlink format do we use for vscode terminals",
+        "answer": "Dev containers set --hyperlink-format vscode so clicking a result opens the file in VS Code at the matched line."
+      },
+      "adjacent": {
+        "query": "vscode extension recommendations updated",
+        "answer": "The repo's .vscode/extensions.json now recommends rust-analyzer and even-better-toml for new contributors."
+      }
+    }
+  ],
+  "abstention_cases": [
+    { "id": "A1", "query": "How does the Kafka consumer group handle rebalancing?" },
+    { "id": "A2", "query": "Where is the OAuth token refresh implemented?" },
+    { "id": "A3", "query": "Where are JWT tokens validated?" },
+    { "id": "A4", "query": "What Kubernetes resources does the deployment create?" },
+    { "id": "A5", "query": "How does the websocket reconnect logic work?" },
+    { "id": "A6", "query": "How does cursor-based pagination work in the list API?" },
+    { "id": "A7", "query": "How are webhook signatures verified?" },
+    { "id": "A8", "query": "결제 PG 이중화 구성이 어떻게 되어 있지?" },
+    { "id": "A9", "query": "커넥션 풀 제한 설정 알려줘" }
+  ],
+  "present_controls": [
+    { "id": "P1", "query": "How do glob patterns include and exclude files?" },
+    { "id": "P2", "query": "How does gitignore filtering work?" },
+    { "id": "P3", "query": "How do I enable PCRE2 for lookaround patterns?" },
+    { "id": "P4", "query": "유니코드 매칭은 어떻게 처리돼?" }
+  ]
+}
