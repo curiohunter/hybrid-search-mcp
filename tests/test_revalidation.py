@@ -295,6 +295,45 @@ class TestAnchorIdentityBoundaries:
         result = project_revalidations(repo.root, [("qa-recall", content)])
         assert result.complete is True and result.rows == []
 
+    def test_evidence_bearing_virtual_anchors_never_flag(self, repo: Repo) -> None:
+        """Round-2 final follow-up: records written BEFORE the
+        writer-side boundary already carry virtual anchors in their
+        evidence — the projection itself must filter them, or every such
+        record reads as renamed/deleted (virtual paths are never in
+        HEAD). This is the evidence path, not the legacy-timestamp path."""
+        entries = [_qa(
+            T_QA, [".hybrid-search/qa/2026/07/old.md"],
+            anchor_hashes={
+                ".hybrid-search/qa/2026/07/old.md": {
+                    "h": "previous-hash", "p": "hybrid-search-mcp",
+                },
+                ".conversations/claude/abc.jsonl": "conv-hash",
+                ".git-history/commits-2026-07.md": {"h": "x"},
+            },
+        )]
+        result = project_revalidations(
+            repo.root, entries, project="hybrid-search-mcp",
+        )
+        assert result.complete is True and result.rows == []
+
+    def test_evidence_mixed_virtual_and_source_checks_source_only(
+        self, repo: Repo,
+    ) -> None:
+        """Virtual anchors must be skipped WITHOUT shadowing the real
+        one — even when three of them occupy the leading top-N slots
+        (filter runs before the slice)."""
+        entries = [_qa(
+            T_QA, ["src/auth.py"],
+            anchor_hashes={
+                ".hybrid-search/qa/2026/07/a.md": {"h": "x1"},
+                ".conversations/claude/b.jsonl": {"h": "x2"},
+                ".git-history/c.md": {"h": "x3"},
+                "src/auth.py": {"h": "stale-hash"},
+            },
+        )]
+        result = project_revalidations(repo.root, entries)
+        assert len(result.rows) == 1 and result.rows[0][2] == "src/auth.py"
+
     def test_cross_project_anchor_not_checked_against_local_head(
         self, repo: Repo,
     ) -> None:

@@ -1,4 +1,4 @@
-"""Commit-aware memory invalidation — evidence-based HEAD projection (P1-2, v3).
+"""Commit-aware memory invalidation — evidence-based HEAD projection (P1-2, v4).
 
 A qa answer is written against the code as it was at answer time. When
 the code its anchors point at differs NOW, the memory is no longer
@@ -332,12 +332,15 @@ def project_revalidations(
 ) -> ProjectionResult:
     """The full needs_revalidation projection for the pinned HEAD.
 
-    Evidence-bearing qa (v3): stored working-tree blob hash vs blob at
-    HEAD — exact, branch-agnostic, dirty-worktree correct. Legacy qa:
-    timestamp-estimated base commit (documented approximation; such
-    records can never anchor STRONG anyway). Conservative on semantic
-    absence (no flag); INCOMPLETE on infrastructure errors (caller keeps
-    the previous projection).
+    Evidence-bearing qa (v4): the index content hash the search results
+    carried (result provenance) vs the content hash at the pinned HEAD —
+    exact, branch-agnostic, dirty-worktree correct. Virtual anchors
+    (memory-lane paths) are filtered even in OLD evidence; anchors from
+    another project are not locally revalidatable and are skipped.
+    Legacy qa (no evidence): timestamp-estimated base commit (documented
+    approximation; such records can never anchor STRONG anyway).
+    Conservative on semantic absence (no flag); INCOMPLETE on
+    infrastructure errors (caller keeps the previous projection).
     """
     try:
         head = run_git(repo, "rev-parse", "HEAD")
@@ -352,9 +355,21 @@ def project_revalidations(
         for chunk_id, content in entries:
             stored = _stored_anchor_hashes(content)
             if stored:
-                for path, (stored_hash, anchor_project) in list(
-                    stored.items()
-                )[:_ANCHOR_TOP_N]:
+                # Filter BEFORE the top-N slice: in records written before
+                # the writer-side boundary, virtual anchors may occupy the
+                # leading slots and would otherwise shadow a real source
+                # anchor behind them.
+                source_anchors = [
+                    (path, value) for path, value in stored.items()
+                    if is_source_anchor(None, path)
+                    # Node types weren't stored in old evidence, so the
+                    # virtual-prefix filter is the strongest recoverable
+                    # boundary: those paths are never in HEAD and must
+                    # not read as renamed/deleted (round-2 follow-up).
+                ]
+                for path, (stored_hash, anchor_project) in source_anchors[
+                    :_ANCHOR_TOP_N
+                ]:
                     if (
                         project is not None
                         and anchor_project is not None
