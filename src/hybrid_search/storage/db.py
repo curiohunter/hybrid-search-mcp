@@ -710,24 +710,39 @@ class StoreDB:
         )
         return {row["chunk_id"]: row["superseded_by"] for row in cur.fetchall()}
 
-    # --- qa revalidation (P1-2 commit-aware invalidation) ------------------
-    # Rows flag qa chunks whose anchored files changed in a later commit.
-    # Side table on purpose: rewriting qa frontmatter would change the
-    # content hash and re-embed every flagged memory.
+    # --- qa revalidation (P1-2 commit-aware invalidation, v2) ---------------
+    # Rows flag qa chunks whose anchored files differ between qa-time and
+    # current HEAD. Side table on purpose: rewriting qa frontmatter would
+    # change the content hash and re-embed every flagged memory. The table
+    # is a PROJECTION — replaced wholesale each pass, never accumulated
+    # (round-2 lifecycle contract: rebuild/checkout/revert safe). Orphan
+    # rows are impossible by construction (full replace each pass).
 
-    def add_qa_revalidations(
+    def replace_qa_revalidation(
         self,
         conn: sqlite3.Connection,
         project_id: str,
         rows: list[tuple[str, str, str]],
+        *,
+        projection_head: str | None = None,
     ) -> None:
-        """Upsert ``(chunk_id, cause_commit, changed_path)`` flags."""
+        """Overwrite the project's flags with the freshly-computed
+        projection, atomically, recording which HEAD it reflects."""
+        conn.execute(
+            "DELETE FROM qa_revalidation WHERE project_id = ?", (project_id,)
+        )
         if rows:
             conn.executemany(
                 "INSERT OR REPLACE INTO qa_revalidation "
                 "(chunk_id, cause_commit, changed_path, project_id) "
                 "VALUES (?, ?, ?, ?)",
                 [(c, cause, path, project_id) for c, cause, path in rows],
+            )
+        if projection_head:
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) "
+                "VALUES ('qa_reval_projection_head', ?)",
+                (projection_head,),
             )
 
     def get_qa_revalidations(
@@ -746,14 +761,6 @@ class StoreDB:
             row["chunk_id"]: (row["cause_commit"], row["changed_path"])
             for row in cur.fetchall()
         }
-
-    def prune_orphan_qa_revalidations(self, conn: sqlite3.Connection) -> int:
-        """Drop flags whose qa chunk no longer exists in the store."""
-        cur = conn.execute(
-            "DELETE FROM qa_revalidation WHERE NOT EXISTS "
-            "(SELECT 1 FROM chunks c WHERE c.id = qa_revalidation.chunk_id)"
-        )
-        return cur.rowcount
 
     # Memory/derived lanes are excluded on purpose: a past *question* about
     # an absent topic echoes the topic word into qa/conv chunks, and the

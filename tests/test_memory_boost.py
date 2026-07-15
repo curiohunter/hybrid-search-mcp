@@ -64,6 +64,11 @@ class TestMemoryIntent:
         "what is the most recent thing we worked on",
         "show me the latest progress",
         "what did we do recently",
+        # Round-2 FN corpus: plural/complete word forms must trigger.
+        "recent changes",
+        "recent activity",
+        "recent commits",
+        "latest updates",
         "the other day we looked at tuition",
         "before, I searched for admission_results",
         "last time you mentioned consultations",
@@ -81,13 +86,19 @@ class TestMemoryIntent:
         "how does authentication work",
         "",
         "TuitionChargeSection 컴포넌트",
-        # Topical queries with bare recency words (round-2 pre-fix,
-        # Codex negative corpus): recency without a work/conversation
-        # object is a lookup, not recall.
+        # Topical queries with bare recency words (round-2 negative
+        # corpus): recency without a work/conversation object is a
+        # lookup, not recall.
         "최신 OpenAI API 사용법",
         "최근 Python 버전 차이",
         "latest schema 문서 찾아줘",
         "recent Python versions comparison",
+        # Round-2 additions: superlatives and verbs without OUR-work
+        # objects are still topical.
+        "가장 최근 OpenAI 모델은 뭐야?",
+        "최신 상태 관리 라이브러리 추천해줘",
+        "what is the most recent Python release?",
+        "did Python change recently?",
     ])
     def test_non_recall_queries_do_not_trigger(self, query: str) -> None:
         assert _has_memory_intent(query) is False

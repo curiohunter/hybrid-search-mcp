@@ -231,14 +231,14 @@ _MEMORY_INTENT_KO = (
     # zero of the tokens above, so the conv lane + in-flight overlay —
     # the exact machinery built for the cross-agent handoff loop —
     # never fired and the ambient qa lane served May records
-    # (2026-07-15 Codex field check). COMPOUND forms only: bare
-    # "최근/최신" false-positives on topical queries ("최근 Python 버전
-    # 차이", "최신 OpenAI API 사용법") — recency must bind to a
-    # work/conversation object to mean recall (round-2 pre-fix).
-    "가장 최근",
+    # (2026-07-15 Codex field check). COMPOUND forms only, and the
+    # recency word must bind to a WORK/CONVERSATION object: bare "최근/
+    # 최신" false-positives on topical queries ("최근 Python 버전 차이"),
+    # and so do superlatives without an object ("가장 최근 OpenAI 모델")
+    # and noun collisions ("최신 상태 관리 라이브러리") — round-2 review.
     "최근 작업", "최근 대화", "최근 진행", "최근 세션", "최근 커밋",
-    "최근에 한", "최근에 뭐", "최근에 나눈",
-    "최신 작업", "최신 진행", "최신 상태", "최신 상황", "최신 대화",
+    "최근에 한", "최근에 뭐", "최근에 나눈", "최근에 했",
+    "최신 작업", "최신 진행", "최신 대화",
     # History-shaped questions. "How was this built / why did it change"
     # is answered by past conversations, plans, and commits — the same
     # lanes recall questions use. Without these tokens the conv lane never
@@ -249,15 +249,18 @@ _MEMORY_INTENT_KO = (
 )
 _MEMORY_INTENT_EN_RE = re.compile(
     r"\b(previously|earlier|before|last\s+time|the\s+other\s+day"
-    # Recency binds to a work/conversation object — bare "latest"/
-    # "recent" false-positives on topical lookups ("latest schema doc",
-    # "recent Python versions"). "most recent" stays standalone: the
-    # superlative is inherently about OUR timeline.
-    r"|most\s+recent"
-    r"|recent(?:ly)?\s+(?:work|task|progress|conversation|session|chang|commit|activit)"
-    r"|latest\s+(?:progress|work|task|status|state|conversation|session|update)"
+    # Recency binds to a work/conversation object — round-2 review:
+    # standalone "most recent" false-positives on topical lookups
+    # ("most recent Python release"), and the object nouns must be
+    # spelled to their word end or the trailing \b of this whole group
+    # rejects plurals ("recent changes" failed on the "chang" stem).
+    r"|most\s+recent\s+(?:things?|works?|tasks?|changes?|commits?"
+    r"|conversations?|sessions?|activit(?:y|ies)|updates?|progress)"
+    r"|recent(?:ly)?\s+(?:works?|tasks?|progress|conversations?|sessions?"
+    r"|changes?|commits?|activit(?:y|ies)|updates?)"
+    r"|latest\s+(?:progress|works?|tasks?|status|conversations?|sessions?"
+    r"|updates?|changes?|commits?)"
     r"|what\s+did\s+(?:i|we|you)\s+(?:ask|say|do|work)"
-    r"|(?:did|done|worked\s+on)\b.{0,20}\brecently"
     r"|how\s+(?:was|did)\s+\w+.*\s(?:built|made|implemented|changed?|evolve)"
     r"|why\s+(?:was|did)\s+\w+.*\s(?:added|built|changed?|removed)"
     r"|history\s+of)\b",
@@ -1160,7 +1163,7 @@ class SearchOrchestrator:
             # classifies on the ORIGINAL query's anchoring rules, so the
             # strong demotion / corpus-absent caps are untouched.
             if is_korean_dominant(query):
-                en_results, cross_language_state = self._cross_language_memory_results(
+                en_results, cross_language_state = self._cross_language_with_deadline(
                     query, project_infos,
                     depth=memory_depth,
                     memory_node_types=memory_node_types,
@@ -1335,6 +1338,41 @@ class SearchOrchestrator:
         except Exception:  # pragma: no cover — fail open to single lane
             logger.debug("query translation unavailable", exc_info=True)
             return None
+
+    # End-to-end wall for the WHOLE cross-language lane: translation +
+    # translated-query embedding + extra retrieval. The per-request
+    # translation timeout (2.5s) alone did not bound search latency —
+    # the embedding call after it could wait up to 120s (round-2 review;
+    # the 5.8s cold measurement was this). Cold-cache worst case stays
+    # around translation(≤2.5s) + embed + retrieval; past this wall the
+    # lane is dropped and reported "skipped". The orphaned worker thread
+    # (daemon) may finish in the background; its result is discarded.
+    _CROSS_LANGUAGE_DEADLINE_S = 6.0
+
+    def _cross_language_with_deadline(
+        self, *args, deadline_s: float | None = None, **kwargs
+    ) -> tuple[list[HybridResult], str]:
+        deadline = deadline_s or self._CROSS_LANGUAGE_DEADLINE_S
+        executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="xlang-lane"
+        )
+        try:
+            future = executor.submit(
+                self._cross_language_memory_results, *args, **kwargs
+            )
+            try:
+                return future.result(timeout=deadline)
+            except FutureTimeoutError:
+                logger.debug(
+                    "cross-language lane exceeded %.1fs deadline — skipped",
+                    deadline,
+                )
+                return [], "skipped"
+            except Exception:
+                logger.debug("cross-language lane failed", exc_info=True)
+                return [], "skipped"
+        finally:
+            executor.shutdown(wait=False)
 
     def _cross_language_memory_results(
         self,

@@ -603,18 +603,17 @@ def _run_qa_revalidation(
     project_name: str,
     project_path: Path,
 ) -> None:
-    """Flag qa memories whose anchored files changed in HEAD (P1-2).
+    """Recompute the needs_revalidation projection against current HEAD.
 
-    Post-commit reindex is the natural hook: HEAD's changed files are
-    exactly "what just became true". Older qa answered from those files
-    is flagged ``needs_revalidation`` in the side table; search demotes
-    and marks it until a newer answer supersedes. No-op outside git;
-    never blocks a reindex.
+    P1-2 v2 (round-2 lifecycle contract): the flag set is a pure function
+    of (HEAD, qa corpus) — recomputed from scratch and swapped atomically
+    every pass. No cursor, no commit walk: rebuild restores exactly the
+    flags that still hold, checkouts can't leak flags across branches,
+    reverts clear flags, and there is no per-commit failure to skip.
+    No-op outside git; never blocks a reindex.
     """
-    import subprocess
-
     try:
-        from hybrid_search.memory.revalidation import compute_revalidations
+        from hybrid_search.memory.revalidation import project_revalidations
 
         pinfo = registry.get_by_name(project_name)
         if pinfo is None:
@@ -623,73 +622,24 @@ def _run_qa_revalidation(
         if not idx.store_db.exists():
             return
 
-        def _git(*argv: str) -> str:
-            return subprocess.run(
-                ["git", *argv], cwd=project_path, capture_output=True,
-                text=True, timeout=10, check=True,
-            ).stdout.strip()
-
-        try:
-            head = _git("rev-parse", "HEAD")
-        except Exception:
-            return  # not a git repo / no commits — nothing to anchor against
-
         db = StoreDB(idx.store_db)
         try:
-            # Commits are processed exactly once: the range is
-            # (last processed, HEAD]. First run seeds on HEAD only —
-            # flagging against the whole history would mark most of the
-            # corpus at once with no new information.
-            last = db.get_meta("qa_reval_last_commit")
-            if last == head:
-                return
-            try:
-                if last:
-                    pending = _git("rev-list", "--reverse", f"{last}..HEAD").splitlines()
-                else:
-                    pending = [head]
-            except Exception:
-                pending = [head]  # `last` may have been rebased away
-            from hybrid_search.memory.revalidation import next_commit_batch
-
-            commits, cursor = next_commit_batch(pending)
-            if not commits:
-                db.set_meta("qa_reval_last_commit", head)
-                return
-
             qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
             entries = [(c.id, c.content or "") for c in qa_chunks]
-            rows: list[tuple[str, str, str]] = []
-            for sha in commits:
-                try:
-                    changed = set(
-                        _git("diff-tree", "--no-commit-id", "--name-only", "-r", sha)
-                        .splitlines()
-                    )
-                    commit_iso = _git("show", "-s", "--format=%cI", sha)
-                    commit_time = datetime.fromisoformat(commit_iso)
-                except Exception:
-                    continue
-                rows.extend(compute_revalidations(
-                    entries, changed,
-                    cause_commit=sha[:7],
-                    commit_time=commit_time,
-                ))
+            rows, head = project_revalidations(project_path, entries)
+            if head is None:
+                return  # not a git repo / no commits — keep prior state
             with db.transaction() as conn:
-                db.add_qa_revalidations(conn, pinfo.id, rows)
-                pruned = db.prune_orphan_qa_revalidations(conn)
-            # Cursor = last PROCESSED commit — a partial batch resumes on
-            # the next reindex instead of silently skipping to HEAD.
-            db.set_meta("qa_reval_last_commit", cursor or head)
-            backlog = len(pending) - len(commits)
+                db.replace_qa_revalidation(
+                    conn, pinfo.id, rows, projection_head=head,
+                )
         finally:
             db.close()
-        if rows or backlog:
+        if rows:
             print(
-                f"QA revalidation: {len(rows)} memor{'y' if len(rows) == 1 else 'ies'} "
-                f"flagged ({len(commits)} commit(s))."
-                + (f" {pruned} orphan flag(s) pruned." if pruned else "")
-                + (f" {backlog} commit(s) deferred to next reindex." if backlog else "")
+                f"QA revalidation: {len(rows)} memor"
+                f"{'y' if len(rows) == 1 else 'ies'} need revalidation "
+                f"(projection @ {head[:7]})."
             )
     except Exception as exc:  # never block reindex on the flagging pass
         logger.debug("qa revalidation pass skipped: %s", exc)

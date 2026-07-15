@@ -204,3 +204,59 @@ class TestCrossLanguageLane:
         orch._translator.translate.return_value = "translated"
         orch._embedder.embed_query.side_effect = RuntimeError("API down")
         assert self._call(orch) == ([], "skipped")
+
+
+class TestEndToEndDeadline:
+    """Round-2 fix 4: the WHOLE lane (translation + embedding +
+    retrieval) is bounded — a slow embedding call must not stall the
+    search past the deadline; the lane is dropped and reported skipped."""
+
+    def _deadline_call(self, orch, deadline_s: float):
+        return orch._cross_language_with_deadline(
+            "가장 최근 대화가 뭐였지?", [_PINFO],
+            deadline_s=deadline_s,
+            depth=30,
+            memory_node_types=["qa_log"],
+            file_pattern=None,
+            exclude_pattern=None,
+            primary_project_id=None,
+            memory_intent=True,
+            limit=10,
+        )
+
+    def test_deadline_exceeded_returns_skipped_quickly(self, monkeypatch) -> None:
+        import time as _time
+
+        monkeypatch.setenv("HYBRID_SEARCH_TRANSLATION", "1")
+        orch = _mk_orch()
+
+        def slow_lane(*args, **kwargs):
+            _time.sleep(0.5)
+            return [_mk_result("late")], "used"
+
+        orch._cross_language_memory_results = slow_lane
+        start = _time.monotonic()
+        result = self._deadline_call(orch, deadline_s=0.05)
+        elapsed = _time.monotonic() - start
+        assert result == ([], "skipped")
+        assert elapsed < 0.4  # bounded well under the worker's 0.5s sleep
+
+    def test_fast_lane_passes_through(self, monkeypatch) -> None:
+        monkeypatch.setenv("HYBRID_SEARCH_TRANSLATION", "1")
+        orch = _mk_orch()
+        orch._cross_language_memory_results = lambda *a, **k: (
+            [_mk_result("fast")], "used",
+        )
+        results, state = self._deadline_call(orch, deadline_s=2.0)
+        assert [r.chunk_id for r in results] == ["fast"]
+        assert state == "used"
+
+    def test_worker_exception_reports_skipped(self, monkeypatch) -> None:
+        monkeypatch.setenv("HYBRID_SEARCH_TRANSLATION", "1")
+        orch = _mk_orch()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("lane crashed")
+
+        orch._cross_language_memory_results = boom
+        assert self._deadline_call(orch, deadline_s=1.0) == ([], "skipped")
