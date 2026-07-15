@@ -233,20 +233,23 @@ def _mk(
 
 
 class TestSpliceSuperseding:
-    def test_correction_lands_directly_above_stale_hit(self) -> None:
+    def test_full_list_replaces_stale_and_keeps_code_slots(self) -> None:
+        """Round-1 slot invariant: at full top-N the correction takes the
+        stale slot; code hits never lose theirs."""
         stale = _mk("old")
         results = [stale, _mk("code-1", node_type="function"), _mk("code-2", node_type="function")]
         out = _splice_superseding(
-            results, {"old": "new"}, lambda nid, s: _mk(nid, score=s.rrf_score)
+            results, {"old": "new"}, lambda nid, s: _mk(nid, score=s.rrf_score),
+            limit=3,
         )
-        assert [r.chunk_id for r in out] == ["new", "old", "code-1"]
-        assert len(out) == len(results)  # slot count preserved, tail dropped
+        assert [r.chunk_id for r in out] == ["new", "code-1", "code-2"]
 
-    def test_stale_hit_is_marked_superseded(self) -> None:
+    def test_spare_capacity_inserts_and_keeps_marked_stale(self) -> None:
         results = [_mk("old"), _mk("code", node_type="function")]
         out = _splice_superseding(
-            results, {"old": "new"}, lambda nid, s: _mk(nid)
+            results, {"old": "new"}, lambda nid, s: _mk(nid), limit=5,
         )
+        assert [r.chunk_id for r in out] == ["new", "old", "code"]
         stale = next(r for r in out if r.chunk_id == "old")
         assert _SUPERSEDED_MARK in (stale.trust_meta or "")
         assert stale.snippet.startswith(_SUPERSEDED_MARK)
@@ -254,8 +257,10 @@ class TestSpliceSuperseding:
     def test_spliced_result_inherits_stale_score(self) -> None:
         results = [_mk("old", score=0.0173), _mk("code", node_type="function")]
         out = _splice_superseding(
-            results, {"old": "new"}, lambda nid, s: _mk(nid, score=s.rrf_score)
+            results, {"old": "new"}, lambda nid, s: _mk(nid, score=s.rrf_score),
+            limit=2,
         )
+        assert out[0].chunk_id == "new"
         assert out[0].rrf_score == pytest.approx(0.0173)
 
     def test_target_retrieved_above_marks_stale_without_splice(self) -> None:
@@ -286,9 +291,10 @@ class TestSpliceSuperseding:
             {"o1": "n1", "o2": "n2", "o3": "n3"},
             lambda nid, s: _mk(nid),
             cap=2,
+            limit=3,
         )
-        spliced = [r.chunk_id for r in out if r.chunk_id.startswith("n")]
-        assert spliced == ["n1", "n2"]
+        # Full list → replacements; cap stops after two.
+        assert [r.chunk_id for r in out] == ["n1", "n2", "o3"]
 
     def test_non_qa_hit_never_spliced(self) -> None:
         results = [_mk("old", node_type="function")]
@@ -361,8 +367,15 @@ class TestR1EndToEnd:
                     return None
                 return _mk(nid, score=stale.rrf_score)
 
-            out = _splice_superseding(results, db.get_qa_superseding(["qa-old"]), fetch)
+            mapping = db.get_qa_superseding(["qa-old"])
+            # Spare capacity: correction above the marked stale hit.
+            out = _splice_superseding(results, mapping, fetch, limit=5)
             ids = [r.chunk_id for r in out]
             assert ids.index("qa-new") < ids.index("qa-old")
+            # Full list: correction REPLACES the stale hit — stale-only
+            # is impossible either way.
+            out_full = _splice_superseding(results, mapping, fetch, limit=2)
+            ids_full = [r.chunk_id for r in out_full]
+            assert "qa-new" in ids_full and "qa-old" not in ids_full
         finally:
             db.close()

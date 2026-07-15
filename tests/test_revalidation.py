@@ -88,6 +88,33 @@ class TestComputeRevalidations:
         ) == []
 
 
+class TestCommitBatching:
+    """Round-1 fix 3: >cap backlogs must resume, never skip to HEAD."""
+
+    def test_backlog_of_51_processes_oldest_50_and_resumes(self) -> None:
+        from hybrid_search.memory.revalidation import next_commit_batch
+
+        commits = [f"c{i:03d}" for i in range(51)]  # oldest → newest
+        batch, cursor = next_commit_batch(commits, cap=50)
+        assert batch == commits[:50]
+        assert cursor == "c049"          # NOT head — resume point
+        # Next reindex picks up the remainder and lands on head.
+        batch2, cursor2 = next_commit_batch(commits[50:], cap=50)
+        assert batch2 == ["c050"]
+        assert cursor2 == "c050"
+
+    def test_small_range_cursor_is_head(self) -> None:
+        from hybrid_search.memory.revalidation import next_commit_batch
+
+        batch, cursor = next_commit_batch(["a", "b", "head"], cap=50)
+        assert batch == ["a", "b", "head"] and cursor == "head"
+
+    def test_empty_range(self) -> None:
+        from hybrid_search.memory.revalidation import next_commit_batch
+
+        assert next_commit_batch([], cap=50) == ([], None)
+
+
 class TestRevalidationStore:
     def test_roundtrip_and_orphan_prune(self, tmp_path: Path) -> None:
         from hybrid_search.storage.db import ChunkRecord, FileRecord

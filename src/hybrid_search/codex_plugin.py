@@ -38,6 +38,9 @@ class SmokeCheck:
     name: str
     ok: bool
     detail: str
+    # True when the check could not run (e.g. qa logging disabled) —
+    # displayed as SKIP, never as PASS (round-1 review).
+    skipped: bool = False
 
 
 def build_plugin_manifest() -> dict[str, Any]:
@@ -102,12 +105,18 @@ def install_codex_plugin(
 
 
 def smoke_test(project_root: Path, *, user: bool = False) -> list[SmokeCheck]:
-    """Post-install proof that the Codex side actually works.
+    """CONFIG/HANDLER smoke — not an install E2E (round-1 review).
 
-    Four checks, mirroring the P0-3 spec: hooks registered, Stop-event
-    round-trip writes a qa record (cleaned up afterwards — a smoke
-    artifact must never pollute the corpus), MCP registered for both
-    agents, and both agents point at the same `.hybrid-search/` root.
+    What this proves: hook config is registered, the Stop handler writes
+    a qa record when invoked in-process (cleaned up afterwards — a smoke
+    artifact must never pollute the corpus), MCP config keys exist on
+    both agents, and both agent surfaces point at the same
+    `.hybrid-search/` root.
+
+    What this does NOT prove (release gate, pending — CX-T2/CX-T3):
+    Codex actually invoking the installed hook command as a subprocess,
+    a live MCP handshake + search round-trip, and a real
+    Claude-write → Codex-read recall on a clean machine.
     """
     checks: list[SmokeCheck] = []
     status = codex_hooks.codex_status(project_root)
@@ -140,7 +149,8 @@ def _stop_roundtrip_check(project_root: Path) -> SmokeCheck:
     if not qa_log.is_enabled():
         return SmokeCheck(
             "stop-event-roundtrip", True,
-            "skipped — qa logging disabled by env",
+            "qa logging disabled by env — roundtrip not exercised",
+            skipped=True,
         )
     marker = f"codex-smoke-{uuid.uuid4().hex[:8]}"
     event = {

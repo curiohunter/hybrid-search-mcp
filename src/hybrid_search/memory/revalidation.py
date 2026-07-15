@@ -30,7 +30,27 @@ from datetime import datetime
 from hybrid_search.memory.integrity import _extract_result_paths
 from hybrid_search.memory.supersession import _parse_timestamp
 
-__all__ = ["anchor_paths", "compute_revalidations"]
+__all__ = ["anchor_paths", "compute_revalidations", "next_commit_batch"]
+
+# Per-reindex commit-processing cap. A pathological backlog must not
+# stall a reindex; the remainder is picked up by the NEXT reindex via
+# the cursor — never dropped (round-1 review: taking the newest 50 and
+# jumping the cursor to HEAD silently lost the older commits' changes).
+COMMIT_BATCH_CAP = 50
+
+
+def next_commit_batch(
+    commits: list[str], cap: int = COMMIT_BATCH_CAP
+) -> tuple[list[str], str | None]:
+    """(batch to process now, cursor to persist) — oldest-first.
+
+    ``commits`` is the unprocessed range oldest→newest (``git rev-list
+    --reverse last..HEAD``). The cursor is the LAST PROCESSED commit, so
+    a partial batch leaves the cursor mid-range and the next reindex
+    resumes exactly where this one stopped.
+    """
+    batch = commits[:cap]
+    return batch, (batch[-1] if batch else None)
 
 # A qa's anchors are the TOP results it was answered from. Deeper ranks
 # are incidental co-retrievals — anchoring on all ten would invalidate

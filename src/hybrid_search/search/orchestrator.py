@@ -187,6 +187,11 @@ class HybridSearchResponse:
     # Gap from the top hit to the first different-file result — the value
     # classification actually uses (score_gap keeps the raw top1-top2).
     effective_gap: float | None = None
+    # ADV3 observability contract: "used" when the KO→EN dual-query
+    # memory lane ran with a translation, "skipped" when a
+    # Hangul-dominant query fell back to the single lane (translation
+    # missing/failed/disabled), None when the lane was not applicable.
+    cross_language_lane: str | None = None
 
 
 # --- Memory Layer boost ------------------------------------------------
@@ -740,33 +745,44 @@ def _splice_superseding(
     superseding: dict[str, str],
     fetch: "Callable[[str, HybridResult], HybridResult | None]",
     cap: int = _SUPERSESSION_SPLICE_CAP,
+    limit: int | None = None,
 ) -> list[HybridResult]:
-    """Insert the newest same-topic qa directly above each stale qa hit.
+    """Surface the newest same-topic qa wherever a stale qa hit appears.
 
     ``superseding`` maps stale chunk_id → newest chunk_id (index-time).
     ``fetch(newer_id, stale_hit)`` materialises the newer chunk as a
-    HybridResult, or None when it no longer exists. The list length is
-    preserved: a splice pushes the tail out rather than growing the
-    response past its limit. Runs after confidence classification, so
-    spliced entries never feed the gap/coherence inputs.
+    HybridResult, or None when it no longer exists.
+
+    Slot invariant (round-1 review): code hits never lose their slots to
+    a splice. With spare capacity (len < limit) the correction is
+    INSERTED above the stale hit, which stays visible with a superseded
+    mark. At full capacity the correction REPLACES the stale hit in
+    place — the stale answer drops out entirely rather than displacing
+    the tail code hit. Runs after confidence classification, so spliced
+    entries never feed the gap/coherence inputs.
     """
     if not superseding:
         return results
+    limit = len(results) if limit is None else max(limit, 1)
     position = {r.chunk_id: i for i, r in enumerate(results)}
     out: list[HybridResult] = []
     spliced = 0
     marked = 0
+    inserted = 0
     for i, r in enumerate(results):
         newer_id = superseding.get(r.chunk_id)
         if r.node_type == "qa_log" and newer_id:
             if newer_id not in position and spliced < cap:
                 newer = fetch(newer_id, r)
                 if newer is not None:
-                    out.append(newer)
                     position[newer_id] = i
                     spliced += 1
-                    r = _mark_superseded(r)
-                    marked += 1
+                    out.append(newer)
+                    if len(results) + inserted < limit:
+                        inserted += 1
+                        out.append(_mark_superseded(r))
+                    # else: full — the correction takes the stale slot.
+                    continue
             elif position.get(newer_id, i) < i:
                 # The newest answer was retrieved on its own and already
                 # ranks above — no splice needed, but the stale hit still
@@ -776,7 +792,7 @@ def _splice_superseding(
         out.append(r)
     if spliced == 0 and marked == 0:
         return results
-    return out[: len(results)]
+    return out
 
 
 def _apply_revalidation_flag(
@@ -793,6 +809,27 @@ def _apply_revalidation_flag(
         trust_meta=f"{r.trust_meta} {note}".strip() if r.trust_meta else note,
         snippet=f"{note}\n{r.snippet}" if r.snippet else note,
     )
+
+
+def _cap_confidence_for_displayed_top(
+    response: "HybridSearchResponse",
+) -> "HybridSearchResponse":
+    """Demote-only trust cap on the DISPLAYED top hit (round-1 review).
+
+    `_make_response` caps on the score-ranked top; the supersession
+    splice can then change what actually sits at position 0. If that
+    displayed top is a qa memory that could not have anchored STRONG had
+    retrieval surfaced it (not verified/accepted — includes legacy,
+    inferred, and revalidation-flagged records), the label must drop to
+    mixed. Never upgrades, never recomputes gap/coherence."""
+    if response.confidence != "strong" or not response.results:
+        return response
+    top = response.results[0]
+    if top.node_type == "qa_log" and _memory_verification(top) not in {
+        "verified", "accepted",
+    }:
+        return _dc_replace(response, confidence="mixed")
+    return response
 
 
 def _mark_superseded(r: HybridResult) -> HybridResult:
@@ -1053,6 +1090,7 @@ class SearchOrchestrator:
                 )
 
         memory_results: list[HybridResult] = []
+        cross_language_state: str | None = None
         if node_types is None:
             if memory_intent:
                 memory_depth = max(retrieval_depth, 50)
@@ -1102,7 +1140,7 @@ class SearchOrchestrator:
             # classifies on the ORIGINAL query's anchoring rules, so the
             # strong demotion / corpus-absent caps are untouched.
             if is_korean_dominant(query):
-                en_results = self._cross_language_memory_results(
+                en_results, cross_language_state = self._cross_language_memory_results(
                     query, project_infos,
                     depth=memory_depth,
                     memory_node_types=memory_node_types,
@@ -1249,9 +1287,19 @@ class SearchOrchestrator:
         # correction can never alter gap/coherence inputs (holdout rule:
         # the splice repairs exposure, not retrieval strength).
         if node_types is None:
-            final = self._complete_supersession(response.results, project_infos, query)
+            final = self._complete_supersession(
+                response.results, project_infos, query, limit=limit,
+            )
             if final is not response.results:
                 response = _dc_replace(response, results=final)
+                # Round-1 review: the splice changed the DISPLAYED top
+                # hit after classification, so re-apply the trust cap on
+                # what the agent will actually read. Demote-only — a
+                # splice can never raise confidence, and gap/coherence
+                # are never recomputed.
+                response = _cap_confidence_for_displayed_top(response)
+        if cross_language_state is not None:
+            response = _dc_replace(response, cross_language_lane=cross_language_state)
         return response
 
     def _translate_query(self, query: str) -> str | None:
@@ -1280,23 +1328,26 @@ class SearchOrchestrator:
         primary_project_id: str | None,
         memory_intent: bool,
         limit: int,
-    ) -> list[HybridResult]:
+    ) -> tuple[list[HybridResult], str]:
         """Memory-lane retrieval with the English translation of ``query``.
 
-        Fail-open at every step: no translation, no embedding, or an
-        empty lane all degrade to [] — exactly the pre-fix behavior. The
-        translated lane classifies its own BM25 weight (the EN text CAN
-        match lexically, unlike the Korean original) and applies the same
-        ambient rank gate as the primary memory lane.
+        Returns ``(results, state)`` — state is the ADV3 observability
+        contract: "used" when the translated lane actually ran, "skipped"
+        on any fail-open path (no translation, embed failure, retrieval
+        failure). Fail-open at every step: skipped == exactly the pre-fix
+        single-lane behavior. The translated lane classifies its own BM25
+        weight (the EN text CAN match lexically, unlike the Korean
+        original) and applies the same ambient rank gate as the primary
+        memory lane.
         """
         translated = self._translate_query(query)
         if not translated:
-            return []
+            return [], "skipped"
         try:
             en_vector = self._embedder.embed_query(translated)
         except Exception:
             logger.debug("cross-language embed failed", exc_info=True)
-            return []
+            return [], "skipped"
         en_weight, _ = get_bm25_weight(translated, None)
         try:
             if len(project_infos) == 1:
@@ -1313,7 +1364,7 @@ class SearchOrchestrator:
                 )
         except Exception:
             logger.debug("cross-language retrieval failed", exc_info=True)
-            return []
+            return [], "skipped"
         fused = reciprocal_rank_fusion(
             bm25_ids, vector_ids,
             k=self._config.search.rrf_k,
@@ -1326,7 +1377,7 @@ class SearchOrchestrator:
                 if (r.bm25_rank is not None and r.bm25_rank <= 10)
                 or (r.vector_rank is not None and r.vector_rank <= 10)
             ]
-        return results
+        return results, "used"
 
     def _first_corpus_absent_term(
         self, project_infos: list["ProjectInfo"], terms: list[str]
@@ -1371,13 +1422,18 @@ class SearchOrchestrator:
         results: list[HybridResult],
         project_infos: list["ProjectInfo"],
         query: str,
+        limit: int | None = None,
     ) -> list[HybridResult]:
         """R1 fix — splice the newest same-topic qa above stale qa hits.
 
         Reads the index-time ``qa_supersession`` mapping and materialises
-        the superseding chunk when it isn't already in the results. Any
-        failure returns the results untouched — a search must never break
-        on its own repair layer.
+        the superseding chunk when it isn't already in the results. A
+        spliced-in chunk passes the same trust checks as a retrieved one
+        (round-1 review): its ``qa_revalidation`` flag is looked up and
+        stamped, so the display layer and the post-splice confidence cap
+        see it exactly as retrieval would have. Any failure returns the
+        results untouched — a search must never break on its own repair
+        layer.
         """
         qa_ids = [r.chunk_id for r in results if r.node_type == "qa_log"]
         if not qa_ids:
@@ -1425,7 +1481,7 @@ class SearchOrchestrator:
                     # slots as one answer unit, and an artificial higher
                     # score would leak into nothing (confidence already
                     # classified) but would misreport retrieval strength.
-                    return HybridResult(
+                    built = HybridResult(
                         chunk_id=newer_id,
                         rrf_score=stale.rrf_score,
                         bm25_rank=None,
@@ -1442,9 +1498,15 @@ class SearchOrchestrator:
                         file_mtime=mtime,
                         trust_meta=trust_meta,
                     )
+                    # Round-1 review: a spliced-in memory must pass the
+                    # same revalidation lookup a retrieved one gets in
+                    # _enrich_results — otherwise a stale-anchored
+                    # correction arrives unflagged.
+                    reval = db.get_qa_revalidations([newer_id])
+                    return _apply_revalidation_flag(built, reval.get(newer_id))
                 return None
 
-            return _splice_superseding(results, superseding, fetch)
+            return _splice_superseding(results, superseding, fetch, limit=limit)
         except Exception:  # pragma: no cover — never fail a search on this
             logger.debug("supersession splice skipped", exc_info=True)
             return results

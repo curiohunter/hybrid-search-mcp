@@ -161,6 +161,7 @@ def compute_report(
     )
 
     if _slice:
+        # Marginal slices (corpus=X, language=Y) ...
         for key in slice_keys:
             values = sorted({str(r[key]) for r in rows if r.get(key)})
             for value in values:
@@ -168,6 +169,22 @@ def compute_report(
                 report.slices[f"{key}={value}"] = compute_report(
                     subset, _slice=False,
                 )
+        # ... plus the true CROSS slices (corpus=X|language=Y) — the
+        # contract is "corpus×language"; marginals alone would let a
+        # KO-tuned threshold hide inside a mixed-language corpus slice.
+        if len(slice_keys) >= 2:
+            combos = sorted({
+                tuple(str(r[k]) for k in slice_keys)
+                for r in rows
+                if all(r.get(k) for k in slice_keys)
+            })
+            for combo in combos:
+                subset = [
+                    r for r in rows
+                    if all(str(r.get(k, "")) == v for k, v in zip(slice_keys, combo))
+                ]
+                name = "|".join(f"{k}={v}" for k, v in zip(slice_keys, combo))
+                report.slices[name] = compute_report(subset, _slice=False)
     return report
 
 

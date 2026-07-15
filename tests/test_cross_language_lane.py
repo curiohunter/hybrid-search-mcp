@@ -157,9 +157,10 @@ class TestCrossLanguageLane:
         orch._translator.translate.return_value = "what was our latest conversation?"
         orch._enrich_results = MagicMock(return_value=[_mk_result("en-1")])
 
-        results = self._call(orch)
+        results, state = self._call(orch)
 
         assert [r.chunk_id for r in results] == ["en-1"]
+        assert state == "used"
         # Retrieval must run on the TRANSLATED text, not the Korean original.
         args = orch._search_single.call_args[0]
         assert args[1] == "what was our latest conversation?"
@@ -176,29 +177,30 @@ class TestCrossLanguageLane:
             _mk_result("good", bm25_rank=3, vector_rank=None),
             _mk_result("junk", bm25_rank=25, vector_rank=30),
         ])
-        results = self._call(orch, memory_intent=False)
+        results, state = self._call(orch, memory_intent=False)
         assert [r.chunk_id for r in results] == ["good"]
+        assert state == "used"
 
-    def test_no_translation_degrades_to_empty(self, monkeypatch) -> None:
+    def test_no_translation_reports_skipped(self, monkeypatch) -> None:
         monkeypatch.setenv("HYBRID_SEARCH_TRANSLATION", "1")
         orch = _mk_orch()
         orch._translator = MagicMock()
         orch._translator.translate.return_value = None
-        assert self._call(orch) == []
+        assert self._call(orch) == ([], "skipped")
         orch._embedder.embed_query.assert_not_called()
 
-    def test_kill_switch_blocks_lane_even_with_translator(self) -> None:
+    def test_kill_switch_reports_skipped(self) -> None:
         # conftest already sets HYBRID_SEARCH_TRANSLATION=0
         orch = _mk_orch()
         orch._translator = MagicMock()
         orch._translator.translate.return_value = "translated"
-        assert self._call(orch) == []
+        assert self._call(orch) == ([], "skipped")
         orch._translator.translate.assert_not_called()
 
-    def test_embed_failure_degrades_to_empty(self, monkeypatch) -> None:
+    def test_embed_failure_reports_skipped(self, monkeypatch) -> None:
         monkeypatch.setenv("HYBRID_SEARCH_TRANSLATION", "1")
         orch = _mk_orch()
         orch._translator = MagicMock()
         orch._translator.translate.return_value = "translated"
         orch._embedder.embed_query.side_effect = RuntimeError("API down")
-        assert self._call(orch) == []
+        assert self._call(orch) == ([], "skipped")

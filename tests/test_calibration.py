@@ -125,6 +125,21 @@ class TestSlices:
         assert report.slices["corpus=valuein"].per_label["strong"].precision == 0.0
         assert "language=ko" in report.slices
 
+    def test_true_cross_slices_exist(self) -> None:
+        """Round-1 contract fix: 'corpus×language' means the actual
+        combination — a KO regression must not hide inside a
+        mixed-language corpus marginal."""
+        rows = [
+            {"confidence": "strong", "correct": True, "corpus": "httpx", "language": "en"},
+            {"confidence": "strong", "correct": False, "corpus": "httpx", "language": "ko"},
+        ]
+        report = compute_report(rows)
+        # Marginal hides the split (0.5)...
+        assert report.slices["corpus=httpx"].per_label["strong"].precision == 0.5
+        # ...the cross slices expose it.
+        assert report.slices["corpus=httpx|language=en"].per_label["strong"].precision == 1.0
+        assert report.slices["corpus=httpx|language=ko"].per_label["strong"].precision == 0.0
+
 
 class TestIO:
     def test_load_jsonl_and_array(self, tmp_path: Path) -> None:

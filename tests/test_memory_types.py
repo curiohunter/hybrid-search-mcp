@@ -178,6 +178,60 @@ class TestQuarantine:
         assert self._confidence(_code_result("top", 0.06)) == "strong"
 
 
+# --- post-splice displayed-top cap (round-1 fix 1) -----------------------------------
+
+class TestDisplayedTopCap:
+    """The supersession splice changes the DISPLAYED top after
+    classification — the trust cap must re-apply on what the agent
+    actually reads, demote-only."""
+
+    def _response(self, results, confidence="strong"):
+        from hybrid_search.search.orchestrator import HybridSearchResponse
+        return HybridSearchResponse(
+            results=results, query_type="ENGLISH_NL",
+            effective_bm25_weight=0.4, query_time_ms=1.0,
+            total_chunks_searched=10, confidence=confidence,
+        )
+
+    def test_inferred_spliced_top_demotes_strong(self) -> None:
+        from hybrid_search.search.orchestrator import _cap_confidence_for_displayed_top
+        resp = self._response([_qa_result("spliced", "inferred", 0.06)])
+        assert _cap_confidence_for_displayed_top(resp).confidence == "mixed"
+
+    def test_legacy_spliced_top_demotes_strong(self) -> None:
+        from hybrid_search.search.orchestrator import _cap_confidence_for_displayed_top
+        resp = self._response([_qa_result("spliced", None, 0.06)])
+        assert _cap_confidence_for_displayed_top(resp).confidence == "mixed"
+
+    def test_revalidation_flagged_spliced_top_demotes_strong(self) -> None:
+        from hybrid_search.search.orchestrator import (
+            _apply_revalidation_flag,
+            _cap_confidence_for_displayed_top,
+        )
+        top = _apply_revalidation_flag(
+            _qa_result("spliced", "verified", 0.06), ("abc1234", "src/x.py"),
+        )
+        resp = self._response([top])
+        assert _cap_confidence_for_displayed_top(resp).confidence == "mixed"
+
+    def test_verified_top_keeps_strong(self) -> None:
+        from hybrid_search.search.orchestrator import _cap_confidence_for_displayed_top
+        resp = self._response([_qa_result("spliced", "verified", 0.06)])
+        assert _cap_confidence_for_displayed_top(resp).confidence == "strong"
+
+    def test_never_upgrades(self) -> None:
+        from hybrid_search.search.orchestrator import _cap_confidence_for_displayed_top
+        resp = self._response(
+            [_qa_result("spliced", "verified", 0.06)], confidence="mixed",
+        )
+        assert _cap_confidence_for_displayed_top(resp).confidence == "mixed"
+
+    def test_code_top_untouched(self) -> None:
+        from hybrid_search.search.orchestrator import _cap_confidence_for_displayed_top
+        resp = self._response([_code_result("top", 0.06)])
+        assert _cap_confidence_for_displayed_top(resp).confidence == "strong"
+
+
 # --- boost demotion -----------------------------------------------------------------
 
 class TestRevalidationDecay:

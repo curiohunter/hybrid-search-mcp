@@ -101,9 +101,11 @@ class TestSmoke:
     def test_stop_roundtrip_skips_when_qa_disabled(
         self, project: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Round-1 review: a check that could not run is SKIP, not PASS."""
         monkeypatch.setenv("HYBRID_SEARCH_QA_LOG", "0")
         check = _stop_roundtrip_check(project)
-        assert check.ok and "skipped" in check.detail
+        assert check.skipped is True
+        assert check.ok is True  # skip never fails the gate either
 
     def test_shared_root_requires_both_agents_wired(self, project: Path) -> None:
         """CX-T3 shape — the check fails until BOTH agent surfaces point

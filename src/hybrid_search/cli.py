@@ -645,12 +645,17 @@ def _run_qa_revalidation(
                 return
             try:
                 if last:
-                    commits = _git("rev-list", "--reverse", f"{last}..HEAD").splitlines()
+                    pending = _git("rev-list", "--reverse", f"{last}..HEAD").splitlines()
                 else:
-                    commits = [head]
+                    pending = [head]
             except Exception:
-                commits = [head]  # `last` may have been rebased away
-            commits = commits[-50:]  # bound pathological ranges
+                pending = [head]  # `last` may have been rebased away
+            from hybrid_search.memory.revalidation import next_commit_batch
+
+            commits, cursor = next_commit_batch(pending)
+            if not commits:
+                db.set_meta("qa_reval_last_commit", head)
+                return
 
             qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
             entries = [(c.id, c.content or "") for c in qa_chunks]
@@ -673,14 +678,18 @@ def _run_qa_revalidation(
             with db.transaction() as conn:
                 db.add_qa_revalidations(conn, pinfo.id, rows)
                 pruned = db.prune_orphan_qa_revalidations(conn)
-            db.set_meta("qa_reval_last_commit", head)
+            # Cursor = last PROCESSED commit — a partial batch resumes on
+            # the next reindex instead of silently skipping to HEAD.
+            db.set_meta("qa_reval_last_commit", cursor or head)
+            backlog = len(pending) - len(commits)
         finally:
             db.close()
-        if rows:
+        if rows or backlog:
             print(
                 f"QA revalidation: {len(rows)} memor{'y' if len(rows) == 1 else 'ies'} "
                 f"flagged ({len(commits)} commit(s))."
                 + (f" {pruned} orphan flag(s) pruned." if pruned else "")
+                + (f" {backlog} commit(s) deferred to next reindex." if backlog else "")
             )
     except Exception as exc:  # never block reindex on the flagging pass
         logger.debug("qa revalidation pass skipped: %s", exc)
@@ -3800,16 +3809,22 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
 
 def _run_codex_smoke(project_root: Path) -> None:
-    """P0-3 smoke test: prove the Codex side works after install."""
+    """P0-3 config/handler smoke — NOT an install E2E (see CX-T2/T3)."""
     from hybrid_search import codex_plugin
 
     checks = codex_plugin.smoke_test(project_root)
-    print("Codex smoke test")
+    print("Codex config/handler smoke")
     print()
     failed = 0
+    skipped = 0
     for c in checks:
-        mark = "PASS" if c.ok else "FAIL"
-        if not c.ok:
+        if getattr(c, "skipped", False):
+            mark = "SKIP"
+            skipped += 1
+        elif c.ok:
+            mark = "PASS"
+        else:
+            mark = "FAIL"
             failed += 1
         print(f"  [{mark}] {c.name}: {c.detail}")
     print()
@@ -3817,7 +3832,12 @@ def _run_codex_smoke(project_root: Path) -> None:
         print(f"{failed} check(s) failed. Run `hybrid-search-mcp setup --codex --cwd .` "
               "then restart Codex in this project.")
         sys.exit(1)
-    print("Codex connected — both agents share the same .hybrid-search/ memory root.")
+    passed = len(checks) - failed - skipped
+    print(f"Config/handler smoke green ({passed} pass"
+          + (f", {skipped} skip" if skipped else "") + ").")
+    print("Note: this verifies configuration and handlers, not a live install — "
+          "the full E2E (subprocess hook, MCP handshake, cross-agent recall) "
+          "is a separate release gate.")
 
 
 def cmd_memory_refresh(args: argparse.Namespace) -> None:
