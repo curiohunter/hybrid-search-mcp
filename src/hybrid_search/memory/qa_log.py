@@ -98,11 +98,12 @@ class QARecord:
     # v3 (P1-1) — typed memory schema; see memory/memory_types.py.
     memory_type: str | None = None          # observation|decision|hypothesis|task_state|procedure|review_finding
     verification: str | None = None         # verified|accepted|inferred|needs_revalidation|superseded
-    # v4 (P1-2 v3) — what the qa actually saw, captured at write time:
-    # {"head": sha, "dirty": bool, "hashes": {path: working-tree blob sha}}.
-    # The revalidation projection compares these hashes against HEAD
-    # directly — no timestamp estimation, correct for dirty worktrees
-    # and cross-branch writes. None → legacy timestamp fallback.
+    # v4 (P1-2) — what the qa was actually grounded in:
+    # {"hashes": {path: indexed_file_hash}} taken from the SEARCH RESULTS
+    # (the index's content fingerprint at retrieval time — not the
+    # working tree at write time, which may be ahead of the index). The
+    # revalidation projection compares these against HEAD content.
+    # None → legacy timestamp fallback.
     anchor_evidence: dict | None = None
 
 
@@ -247,19 +248,20 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"memory_type: {record.memory_type}")
     if record.verification:
         lines.append(f"verification: {record.verification}")
-    if record.anchor_evidence:
+    if record.anchor_evidence and record.anchor_evidence.get("hashes"):
         import json as _json
-        ev = record.anchor_evidence
-        lines.append(f"anchor_head: {ev.get('head', '')}")
-        lines.append(f"anchor_dirty: {str(bool(ev.get('dirty'))).lower()}")
-        if ev.get("hashes"):
-            # Single-quoted so the JSON's double quotes survive the
-            # frontmatter reader's quote stripping.
-            lines.append(
-                "anchor_hashes: '"
-                + _json.dumps(ev["hashes"], ensure_ascii=False)
-                + "'"
-            )
+        # The algo marker versions the hash semantics: "index" = the
+        # scanner's content fingerprint (compute_content_hash), taken
+        # from the search results themselves. Readers must ignore
+        # evidence whose algo they don't recognise.
+        lines.append("anchor_hash_algo: index")
+        # Single-quoted so the JSON's double quotes survive the
+        # frontmatter reader's quote stripping.
+        lines.append(
+            "anchor_hashes: '"
+            + _json.dumps(record.anchor_evidence["hashes"], ensure_ascii=False)
+            + "'"
+        )
     lines += [
         "---",
         "",
@@ -395,22 +397,27 @@ def record(
                 "start_line": getattr(r, "start_line", None),
                 "end_line": getattr(r, "end_line", None),
                 "snippet": getattr(r, "snippet", None),
+                "indexed_file_hash": getattr(r, "indexed_file_hash", None),
             })
 
         from hybrid_search.memory import memory_types
-        from hybrid_search.memory.revalidation import collect_anchor_evidence
 
         mtype, verification = memory_types.classify(
             query=query, answer_excerpt=None, trigger=trigger,
         )
-        anchor_paths_top: list[str] = []
+        # Anchor evidence = the index content hashes the search RESULTS
+        # actually carried (round-2 review: hashing the working tree here
+        # records what the disk looked like, not what the qa was grounded
+        # in — and the git subprocesses blocked the hot path). Zero
+        # subprocess calls: the hashes rode in on the results.
+        anchor_hashes: dict[str, str] = {}
         for r in results_payload:
-            p = r.get("file_path")
-            if p and p not in anchor_paths_top:
-                anchor_paths_top.append(p)
-            if len(anchor_paths_top) >= 3:
+            p, h = r.get("file_path"), r.get("indexed_file_hash")
+            if p and h and p not in anchor_hashes:
+                anchor_hashes[p] = h
+            if len(anchor_hashes) >= 3:
                 break
-        evidence = collect_anchor_evidence(root, anchor_paths_top)
+        evidence = {"hashes": anchor_hashes} if anchor_hashes else None
         rec = QARecord(
             query=query,
             query_type=getattr(response, "query_type", "UNKNOWN"),

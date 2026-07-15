@@ -11,18 +11,24 @@ showed the estimate breaks on the most common agent workflow — edit
 timestamp estimate resolves to the OLD commit and false-flags it. It is
 also wrong for qa written on another branch.
 
-v3 removes the estimation for all new records: **qa write time captures
-what the qa actually saw** —
+v3 captured the WORKING TREE at write time — round-2 re-review showed
+that is still not "what the qa saw": the index (and thus the search
+results the answer was grounded in) can lag the working tree. v4 states
+provenance exactly: **the anchor evidence is the index content hash the
+search results themselves carried** (``HybridResult.indexed_file_hash``,
+= ``files.file_hash`` for indexed chunks, live index hash for in-flight
+overlay results):
 
-    anchor_head:   repo HEAD at write time
-    anchor_dirty:  whether the anchored paths had uncommitted changes
-    anchor_hashes: {path: git blob hash of the WORKING-TREE content}
+    anchor_hash_algo: index
+    anchor_hashes: {path: scanner.compute_content_hash of what was served}
 
-and the projection compares stored working-tree blob hashes directly
-against blobs at the pinned HEAD. Legacy records (no evidence) keep the
-timestamp estimate as a fallback; estimation-derived state is inherently
-weaker, which the trust contract already reflects (legacy records can
-never anchor STRONG regardless).
+The projection compares those against the content at the pinned HEAD
+using the same hash function. Evidence capture makes ZERO git calls on
+the search hot path — the hashes ride in on the results. Legacy records
+(no evidence, or an unrecognised algo) keep the timestamp estimate as a
+fallback; estimation-derived state is inherently weaker, which the trust
+contract already reflects (legacy records can never anchor STRONG
+regardless).
 
 Round-2 re-review hardening, all in this module:
 
@@ -54,9 +60,9 @@ __all__ = [
     "GitError",
     "ProjectionResult",
     "anchor_paths",
-    "collect_anchor_evidence",
     "head_unchanged",
     "project_revalidations",
+    "replace_projection_guarded",
 ]
 
 # A qa's anchors are the TOP results it was answered from. Deeper ranks
@@ -97,38 +103,29 @@ def _default_git(repo: Path, *argv: str) -> str:
     return proc.stdout.strip()
 
 
-# --- write-time evidence -----------------------------------------------------
-
-
-def collect_anchor_evidence(
-    repo: Path,
-    paths: list[str],
-    *,
-    run_git: Callable[..., str] = _default_git,
-) -> dict | None:
-    """What the qa actually saw: HEAD, dirtiness, working-tree blob hashes.
-
-    Called on the qa WRITE path — must never raise and never block it;
-    None simply means "legacy record" (timestamp fallback at read time).
-    """
-    if not paths:
-        return None
+def _default_git_bytes(repo: Path, *argv: str) -> bytes:
+    """Raw stdout bytes of a git command; raises GitError on failure.
+    Needed for ``cat-file`` — content hashing must see exact bytes."""
     try:
-        head = run_git(repo, "rev-parse", "HEAD")
-        existing = [p for p in paths[:_ANCHOR_TOP_N] if (repo / p).is_file()]
-        hashes: dict[str, str] = {}
-        if existing:
-            out = run_git(repo, "hash-object", "--", *existing)
-            hashes = dict(zip(existing, out.splitlines()))
-        if not hashes:
-            return None
-        dirty_out = run_git(repo, "status", "--porcelain", "--", *existing)
-        return {"head": head, "dirty": bool(dirty_out), "hashes": hashes}
-    except Exception:
-        return None
+        proc = subprocess.run(
+            ["git", *argv], cwd=repo, capture_output=True,
+            timeout=_GIT_TIMEOUT_S,
+        )
+    except Exception as exc:
+        raise GitError(f"git {argv[0]}: {exc}") from exc
+    if proc.returncode != 0:
+        raise GitError(
+            f"git {argv[0]} rc={proc.returncode}: "
+            f"{proc.stderr.decode('utf-8', 'replace').strip()[:200]}"
+        )
+    return proc.stdout
 
 
 def _stored_anchor_hashes(content: str) -> dict[str, str] | None:
+    """Evidence hashes, only when the algo marker matches what we know
+    how to compare. Unknown/missing algo → legacy fallback."""
+    if (_frontmatter_value(content, "anchor_hash_algo") or "") != "index":
+        return None
     raw = _frontmatter_value(content, "anchor_hashes")
     if not raw:
         return None
@@ -157,12 +154,20 @@ class ProjectionResult:
 class _RepoView:
     """Memoised git lookups pinned to one HEAD SHA for one pass."""
 
-    def __init__(self, repo: Path, head: str, run_git: Callable[..., str]) -> None:
+    def __init__(
+        self,
+        repo: Path,
+        head: str,
+        run_git: Callable[..., str],
+        run_git_bytes: Callable[..., bytes] = _default_git_bytes,
+    ) -> None:
         self._repo = repo
         self._head = head
         self._git = run_git
+        self._git_bytes = run_git_bytes
         self._base_by_ts: dict[str, str | None] = {}
         self._blob: dict[tuple[str, str], str | None] = {}
+        self._content_hash: dict[tuple[str, str], str | None] = {}
 
     def base_commit(self, ts_iso: str) -> str | None:
         """Last commit on the pinned HEAD's history at or before ts.
@@ -187,6 +192,26 @@ class _RepoView:
                     sha = fields[2]
             self._blob[key] = sha
         return self._blob[key]
+
+    def content_hash(self, commit: str, path: str) -> str | None:
+        """Index-equivalent content hash of ``path`` at ``commit``;
+        None when the path does not exist there. Uses the same function
+        the scanner stores (compute_content_hash), so it compares 1:1
+        with the evidence hashes the search results carried."""
+        key = (commit, path)
+        if key not in self._content_hash:
+            if self.blob(commit, path) is None:
+                self._content_hash[key] = None
+            else:
+                from hybrid_search.index.scanner import compute_content_hash
+
+                raw = self._git_bytes(
+                    self._repo, "cat-file", "blob", f"{commit}:{path}",
+                )
+                self._content_hash[key] = compute_content_hash(
+                    raw, is_markdown=path.lower().endswith(".md"),
+                )
+        return self._content_hash[key]
 
     def blobs_differ_beyond_whitespace(self, old_blob: str, new_blob: str) -> bool:
         """False when the two blobs differ only in whitespace/blank
@@ -228,6 +253,42 @@ def head_unchanged(
         return False
 
 
+class _HeadMoved(Exception):
+    """Raised inside the replace transaction to force a rollback when
+    HEAD moved between projection and commit."""
+
+
+def replace_projection_guarded(
+    db,
+    project_id: str,
+    result: ProjectionResult,
+    repo: Path,
+    *,
+    run_git: Callable[..., str] = _default_git,
+) -> bool:
+    """Atomically replace the stored projection, guarded by HEAD checks
+    INSIDE the transaction — immediately before and after the write
+    (round-2 re-review: check-then-write outside the transaction left a
+    window where a stale projection could land after a checkout). A
+    post-write mismatch raises and ROLLS BACK, so a projection for the
+    wrong HEAD is never committed. Returns True when the replace stuck.
+    """
+    assert result.head is not None and result.complete
+    try:
+        with db.transaction() as conn:
+            if not head_unchanged(repo, result.head, run_git=run_git):
+                raise _HeadMoved("pre-write")
+            db.replace_qa_revalidation(
+                conn, project_id, result.rows, projection_head=result.head,
+            )
+            if not head_unchanged(repo, result.head, run_git=run_git):
+                raise _HeadMoved("post-write")
+    except _HeadMoved as exc:
+        logger.debug("projection replace discarded (HEAD moved %s)", exc)
+        return False
+    return True
+
+
 def project_revalidations(
     repo: Path,
     entries: list[tuple[str, str]],
@@ -256,16 +317,18 @@ def project_revalidations(
         for chunk_id, content in entries:
             stored = _stored_anchor_hashes(content)
             if stored:
-                for path, stored_blob in list(stored.items())[:_ANCHOR_TOP_N]:
-                    head_blob = view.blob(head, path)
-                    if head_blob == stored_blob:
+                for path, stored_hash in list(stored.items())[:_ANCHOR_TOP_N]:
+                    head_hash = view.content_hash(head, path)
+                    if head_hash == stored_hash:
                         continue
-                    if head_blob is None:
+                    if head_hash is None:
                         # Renamed or deleted since — delete+add semantics.
                         rows.append((chunk_id, view.cause_commit(path), path))
                         break
-                    if not view.blobs_differ_beyond_whitespace(stored_blob, head_blob):
-                        continue
+                    # Whitespace refinement is unavailable here: only the
+                    # hash of the served content survives, not its bytes.
+                    # Over-flags a whitespace-only rewrite; never hides a
+                    # real one.
                     rows.append((chunk_id, view.cause_commit(path), path))
                     break
                 continue

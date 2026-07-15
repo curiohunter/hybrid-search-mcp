@@ -614,8 +614,8 @@ def _run_qa_revalidation(
     """
     try:
         from hybrid_search.memory.revalidation import (
-            head_unchanged,
             project_revalidations,
+            replace_projection_guarded,
         )
 
         pinfo = registry.get_by_name(project_name)
@@ -641,19 +641,16 @@ def _run_qa_revalidation(
                     "previous projection (will retry next reindex)"
                 )
                 return
-            # CAS: the projection is only valid for the HEAD it was
-            # computed against. A commit/checkout during the pass means
-            # discard — the post-commit hook of that very change will
-            # trigger the next pass anyway.
-            if not head_unchanged(project_path, result.head):
-                logger.debug(
-                    "HEAD moved during revalidation pass — result discarded"
-                )
+            # CAS: HEAD re-verified INSIDE the transaction, immediately
+            # before and after the write — a post-write mismatch rolls
+            # back, so a projection for the wrong HEAD is never
+            # committed. Discarded results cost nothing: the checkout/
+            # commit that moved HEAD triggers the next pass anyway.
+            replaced = replace_projection_guarded(
+                db, pinfo.id, result, project_path,
+            )
+            if not replaced:
                 return
-            with db.transaction() as conn:
-                db.replace_qa_revalidation(
-                    conn, pinfo.id, result.rows, projection_head=result.head,
-                )
         finally:
             db.close()
         if result.rows:

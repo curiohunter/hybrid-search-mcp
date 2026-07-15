@@ -17,12 +17,14 @@ import pytest
 
 import json
 
+from hybrid_search.index.scanner import compute_file_hash
 from hybrid_search.memory.revalidation import (
     GitError,
+    ProjectionResult,
     anchor_paths,
-    collect_anchor_evidence,
     head_unchanged,
     project_revalidations,
+    replace_projection_guarded,
 )
 from hybrid_search.search.orchestrator import (
     HybridResult,
@@ -86,6 +88,7 @@ def _qa(
 ) -> tuple[str, str]:
     body = f'---\nquery: "auth 어디서 처리해?"\ntimestamp: {ts}\n'
     if anchor_hashes:
+        body += "anchor_hash_algo: index\n"
         body += "anchor_hashes: '" + json.dumps(anchor_hashes) + "'\n"
     body += "---\n\n## Answer excerpt\n\nanswer\n\n## Top results\n\n"
     for i, p in enumerate(paths, 1):
@@ -188,59 +191,218 @@ class TestProjection:
         assert result.head is None and result.complete is False
 
 
-# --- write-time evidence (round-2 re-review fix 1) --------------------------------
+# --- anchor evidence = what the SEARCH RESULTS carried (round-2, 3rd pass) ---------
+
+def _index_hash(repo: Repo, rel: str) -> str:
+    return compute_file_hash(repo.root / rel)
+
 
 class TestAnchorEvidence:
-    def test_dirty_worktree_qa_then_commit_same_content_no_false_flag(
-        self, repo: Repo,
-    ) -> None:
-        """The exact workflow the timestamp estimate broke: edit
-        (uncommitted) → qa written against the NEW code → commit later.
-        Evidence captures the working-tree blob; after the commit it
-        equals HEAD's blob → no flag."""
-        repo.write("src/auth.py", "def verify_token():\n    return 'v2'\n")
-        ev = collect_anchor_evidence(repo.root, ["src/auth.py"])
-        assert ev is not None and ev["dirty"] is True
-        entries = [_qa(T_QA, ["src/auth.py"], anchor_hashes=ev["hashes"])]
-        # Timestamp estimate would flag here (base=T0 blob != HEAD later).
-        repo.commit("commit the same content the qa saw", T1)
+    def test_qa_grounded_on_current_head_is_clean(self, repo: Repo) -> None:
+        h = _index_hash(repo, "src/auth.py")
+        entries = [_qa(T_QA, ["src/auth.py"], anchor_hashes={"src/auth.py": h})]
         assert _flags(repo, entries) == []
 
-    def test_evidence_flags_when_head_moves_past_what_qa_saw(
-        self, repo: Repo,
-    ) -> None:
-        ev = collect_anchor_evidence(repo.root, ["src/auth.py"])
-        entries = [_qa(T_QA, ["src/auth.py"], anchor_hashes=ev["hashes"])]
-        repo.write("src/auth.py", "def verify_token():\n    return 'v3'\n")
-        repo.commit("real change after qa", T1)
+    def test_qa_grounded_on_v1_flags_after_v2_commit(self, repo: Repo) -> None:
+        """The round-2 3rd-pass scenario, resolved correctly by result
+        provenance: search served v1 (indexed) even though the worktree
+        already had v2 — the memory is grounded in v1, so once v2 lands
+        at HEAD it MUST be flagged. (v3's worktree hashing recorded v2
+        and would have wrongly判 clean.)"""
+        v1_hash = _index_hash(repo, "src/auth.py")   # what the index served
+        repo.write("src/auth.py", "def verify_token():\n    return 'v2'\n")
+        # worktree is v2 now, but the result carried v1:
+        entries = [_qa(T_QA, ["src/auth.py"], anchor_hashes={"src/auth.py": v1_hash})]
+        repo.commit("commit v2", T1)
         rows = _flags(repo, entries)
         assert len(rows) == 1 and rows[0][2] == "src/auth.py"
 
-    def test_evidence_beats_timestamp_cross_branch(self, repo: Repo) -> None:
-        """qa written on branch B carries B's content hash — checked out
-        back on main, the hash comparison is branch-agnostic."""
+    def test_inflight_result_evidence_stays_clean_after_same_commit(
+        self, repo: Repo,
+    ) -> None:
+        """Search served the DIRTY v2 via the in-flight overlay (result
+        hash = live content) → committing that same content keeps the
+        memory clean."""
+        repo.write("src/auth.py", "def verify_token():\n    return 'v2'\n")
+        live_hash = _index_hash(repo, "src/auth.py")  # overlay index hash
+        entries = [_qa(T_QA, ["src/auth.py"], anchor_hashes={"src/auth.py": live_hash})]
+        repo.commit("commit what the overlay served", T1)
+        assert _flags(repo, entries) == []
+
+    def test_evidence_is_branch_agnostic(self, repo: Repo) -> None:
         repo.git("checkout", "-q", "-b", "feature-b")
         repo.write("src/auth.py", "def verify_token():\n    return 'b'\n")
         repo.commit("b change", T1)
-        ev = collect_anchor_evidence(repo.root, ["src/auth.py"])
-        entries = [_qa(T_QA_LATE, ["src/auth.py"], anchor_hashes=ev["hashes"])]
-        assert _flags(repo, entries) == []           # on B: qa saw B ✓
+        h = _index_hash(repo, "src/auth.py")
+        entries = [_qa(T_QA_LATE, ["src/auth.py"], anchor_hashes={"src/auth.py": h})]
+        assert _flags(repo, entries) == []           # on B: matches ✓
         repo.git("checkout", "-q", "main")
         assert len(_flags(repo, entries)) == 1       # on main: differs → flag
 
-    def test_collect_evidence_clean_worktree(self, repo: Repo) -> None:
-        ev = collect_anchor_evidence(repo.root, ["src/auth.py"])
-        assert ev is not None
-        assert ev["dirty"] is False
-        assert ev["head"] == repo.git("rev-parse", "HEAD")
-        assert set(ev["hashes"]) == {"src/auth.py"}
+    def test_unknown_algo_falls_back_to_legacy(self, repo: Repo) -> None:
+        """Evidence with an unrecognised hash algo must be ignored, not
+        misinterpreted — the record degrades to the timestamp path."""
+        content = (
+            f'---\nquery: "q"\ntimestamp: {T_QA_LATE}\n'
+            "anchor_hash_algo: blob\n"
+            "anchor_hashes: '" + json.dumps({"src/auth.py": "deadbeef"}) + "'\n"
+            "---\n\n## Top results\n\n### 1. `src/auth.py:1-2` — n\n"
+        )
+        # Legacy path with T_QA_LATE (after any change) → no flag; the
+        # bogus "deadbeef" hash must NOT be compared.
+        repo.write("src/auth.py", "v2\n")
+        repo.commit("change", T1)
+        assert _flags(repo, [("qa-x", content)]) == []
 
-    def test_collect_evidence_never_raises(self, tmp_path: Path) -> None:
-        plain = tmp_path / "not-a-repo"
-        plain.mkdir()
-        (plain / "a.py").write_text("x")
-        assert collect_anchor_evidence(plain, ["a.py"]) is None
-        assert collect_anchor_evidence(plain, []) is None
+
+class TestWriterIntegration:
+    """Round-2 3rd-pass required tests: the REAL writer → frontmatter →
+    parser → projection, and the hot path making zero subprocess calls."""
+
+    class _FakeResult:
+        def __init__(self, path: str, ihash: str | None):
+            self.chunk_id = "c1"
+            self.file_path = path
+            self.project = "p"
+            self.name = "n"
+            self.qualified_name = "q"
+            self.node_type = "function"
+            self.start_line = 1
+            self.end_line = 2
+            self.snippet = "s"
+            self.indexed_file_hash = ihash
+
+    class _FakeResponse:
+        def __init__(self, results):
+            self.results = results
+            self.query_type = "KOREAN_NL"
+            self.effective_bm25_weight = 0.15
+            self.query_time_ms = 1.0
+            self.total_chunks_searched = 10
+
+    def _record(self, repo: Repo, ihash: str | None, monkeypatch) -> Path:
+        from hybrid_search.memory import qa_log
+
+        monkeypatch.setenv(qa_log.ENV_TOGGLE, "1")
+        (repo.root / ".hybrid-search").mkdir(exist_ok=True)
+        written = qa_log.record(
+            query="auth 어디서 처리해?",
+            response=self._FakeResponse(
+                [self._FakeResult("src/auth.py", ihash)]
+            ),
+            cwd=str(repo.root),
+            async_write=False,
+        )
+        assert written is not None
+        return written
+
+    def test_writer_stores_result_hash_not_worktree(
+        self, repo: Repo, monkeypatch,
+    ) -> None:
+        """Stale index v1 + dirty worktree v2 → the qa must store v1
+        (what the search returned), NOT the v2 on disk."""
+        v1_hash = _index_hash(repo, "src/auth.py")
+        repo.write("src/auth.py", "def verify_token():\n    return 'v2'\n")
+        written = self._record(repo, v1_hash, monkeypatch)
+        text = written.read_text(encoding="utf-8")
+        assert "anchor_hash_algo: index" in text
+        assert v1_hash in text
+        v2_hash = _index_hash(repo, "src/auth.py")
+        assert v2_hash not in text
+
+    def test_writer_to_projection_end_to_end(
+        self, repo: Repo, monkeypatch,
+    ) -> None:
+        """Writer output feeds the projection without hand-assembled
+        frontmatter: v1-grounded qa flags after v2 lands at HEAD."""
+        v1_hash = _index_hash(repo, "src/auth.py")
+        written = self._record(repo, v1_hash, monkeypatch)
+        repo.write("src/auth.py", "def verify_token():\n    return 'v2'\n")
+        repo.commit("v2", T1)
+        entries = [("qa-real", written.read_text(encoding="utf-8"))]
+        rows = _flags(repo, entries)
+        assert rows and rows[0][0] == "qa-real" and rows[0][2] == "src/auth.py"
+
+    def test_record_hot_path_makes_no_subprocess_calls(
+        self, repo: Repo, monkeypatch,
+    ) -> None:
+        """Round-2 3rd-pass fix 2: evidence rides in on the results —
+        the fire-and-forget write contract is restored."""
+        import subprocess as _subprocess
+
+        v1_hash = _index_hash(repo, "src/auth.py")
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("subprocess on the qa hot path")
+
+        monkeypatch.setattr(_subprocess, "run", forbidden)
+        monkeypatch.setattr(_subprocess, "Popen", forbidden)
+        written = self._record(repo, v1_hash, monkeypatch)
+        assert "anchor_hash_algo: index" in written.read_text(encoding="utf-8")
+
+
+class TestGuardedReplace:
+    """Round-2 3rd-pass fix 3: HEAD re-verified INSIDE the transaction;
+    post-write mismatch rolls back."""
+
+    def _seed(self, db: StoreDB) -> None:
+        with db.transaction() as conn:
+            db.replace_qa_revalidation(
+                conn, "p1", [("qa-old", "aaaaaaa", "old.py")],
+                projection_head="old-head",
+            )
+
+    def test_replace_sticks_when_head_stable(self, repo: Repo, tmp_path: Path) -> None:
+        db = StoreDB(tmp_path / "store.db")
+        try:
+            self._seed(db)
+            head = repo.git("rev-parse", "HEAD")
+            result = ProjectionResult(
+                rows=[("qa-new", "bbbbbbb", "new.py")], head=head, complete=True,
+            )
+            assert replace_projection_guarded(db, "p1", result, repo.root) is True
+            assert db.get_qa_revalidations(["qa-new"]) == {"qa-new": ("bbbbbbb", "new.py")}
+        finally:
+            db.close()
+
+    def test_post_write_head_move_rolls_back(self, repo: Repo, tmp_path: Path) -> None:
+        db = StoreDB(tmp_path / "store.db")
+        try:
+            self._seed(db)
+            head = repo.git("rev-parse", "HEAD")
+            result = ProjectionResult(
+                rows=[("qa-new", "bbbbbbb", "new.py")], head=head, complete=True,
+            )
+            calls = {"n": 0}
+
+            def moving_git(repo_path, *argv):
+                # First check (pre-write) sees the pinned head; the
+                # post-write check sees a moved HEAD.
+                calls["n"] += 1
+                return head if calls["n"] == 1 else "moved-head"
+
+            assert replace_projection_guarded(
+                db, "p1", result, repo.root, run_git=moving_git,
+            ) is False
+            # Rolled back: the OLD projection survives untouched.
+            assert db.get_qa_revalidations(["qa-old", "qa-new"]) == {
+                "qa-old": ("aaaaaaa", "old.py"),
+            }
+            assert db.get_meta("qa_reval_projection_head") == "old-head"
+        finally:
+            db.close()
+
+    def test_pre_write_mismatch_discards_without_touching(self, repo: Repo, tmp_path: Path) -> None:
+        db = StoreDB(tmp_path / "store.db")
+        try:
+            self._seed(db)
+            result = ProjectionResult(
+                rows=[], head="not-current-head", complete=True,
+            )
+            assert replace_projection_guarded(db, "p1", result, repo.root) is False
+            assert db.get_qa_revalidations(["qa-old"]) == {"qa-old": ("aaaaaaa", "old.py")}
+        finally:
+            db.close()
 
 
 # --- error/absence separation (round-2 re-review fix 2) -----------------------------

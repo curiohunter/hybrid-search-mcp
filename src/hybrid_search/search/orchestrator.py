@@ -163,6 +163,12 @@ class HybridResult:
     # the memory's anchored files changed in a later commit. Short cause
     # commit sha; None for everything else.
     revalidation_cause: str | None = None
+    # Provenance: the index's content hash of the file THIS RESULT was
+    # served from (files.file_hash for indexed chunks, live index hash
+    # for in-flight overlay results). Anchor evidence must record what
+    # the search actually returned — not the working tree at qa-write
+    # time, which may already be ahead of the index (round-2 review).
+    indexed_file_hash: str | None = None
 
 
 @dataclass
@@ -2264,6 +2270,9 @@ class SearchOrchestrator:
                         snippet=snippet,
                         file_mtime=mtime,
                         trust_meta=trust_meta,
+                        indexed_file_hash=(
+                            file_rec.file_hash if file_rec else None
+                        ),
                     ))
                     break  # Found the chunk, no need to check other projects
 
