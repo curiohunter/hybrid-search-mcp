@@ -1,0 +1,425 @@
+{
+  "date": "2026-07-14",
+  "project": "ripgrep",
+  "aggregate": {
+    "update": {
+      "n": 11,
+      "newer_found_rate": 0.8181818181818182,
+      "newer_first_rate": 0.8181818181818182,
+      "stale_only_rate": 0.09090909090909091
+    },
+    "adversarial": {
+      "n": 3,
+      "exact_first_rate": 0.6666666666666666,
+      "exact_found": 2,
+      "both_found": 0,
+      "exact_first_given_both": 0,
+      "adjacent_not_retrieved": 2
+    },
+    "abstention": {
+      "n_absent": 9,
+      "n_present": 4,
+      "confidence_matrix": {
+        "absent": {
+          "strong": 0,
+          "mixed": 0,
+          "weak": 9
+        },
+        "present": {
+          "strong": 0,
+          "mixed": 3,
+          "weak": 1
+        }
+      },
+      "weak_on_absent_rate": 1.0,
+      "strong_on_absent_rate": 0.0,
+      "weak_on_present_rate": 0.25,
+      "strong_on_present_rate": 0.0
+    },
+    "latency": {
+      "n_queries": 27,
+      "p50_ms": 420.34320812672377,
+      "p95_ms": 521.025916095823,
+      "expected_embedding_calls": 54
+    },
+    "tokens_per_answer": {
+      "compact_mean": 2797.777777777778,
+      "compact_median": 2927,
+      "full_mean": 4557.666666666667,
+      "full_median": 4387,
+      "compact_vs_full_ratio": 0.6138618688900266
+    }
+  },
+  "update_rows": [
+    {
+      "id": "U1",
+      "topic": "max-columns default in team config",
+      "old_rank": 5,
+      "new_rank": 4,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "mixed",
+      "query_time_ms": 201.20570762082934,
+      "compact_tokens": 3046,
+      "full_tokens": 4299,
+      "top_paths": [
+        "crates/core/flags/doc/version.rs",
+        "GUIDE.md",
+        ".hybrid-search/qa/2026/07/12-093937-e560def2.md",
+        ".hybrid-search/qa/2026/07/12-093937-e5de439a.md",
+        ".hybrid-search/qa/2026/04/15-093937-6d33c65d.md"
+      ]
+    },
+    {
+      "id": "U2",
+      "topic": "case sensitivity alias",
+      "old_rank": 4,
+      "new_rank": 2,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "strong",
+      "query_time_ms": 423.16704196855426,
+      "compact_tokens": 2480,
+      "full_tokens": 2745,
+      "top_paths": [
+        "crates/pcre2/src/matcher.rs",
+        ".hybrid-search/qa/2026/07/12-093937-cec937d4.md",
+        "crates/printer/src/hyperlink/mod.rs",
+        ".hybrid-search/qa/2026/04/15-093937-922777af.md",
+        "crates/core/flags/config.rs"
+      ]
+    },
+    {
+      "id": "U3",
+      "topic": "ripgrep config file location",
+      "old_rank": 5,
+      "new_rank": 2,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "strong",
+      "query_time_ms": 490.4584172181785,
+      "compact_tokens": 3204,
+      "full_tokens": 4591,
+      "top_paths": [
+        "crates/core/flags/doc/version.rs",
+        ".hybrid-search/qa/2026/07/12-093937-38cbdeaa.md",
+        "pkg/brew/ripgrep-bin.rb",
+        "GUIDE.md",
+        ".hybrid-search/qa/2026/04/15-093937-6d33e3aa.md"
+      ]
+    },
+    {
+      "id": "U4",
+      "topic": "custom type filters in search script",
+      "old_rank": 5,
+      "new_rank": 2,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "strong",
+      "query_time_ms": 367.5675829872489,
+      "compact_tokens": 3469,
+      "full_tokens": 5413,
+      "top_paths": [
+        "crates/searcher/src/searcher/mod.rs",
+        ".hybrid-search/qa/2026/07/12-093937-eda2c337.md",
+        "FAQ.md",
+        "GUIDE.md",
+        ".hybrid-search/qa/2026/04/15-093937-a5c4952a.md"
+      ]
+    },
+    {
+      "id": "U5",
+      "topic": "thread cap",
+      "old_rank": null,
+      "new_rank": 6,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "mixed",
+      "query_time_ms": 406.19516698643565,
+      "compact_tokens": 3469,
+      "full_tokens": 4135,
+      "top_paths": [
+        "crates/core/main.rs",
+        ".git-history/commits",
+        "crates/core/flags/doc/version.rs",
+        ".git-history/commits",
+        "crates/core/flags/hiargs.rs"
+      ]
+    },
+    {
+      "id": "U6",
+      "topic": "binary file handling",
+      "old_rank": 5,
+      "new_rank": 4,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "weak",
+      "query_time_ms": 370.9184159524739,
+      "compact_tokens": 2893,
+      "full_tokens": 5529,
+      "top_paths": [
+        "FAQ.md",
+        "CLAUDE.md",
+        "crates/searcher/src/searcher/mod.rs",
+        ".hybrid-search/qa/2026/07/12-093937-cbedd3f8.md",
+        ".hybrid-search/qa/2026/04/15-093937-f09aecf6.md"
+      ]
+    },
+    {
+      "id": "R1",
+      "topic": "REAL: auto PCRE2 fallback flag (CHANGELOG 12.0.0)",
+      "old_rank": 1,
+      "new_rank": null,
+      "newer_found": false,
+      "newer_first": false,
+      "stale_only": true,
+      "confidence": "mixed",
+      "query_time_ms": 420.8292500115931,
+      "compact_tokens": 3064,
+      "full_tokens": 4379,
+      "top_paths": [
+        ".hybrid-search/qa/2026/04/15-093937-246b3ffb.md",
+        "crates/core/flags/doc/version.rs",
+        "crates/core/flags/hiargs.rs",
+        ".hybrid-search/qa/2026/07/12-093937-21ae8fec.md",
+        "crates/core/flags/defs.rs"
+      ]
+    },
+    {
+      "id": "R2",
+      "topic": "REAL: pcre2 unicode flag rename (CHANGELOG 12.0.0)",
+      "old_rank": 5,
+      "new_rank": 4,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "mixed",
+      "query_time_ms": 455.56066697463393,
+      "compact_tokens": 2927,
+      "full_tokens": 4171,
+      "top_paths": [
+        ".hybrid-search/qa/2026/04/15-093937-246b3ffb.md",
+        "crates/core/flags/hiargs.rs",
+        "crates/pcre2/src/matcher.rs",
+        ".hybrid-search/qa/2026/07/12-093937-21ae8fec.md",
+        ".hybrid-search/qa/2026/04/15-093937-af9a53d6.md"
+      ]
+    },
+    {
+      "id": "R3",
+      "topic": "REAL: terminal hyperlinks introduced (CHANGELOG 14.0.0)",
+      "old_rank": 5,
+      "new_rank": 4,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "strong",
+      "query_time_ms": 420.34320812672377,
+      "compact_tokens": 3540,
+      "full_tokens": 5989,
+      "top_paths": [
+        "crates/core/flags/doc/version.rs",
+        "crates/core/flags/defs.rs",
+        "crates/core/main.rs",
+        ".hybrid-search/qa/2026/07/12-093937-4d69b8b0.md",
+        ".hybrid-search/qa/2026/04/15-093937-6cace297.md"
+      ]
+    },
+    {
+      "id": "R4",
+      "topic": "REAL: minimum supported Rust version bump (CHANGELOG 11.0.0)",
+      "old_rank": 5,
+      "new_rank": 2,
+      "newer_found": true,
+      "newer_first": true,
+      "stale_only": false,
+      "confidence": "strong",
+      "query_time_ms": 351.0985826142132,
+      "compact_tokens": 3100,
+      "full_tokens": 4079,
+      "top_paths": [
+        "crates/core/flags/doc/version.rs",
+        ".hybrid-search/qa/2026/07/12-093937-50c09602.md",
+        "crates/ignore/src/walk.rs",
+        ".git-history/commits",
+        ".hybrid-search/qa/2026/04/15-093937-e267ae99.md"
+      ]
+    },
+    {
+      "id": "R5",
+      "topic": "REAL: empty -vf pattern file semantics (CHANGELOG 15.0.0)",
+      "old_rank": null,
+      "new_rank": null,
+      "newer_found": false,
+      "newer_first": false,
+      "stale_only": false,
+      "confidence": "mixed",
+      "query_time_ms": 383.45674984157085,
+      "compact_tokens": 3143,
+      "full_tokens": 6817,
+      "top_paths": [
+        "crates/globset/src/glob.rs",
+        ".git-history/commits",
+        "crates/core/flags/hiargs.rs",
+        "FAQ.md",
+        ".hybrid-search/qa/2026/07/12-093937-cec937d4.md"
+      ]
+    }
+  ],
+  "adversarial_rows": [
+    {
+      "id": "ADV1",
+      "exact_rank": 5,
+      "adjacent_rank": null,
+      "exact_first": true,
+      "query_time_ms": 393.9855843782425,
+      "compact_tokens": 3106,
+      "full_tokens": 5961
+    },
+    {
+      "id": "ADV2",
+      "exact_rank": 4,
+      "adjacent_rank": null,
+      "exact_first": true,
+      "query_time_ms": 521.025916095823,
+      "compact_tokens": 3513,
+      "full_tokens": 5653
+    },
+    {
+      "id": "ADV3",
+      "exact_rank": null,
+      "adjacent_rank": 2,
+      "exact_first": false,
+      "query_time_ms": 458.79633305594325,
+      "compact_tokens": 3282,
+      "full_tokens": 4002
+    }
+  ],
+  "absent_rows": [
+    {
+      "id": "A1",
+      "query": "How does the Kafka consumer group handle rebalancing?",
+      "confidence": "weak",
+      "result_count": 7,
+      "query_time_ms": 434.75562520325184,
+      "compact_tokens": 2130,
+      "full_tokens": 3534
+    },
+    {
+      "id": "A2",
+      "query": "Where is the OAuth token refresh implemented?",
+      "confidence": "weak",
+      "result_count": 9,
+      "query_time_ms": 318.32087505608797,
+      "compact_tokens": 2331,
+      "full_tokens": 4444
+    },
+    {
+      "id": "A3",
+      "query": "Where are JWT tokens validated?",
+      "confidence": "weak",
+      "result_count": 7,
+      "query_time_ms": 325.5783342756331,
+      "compact_tokens": 1814,
+      "full_tokens": 3332
+    },
+    {
+      "id": "A4",
+      "query": "What Kubernetes resources does the deployment create?",
+      "confidence": "weak",
+      "result_count": 4,
+      "query_time_ms": 360.0025000050664,
+      "compact_tokens": 1319,
+      "full_tokens": 2190
+    },
+    {
+      "id": "A5",
+      "query": "How does the websocket reconnect logic work?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 265.7981659285724,
+      "compact_tokens": 3302,
+      "full_tokens": 4642
+    },
+    {
+      "id": "A6",
+      "query": "How does cursor-based pagination work in the list API?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 450.12720907106996,
+      "compact_tokens": 3046,
+      "full_tokens": 5580
+    },
+    {
+      "id": "A7",
+      "query": "How are webhook signatures verified?",
+      "confidence": "weak",
+      "result_count": 8,
+      "query_time_ms": 537.7106661908329,
+      "compact_tokens": 2234,
+      "full_tokens": 3720
+    },
+    {
+      "id": "A8",
+      "query": "결제 PG 이중화 구성이 어떻게 되어 있지?",
+      "confidence": "weak",
+      "result_count": 10,
+      "query_time_ms": 441.1302078515291,
+      "compact_tokens": 2795,
+      "full_tokens": 4387
+    },
+    {
+      "id": "A9",
+      "query": "커넥션 풀 제한 설정 알려줘",
+      "confidence": "weak",
+      "result_count": 7,
+      "query_time_ms": 450.43700002133846,
+      "compact_tokens": 1891,
+      "full_tokens": 3678
+    }
+  ],
+  "present_rows": [
+    {
+      "id": "P1",
+      "query": "How do glob patterns include and exclude files?",
+      "confidence": "mixed",
+      "result_count": 10,
+      "query_time_ms": 459.73191736266017,
+      "compact_tokens": 2474,
+      "full_tokens": 5637
+    },
+    {
+      "id": "P2",
+      "query": "How does gitignore filtering work?",
+      "confidence": "mixed",
+      "result_count": 10,
+      "query_time_ms": 497.5144169293344,
+      "compact_tokens": 2567,
+      "full_tokens": 4522
+    },
+    {
+      "id": "P3",
+      "query": "How do I enable PCRE2 for lookaround patterns?",
+      "confidence": "mixed",
+      "result_count": 10,
+      "query_time_ms": 379.28354227915406,
+      "compact_tokens": 2724,
+      "full_tokens": 3964
+    },
+    {
+      "id": "P4",
+      "query": "유니코드 매칭은 어떻게 처리돼?",
+      "confidence": "weak",
+      "result_count": 9,
+      "query_time_ms": 361.3217920064926,
+      "compact_tokens": 2677,
+      "full_tokens": 5664
+    }
+  ]
+}

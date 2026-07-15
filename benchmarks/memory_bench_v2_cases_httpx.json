@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "created": "2026-07-13",
+  "project": "httpx",
+  "project_path": "/Users/ian/project/claude_project/oss_holdout/httpx",
+  "description": "HOLDOUT set — English-only external OSS repo (encode/httpx @ b5addb64, 2026-02-23, shallow clone). Cases authored 2026-07-13 AFTER the algorithm was frozen (PR #1 / v0.7.1); run once, published as-is, no tuning against results. Same schema as memory_bench_v2_cases.json. update_cases simulate a team's own decisions layered on top of the real httpx corpus — topics deliberately collide with heavily-documented real content (timeout: 24 files, proxy: 30, http2: 12, pool: 10, ssl: 20) so distractor pressure is real. abstention_cases: topics verified ABSENT via grep -ril (0 hits, 2026-07-13). present_controls: topics verified PRESENT.",
+  "update_cases": [
+    {
+      "id": "U1",
+      "topic": "default request timeout",
+      "old": {
+        "query": "what default timeout does our shared httpx client use",
+        "answer": "Our shared client wrapper sets timeout=5.0 seconds for everything (connect, read, write, pool). It is defined once in the client factory and applies to all outbound calls."
+      },
+      "new": {
+        "query": "default timeout raised for slow upstream",
+        "answer": "We raised the shared client default timeout from 5 seconds to 30 seconds because the reporting upstream regularly takes 20+ seconds. The factory now passes timeout=httpx.Timeout(30.0, connect=5.0). The old 5-second default is no longer valid."
+      },
+      "probe": "what is our default request timeout?"
+    },
+    {
+      "id": "U2",
+      "topic": "connection pool limits",
+      "old": {
+        "query": "what connection pool limits are we running with",
+        "answer": "We use the httpx defaults for pooling: max_connections=100 and max_keepalive_connections=20. No custom httpx.Limits object is passed."
+      },
+      "new": {
+        "query": "connection pool limits tuned down",
+        "answer": "After the file-descriptor incident we now pass httpx.Limits(max_connections=50, max_keepalive_connections=10) explicitly. The library defaults (100/20) are no longer what production runs."
+      },
+      "probe": "what are our connection pool limits set to?"
+    },
+    {
+      "id": "U3",
+      "topic": "transport retries",
+      "old": {
+        "query": "do we retry failed requests at the transport level",
+        "answer": "No transport-level retries: HTTPTransport(retries=0). All retry logic lives in the application layer with tenacity."
+      },
+      "new": {
+        "query": "transport retries enabled",
+        "answer": "We moved connect-error retries down into the transport: HTTPTransport(retries=3). The tenacity application-layer retry was removed for plain connect failures. 'retries=0, tenacity handles it' is outdated."
+      },
+      "probe": "how many retries does our HTTP transport do?"
+    },
+    {
+      "id": "U4",
+      "topic": "HTTP/2 support",
+      "old": {
+        "query": "is http2 enabled on our client",
+        "answer": "HTTP/2 is OFF. We never installed the h2 extra, so the client is created without http2=True and everything speaks HTTP/1.1."
+      },
+      "new": {
+        "query": "http2 rollout decision",
+        "answer": "We enabled HTTP/2: the h2 extra is installed (httpx[http2]) and the client factory now passes http2=True. The old statement that we only speak HTTP/1.1 is no longer true."
+      },
+      "probe": "is HTTP/2 enabled in our client?"
+    },
+    {
+      "id": "U5",
+      "topic": "outbound proxy",
+      "old": {
+        "query": "how is the outbound proxy configured for our client",
+        "answer": "We rely on environment variables: trust_env=True and HTTP_PROXY/HTTPS_PROXY are set by the deployment. No explicit proxy argument in code."
+      },
+      "new": {
+        "query": "proxy moved to explicit config",
+        "answer": "Proxy configuration moved out of environment variables into code: the client is now created with proxy='http://egress.internal:3128' and trust_env=False, so HTTP_PROXY/HTTPS_PROXY env vars are ignored. The env-var based setup is retired."
+      },
+      "probe": "how is the outbound proxy configured?"
+    },
+    {
+      "id": "U6",
+      "topic": "TLS verification in staging",
+      "old": {
+        "query": "why is tls verification disabled in staging",
+        "answer": "Staging talks to services with self-signed certs, so the staging client is built with verify=False. Production keeps verify=True."
+      },
+      "new": {
+        "query": "staging tls verify re-enabled with internal ca",
+        "answer": "We stopped using verify=False in staging. The internal CA bundle is now mounted and the staging client passes verify='/etc/ssl/internal-ca.pem'. TLS verification is enforced in every environment; the verify=False setup is gone."
+      },
+      "probe": "do we still disable TLS verification in staging?"
+    }
+  ],
+  "adversarial_recency_cases": [
+    {
+      "id": "ADV1",
+      "probe": "how do we mock httpx calls in unit tests?",
+      "exact": {
+        "query": "how do we mock httpx in unit tests",
+        "answer": "Unit tests use httpx.MockTransport: each test passes a handler function that returns canned httpx.Response objects, and the client fixture is created with transport=MockTransport(handler). No network calls in unit tests."
+      },
+      "adjacent": {
+        "query": "unit test flakiness in CI",
+        "answer": "The nightly CI unit test job was flaky because the runner's clock skew broke a token-expiry test. We froze time with a fixture and the tests are stable again."
+      }
+    },
+    {
+      "id": "ADV2",
+      "probe": "where is the base URL for the API client set?",
+      "exact": {
+        "query": "where do we set the api client base url",
+        "answer": "The base URL is set once in the client factory: httpx.Client(base_url=settings.API_BASE_URL). Individual call sites only pass relative paths like '/orders/123'."
+      },
+      "adjacent": {
+        "query": "api documentation url moved",
+        "answer": "The API reference documentation moved to a new URL under docs.internal/api-v2. Old bookmarks redirect for 90 days."
+      }
+    },
+    {
+      "id": "ADV3",
+      "probe": "how do we download large files without loading them into memory?",
+      "exact": {
+        "query": "how do we stream large file downloads",
+        "answer": "Large downloads use client.stream('GET', url) and iterate response.iter_bytes(chunk_size=65536), writing each chunk straight to disk. The response body is never fully buffered in memory."
+      },
+      "adjacent": {
+        "query": "large file upload size limit raised",
+        "answer": "The upload endpoint's max file size went from 50MB to 500MB after we switched the ingress buffer to disk-backed spooling."
+      }
+    }
+  ],
+  "abstention_cases": [
+    { "id": "A1", "query": "How does the Kafka consumer group handle rebalancing?" },
+    { "id": "A2", "query": "Where is the GraphQL schema defined?" },
+    { "id": "A3", "query": "Which gRPC services does the gateway expose?" },
+    { "id": "A4", "query": "How are Celery background tasks scheduled?" },
+    { "id": "A5", "query": "What Kubernetes resources does the deployment create?" },
+    { "id": "A6", "query": "Where is the rate limiting middleware implemented?" },
+    { "id": "A7", "query": "How does cursor-based pagination work in the list endpoints?" },
+    { "id": "A8", "query": "Where are JWT tokens validated?" },
+    { "id": "A9", "query": "Which SQLAlchemy models define the billing tables?" }
+  ],
+  "present_controls": [
+    { "id": "P1", "query": "How do I set a timeout on requests?" },
+    { "id": "P2", "query": "How does connection pooling work?" },
+    { "id": "P3", "query": "How do I stream a large response body?" },
+    { "id": "P4", "query": "How do I send requests through a proxy?" }
+  ]
+}
