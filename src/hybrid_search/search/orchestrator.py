@@ -227,6 +227,13 @@ _MEMORY_INTENT_BOOST = 1.00
 _MEMORY_INTENT_KO = (
     "지난번", "이전에", "아까", "방금", "전에", "저번에", "그때",
     "뭐였지", "했지", "결정했지", "정했지", "기억", "메모리",
+    # Superlative-recency phrasings. "가장 최근에 한 일이 뭐지" carried
+    # zero of the tokens above, so the conv lane + in-flight overlay —
+    # the exact machinery built for the cross-agent handoff loop —
+    # never fired and the ambient qa lane served May records
+    # (2026-07-15 Codex field check). The wedge use case lives or dies
+    # on this phrasing class.
+    "최근", "최신",
     # History-shaped questions. "How was this built / why did it change"
     # is answered by past conversations, plans, and commits — the same
     # lanes recall questions use. Without these tokens the conv lane never
@@ -237,6 +244,7 @@ _MEMORY_INTENT_KO = (
 )
 _MEMORY_INTENT_EN_RE = re.compile(
     r"\b(previously|earlier|before|last\s+time|the\s+other\s+day"
+    r"|recent(?:ly)?|latest|most\s+recent"
     r"|what\s+did\s+(?:i|we|you)\s+(?:ask|say)"
     r"|how\s+(?:was|did)\s+\w+.*\s(?:built|made|implemented|changed?|evolve)"
     r"|why\s+(?:was|did)\s+\w+.*\s(?:added|built|changed?|removed)"

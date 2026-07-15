@@ -49,6 +49,11 @@ class TestMemoryIntent:
         "confidence weak 판정 로직은 어떻게 바뀌었어",
         "이 기능 왜 만들게 됐어",
         "레인 분리 경위가 궁금해",
+        # Superlative-recency phrasings (2026-07-15 Codex field check —
+        # the cross-agent handoff loop's most common question shape)
+        "클로드 코드와 내가 가장 최근에 한 일이 뭐지",
+        "최근 작업 내용 알려줘",
+        "최신 진행 상황이 어떻게 되지",
     ])
     def test_korean_recall_phrases_trigger(self, query: str) -> None:
         assert _has_memory_intent(query) is True
@@ -56,6 +61,9 @@ class TestMemoryIntent:
     @pytest.mark.parametrize("query", [
         "previously discussed authentication flow",
         "what did I ask about the portal earlier",
+        "what is the most recent thing we worked on",
+        "show me the latest progress",
+        "what did we do recently",
         "the other day we looked at tuition",
         "before, I searched for admission_results",
         "last time you mentioned consultations",
