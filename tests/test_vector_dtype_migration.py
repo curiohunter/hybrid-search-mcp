@@ -12,6 +12,7 @@ would replace the complete index with a partial one.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 
 import numpy as np
@@ -152,6 +153,29 @@ class TestMigrationValidation:
         assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.BF16
 
 
+    def test_orphan_vectors_in_index_fail_migration(self, tmp_path) -> None:
+        # Index holds MORE vectors than the mapping: those orphans have
+        # already lost their chunk_id. Per-key containment can't see
+        # them (every mapped key exists), so without the total-count
+        # check the migration would silently drop them. Fail instead.
+        vecs = _rand_vectors(5)
+        _write_bf16_index(tmp_path / "vec", vecs)
+        # Rewrite the mapping to cover only the first 3 keys.
+        np.savez(
+            str(tmp_path / "vec" / "key_mapping.npz"),
+            keys=np.arange(3, dtype=np.int64),
+            ids=np.array([f"chunk-{i}" for i in range(3)], dtype=object),
+            next_key=np.array([3]),
+        )
+        before = _disk_bytes(tmp_path / "vec")
+
+        eng = VectorEngine(tmp_path / "vec", DIM)
+
+        assert eng.migration_failed
+        assert _disk_bytes(tmp_path / "vec") == before
+        assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.BF16
+
+
 class TestFailedMigrationBlocksWrites:
     def _failed_engine(self, tmp_path, monkeypatch) -> VectorEngine:
         _write_bf16_index(tmp_path / "vec", _rand_vectors(5))
@@ -225,25 +249,24 @@ class TestInterruptedMigration:
 
 class TestConcurrentMigration:
     def test_two_concurrent_engines_migrate_one_bf16_index_safely(self, tmp_path) -> None:
-        # Two sessions open the same project right after an upgrade. Force
-        # both migrations to sit inside the save window simultaneously via
-        # a barrier — with a shared temp path they would truncate each
-        # other; with per-thread temp paths both produce a valid f32 index
-        # and the atomic replaces land sequentially.
+        # Two sessions open the same project right after an upgrade. The
+        # migration lock must serialize them: EXACTLY ONE migrates (a
+        # sleep inside the migrating save widens the overlap window so
+        # the loser demonstrably arrives while the winner holds the
+        # lock), the other waits, re-checks the header, and loads f32.
+        import time as _time
+        import unittest.mock as mock
+
         vecs = _rand_vectors(6)
         chunk_ids = _write_bf16_index(tmp_path / "vec", vecs)
 
-        barrier = threading.Barrier(2, timeout=10)
         original_save = Index.save
-        crossed = {"count": 0}
+        migration_saves = {"count": 0}
 
-        def synced_save(self, path):
+        def slow_migrating_save(self, path):
             if ".migrating." in str(path):
-                try:
-                    barrier.wait()
-                    crossed["count"] += 1
-                except threading.BrokenBarrierError:
-                    pass  # partner already finished — proceed alone
+                migration_saves["count"] += 1
+                _time.sleep(0.3)
             return original_save(self, path)
 
         engines: list[VectorEngine | None] = [None, None]
@@ -255,9 +278,7 @@ class TestConcurrentMigration:
             except Exception as e:  # pragma: no cover - fail the test below
                 errors.append(e)
 
-        import unittest.mock as mock
-
-        with mock.patch.object(Index, "save", synced_save):
+        with mock.patch.object(Index, "save", slow_migrating_save):
             threads = [threading.Thread(target=construct, args=(i,)) for i in range(2)]
             for t in threads:
                 t.start()
@@ -265,14 +286,101 @@ class TestConcurrentMigration:
                 t.join(timeout=30)
 
         assert not errors
-        # Both threads actually overlapped inside the migration window.
-        assert crossed["count"] == 2
+        # The lock serialized the migrators: one winner, one waiter.
+        assert migration_saves["count"] == 1
         assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.F32
         assert list((tmp_path / "vec").glob("*.migrating*")) == []
+        assert list((tmp_path / "vec").glob("*.dtype-migration.lock")) == []
+        for eng in engines:
+            assert eng is not None and not eng.migration_failed
+            assert eng.count == len(chunk_ids)
         fresh = VectorEngine(tmp_path / "vec", DIM)
         assert fresh.count == len(chunk_ids)
         top = fresh.search(vecs[2], limit=1)
         assert top and top[0].chunk_id == chunk_ids[2]
+
+    def test_stale_lock_from_dead_process_is_reclaimed(self, tmp_path) -> None:
+        # A crashed migrator leaves its lock dir behind. Startup must
+        # reclaim it (dead pid in the owner file) instead of waiting out
+        # the full timeout or failing.
+        vecs = _rand_vectors(4)
+        chunk_ids = _write_bf16_index(tmp_path / "vec", vecs)
+        lock_dir = tmp_path / "vec" / "vectors.usearch.dtype-migration.lock"
+        lock_dir.mkdir()
+        (lock_dir / "owner").write_text("999999999:0.0")  # dead pid, ancient ts
+
+        eng = VectorEngine(tmp_path / "vec", DIM)
+
+        assert not eng.migration_failed
+        assert eng.count == len(chunk_ids)
+        assert _disk_scalar_kind(tmp_path / "vec") == ScalarKind.F32
+        assert not lock_dir.exists()
+
+    def test_concurrent_migration_and_incremental_save_preserves_new_vector(
+        self, tmp_path
+    ) -> None:
+        # The round-4 review scenario: without the lock, a slow migrator
+        # could os.replace its pre-migration snapshot OVER an index that
+        # a faster engine had already migrated and extended — silently
+        # dropping the new vectors. With the lock: A pauses just before
+        # its replace; B's constructor must NOT complete while A holds
+        # the lock; after A finishes, B loads f32, adds a new vector and
+        # saves; the new vector must survive in a fresh engine.
+        import unittest.mock as mock
+
+        vecs = _rand_vectors(5)
+        chunk_ids = _write_bf16_index(tmp_path / "vec", vecs)
+
+        a_at_replace = threading.Event()
+        a_may_proceed = threading.Event()
+        original_replace = os.replace
+
+        def gated_replace(src, dst, *args, **kwargs):
+            if ".migrating." in str(src):
+                a_at_replace.set()
+                assert a_may_proceed.wait(timeout=15)
+            return original_replace(src, dst, *args, **kwargs)
+
+        results: dict[str, VectorEngine] = {}
+        errors: list[Exception] = []
+
+        def construct(name: str) -> None:
+            try:
+                results[name] = VectorEngine(tmp_path / "vec", DIM)
+            except Exception as e:  # pragma: no cover - fail the test below
+                errors.append(e)
+
+        with mock.patch("hybrid_search.search.vector.os.replace", gated_replace):
+            thread_a = threading.Thread(target=construct, args=("a",))
+            thread_a.start()
+            assert a_at_replace.wait(timeout=15)  # A holds the lock, pre-replace
+
+            thread_b = threading.Thread(target=construct, args=("b",))
+            thread_b.start()
+            thread_b.join(timeout=1.0)
+            # B must be blocked on the migration lock while A holds it.
+            assert thread_b.is_alive()
+            assert "b" not in results
+
+            a_may_proceed.set()
+            thread_a.join(timeout=30)
+            thread_b.join(timeout=30)
+
+        assert not errors and not thread_a.is_alive() and not thread_b.is_alive()
+        eng_b = results["b"]
+        assert not eng_b.migration_failed
+        assert eng_b.count == len(chunk_ids)
+
+        # B extends the migrated index; A's stale snapshot must not undo it.
+        new_vec = _rand_vectors(1)[0] * -1.0
+        new_vec = new_vec / np.linalg.norm(new_vec)
+        eng_b.add("new-chunk", new_vec)
+        eng_b.save()
+
+        fresh = VectorEngine(tmp_path / "vec", DIM)
+        assert fresh.count == len(chunk_ids) + 1
+        top = fresh.search(new_vec, limit=1)
+        assert top and top[0].chunk_id == "new-chunk"
 
 
 class TestPipelineFailureBranch:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,91 @@ HNSW_EF_CONSTRUCTION = 200
 # That bf16 NEON kernel has crashed with SIGBUS (out-of-bounds read during
 # HNSW traversal). f32 avoids that code path entirely and improves precision.
 INDEX_DTYPE = ScalarKind.F32
+
+
+class _MigrationLock:
+    """Cross-process lock for the one-time dtype migration.
+
+    Atomic ``mkdir`` acquires; an ``owner`` file records pid + wall time
+    so a lock whose owner died (or that outlived any plausible
+    migration) can be reclaimed. Losers wait for release rather than
+    migrating in parallel — see _migrate_dtype_if_needed for why
+    parallel migration is unsafe against incremental writers.
+    """
+
+    POLL_SECONDS = 0.05
+    WAIT_TIMEOUT_SECONDS = 300.0
+    STALE_AFTER_SECONDS = 600.0
+
+    def __init__(self, index_path: Path) -> None:
+        self._dir = index_path.with_name(index_path.name + ".dtype-migration.lock")
+        self._owner_file = self._dir / "owner"
+
+    def acquire_or_wait(self) -> bool:
+        """Try to become the migrator. Returns True when acquired; False
+        when another process held the lock and has since released it (the
+        caller must re-check whether migration is still needed). Raises
+        TimeoutError if the lock never frees up."""
+        deadline = time.monotonic() + self.WAIT_TIMEOUT_SECONDS
+        while True:
+            try:
+                self._dir.mkdir()
+            except FileExistsError:
+                self._reclaim_if_stale()
+                if not self._dir.exists():
+                    continue  # reclaimed — race for it again
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"timed out waiting for dtype migration lock {self._dir}"
+                    )
+                time.sleep(self.POLL_SECONDS)
+                if not self._dir.exists():
+                    return False  # holder finished; caller re-checks header
+                continue
+            try:
+                self._owner_file.write_text(f"{os.getpid()}:{time.time()}")
+            except Exception:
+                pass  # owner info is best-effort; the mkdir is the lock
+            return True
+
+    def release(self) -> None:
+        self._owner_file.unlink(missing_ok=True)
+        try:
+            self._dir.rmdir()
+        except OSError:
+            pass
+
+    def _reclaim_if_stale(self) -> None:
+        try:
+            pid_str, ts_str = self._owner_file.read_text().split(":", 1)
+            pid, ts = int(pid_str), float(ts_str)
+        except Exception:
+            # No/garbled owner file: only reclaim on directory age.
+            try:
+                age = time.time() - self._dir.stat().st_mtime
+            except OSError:
+                return
+            if age > self.STALE_AFTER_SECONDS:
+                self._force_remove()
+            return
+
+        dead = False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            dead = True
+        except OSError:
+            pass  # e.g. permission — assume alive
+        if dead or (time.time() - ts) > self.STALE_AFTER_SECONDS:
+            self._force_remove()
+
+    def _force_remove(self) -> None:
+        logger.warning("Reclaiming stale dtype migration lock %s", self._dir)
+        self._owner_file.unlink(missing_ok=True)
+        try:
+            self._dir.rmdir()
+        except OSError:
+            pass
 
 
 class VectorMigrationError(RuntimeError):
@@ -250,6 +336,13 @@ class VectorEngine:
             expansion_add=HNSW_EF_CONSTRUCTION,
         )
 
+    def _needs_dtype_migration(self) -> bool:
+        try:
+            metadata = Index.metadata(str(self._index_path))
+        except Exception:
+            return False  # unreadable header: let load() surface the failure
+        return bool(metadata) and metadata.get("kind_scalar") != INDEX_DTYPE
+
     def _migrate_dtype_if_needed(self) -> None:
         """One-time atomic rewrite of a pre-0.7.2 (BF16) index as f32.
 
@@ -260,17 +353,43 @@ class VectorEngine:
         fresh f32 index — no re-embedding, no API calls. The new file is
         written to a temp path and swapped in with os.replace, so an
         interrupted migration leaves the original index untouched.
-        """
-        try:
-            metadata = Index.metadata(str(self._index_path))
-        except Exception:
-            return  # unreadable header: let load() surface the failure
-        if not metadata or metadata.get("kind_scalar") == INDEX_DTYPE:
-            return
 
+        Migration is serialized by a cross-process lock. Unique temp
+        files alone make concurrent migrators safe against EACH OTHER,
+        but not against a migrator racing an incremental WRITER: without
+        the lock, a slow migrator could os.replace its pre-migration
+        snapshot over an index that a faster process had already
+        migrated AND extended with new vectors — silently dropping them.
+        The lock decides who migrates; everyone else waits, then
+        re-checks the header (the winner usually finished the job).
+        """
+        lock = _MigrationLock(self._index_path)
+        while self._needs_dtype_migration():
+            try:
+                acquired = lock.acquire_or_wait()
+            except TimeoutError as e:
+                raise VectorMigrationError(str(e)) from e
+            if not acquired:
+                # The holder released; loop re-checks the header. Usually
+                # it migrated and we fall out — but if it FAILED, the
+                # header is still BF16 and we must contend for the lock
+                # again rather than migrate lockless.
+                continue
+            try:
+                # Re-check under the lock: another process may have
+                # completed the migration while we raced for the mkdir.
+                if not self._needs_dtype_migration():
+                    return
+                self._perform_dtype_migration()
+                return
+            finally:
+                lock.release()
+
+    def _perform_dtype_migration(self) -> None:
+        disk_kind = Index.metadata(str(self._index_path)).get("kind_scalar")
         logger.info(
             "Migrating vector index %s → %s (one-time, %d vectors)",
-            metadata.get("kind_scalar"), INDEX_DTYPE, len(self._key_to_id),
+            disk_kind, INDEX_DTYPE, len(self._key_to_id),
         )
         # Temp path is unique per process AND thread: VectorEngine is
         # constructed per search, so two sessions opening the same project
@@ -283,6 +402,15 @@ class VectorEngine:
         )
         try:
             old_index = Index.restore(str(self._index_path))
+            if len(old_index) != len(self._key_to_id):
+                # More vectors than mapping entries = orphans that already
+                # lost their chunk_id; fewer = the per-key check below
+                # will name the missing one. Either way the stores
+                # disagree — a full rebuild, not a migration, is the fix.
+                raise VectorMigrationError(
+                    f"existing index holds {len(old_index)} vectors but the "
+                    f"mapping has {len(self._key_to_id)} entries"
+                )
             migrated = Index(
                 ndim=self._dim,
                 metric=MetricKind.Cos,
