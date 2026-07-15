@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,7 +186,12 @@ class VectorEngine:
                 self._key_to_id = dict(zip(keys, ids))
                 self._id_to_key = dict(zip(ids, keys))
 
-                # Load the HNSW index
+                self._migrate_dtype_if_needed()
+
+                # Load the HNSW index. USearch's load() adopts the FILE
+                # header's scalar kind, discarding the constructor dtype —
+                # which is why the dtype migration above must rewrite the
+                # file first, not just construct with f32.
                 self._index.load(str(self._index_path))
                 logger.info("Loaded vector index: %d vectors", self.count)
             except Exception:
@@ -200,3 +206,44 @@ class VectorEngine:
                     connectivity=HNSW_M,
                     expansion_add=HNSW_EF_CONSTRUCTION,
                 )
+
+    def _migrate_dtype_if_needed(self) -> None:
+        """One-time atomic rewrite of a pre-0.7.2 (BF16) index as f32.
+
+        The scalar kind is persisted in the usearch file header, so
+        existing 0.7.1 installs keep hitting the BF16 NEON kernel after a
+        package upgrade unless the file itself is rewritten. Vectors are
+        extracted losslessly (BF16 → F32 widening) and re-added to a
+        fresh f32 index — no re-embedding, no API calls. The new file is
+        written to a temp path and swapped in with os.replace, so an
+        interrupted migration leaves the original index untouched.
+        """
+        try:
+            metadata = Index.metadata(str(self._index_path))
+        except Exception:
+            return  # unreadable header: let load() surface the failure
+        if not metadata or metadata.get("kind_scalar") == INDEX_DTYPE:
+            return
+
+        logger.info(
+            "Migrating vector index %s → %s (one-time, %d vectors)",
+            metadata.get("kind_scalar"), INDEX_DTYPE, len(self._key_to_id),
+        )
+        old_index = Index.restore(str(self._index_path))
+        migrated = Index(
+            ndim=self._dim,
+            metric=MetricKind.Cos,
+            dtype=INDEX_DTYPE,
+            connectivity=HNSW_M,
+            expansion_add=HNSW_EF_CONSTRUCTION,
+        )
+        for key in self._key_to_id:
+            vec = old_index.get(int(key))
+            if vec is None:
+                continue
+            migrated.add(int(key), np.asarray(vec).reshape(-1).astype(np.float32))
+
+        tmp_path = str(self._index_path) + ".migrating"
+        migrated.save(tmp_path)
+        os.replace(tmp_path, str(self._index_path))
+        logger.info("Vector index migrated to %s", INDEX_DTYPE)

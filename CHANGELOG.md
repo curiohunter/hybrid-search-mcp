@@ -26,8 +26,16 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   on 2026-06-28 but missed in git): pin USearch scalar kind to f32 —
   the default BF16 routes cosine through a NEON kernel that SIGBUSes on
   Apple Silicon (Python 3.14) — and serialize index mutation/search
-  through a lock. Existing indexes must be f32 (dtype persists on
-  disk); rebuilt deployments already are.
+  through a lock.
+- **Automatic BF16 → F32 index migration**: the scalar kind is persisted
+  in the usearch file header and `load()` adopts it, so pinning f32 in
+  code alone would leave existing 0.7.1 indexes on the crashy BF16 path
+  forever. On first startup after upgrade, a BF16 index is detected via
+  the file header and rewritten as f32 — vectors extracted losslessly,
+  no re-embedding, no API calls, temp-file + atomic rename so an
+  interrupted migration preserves the original index and retries on the
+  next startup (`tests/test_vector_dtype_migration.py`, incl. a
+  0.7.1-format E2E).
 
 ### Added
 
