@@ -1505,12 +1505,18 @@ class SearchOrchestrator:
             confidence == "strong"
             and ranked
             and ranked[0].node_type == "qa_log"
-            and _memory_verification(ranked[0]) in {"inferred", "needs_revalidation"}
+            and _memory_verification(ranked[0])
+            not in {"verified", "accepted"}
         ):
-            # P1-1 quarantine: a model-inferred (or stale-anchored) memory
-            # can be the top hit, but it can never be the basis of a
-            # STRONG claim — that is write-time contamination laundered
-            # through retrieval. Demote-only; legacy untyped qa unaffected.
+            # P1-1 quarantine: a memory can be the top hit, but only
+            # VERIFIED (executed evidence) or ACCEPTED (user-approved)
+            # memories may anchor a STRONG claim. inferred and
+            # needs_revalidation are model output / stale anchors;
+            # legacy untyped records (None) get no free pass either —
+            # otherwise every pre-schema auto-captured turn would keep a
+            # privilege new records must earn (2026-07-15 review
+            # condition). Demote-only: ranking and retrieval of legacy
+            # records are untouched.
             confidence = "mixed"
         if confidence == "weak" and _has_quality_anchor(query, results, top_score, thresholds):
             confidence = "mixed"

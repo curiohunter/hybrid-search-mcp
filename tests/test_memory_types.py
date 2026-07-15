@@ -164,9 +164,15 @@ class TestQuarantine:
     def test_verified_qa_keeps_strong(self) -> None:
         assert self._confidence(_qa_result("top", "verified", 0.06)) == "strong"
 
-    def test_legacy_untyped_qa_keeps_strong(self) -> None:
-        """No mass retroactive demotion of the existing corpus."""
-        assert self._confidence(_qa_result("top", None, 0.06)) == "strong"
+    def test_accepted_decision_keeps_strong(self) -> None:
+        assert self._confidence(_qa_result("top", "accepted", 0.06)) == "strong"
+
+    def test_legacy_untyped_qa_cannot_anchor_strong(self) -> None:
+        """2026-07-15 review condition: legacy records keep their ranking
+        but get no free pass on the trust contract — otherwise every
+        pre-schema auto-captured turn keeps a privilege new records must
+        earn (only their confidence LABEL is capped, never their score)."""
+        assert self._confidence(_qa_result("top", None, 0.06)) == "mixed"
 
     def test_code_top_hit_unaffected(self) -> None:
         assert self._confidence(_code_result("top", 0.06)) == "strong"
