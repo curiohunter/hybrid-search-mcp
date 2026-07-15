@@ -98,6 +98,12 @@ class QARecord:
     # v3 (P1-1) — typed memory schema; see memory/memory_types.py.
     memory_type: str | None = None          # observation|decision|hypothesis|task_state|procedure|review_finding
     verification: str | None = None         # verified|accepted|inferred|needs_revalidation|superseded
+    # v4 (P1-2 v3) — what the qa actually saw, captured at write time:
+    # {"head": sha, "dirty": bool, "hashes": {path: working-tree blob sha}}.
+    # The revalidation projection compares these hashes against HEAD
+    # directly — no timestamp estimation, correct for dirty worktrees
+    # and cross-branch writes. None → legacy timestamp fallback.
+    anchor_evidence: dict | None = None
 
 
 def is_enabled() -> bool:
@@ -241,6 +247,19 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"memory_type: {record.memory_type}")
     if record.verification:
         lines.append(f"verification: {record.verification}")
+    if record.anchor_evidence:
+        import json as _json
+        ev = record.anchor_evidence
+        lines.append(f"anchor_head: {ev.get('head', '')}")
+        lines.append(f"anchor_dirty: {str(bool(ev.get('dirty'))).lower()}")
+        if ev.get("hashes"):
+            # Single-quoted so the JSON's double quotes survive the
+            # frontmatter reader's quote stripping.
+            lines.append(
+                "anchor_hashes: '"
+                + _json.dumps(ev["hashes"], ensure_ascii=False)
+                + "'"
+            )
     lines += [
         "---",
         "",
@@ -379,10 +398,19 @@ def record(
             })
 
         from hybrid_search.memory import memory_types
+        from hybrid_search.memory.revalidation import collect_anchor_evidence
 
         mtype, verification = memory_types.classify(
             query=query, answer_excerpt=None, trigger=trigger,
         )
+        anchor_paths_top: list[str] = []
+        for r in results_payload:
+            p = r.get("file_path")
+            if p and p not in anchor_paths_top:
+                anchor_paths_top.append(p)
+            if len(anchor_paths_top) >= 3:
+                break
+        evidence = collect_anchor_evidence(root, anchor_paths_top)
         rec = QARecord(
             query=query,
             query_type=getattr(response, "query_type", "UNKNOWN"),
@@ -395,6 +423,7 @@ def record(
             trigger=trigger,
             memory_type=mtype,
             verification=verification,
+            anchor_evidence=evidence,
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("qa_log prepare failed: %s", exc)

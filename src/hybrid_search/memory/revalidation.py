@@ -1,53 +1,63 @@
-"""Commit-aware memory invalidation — current-HEAD projection (P1-2, v2).
+"""Commit-aware memory invalidation — evidence-based HEAD projection (P1-2, v3).
 
 A qa answer is written against the code as it was at answer time. When
-the code its anchors point at differs NOW, the memory is not
-known-wrong — but it is no longer verified against current code.
+the code its anchors point at differs NOW, the memory is no longer
+verified against current code.
 
-v1 (round-1) accumulated flags by walking commits with a cursor. Round-2
-review showed that accumulation cannot satisfy the lifecycle contract:
-a full rebuild wipes the table and the cursor (silently un-flagging
-everything), branch checkouts leak flags across branches, reverts never
-clear flags, and a single failed commit in the walk is skipped forever.
+v2 recomputed flags from (HEAD, qa timestamp): "the code the qa saw" was
+ESTIMATED as the last commit before the qa timestamp. Round-2 re-review
+showed the estimate breaks on the most common agent workflow — edit
+(uncommitted) → ask → commit later: the qa saw the NEW code, but the
+timestamp estimate resolves to the OLD commit and false-flags it. It is
+also wrong for qa written on another branch.
 
-v2 states the invariant directly: **the flag set is a pure function of
-(current HEAD, qa corpus)** — recomputed from scratch on every pass.
+v3 removes the estimation for all new records: **qa write time captures
+what the qa actually saw** —
 
-    flagged(qa, path) ⇔ blob(path @ base(qa.timestamp)) != blob(path @ HEAD)
-                         and the difference is not whitespace-only
+    anchor_head:   repo HEAD at write time
+    anchor_dirty:  whether the anchored paths had uncommitted changes
+    anchor_hashes: {path: git blob hash of the WORKING-TREE content}
 
-where base(ts) = the last commit on HEAD's history at or before the qa
-timestamp. Consequences, by construction:
+and the projection compares stored working-tree blob hashes directly
+against blobs at the pinned HEAD. Legacy records (no evidence) keep the
+timestamp estimate as a fallback; estimation-derived state is inherently
+weaker, which the trust contract already reflects (legacy records can
+never anchor STRONG regardless).
 
-- full rebuild: table starts empty, recompute restores exactly the
-  flags that still hold — nothing survives by accident, nothing is lost.
-- checkout A→B→A: HEAD defines truth; B's flags cannot leak into A.
-- revert: blob equality is restored, the flag disappears.
-- no cursor, no per-commit walk → no permanent skips, no cursor
-  regression under concurrency. Concurrent passes each write one
-  atomic, internally-consistent projection; last writer wins and the
-  next pass converges (store-level serialization is out of scope here
-  and documented in the spec).
-- rename/delete: the path is absent at HEAD → flagged (delete+add
-  semantics, per review).
-- whitespace-only edits: excluded via ``git diff -w`` (broader
-  format-only rewrites are an accepted limitation, documented).
+Round-2 re-review hardening, all in this module:
+
+- found / absent / error are distinct: path absence is a clean signal
+  (``git ls-tree`` exit 0, empty output); timeouts and process failures
+  raise ``GitError``. Any error makes the pass INCOMPLETE — the caller
+  must keep the previous projection instead of silently un-flagging.
+- every git command uses the HEAD SHA captured once at pass start;
+  a checkout/commit mid-pass cannot mix two HEADs into one projection.
+  Callers re-verify HEAD (``head_unchanged``) immediately before the
+  atomic replace and discard the result on mismatch (CAS).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
-from datetime import datetime
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 from hybrid_search.memory.integrity import _extract_result_paths
-from hybrid_search.memory.supersession import _parse_timestamp
+from hybrid_search.memory.supersession import _frontmatter_value, _parse_timestamp
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["anchor_paths", "project_revalidations"]
+__all__ = [
+    "GitError",
+    "ProjectionResult",
+    "anchor_paths",
+    "collect_anchor_evidence",
+    "head_unchanged",
+    "project_revalidations",
+]
 
 # A qa's anchors are the TOP results it was answered from. Deeper ranks
 # are incidental co-retrievals — anchoring on all ten would invalidate
@@ -55,6 +65,11 @@ __all__ = ["anchor_paths", "project_revalidations"]
 _ANCHOR_TOP_N = 3
 
 _GIT_TIMEOUT_S = 10
+
+
+class GitError(Exception):
+    """Infrastructure failure (timeout, process error, bad repo state) —
+    NOT semantic absence. Absence is reported as None/empty by lookups."""
 
 
 def anchor_paths(content: str) -> list[str]:
@@ -68,118 +83,217 @@ def anchor_paths(content: str) -> list[str]:
     return seen
 
 
-def _default_git(repo: Path, *argv: str) -> str | None:
-    """stdout of a git command, or None on any failure."""
+def _default_git(repo: Path, *argv: str) -> str:
+    """stdout of a git command; raises GitError on any failure."""
     try:
         proc = subprocess.run(
             ["git", *argv], cwd=repo, capture_output=True, text=True,
             timeout=_GIT_TIMEOUT_S,
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        raise GitError(f"git {argv[0]}: {exc}") from exc
     if proc.returncode != 0:
-        return None
+        raise GitError(f"git {argv[0]} rc={proc.returncode}: {proc.stderr.strip()[:200]}")
     return proc.stdout.strip()
 
 
-class _RepoView:
-    """Memoised git lookups for one projection pass."""
+# --- write-time evidence -----------------------------------------------------
 
-    def __init__(self, repo: Path, run_git: Callable[..., str | None]) -> None:
+
+def collect_anchor_evidence(
+    repo: Path,
+    paths: list[str],
+    *,
+    run_git: Callable[..., str] = _default_git,
+) -> dict | None:
+    """What the qa actually saw: HEAD, dirtiness, working-tree blob hashes.
+
+    Called on the qa WRITE path — must never raise and never block it;
+    None simply means "legacy record" (timestamp fallback at read time).
+    """
+    if not paths:
+        return None
+    try:
+        head = run_git(repo, "rev-parse", "HEAD")
+        existing = [p for p in paths[:_ANCHOR_TOP_N] if (repo / p).is_file()]
+        hashes: dict[str, str] = {}
+        if existing:
+            out = run_git(repo, "hash-object", "--", *existing)
+            hashes = dict(zip(existing, out.splitlines()))
+        if not hashes:
+            return None
+        dirty_out = run_git(repo, "status", "--porcelain", "--", *existing)
+        return {"head": head, "dirty": bool(dirty_out), "hashes": hashes}
+    except Exception:
+        return None
+
+
+def _stored_anchor_hashes(content: str) -> dict[str, str] | None:
+    raw = _frontmatter_value(content, "anchor_hashes")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    return {str(k): str(v) for k, v in data.items()}
+
+
+# --- projection ---------------------------------------------------------------
+
+
+@dataclass
+class ProjectionResult:
+    rows: list[tuple[str, str, str]] = field(default_factory=list)
+    head: str | None = None
+    # False when any git ERROR occurred: the projection may be missing
+    # flags it could not compute, so callers MUST NOT replace the stored
+    # projection with it (a transient timeout would silently un-flag).
+    complete: bool = True
+
+
+class _RepoView:
+    """Memoised git lookups pinned to one HEAD SHA for one pass."""
+
+    def __init__(self, repo: Path, head: str, run_git: Callable[..., str]) -> None:
         self._repo = repo
+        self._head = head
         self._git = run_git
         self._base_by_ts: dict[str, str | None] = {}
         self._blob: dict[tuple[str, str], str | None] = {}
 
-    def base_commit(self, ts: datetime) -> str | None:
-        """Last commit on HEAD's history at or before ``ts``."""
-        key = ts.isoformat()
-        if key not in self._base_by_ts:
-            self._base_by_ts[key] = self._git(
-                self._repo, "rev-list", "-1", f"--before={key}", "HEAD",
-            ) or None
-        return self._base_by_ts[key]
+    def base_commit(self, ts_iso: str) -> str | None:
+        """Last commit on the pinned HEAD's history at or before ts.
+        None = repo history starts later (absence, not error)."""
+        if ts_iso not in self._base_by_ts:
+            out = self._git(
+                self._repo, "rev-list", "-1", f"--before={ts_iso}", self._head,
+            )
+            self._base_by_ts[ts_iso] = out or None
+        return self._base_by_ts[ts_iso]
 
     def blob(self, commit: str, path: str) -> str | None:
-        """Blob sha of ``path`` at ``commit``; None when absent."""
+        """Blob sha of ``path`` at ``commit``; None when the path does
+        not exist there (clean absence via ls-tree exit 0 + empty)."""
         key = (commit, path)
         if key not in self._blob:
-            self._blob[key] = self._git(
-                self._repo, "rev-parse", f"{commit}:{path}",
-            ) or None
+            out = self._git(self._repo, "ls-tree", commit, "--", path)
+            sha: str | None = None
+            if out:
+                fields = out.split()
+                if len(fields) >= 3 and fields[1] == "blob":
+                    sha = fields[2]
+            self._blob[key] = sha
         return self._blob[key]
 
-    def whitespace_only_change(self, base: str, path: str) -> bool:
-        """True when base..HEAD touches ``path`` only in whitespace
-        (including blank-line churn). NOTE: ``--name-only`` ignores the
-        whitespace flags (tree-level), so the actual patch output must
-        be inspected — empty patch under -w while blobs differ means
-        cosmetic."""
-        out = self._git(
-            self._repo, "diff", "-w", "--ignore-blank-lines",
-            base, "HEAD", "--", path,
-        )
-        return out == ""
+    def blobs_differ_beyond_whitespace(self, old_blob: str, new_blob: str) -> bool:
+        """False when the two blobs differ only in whitespace/blank
+        lines. ``--name-only`` ignores whitespace flags (tree-level), so
+        the patch output itself is inspected. An unreadable old blob
+        (working-tree content that was never committed) cannot be
+        refined — treated as a real change, which over-flags slightly
+        but never hides one."""
+        try:
+            out = self._git(
+                self._repo, "diff", "-w", "--ignore-blank-lines",
+                old_blob, new_blob,
+            )
+        except GitError:
+            return True
+        return out != ""
 
-    def cause_commit(self, base: str, path: str) -> str | None:
-        out = self._git(
-            self._repo, "log", "-1", "--format=%h", f"{base}..HEAD", "--", path,
-        )
-        return out or None
+    def cause_commit(self, path: str, since: str | None = None) -> str:
+        """Most recent commit touching ``path`` up to the pinned HEAD."""
+        try:
+            rev_range = f"{since}..{self._head}" if since else self._head
+            out = self._git(
+                self._repo, "log", "-1", "--format=%h", rev_range, "--", path,
+            )
+            return out or self._head[:7]
+        except GitError:
+            return self._head[:7]
 
-    def head(self) -> str | None:
-        return self._git(self._repo, "rev-parse", "HEAD") or None
+
+def head_unchanged(
+    repo: Path, head: str, *, run_git: Callable[..., str] = _default_git,
+) -> bool:
+    """CAS guard: True iff the repo HEAD still equals ``head``. Callers
+    check this immediately before replacing the stored projection and
+    discard the computed result on mismatch."""
+    try:
+        return run_git(repo, "rev-parse", "HEAD") == head
+    except GitError:
+        return False
 
 
 def project_revalidations(
     repo: Path,
     entries: list[tuple[str, str]],
     *,
-    run_git: Callable[..., str | None] = _default_git,
-) -> tuple[list[tuple[str, str, str]], str | None]:
-    """``([(chunk_id, cause_commit, changed_path)], head)`` — the full
-    flag projection for the CURRENT HEAD, computed from scratch.
+    run_git: Callable[..., str] = _default_git,
+) -> ProjectionResult:
+    """The full needs_revalidation projection for the pinned HEAD.
 
-    ``entries`` is ``(chunk_id, content)`` for the project's qa chunks.
-    Conservative on every unknown: no timestamp, no base commit, or a
-    path absent at base ⇒ no flag (a guessed flag silently demotes a
-    memory; a missed flag is caught by the trust contract's other
-    layers). Returns head=None when the repo has no commits — callers
-    must then leave the previous projection untouched rather than
-    replacing it with an empty one.
+    Evidence-bearing qa (v3): stored working-tree blob hash vs blob at
+    HEAD — exact, branch-agnostic, dirty-worktree correct. Legacy qa:
+    timestamp-estimated base commit (documented approximation; such
+    records can never anchor STRONG anyway). Conservative on semantic
+    absence (no flag); INCOMPLETE on infrastructure errors (caller keeps
+    the previous projection).
     """
-    view = _RepoView(repo, run_git)
-    head = view.head()
-    if head is None:
-        return [], None
+    try:
+        head = run_git(repo, "rev-parse", "HEAD")
+    except GitError:
+        # No repo / no commits / git unavailable — nothing to project
+        # against; the caller keeps whatever projection it had.
+        return ProjectionResult(rows=[], head=None, complete=False)
 
+    view = _RepoView(repo, head, run_git)
     rows: list[tuple[str, str, str]] = []
-    for chunk_id, content in entries:
-        ts = _parse_timestamp(content)
-        if ts is None:
-            continue
-        anchors = anchor_paths(content)
-        if not anchors:
-            continue
-        base = view.base_commit(ts)
-        if base is None or base == head:
-            continue
-        for path in anchors:
-            base_blob = view.blob(base, path)
-            if base_blob is None:
-                continue  # anchor didn't exist at qa time — unreliable
-            head_blob = view.blob(head, path)
-            if head_blob == base_blob:
+    try:
+        for chunk_id, content in entries:
+            stored = _stored_anchor_hashes(content)
+            if stored:
+                for path, stored_blob in list(stored.items())[:_ANCHOR_TOP_N]:
+                    head_blob = view.blob(head, path)
+                    if head_blob == stored_blob:
+                        continue
+                    if head_blob is None:
+                        # Renamed or deleted since — delete+add semantics.
+                        rows.append((chunk_id, view.cause_commit(path), path))
+                        break
+                    if not view.blobs_differ_beyond_whitespace(stored_blob, head_blob):
+                        continue
+                    rows.append((chunk_id, view.cause_commit(path), path))
+                    break
                 continue
-            if head_blob is None:
-                # Renamed or deleted since — delete+add semantics: the
-                # anchored content is gone from HEAD.
-                cause = view.cause_commit(base, path) or head[:7]
-                rows.append((chunk_id, cause, path))
+
+            # Legacy fallback: estimate the base from the qa timestamp.
+            ts = _parse_timestamp(content)
+            if ts is None:
+                continue
+            anchors = anchor_paths(content)
+            if not anchors:
+                continue
+            base = view.base_commit(ts.isoformat())
+            if base is None or base == head:
+                continue
+            for path in anchors:
+                base_blob = view.blob(base, path)
+                if base_blob is None:
+                    continue  # anchor didn't exist at estimated base
+                head_blob = view.blob(head, path)
+                if head_blob == base_blob:
+                    continue
+                if head_blob is not None and not view.blobs_differ_beyond_whitespace(
+                    base_blob, head_blob
+                ):
+                    continue
+                rows.append((chunk_id, view.cause_commit(path, since=base), path))
                 break
-            if view.whitespace_only_change(base, path):
-                continue
-            cause = view.cause_commit(base, path) or head[:7]
-            rows.append((chunk_id, cause, path))
-            break
-    return rows, head
+    except GitError as exc:
+        logger.debug("revalidation projection incomplete: %s", exc)
+        return ProjectionResult(rows=rows, head=head, complete=False)
+    return ProjectionResult(rows=rows, head=head, complete=True)

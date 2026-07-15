@@ -15,7 +15,15 @@ from pathlib import Path
 
 import pytest
 
-from hybrid_search.memory.revalidation import anchor_paths, project_revalidations
+import json
+
+from hybrid_search.memory.revalidation import (
+    GitError,
+    anchor_paths,
+    collect_anchor_evidence,
+    head_unchanged,
+    project_revalidations,
+)
 from hybrid_search.search.orchestrator import (
     HybridResult,
     _apply_revalidation_flag,
@@ -70,18 +78,25 @@ def repo(tmp_path: Path) -> Repo:
     return r
 
 
-def _qa(ts: str, paths: list[str], chunk_id: str = "qa-1") -> tuple[str, str]:
-    body = f'---\nquery: "auth 어디서 처리해?"\ntimestamp: {ts}\n---\n\n'
-    body += "## Answer excerpt\n\nanswer\n\n## Top results\n\n"
+def _qa(
+    ts: str,
+    paths: list[str],
+    chunk_id: str = "qa-1",
+    anchor_hashes: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    body = f'---\nquery: "auth 어디서 처리해?"\ntimestamp: {ts}\n'
+    if anchor_hashes:
+        body += "anchor_hashes: '" + json.dumps(anchor_hashes) + "'\n"
+    body += "---\n\n## Answer excerpt\n\nanswer\n\n## Top results\n\n"
     for i, p in enumerate(paths, 1):
         body += f"### {i}. `{p}:1-10` — name\n- chunk_id: `c{i}`\n\n"
     return (chunk_id, body)
 
 
 def _flags(repo: Repo, entries) -> list[tuple[str, str, str]]:
-    rows, head = project_revalidations(repo.root, entries)
-    assert head is not None
-    return rows
+    result = project_revalidations(repo.root, entries)
+    assert result.head is not None and result.complete
+    return result.rows
 
 
 # --- core projection semantics ---------------------------------------------------
@@ -167,10 +182,130 @@ class TestProjection:
         assert _flags(repo, [no_ts, no_anchor]) == []
 
     def test_non_git_directory_returns_no_head(self, tmp_path: Path) -> None:
-        rows, head = project_revalidations(
-            tmp_path / "plain", [_qa(T_QA, ["a.py"])],
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        result = project_revalidations(plain, [_qa(T_QA, ["a.py"])])
+        assert result.head is None and result.complete is False
+
+
+# --- write-time evidence (round-2 re-review fix 1) --------------------------------
+
+class TestAnchorEvidence:
+    def test_dirty_worktree_qa_then_commit_same_content_no_false_flag(
+        self, repo: Repo,
+    ) -> None:
+        """The exact workflow the timestamp estimate broke: edit
+        (uncommitted) → qa written against the NEW code → commit later.
+        Evidence captures the working-tree blob; after the commit it
+        equals HEAD's blob → no flag."""
+        repo.write("src/auth.py", "def verify_token():\n    return 'v2'\n")
+        ev = collect_anchor_evidence(repo.root, ["src/auth.py"])
+        assert ev is not None and ev["dirty"] is True
+        entries = [_qa(T_QA, ["src/auth.py"], anchor_hashes=ev["hashes"])]
+        # Timestamp estimate would flag here (base=T0 blob != HEAD later).
+        repo.commit("commit the same content the qa saw", T1)
+        assert _flags(repo, entries) == []
+
+    def test_evidence_flags_when_head_moves_past_what_qa_saw(
+        self, repo: Repo,
+    ) -> None:
+        ev = collect_anchor_evidence(repo.root, ["src/auth.py"])
+        entries = [_qa(T_QA, ["src/auth.py"], anchor_hashes=ev["hashes"])]
+        repo.write("src/auth.py", "def verify_token():\n    return 'v3'\n")
+        repo.commit("real change after qa", T1)
+        rows = _flags(repo, entries)
+        assert len(rows) == 1 and rows[0][2] == "src/auth.py"
+
+    def test_evidence_beats_timestamp_cross_branch(self, repo: Repo) -> None:
+        """qa written on branch B carries B's content hash — checked out
+        back on main, the hash comparison is branch-agnostic."""
+        repo.git("checkout", "-q", "-b", "feature-b")
+        repo.write("src/auth.py", "def verify_token():\n    return 'b'\n")
+        repo.commit("b change", T1)
+        ev = collect_anchor_evidence(repo.root, ["src/auth.py"])
+        entries = [_qa(T_QA_LATE, ["src/auth.py"], anchor_hashes=ev["hashes"])]
+        assert _flags(repo, entries) == []           # on B: qa saw B ✓
+        repo.git("checkout", "-q", "main")
+        assert len(_flags(repo, entries)) == 1       # on main: differs → flag
+
+    def test_collect_evidence_clean_worktree(self, repo: Repo) -> None:
+        ev = collect_anchor_evidence(repo.root, ["src/auth.py"])
+        assert ev is not None
+        assert ev["dirty"] is False
+        assert ev["head"] == repo.git("rev-parse", "HEAD")
+        assert set(ev["hashes"]) == {"src/auth.py"}
+
+    def test_collect_evidence_never_raises(self, tmp_path: Path) -> None:
+        plain = tmp_path / "not-a-repo"
+        plain.mkdir()
+        (plain / "a.py").write_text("x")
+        assert collect_anchor_evidence(plain, ["a.py"]) is None
+        assert collect_anchor_evidence(plain, []) is None
+
+
+# --- error/absence separation (round-2 re-review fix 2) -----------------------------
+
+class TestIncompleteProjection:
+    def test_git_error_marks_projection_incomplete(self, repo: Repo) -> None:
+        """A transient failure must NOT produce a complete-looking empty
+        projection that would un-flag everything on replace."""
+        from hybrid_search.memory.revalidation import _default_git
+
+        def flaky(repo_path, *argv):
+            if argv[0] == "rev-list":
+                raise GitError("timeout")
+            return _default_git(repo_path, *argv)
+
+        repo.write("src/auth.py", "v2\n")
+        repo.commit("change", T1)
+        result = project_revalidations(
+            repo.root, [_qa(T_QA, ["src/auth.py"])], run_git=flaky,
         )
-        assert (rows, head) == ([], None)
+        assert result.complete is False
+
+    def test_path_absence_is_not_an_error(self, repo: Repo) -> None:
+        """ls-tree exit 0 + empty output = clean absence — the pass
+        stays complete and simply doesn't flag."""
+        result = project_revalidations(
+            repo.root, [_qa(T_QA, ["src/never_existed.py"])],
+        )
+        assert result.complete is True and result.rows == []
+
+
+# --- pinned HEAD + CAS (round-2 re-review fix 3) -------------------------------------
+
+class TestPinnedHead:
+    def test_no_symbolic_head_after_capture(self, repo: Repo) -> None:
+        """Every git command after the initial capture must use the
+        pinned SHA — a mid-pass checkout cannot mix two HEADs."""
+        from hybrid_search.memory.revalidation import _default_git
+
+        calls: list[tuple[str, ...]] = []
+
+        def spy(repo_path, *argv):
+            calls.append(argv)
+            return _default_git(repo_path, *argv)
+
+        repo.write("src/auth.py", "v2\n")
+        repo.commit("change", T1)
+        ev_entries = [_qa(T_QA, ["src/auth.py"])]  # legacy path: base/diff/log
+        result = project_revalidations(repo.root, ev_entries, run_git=spy)
+        assert result.complete
+        after_capture = calls[1:]  # calls[0] is the rev-parse HEAD capture
+        for argv in after_capture:
+            assert "HEAD" not in argv, f"symbolic HEAD leaked into: {argv}"
+
+    def test_head_unchanged_cas_guard(self, repo: Repo) -> None:
+        head = repo.git("rev-parse", "HEAD")
+        assert head_unchanged(repo.root, head) is True
+        repo.write("src/auth.py", "v2\n")
+        repo.commit("moved", T1)
+        assert head_unchanged(repo.root, head) is False
+
+    def test_head_unchanged_on_broken_repo_is_false(self, tmp_path: Path) -> None:
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert head_unchanged(plain, "abc123") is False
 
 
 # --- anchor extraction ----------------------------------------------------------

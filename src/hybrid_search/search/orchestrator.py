@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import logging
 from dataclasses import dataclass, field, replace as _dc_replace
@@ -982,6 +983,13 @@ class SearchOrchestrator:
         # lane. Built on first use so search paths that never need it pay
         # nothing; injectable in tests via direct assignment.
         self._translator: QueryTranslator | None = None
+        # Cross-language lane concurrency circuit (round-2 re-review):
+        # timed-out workers can't be cancelled, only orphaned — the slot
+        # semaphore bounds live workers; saturated → lane skipped.
+        self._xlang_executor: ThreadPoolExecutor | None = None
+        self._xlang_slots = threading.BoundedSemaphore(
+            self._CROSS_LANGUAGE_MAX_WORKERS
+        )
 
     def hybrid_search(
         self,
@@ -1343,36 +1351,50 @@ class SearchOrchestrator:
     # translated-query embedding + extra retrieval. The per-request
     # translation timeout (2.5s) alone did not bound search latency —
     # the embedding call after it could wait up to 120s (round-2 review;
-    # the 5.8s cold measurement was this). Cold-cache worst case stays
-    # around translation(≤2.5s) + embed + retrieval; past this wall the
-    # lane is dropped and reported "skipped". The orphaned worker thread
-    # (daemon) may finish in the background; its result is discarded.
+    # the 5.8s cold measurement was this). Past this wall the lane is
+    # dropped and reported "skipped".
     _CROSS_LANGUAGE_DEADLINE_S = 6.0
+    # Circuit breaker (round-2 re-review): a timed-out worker keeps
+    # running until its own I/O timeouts fire — it cannot be cancelled,
+    # only ORPHANED. The shared executor + slot semaphore bound the
+    # number of live workers: when every slot is held by an orphan, new
+    # queries skip the lane immediately instead of stacking threads,
+    # API calls, and cache writes behind the deadline.
+    _CROSS_LANGUAGE_MAX_WORKERS = 2
 
     def _cross_language_with_deadline(
         self, *args, deadline_s: float | None = None, **kwargs
     ) -> tuple[list[HybridResult], str]:
         deadline = deadline_s or self._CROSS_LANGUAGE_DEADLINE_S
-        executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="xlang-lane"
-        )
-        try:
-            future = executor.submit(
-                self._cross_language_memory_results, *args, **kwargs
+        if not self._xlang_slots.acquire(blocking=False):
+            logger.debug(
+                "cross-language lane saturated (orphaned workers) — skipped"
             )
+            return [], "skipped"
+        if self._xlang_executor is None:
+            self._xlang_executor = ThreadPoolExecutor(
+                max_workers=self._CROSS_LANGUAGE_MAX_WORKERS,
+                thread_name_prefix="xlang-lane",
+            )
+
+        def _run() -> tuple[list[HybridResult], str]:
             try:
-                return future.result(timeout=deadline)
-            except FutureTimeoutError:
-                logger.debug(
-                    "cross-language lane exceeded %.1fs deadline — skipped",
-                    deadline,
-                )
-                return [], "skipped"
-            except Exception:
-                logger.debug("cross-language lane failed", exc_info=True)
-                return [], "skipped"
-        finally:
-            executor.shutdown(wait=False)
+                return self._cross_language_memory_results(*args, **kwargs)
+            finally:
+                self._xlang_slots.release()
+
+        future = self._xlang_executor.submit(_run)
+        try:
+            return future.result(timeout=deadline)
+        except FutureTimeoutError:
+            logger.debug(
+                "cross-language lane exceeded %.1fs deadline — skipped",
+                deadline,
+            )
+            return [], "skipped"
+        except Exception:
+            logger.debug("cross-language lane failed", exc_info=True)
+            return [], "skipped"
 
     def _cross_language_memory_results(
         self,

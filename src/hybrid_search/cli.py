@@ -613,7 +613,10 @@ def _run_qa_revalidation(
     No-op outside git; never blocks a reindex.
     """
     try:
-        from hybrid_search.memory.revalidation import project_revalidations
+        from hybrid_search.memory.revalidation import (
+            head_unchanged,
+            project_revalidations,
+        )
 
         pinfo = registry.get_by_name(project_name)
         if pinfo is None:
@@ -626,20 +629,38 @@ def _run_qa_revalidation(
         try:
             qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
             entries = [(c.id, c.content or "") for c in qa_chunks]
-            rows, head = project_revalidations(project_path, entries)
-            if head is None:
+            result = project_revalidations(project_path, entries)
+            if result.head is None:
                 return  # not a git repo / no commits — keep prior state
+            if not result.complete:
+                # A transient git failure means flags may be MISSING from
+                # this projection — replacing would silently un-flag.
+                # Keep the previous projection; the next reindex retries.
+                logger.warning(
+                    "qa revalidation projection incomplete — keeping "
+                    "previous projection (will retry next reindex)"
+                )
+                return
+            # CAS: the projection is only valid for the HEAD it was
+            # computed against. A commit/checkout during the pass means
+            # discard — the post-commit hook of that very change will
+            # trigger the next pass anyway.
+            if not head_unchanged(project_path, result.head):
+                logger.debug(
+                    "HEAD moved during revalidation pass — result discarded"
+                )
+                return
             with db.transaction() as conn:
                 db.replace_qa_revalidation(
-                    conn, pinfo.id, rows, projection_head=head,
+                    conn, pinfo.id, result.rows, projection_head=result.head,
                 )
         finally:
             db.close()
-        if rows:
+        if result.rows:
             print(
-                f"QA revalidation: {len(rows)} memor"
-                f"{'y' if len(rows) == 1 else 'ies'} need revalidation "
-                f"(projection @ {head[:7]})."
+                f"QA revalidation: {len(result.rows)} memor"
+                f"{'y' if len(result.rows) == 1 else 'ies'} need revalidation "
+                f"(projection @ {result.head[:7]})."
             )
     except Exception as exc:  # never block reindex on the flagging pass
         logger.debug("qa revalidation pass skipped: %s", exc)

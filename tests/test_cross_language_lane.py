@@ -260,3 +260,44 @@ class TestEndToEndDeadline:
 
         orch._cross_language_memory_results = boom
         assert self._deadline_call(orch, deadline_s=1.0) == ([], "skipped")
+
+    def test_repeated_timeouts_bound_orphan_workers(self, monkeypatch) -> None:
+        """Round-2 re-review fix 4: timed-out workers can't be cancelled,
+        only orphaned — repeated timeouts must not stack unbounded
+        threads/API calls. The slot semaphore caps live workers; once
+        saturated, further queries skip the lane instantly."""
+        import threading as _threading
+        import time as _time
+
+        monkeypatch.setenv("HYBRID_SEARCH_TRANSLATION", "1")
+        orch = _mk_orch()
+        active = 0
+        peak = 0
+        lock = _threading.Lock()
+
+        def slow_lane(*args, **kwargs):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                _time.sleep(0.3)
+                return [], "used"
+            finally:
+                with lock:
+                    active -= 1
+
+        orch._cross_language_memory_results = slow_lane
+        start = _time.monotonic()
+        results = [self._deadline_call(orch, deadline_s=0.02) for _ in range(20)]
+        elapsed = _time.monotonic() - start
+
+        assert all(r == ([], "skipped") for r in results)
+        assert peak <= orch._CROSS_LANGUAGE_MAX_WORKERS
+        # 18 of the 20 calls hit the saturated circuit and return
+        # instantly; only the slot-holding calls pay the deadline.
+        assert elapsed < 2.0
+        # Slots are released once orphans finish — the lane recovers.
+        _time.sleep(0.5)
+        orch._cross_language_memory_results = lambda *a, **k: ([], "used")
+        assert self._deadline_call(orch, deadline_s=1.0) == ([], "used")
