@@ -1,0 +1,1855 @@
+{
+  "date": "2026-07-16",
+  "project": "valuein_homepage",
+  "total_pairs": 20,
+  "non_leaky_pairs": 15,
+  "leaky_pairs": 5,
+  "cold_qa_chunk_count": 0,
+  "warm_qa_chunk_count": 20,
+  "paraphrase": {
+    "overall": {
+      "cold": {
+        "n": 20,
+        "primary_hit_rate": 0.65,
+        "primary_top1": 0.4,
+        "primary_top5": 0.65,
+        "recall_at_10_mean": 0.43333333333333335,
+        "mrr_mean": 0.4741666666666667,
+        "qa_hit_rate": 0.0,
+        "qa_top1_rate": 0.0,
+        "memory_primary_rate": 0.0,
+        "answer_found_rate": 0.65
+      },
+      "warm": {
+        "n": 20,
+        "primary_hit_rate": 0.6,
+        "primary_top1": 0.35,
+        "primary_top5": 0.6,
+        "recall_at_10_mean": 0.45,
+        "mrr_mean": 0.4325,
+        "qa_hit_rate": 0.4,
+        "qa_top1_rate": 0.3,
+        "memory_primary_rate": 0.65,
+        "answer_found_rate": 0.9
+      }
+    },
+    "non_leaky": {
+      "cold": {
+        "n": 15,
+        "primary_hit_rate": 0.6,
+        "primary_top1": 0.3333333333333333,
+        "primary_top5": 0.6,
+        "recall_at_10_mean": 0.3111111111111111,
+        "mrr_mean": 0.3988888888888889,
+        "qa_hit_rate": 0.0,
+        "qa_top1_rate": 0.0,
+        "memory_primary_rate": 0.0,
+        "answer_found_rate": 0.6
+      },
+      "warm": {
+        "n": 15,
+        "primary_hit_rate": 0.5333333333333333,
+        "primary_top1": 0.3333333333333333,
+        "primary_top5": 0.5333333333333333,
+        "recall_at_10_mean": 0.3333333333333333,
+        "mrr_mean": 0.37666666666666665,
+        "qa_hit_rate": 0.26666666666666666,
+        "qa_top1_rate": 0.2,
+        "memory_primary_rate": 0.5333333333333333,
+        "answer_found_rate": 0.8666666666666667
+      }
+    },
+    "leaky": {
+      "cold": {
+        "n": 5,
+        "primary_hit_rate": 0.8,
+        "primary_top1": 0.6,
+        "primary_top5": 0.8,
+        "recall_at_10_mean": 0.8,
+        "mrr_mean": 0.7,
+        "qa_hit_rate": 0.0,
+        "qa_top1_rate": 0.0,
+        "memory_primary_rate": 0.0,
+        "answer_found_rate": 0.8
+      },
+      "warm": {
+        "n": 5,
+        "primary_hit_rate": 0.8,
+        "primary_top1": 0.4,
+        "primary_top5": 0.8,
+        "recall_at_10_mean": 0.8,
+        "mrr_mean": 0.6,
+        "qa_hit_rate": 0.8,
+        "qa_top1_rate": 0.6,
+        "memory_primary_rate": 1.0,
+        "answer_found_rate": 1.0
+      }
+    }
+  },
+  "identity": {
+    "overall": {
+      "cold": {
+        "n": 20,
+        "primary_hit_rate": 0.7,
+        "primary_top1": 0.45,
+        "primary_top5": 0.7,
+        "recall_at_10_mean": 0.525,
+        "mrr_mean": 0.5266666666666666,
+        "qa_hit_rate": 0.0,
+        "qa_top1_rate": 0.0,
+        "memory_primary_rate": 0.0,
+        "answer_found_rate": 0.7
+      },
+      "warm": {
+        "n": 20,
+        "primary_hit_rate": 0.65,
+        "primary_top1": 0.35,
+        "primary_top5": 0.65,
+        "recall_at_10_mean": 0.48333333333333334,
+        "mrr_mean": 0.46166666666666667,
+        "qa_hit_rate": 0.45,
+        "qa_top1_rate": 0.35,
+        "memory_primary_rate": 0.75,
+        "answer_found_rate": 0.95
+      }
+    }
+  },
+  "per_pair": [
+    {
+      "id": "S1",
+      "leakage_risk": "low",
+      "category": "structure",
+      "q1a": "수강료 정산 시스템은 어떻게 구성되어 있나",
+      "q1b": "수강료 정산 시스템 구조 다시 설명해줘",
+      "cold": {
+        "id": "S1",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.25,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/tuition/tuition-row.tsx",
+          "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+          "docs/valueinmath_docs/시스템/260109_시스템_2026년DB개선과제.md",
+          "docs/archive/session-edit-add-delete-plan.md",
+          "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx"
+        ]
+      },
+      "warm": {
+        "id": "S1",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.25,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/tuition/tuition-row.tsx",
+          "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+          "docs/valueinmath_docs/시스템/260109_시스템_2026년DB개선과제.md",
+          "docs/archive/session-edit-add-delete-plan.md",
+          "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx"
+        ]
+      },
+      "cold_identity": {
+        "id": "S1",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.75,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/tuition/tuition-row.tsx",
+          "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+          "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx",
+          "services/withdrawal/send-invoice.ts",
+          "supabase/migrations/20260421130000_l2_1_tuition_fees_ledger_flag_and_soft_delete.sql"
+        ]
+      },
+      "warm_identity": {
+        "id": "S1",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.25,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/tuition/tuition-row.tsx",
+          "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+          "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx",
+          "services/withdrawal/send-invoice.ts",
+          "supabase/migrations/20260421130000_l2_1_tuition_fees_ledger_flag_and_soft_delete.sql"
+        ]
+      }
+    },
+    {
+      "id": "S2",
+      "leakage_risk": "low",
+      "category": "structure",
+      "q1a": "학부모 학생 포털 인증 및 레이아웃 흐름",
+      "q1b": "학부모 학생 포털 인증 플로우 다시 보여줘",
+      "cold": {
+        "id": "S2",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 3,
+        "any_hit_rank": 3,
+        "recall_at_10": 0.25,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.3333333333333333,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "app/api/students/route.ts",
+          "docs/features/2026-04-08-auth-registration.md",
+          "docs/features/2026-04-08-portal-parent-student.md",
+          "docs/archive/portal-ux-redesign-plan.md",
+          "app/(portal)/portal/portal-client-layout.tsx"
+        ]
+      },
+      "warm": {
+        "id": "S2",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 5,
+        "any_hit_rank": 5,
+        "recall_at_10": 0.25,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.2,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/students/StudentClassTabs.tsx",
+          "docs/features/2026-04-08-auth-registration.md",
+          "app/api/students/route.ts",
+          "docs/archive/portal-ux-redesign-plan.md",
+          "docs/features/2026-04-08-portal-parent-student.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "S2",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 3,
+        "any_hit_rank": 3,
+        "recall_at_10": 0.25,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.3333333333333333,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "app/api/students/route.ts",
+          "docs/features/2026-04-15-portal-v3.md",
+          "docs/features/2026-04-08-portal-parent-student.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-1122a709.md",
+          "docs/archive/authentication-session-management.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "S2",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 5,
+        "any_hit_rank": 5,
+        "recall_at_10": 0.25,
+        "answer_found": true,
+        "qa_primary_rank": 2,
+        "mrr": 0.2,
+        "qa_hit_count": 1,
+        "qa_top1": false,
+        "top_paths": [
+          "components/students/StudentClassTabs.tsx",
+          ".hybrid-search/qa/2026/07/16-100704-28ca1d3d.md",
+          "app/api/students/route.ts",
+          "docs/features/2026-04-15-portal-v3.md",
+          "docs/features/2026-04-08-portal-parent-student.md"
+        ]
+      }
+    },
+    {
+      "id": "S3",
+      "leakage_risk": "low",
+      "category": "structure",
+      "q1a": "AI 에이전트 아키텍처 전체 그림",
+      "q1b": "AI 에이전트 아키텍처 요약",
+      "cold": {
+        "id": "S3",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "services/campaign/index.ts",
+          "docs/archive/withdrawal-operations-agent.md",
+          "docs/dbdocs/tables/10-ai/ai_global_limits.md",
+          "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+          "archive/portal-v2/detail/ConsultationDetail.tsx"
+        ]
+      },
+      "warm": {
+        "id": "S3",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 3,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "services/campaign/index.ts",
+          "docs/archive/withdrawal-operations-agent.md",
+          ".hybrid-search/qa/2026/07/16-100705-6695f1bd.md",
+          "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+          "archive/portal-v2/detail/ConsultationDetail.tsx"
+        ]
+      },
+      "cold_identity": {
+        "id": "S3",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/dbdocs/tables/10-ai/ai_global_limits.md",
+          "docs/archive/withdrawal-operations-agent.md",
+          "services/campaign/index.ts",
+          "docs/plans/_archive/agent-system-plan.md",
+          "archive/portal-v2/detail/ConsultationDetail.tsx"
+        ]
+      },
+      "warm_identity": {
+        "id": "S3",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100705-6695f1bd.md",
+          "docs/archive/withdrawal-operations-agent.md",
+          "services/campaign/index.ts",
+          "docs/plans/_archive/agent-system-plan.md",
+          "archive/portal-v2/detail/ConsultationDetail.tsx"
+        ]
+      }
+    },
+    {
+      "id": "S4",
+      "leakage_risk": "low",
+      "category": "structure",
+      "q1a": "원격 수업방 remote-room 모듈은 어떻게 구성되나",
+      "q1b": "remote-room 모듈 구성 알려줘",
+      "cold": {
+        "id": "S4",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 4,
+        "any_hit_rank": 4,
+        "recall_at_10": 0.3333333333333333,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.25,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/dbdocs/tables/18-remote-room/daily_summaries.md",
+          ".git-history/commits",
+          "app/api/students/[id]/withdraw/[processId]/complete/route.ts",
+          "docs/features/2026-04-08-learning-remote-room.md",
+          "docs/valueinmath_docs/학습/정규수업/고1수토원장반_2026_고1-1_기말/README.md"
+        ]
+      },
+      "warm": {
+        "id": "S4",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 4,
+        "any_hit_rank": 4,
+        "recall_at_10": 0.3333333333333333,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.25,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100706-252e44a6.md",
+          ".git-history/commits",
+          "app/api/students/[id]/withdraw/[processId]/complete/route.ts",
+          "docs/features/2026-04-08-learning-remote-room.md",
+          "app/(portal)/portal/learning/textbook/page.tsx"
+        ]
+      },
+      "cold_identity": {
+        "id": "S4",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 4,
+        "any_hit_rank": 4,
+        "recall_at_10": 0.3333333333333333,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.25,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/dbdocs/tables/18-remote-room/remote_rooms.md",
+          ".git-history/commits",
+          "docs/archive/remote-finish-room.md",
+          "docs/features/2026-04-08-learning-remote-room.md",
+          "harness/app/public/rules.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "S4",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 3,
+        "any_hit_rank": 3,
+        "recall_at_10": 0.3333333333333333,
+        "answer_found": true,
+        "qa_primary_rank": 2,
+        "mrr": 0.3333333333333333,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          "docs/dbdocs/tables/18-remote-room/remote_rooms.md",
+          ".hybrid-search/qa/2026/07/16-100706-252e44a6.md",
+          "docs/features/2026-04-08-learning-remote-room.md",
+          ".git-history/commits",
+          "docs/archive/remote-finish-room.md"
+        ]
+      }
+    },
+    {
+      "id": "S5",
+      "leakage_risk": "low",
+      "category": "structure",
+      "q1a": "입학 시험 결과 관리 모듈 구조",
+      "q1b": "입학 시험 결과 관리 어디에 뭐 있나",
+      "cold": {
+        "id": "S5",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 5,
+        "any_hit_rank": 5,
+        "recall_at_10": 0.3333333333333333,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.2,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/school-exams/school-exam-table.tsx",
+          "docs/plans/completed/2026-04-17-entrance-test-management.md",
+          "components/learning/school-exam-scores/school-exam-score-table.tsx",
+          "harness/app/dashboard/pages/students.md",
+          "components/admissions/admission-table.tsx"
+        ]
+      },
+      "warm": {
+        "id": "S5",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 9,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/school-exams/school-exam-table.tsx",
+          "docs/plans/completed/2026-04-17-entrance-test-management.md",
+          "components/learning/school-exam-scores/school-exam-score-table.tsx",
+          "harness/app/dashboard/pages/students.md",
+          "supabase/migrations/20260611090000_add_teacher_to_exam_reviews.sql"
+        ]
+      },
+      "cold_identity": {
+        "id": "S5",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": 4,
+        "any_hit_rank": 4,
+        "recall_at_10": 0.6666666666666666,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.25,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/school-exams/school-exam-table.tsx",
+          ".git-history/commits",
+          "components/learning/school-exam-scores/school-exam-score-table.tsx",
+          "components/admissions/admission-table.tsx",
+          ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "S5",
+        "leakage_risk": "low",
+        "category": "structure",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 8,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/school-exams/school-exam-table.tsx",
+          ".git-history/commits",
+          "components/learning/school-exam-scores/school-exam-score-table.tsx",
+          "supabase/migrations/20260611090000_add_teacher_to_exam_reviews.sql",
+          ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md"
+        ]
+      }
+    },
+    {
+      "id": "F1",
+      "leakage_risk": "low",
+      "category": "exploration",
+      "q1a": "학생이 숙제 제출하면 어디서 분석되나",
+      "q1b": "숙제 제출 분석 다시 알려줘",
+      "cold": {
+        "id": "F1",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/homework-analysis/HomeworkAnalysisHeader.tsx",
+          "harness/app/dashboard/pages/learning.md",
+          "docs/features/2026-04-08-learning-homework-analysis.md",
+          "docs/guides/learning-system-guide.md",
+          "docs/valueinmath_docs/분석/260119_분석_학원업무시간대분석-자동화전략.md"
+        ]
+      },
+      "warm": {
+        "id": "F1",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 1,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/homework-analysis/HomeworkAnalysisHeader.tsx",
+          "harness/app/dashboard/pages/learning.md",
+          "docs/features/2026-04-08-learning-homework-analysis.md",
+          "docs/guides/learning-system-guide.md",
+          "docs/valueinmath_docs/분석/260119_분석_학원업무시간대분석-자동화전략.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "F1",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/homework-analysis/HomeworkTab.tsx",
+          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-상담전-체크리스트.md",
+          "docs/features/2026-04-08-learning-homework-analysis.md",
+          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_소수정예-vs-대형학원.md",
+          "supabase/migrations/20260130_mathflat_homework_cron.sql"
+        ]
+      },
+      "warm_identity": {
+        "id": "F1",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/homework-analysis/HomeworkTab.tsx",
+          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-상담전-체크리스트.md",
+          "docs/features/2026-04-08-learning-homework-analysis.md",
+          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_소수정예-vs-대형학원.md",
+          "supabase/migrations/20260130_mathflat_homework_cron.sql"
+        ]
+      }
+    },
+    {
+      "id": "F2",
+      "leakage_risk": "low",
+      "category": "exploration",
+      "q1a": "월별 학원 통계는 어떻게 집계되나",
+      "q1b": "월별 학원 통계 집계 로직 요약",
+      "cold": {
+        "id": "F2",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.6666666666666666,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/create_academy_monthly_stats.sql",
+          "docs/features/2026-04-08-learning-homework-analysis.md",
+          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_2026-대입실적-학원선택.md",
+          "docs/dbdocs/database-functions.md",
+          "marketing/briefs/2026-04-07-pre-stitch-dryrun-arch-l-01.md"
+        ]
+      },
+      "warm": {
+        "id": "F2",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.6666666666666666,
+        "answer_found": true,
+        "qa_primary_rank": 5,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/create_academy_monthly_stats.sql",
+          "docs/features/2026-04-08-learning-homework-analysis.md",
+          ".hybrid-search/qa/2026/07/16-100708-f40e30fc.md",
+          "docs/dbdocs/database-functions.md",
+          ".hybrid-search/qa/2026/07/16-100709-60e91ecf.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "F2",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.6666666666666666,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/create_academy_monthly_stats.sql",
+          "docs/valueinmath_docs/인사/260107_인사_엄해미-인사평가-2025.md",
+          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_2026-대입실적-학원선택.md",
+          "docs/valueinmath_docs/운영/260108_운영_2026년_연간계획서작성_기초분석.md",
+          "marketing/briefs/2026-04-07-pre-stitch-dryrun-arch-l-01.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "F2",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.6666666666666666,
+        "answer_found": true,
+        "qa_primary_rank": 5,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/create_academy_monthly_stats.sql",
+          "docs/valueinmath_docs/인사/260107_인사_엄해미-인사평가-2025.md",
+          ".hybrid-search/qa/2026/07/16-100708-f40e30fc.md",
+          "docs/valueinmath_docs/운영/260108_운영_2026년_연간계획서작성_기초분석.md",
+          ".hybrid-search/qa/2026/07/16-100709-60e91ecf.md"
+        ]
+      }
+    },
+    {
+      "id": "F3",
+      "leakage_risk": "low",
+      "category": "exploration",
+      "q1a": "출결 관리 기능은 어디에 있나",
+      "q1b": "출결 관리 기능 위치 다시 말해줘",
+      "cold": {
+        "id": "F3",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.5,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/attendance/attendance-table.tsx",
+          "docs/archive/student-monthly-session-plan.md",
+          "components/dashboard/attendance-overview/attendance-dialogs.tsx",
+          "docs/archive/payment-system-implementation-guide.md",
+          "app/api/calendar/events/route.ts"
+        ]
+      },
+      "warm": {
+        "id": "F3",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.5,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/attendance/attendance-table.tsx",
+          "docs/archive/student-monthly-session-plan.md",
+          "components/dashboard/attendance-overview/attendance-dialogs.tsx",
+          "docs/archive/payment-system-implementation-guide.md",
+          "app/api/calendar/events/route.ts"
+        ]
+      },
+      "cold_identity": {
+        "id": "F3",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.5,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/attendance/attendance-table.tsx",
+          "docs/archive/student-monthly-session-plan.md",
+          "components/dashboard/attendance-overview/attendance-dialogs.tsx",
+          "docs/archive/business-vision-2026.md",
+          "app/(dashboard)/learning/attendance/page.tsx"
+        ]
+      },
+      "warm_identity": {
+        "id": "F3",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.5,
+        "answer_found": true,
+        "qa_primary_rank": 9,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/learning/attendance/attendance-table.tsx",
+          "docs/archive/student-monthly-session-plan.md",
+          "components/dashboard/attendance-overview/attendance-dialogs.tsx",
+          ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md",
+          "app/(dashboard)/learning/attendance/page.tsx"
+        ]
+      }
+    },
+    {
+      "id": "F4",
+      "leakage_risk": "low",
+      "category": "exploration",
+      "q1a": "상담 예약과 관리 시스템은 어떻게 동작하나",
+      "q1b": "상담 예약 관리 시스템 동작 다시",
+      "cold": {
+        "id": "F4",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.3333333333333333,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/consultations/ConsultationStats.tsx",
+          "docs/features/2026-04-08-ops-meeting.md",
+          "docs/valueinmath_docs/시스템/260109_시스템_2026년DB개선과제.md",
+          "docs/plans/_archive/agent-system-plan.md",
+          "app/api/consultation-requests/route.ts"
+        ]
+      },
+      "warm": {
+        "id": "F4",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/consultations/ConsultationStats.tsx",
+          "docs/features/2026-04-08-ops-meeting.md",
+          "docs/valueinmath_docs/시스템/260109_시스템_2026년DB개선과제.md",
+          "docs/plans/_archive/agent-system-plan.md",
+          "app/(dashboard)/students/enrollment-history/page.tsx"
+        ]
+      },
+      "cold_identity": {
+        "id": "F4",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.3333333333333333,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/consultations/ConsultationStats.tsx",
+          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_광진구-수학학원-추천-비교.md",
+          "archive/portal-preview/(portal-preview)/dashboard/portal-preview/[studentId]/consultation/page.tsx",
+          "docs/features/2026-04-08-ops-meeting.md",
+          "app/api/consultation-requests/route.ts"
+        ]
+      },
+      "warm_identity": {
+        "id": "F4",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 0.6666666666666666,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "components/consultations/ConsultationStats.tsx",
+          "docs/valueinmath_docs/마케팅/블로그/260327_블로그_광진구-수학학원-추천-비교.md",
+          "app/(dashboard)/students/enrollment-history/page.tsx",
+          "docs/features/2026-04-08-ops-meeting.md",
+          "app/(dashboard)/consultations/page.tsx"
+        ]
+      }
+    },
+    {
+      "id": "F5",
+      "leakage_risk": "low",
+      "category": "exploration",
+      "q1a": "변형 문제 variant problems 생성 로직",
+      "q1b": "variant problems 생성 로직 정리",
+      "cold": {
+        "id": "F5",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 5,
+        "any_hit_rank": 5,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.2,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/valueinmath_docs/학습/variant-rule/coefficient-depth.md",
+          "docs/valueinmath_docs/학습/_tools/README.md",
+          "docs/valueinmath_docs/학습/내신대비/광남고/2026_고1-1_중간/rules/변형문제_규칙/coefficient-depth.md",
+          "docs/valueinmath_docs/학습/_tools/validate_problems.py",
+          "docs/plans/2026-04-15-variant-problems-plan.md"
+        ]
+      },
+      "warm": {
+        "id": "F5",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 5,
+        "any_hit_rank": 5,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.2,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100712-cfc9ae74.md",
+          "docs/valueinmath_docs/학습/_tools/README.md",
+          "docs/valueinmath_docs/학습/variant-data/problems.json",
+          "docs/valueinmath_docs/학습/_tools/validate_problems.py",
+          "docs/plans/2026-04-15-variant-problems-plan.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "F5",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 2,
+        "any_hit_rank": 2,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.5,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/valueinmath_docs/학습/내신대비/광남고/2026_고1-1_중간/rules/변형문제_규칙/coefficient-depth.md",
+          "docs/plans/2026-04-15-variant-problems-plan.md",
+          "supabase/functions/mathflat-daily-work-problems/index.ts",
+          "docs/valueinmath_docs/학습/variant-data/problems.json",
+          "docs/valueinmath_docs/학습/variant-rule/keep-full-question.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "F5",
+        "leakage_risk": "low",
+        "category": "exploration",
+        "primary_hit_rank": 2,
+        "any_hit_rank": 2,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.5,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100712-cfc9ae74.md",
+          "docs/plans/2026-04-15-variant-problems-plan.md",
+          "supabase/functions/mathflat-daily-work-problems/index.ts",
+          "docs/valueinmath_docs/학습/variant-data/problems.json",
+          "docs/valueinmath_docs/학습/variant-rule/keep-full-question.md"
+        ]
+      }
+    },
+    {
+      "id": "P1",
+      "leakage_risk": "high",
+      "category": "precision",
+      "q1a": "TuitionChargeSection 컴포넌트",
+      "q1b": "TuitionChargeSection 위치 다시",
+      "cold": {
+        "id": "P1",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/features/tuition-ledger.md",
+          "harness/app/dashboard/pages/students.md",
+          "app/(dashboard)/students/tuition-history/[id]/_hooks/use-fee-detail.ts",
+          "services/textbook-service.ts",
+          "services/tuition-service.ts"
+        ]
+      },
+      "warm": {
+        "id": "P1",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 3,
+        "mrr": 0.0,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          "docs/features/tuition-ledger.md",
+          "harness/app/dashboard/pages/students.md",
+          ".hybrid-search/qa/2026/07/16-100712-e7e72f8d.md",
+          "app/(dashboard)/students/tuition-history/[id]/_hooks/use-fee-detail.ts",
+          "services/textbook-service.ts"
+        ]
+      },
+      "cold_identity": {
+        "id": "P1",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 5,
+        "any_hit_rank": 5,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.2,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "harness/app/dashboard/pages/students.md",
+          "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-672f342c.md",
+          "hooks/use-tuition.ts",
+          "components/tuition/tuition-charge-section.tsx"
+        ]
+      },
+      "warm_identity": {
+        "id": "P1",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 5,
+        "any_hit_rank": 5,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.2,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "harness/app/dashboard/pages/students.md",
+          "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-672f342c.md",
+          "hooks/use-tuition.ts",
+          "components/tuition/tuition-charge-section.tsx"
+        ]
+      }
+    },
+    {
+      "id": "P2",
+      "leakage_risk": "high",
+      "category": "precision",
+      "q1a": "admission_results 테이블 스키마",
+      "q1b": "admission_results 스키마 다시",
+      "cold": {
+        "id": "P2",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 2,
+        "any_hit_rank": 2,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 0.5,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "services/admission-service.ts",
+          "database/migrations/20260327_create_admission_results.sql",
+          ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+          "harness/app/dashboard/pages/students.md",
+          "components/admissions/admission-table.tsx"
+        ]
+      },
+      "warm": {
+        "id": "P2",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 2,
+        "any_hit_rank": 2,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.5,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100713-4b9ba6b9.md",
+          "database/migrations/20260327_create_admission_results.sql",
+          ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+          "services/admission-service.ts",
+          "harness/app/dashboard/pages/students.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "P2",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/20260327_create_admission_results.sql",
+          ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+          "docs/features/2026-04-08-learning-attendance.md",
+          "docs/features/2026-04-08-learning-test-logs.md",
+          "docs/dbdocs/README.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "P2",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 2,
+        "any_hit_rank": 2,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.5,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100713-4b9ba6b9.md",
+          "database/migrations/20260327_create_admission_results.sql",
+          ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+          "docs/features/2026-04-08-learning-attendance.md",
+          "docs/features/2026-04-08-learning-test-logs.md"
+        ]
+      }
+    },
+    {
+      "id": "P3",
+      "leakage_risk": "high",
+      "category": "precision",
+      "q1a": "pending-approval 페이지",
+      "q1b": "pending-approval 경로 알려줘",
+      "cold": {
+        "id": "P3",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "app/(auth)/pending-approval/logout-button.tsx",
+          "harness/app/auth/rules.md",
+          "app/(auth)/update-password/page.tsx",
+          "app/(auth)/pending-approval/pending-approval-client.tsx",
+          ".hybrid-search/memory/cards/2026/04/28-035746-2819af91.md"
+        ]
+      },
+      "warm": {
+        "id": "P3",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 3,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "app/(auth)/pending-approval/logout-button.tsx",
+          "harness/app/auth/rules.md",
+          ".hybrid-search/qa/2026/07/16-100713-17dcc18b.md",
+          "app/(auth)/pending-approval/pending-approval-client.tsx",
+          ".hybrid-search/memory/cards/2026/04/28-035746-2819af91.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "P3",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "app/(auth)/pending-approval/logout-button.tsx",
+          "harness/app/auth/rules.md",
+          "app/(auth)/update-password/page.tsx",
+          "app/(auth)/pending-approval/pending-approval-client.tsx",
+          ".hybrid-search/memory/cards/2026/04/28-035746-5f7fbb82.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "P3",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 3,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "app/(auth)/pending-approval/logout-button.tsx",
+          "harness/app/auth/rules.md",
+          ".hybrid-search/qa/2026/07/16-100713-17dcc18b.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-5f7fbb82.md",
+          "app/(auth)/pending-approval/pending-approval-client.tsx"
+        ]
+      }
+    },
+    {
+      "id": "P4",
+      "leakage_risk": "high",
+      "category": "precision",
+      "q1a": "create_academy_monthly_stats 함수",
+      "q1b": "create_academy_monthly_stats 정의 다시",
+      "cold": {
+        "id": "P4",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/create_academy_monthly_stats.sql",
+          "app/actions/analytics-snapshot.ts",
+          "components/analytics/_hooks/use-operation-stats.ts",
+          "lib/student-metrics.ts",
+          "database/functions/save_monthly_snapshot.sql"
+        ]
+      },
+      "warm": {
+        "id": "P4",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 2,
+        "mrr": 1.0,
+        "qa_hit_count": 1,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/create_academy_monthly_stats.sql",
+          ".hybrid-search/qa/2026/07/16-100714-e28423ea.md",
+          "app/actions/analytics-snapshot.ts",
+          "components/analytics/_hooks/use-operation-stats.ts",
+          "lib/student-metrics.ts"
+        ]
+      },
+      "cold_identity": {
+        "id": "P4",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/create_academy_monthly_stats.sql",
+          "app/actions/analytics-snapshot.ts",
+          "components/analytics/_hooks/use-operation-stats.ts",
+          "docs/dbdocs/tables/06-analytics/academy_monthly_stats.md",
+          "lib/student-metrics.ts"
+        ]
+      },
+      "warm_identity": {
+        "id": "P4",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 2,
+        "mrr": 1.0,
+        "qa_hit_count": 1,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/create_academy_monthly_stats.sql",
+          ".hybrid-search/qa/2026/07/16-100714-e28423ea.md",
+          "app/actions/analytics-snapshot.ts",
+          "components/analytics/_hooks/use-operation-stats.ts",
+          "docs/dbdocs/tables/06-analytics/academy_monthly_stats.md"
+        ]
+      }
+    },
+    {
+      "id": "P5",
+      "leakage_risk": "high",
+      "category": "precision",
+      "q1a": "standardize_rls_policies 마이그레이션",
+      "q1b": "standardize_rls_policies 마이그레이션 다시",
+      "cold": {
+        "id": "P5",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/20251022_standardize_rls_policies.sql",
+          "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+          "database/README.md",
+          "docs/archive/superclaude-valuein-optimization-guide.md"
+        ]
+      },
+      "warm": {
+        "id": "P5",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 2,
+        "any_hit_rank": 2,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.5,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100714-ab93fd31.md",
+          "database/migrations/20251022_standardize_rls_policies.sql",
+          ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+          "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+          "database/README.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "P5",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 1,
+        "any_hit_rank": 1,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": null,
+        "mrr": 1.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "database/migrations/20251022_standardize_rls_policies.sql",
+          "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+          "database/README.md",
+          "docs/archive/withdrawal-risk-detection-system.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "P5",
+        "leakage_risk": "high",
+        "category": "precision",
+        "primary_hit_rank": 2,
+        "any_hit_rank": 2,
+        "recall_at_10": 1.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.5,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100714-ab93fd31.md",
+          "database/migrations/20251022_standardize_rls_policies.sql",
+          ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+          "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+          "database/README.md"
+        ]
+      }
+    },
+    {
+      "id": "R1",
+      "leakage_risk": "low",
+      "category": "rationale",
+      "q1a": "portal v3로 리팩토링하는 이유는 무엇인가",
+      "q1b": "portal v3 리팩토링 이유 다시",
+      "cold": {
+        "id": "R1",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-c3cfb20c.md",
+          "harness/learnings/2026-03-30-T-009.md",
+          "CLAUDE.md"
+        ]
+      },
+      "warm": {
+        "id": "R1",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.0,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100715-4c44bbd5.md",
+          "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-c3cfb20c.md",
+          ".git-history/commits",
+          "CLAUDE.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "R1",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-c3cfb20c.md",
+          "docs/dbdocs/README.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "R1",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.0,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100715-4c44bbd5.md",
+          "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-c3cfb20c.md",
+          ".git-history/commits",
+          "docs/dbdocs/README.md"
+        ]
+      }
+    },
+    {
+      "id": "R2",
+      "leakage_risk": "low",
+      "category": "rationale",
+      "q1a": "ledger writepath ABC 설계를 택한 배경은",
+      "q1b": "ledger writepath ABC 배경 요약",
+      "cold": {
+        "id": "R2",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-7ff3c39b.md",
+          "docs/features/ledger-writepath.md",
+          "docs/plans/completed/2026-04-21-ledger-writepath-abc.md",
+          "docs/handoff/tuition-ledger-writepath-abc.md"
+        ]
+      },
+      "warm": {
+        "id": "R2",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.0,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100716-b19e6281.md",
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-7ff3c39b.md",
+          "docs/features/ledger-writepath.md",
+          "docs/plans/completed/2026-04-21-ledger-writepath-abc.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "R2",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-7ff3c39b.md",
+          "docs/features/ledger-writepath.md",
+          "docs/plans/completed/2026-04-21-ledger-writepath-abc.md",
+          "docs/handoff/tuition-ledger-writepath-abc.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "R2",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.0,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100716-b19e6281.md",
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-7ff3c39b.md",
+          "docs/features/ledger-writepath.md",
+          "docs/plans/completed/2026-04-21-ledger-writepath-abc.md"
+        ]
+      }
+    },
+    {
+      "id": "R3",
+      "leakage_risk": "low",
+      "category": "rationale",
+      "q1a": "tuition hub를 새로 만드는 이유",
+      "q1b": "tuition hub 도입 이유 다시",
+      "cold": {
+        "id": "R3",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-2819af91.md",
+          "services/tuition-session/session-crud.ts",
+          "services/tuition-service.ts"
+        ]
+      },
+      "warm": {
+        "id": "R3",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-2819af91.md",
+          "services/tuition-session/session-crud.ts",
+          "services/tuition-service.ts"
+        ]
+      },
+      "cold_identity": {
+        "id": "R3",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/plans/2026-04-01-tuition-create-page.md",
+          "services/tuition-session/session-generation.ts",
+          ".hybrid-search/memory/cards/2026/04/28-035746-2819af91.md",
+          ".git-history/commits",
+          "services/tuition-service.ts"
+        ]
+      },
+      "warm_identity": {
+        "id": "R3",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.0,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100717-85b04f38.md",
+          "docs/plans/2026-04-01-tuition-create-page.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-2819af91.md",
+          ".git-history/commits",
+          "services/tuition-session/session-generation.ts"
+        ]
+      }
+    },
+    {
+      "id": "R4",
+      "leakage_risk": "low",
+      "category": "rationale",
+      "q1a": "AI 콘텐츠 팩토리를 만드는 목적",
+      "q1b": "AI 콘텐츠 팩토리 목적 다시 설명",
+      "cold": {
+        "id": "R4",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "harness/app/dashboard/pages/marketing.md",
+          "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-0d2b6268.md",
+          "marketing/briefs/2026-04-07-pre-stitch-dryrun-arch-l-01.md"
+        ]
+      },
+      "warm": {
+        "id": "R4",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.0,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100718-33aa319a.md",
+          "harness/app/dashboard/pages/marketing.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-0d2b6268.md",
+          "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+          "marketing/briefs/2026-04-07-pre-stitch-dryrun-arch-l-01.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "R4",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "harness/app/dashboard/pages/marketing.md",
+          "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-0d2b6268.md",
+          "components/marketing/content-studio/hooks/use-content-posts.ts",
+          "docs/features/2026-04-08-ai-blog-content.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "R4",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": true,
+        "qa_primary_rank": 1,
+        "mrr": 0.0,
+        "qa_hit_count": 1,
+        "qa_top1": true,
+        "top_paths": [
+          ".hybrid-search/qa/2026/07/16-100718-33aa319a.md",
+          "harness/app/dashboard/pages/marketing.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-0d2b6268.md",
+          "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+          "components/marketing/content-studio/hooks/use-content-posts.ts"
+        ]
+      }
+    },
+    {
+      "id": "R5",
+      "leakage_risk": "low",
+      "category": "rationale",
+      "q1a": "entrance test 관리 플랜은 왜 세워졌나",
+      "q1b": "entrance test 관리 플랜 배경 다시",
+      "cold": {
+        "id": "R5",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/handoff/entrance-test-management.md",
+          "docs/features/2026-04-17-entrance-test-management.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md",
+          ".git-history/commits",
+          "docs/plans/completed/2026-04-17-entrance-test-management.md"
+        ]
+      },
+      "warm": {
+        "id": "R5",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/handoff/entrance-test-management.md",
+          "docs/features/2026-04-17-entrance-test-management.md",
+          ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md",
+          ".git-history/commits",
+          "docs/plans/completed/2026-04-17-entrance-test-management.md"
+        ]
+      },
+      "cold_identity": {
+        "id": "R5",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/features/2026-04-17-entrance-test-management.md",
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md",
+          "docs/handoff/entrance-test-management.md",
+          "docs/plans/completed/2026-04-17-entrance-test-management.md"
+        ]
+      },
+      "warm_identity": {
+        "id": "R5",
+        "leakage_risk": "low",
+        "category": "rationale",
+        "primary_hit_rank": null,
+        "any_hit_rank": null,
+        "recall_at_10": 0.0,
+        "answer_found": false,
+        "qa_primary_rank": null,
+        "mrr": 0.0,
+        "qa_hit_count": 0,
+        "qa_top1": false,
+        "top_paths": [
+          "docs/features/2026-04-17-entrance-test-management.md",
+          ".git-history/commits",
+          ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md",
+          "docs/handoff/entrance-test-management.md",
+          "docs/plans/completed/2026-04-17-entrance-test-management.md"
+        ]
+      }
+    }
+  ]
+}

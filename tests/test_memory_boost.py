@@ -49,6 +49,11 @@ class TestMemoryIntent:
         "confidence weak 판정 로직은 어떻게 바뀌었어",
         "이 기능 왜 만들게 됐어",
         "레인 분리 경위가 궁금해",
+        # Superlative-recency phrasings (2026-07-15 Codex field check —
+        # the cross-agent handoff loop's most common question shape)
+        "클로드 코드와 내가 가장 최근에 한 일이 뭐지",
+        "최근 작업 내용 알려줘",
+        "최신 진행 상황이 어떻게 되지",
     ])
     def test_korean_recall_phrases_trigger(self, query: str) -> None:
         assert _has_memory_intent(query) is True
@@ -56,6 +61,14 @@ class TestMemoryIntent:
     @pytest.mark.parametrize("query", [
         "previously discussed authentication flow",
         "what did I ask about the portal earlier",
+        "what is the most recent thing we worked on",
+        "show me the latest progress",
+        "what did we do recently",
+        # Round-2 FN corpus: plural/complete word forms must trigger.
+        "recent changes",
+        "recent activity",
+        "recent commits",
+        "latest updates",
         "the other day we looked at tuition",
         "before, I searched for admission_results",
         "last time you mentioned consultations",
@@ -73,6 +86,19 @@ class TestMemoryIntent:
         "how does authentication work",
         "",
         "TuitionChargeSection 컴포넌트",
+        # Topical queries with bare recency words (round-2 negative
+        # corpus): recency without a work/conversation object is a
+        # lookup, not recall.
+        "최신 OpenAI API 사용법",
+        "최근 Python 버전 차이",
+        "latest schema 문서 찾아줘",
+        "recent Python versions comparison",
+        # Round-2 additions: superlatives and verbs without OUR-work
+        # objects are still topical.
+        "가장 최근 OpenAI 모델은 뭐야?",
+        "최신 상태 관리 라이브러리 추천해줘",
+        "what is the most recent Python release?",
+        "did Python change recently?",
     ])
     def test_non_recall_queries_do_not_trigger(self, query: str) -> None:
         assert _has_memory_intent(query) is False
