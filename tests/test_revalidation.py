@@ -572,7 +572,7 @@ class TestIncompleteProjection:
 
         def flaky(repo_path, *argv):
             # The commit-log lookup backs every timestamp→base query.
-            if argv[0] == "log" and "--reverse" in argv:
+            if argv[0] == "log" and "--format=%cI %H" in argv:
                 raise GitError("timeout")
             return _default_git(repo_path, *argv)
 
@@ -626,6 +626,84 @@ class TestPinnedHead:
         plain = tmp_path / "plain"
         plain.mkdir()
         assert head_unchanged(plain, "abc123") is False
+
+
+# --- round-3 correctness regressions -------------------------------------------------
+
+class TestNonAsciiPaths:
+    """git ls-tree C-quotes non-ASCII paths by default — the HEAD-tree
+    preload must use -z (unquoted) or every Korean-named file reads as
+    deleted (round-3 P0)."""
+
+    def test_same_hash_korean_path_is_clean(self, repo: Repo) -> None:
+        repo.write("src/한글모듈.py", "값 = 1\n")
+        repo.commit("korean file", "2026-07-02T00:00:00+00:00")
+        h = _index_hash(repo, "src/한글모듈.py")
+        entries = [_qa(T_QA, ["src/한글모듈.py"],
+                       anchor_hashes={"src/한글모듈.py": h})]
+        assert _flags(repo, entries) == []
+
+    def test_changed_korean_path_flags(self, repo: Repo) -> None:
+        repo.write("src/한글모듈.py", "값 = 1\n")
+        repo.commit("korean file", "2026-07-02T00:00:00+00:00")
+        h = _index_hash(repo, "src/한글모듈.py")
+        entries = [_qa(T_QA, ["src/한글모듈.py"],
+                       anchor_hashes={"src/한글모듈.py": h})]
+        repo.write("src/한글모듈.py", "값 = 2\n")
+        repo.commit("change", T1)
+        rows = _flags(repo, entries)
+        assert len(rows) == 1 and rows[0][2] == "src/한글모듈.py"
+
+
+class TestNonMonotonicCommitDates:
+    """`git log --reverse` orders by topology, not timestamp — the base
+    lookup must sort by commit date or clock-skew/rebase/cherry-pick
+    histories pick a wrong base (round-3 P0)."""
+
+    def test_qa_between_skewed_dates_picks_date_order_base(
+        self, repo: Repo,
+    ) -> None:
+        # Parent order: 07-01 (fixture) → 07-10 → 07-05. The 07-05
+        # commit (later in topology, earlier by date) changes the
+        # anchor to its HEAD state.
+        repo.write("docs/other.md", "x\n")
+        repo.commit("skewed later date", "2026-07-10T00:00:00+00:00")
+        repo.write("src/auth.py", "def verify_token():\n    return 'v2'\n")
+        repo.commit("skewed earlier date", "2026-07-05T00:00:00+00:00")
+
+        # qa at 07-07: by DATE its base includes the 07-05 change, whose
+        # content equals HEAD → clean. An unsorted bisect stops before
+        # the 07-10 entry and lands on 07-01 → false flag.
+        entries = [_qa("2026-07-07T00:00:00+00:00", ["src/auth.py"])]
+        assert _flags(repo, entries) == []
+
+
+class TestCauseCommitAmortised:
+    def test_thousand_flags_same_anchor_constant_subprocesses(
+        self, repo: Repo,
+    ) -> None:
+        """Round-3 P1: cause lookup is memoised per (path, since) — a
+        corpus where every qa is anchored to the same stale file must
+        not run one `git log` per flag."""
+        from hybrid_search.memory.revalidation import _default_git
+
+        repo.write("src/auth.py", "v2\n")
+        repo.commit("change", T1)
+        h = "stale-hash"
+        entries = [
+            _qa(T_QA, ["src/auth.py"], chunk_id=f"qa-{i}",
+                anchor_hashes={"src/auth.py": h})
+            for i in range(1000)
+        ]
+        calls = {"n": 0}
+
+        def counting(repo_path, *argv):
+            calls["n"] += 1
+            return _default_git(repo_path, *argv)
+
+        result = project_revalidations(repo.root, entries, run_git=counting)
+        assert len(result.rows) == 1000
+        assert calls["n"] < 10, f"subprocess grew with flag count: {calls['n']}"
 
 
 # --- scale posture (round-3: projection cost vs qa corpus size) --------------------

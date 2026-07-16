@@ -213,54 +213,70 @@ class _RepoView:
         self._git_bytes = run_git_bytes
         self._blob: dict[tuple[str, str], str | None] = {}
         self._content_hash: dict[tuple[str, str], str | None] = {}
-        self._log: list[tuple[str, str]] | None = None  # (iso_ts, sha) ascending
+        # Parsed once, SORTED by commit datetime ascending. `git log
+        # --reverse` orders by parent topology, NOT by timestamp — clock
+        # skew / rebase / cherry-pick produce non-monotonic dates, and
+        # bisecting an unsorted array picks a wrong base (round-3 P0).
+        self._log: list[tuple[object, str]] | None = None
+        self._log_keys: list[object] | None = None
         self._head_tree: dict[str, str] | None = None
+        self._cause: dict[tuple[str, str | None], str] = {}
 
-    def _commit_log(self) -> list[tuple[str, str]]:
+    @staticmethod
+    def _aware(value):
+        from datetime import timezone as _tz
+
+        # git %cI always carries an offset; a naive qa timestamp is
+        # treated as UTC (same convention as the recency decay).
+        return value if value.tzinfo else value.replace(tzinfo=_tz.utc)
+
+    def _commit_log(self) -> list[tuple[object, str]]:
         if self._log is None:
-            out = self._git(
-                self._repo, "log", "--format=%cI %H", "--reverse", self._head,
-            )
-            log: list[tuple[str, str]] = []
+            from datetime import datetime as _dt
+
+            out = self._git(self._repo, "log", "--format=%cI %H", self._head)
+            parsed: list[tuple[object, str]] = []
             for line in out.splitlines():
                 parts = line.strip().split(" ", 1)
-                if len(parts) == 2:
-                    log.append((parts[0], parts[1]))
-            self._log = log
+                if len(parts) != 2:
+                    continue
+                try:
+                    parsed.append((self._aware(_dt.fromisoformat(parts[0])), parts[1]))
+                except ValueError:
+                    continue  # unparseable commit date — leave it out
+            parsed.sort(key=lambda t: t[0])
+            self._log = parsed
+            self._log_keys = [t for t, _ in parsed]
         return self._log
 
     def base_commit(self, ts_iso: str) -> str | None:
-        """Last commit on the pinned HEAD's history at or before ts.
-        None = repo history starts later (absence, not error)."""
+        """Last commit on the pinned HEAD's history whose COMMIT DATE is
+        at or before ts. None = repo history starts later (absence, not
+        error)."""
         import bisect
-        from datetime import datetime as _dt, timezone as _tz
-
-        def _aware(value: _dt) -> _dt:
-            # git %cI always carries an offset; a naive qa timestamp is
-            # treated as UTC (same convention as the recency decay).
-            return value if value.tzinfo else value.replace(tzinfo=_tz.utc)
+        from datetime import datetime as _dt
 
         try:
-            ts = _aware(_dt.fromisoformat(ts_iso))
+            ts = self._aware(_dt.fromisoformat(ts_iso))
         except ValueError:
             return None
         log = self._commit_log()
-        keys: list[_dt] = []
-        for iso, _ in log:
-            try:
-                keys.append(_aware(_dt.fromisoformat(iso)))
-            except ValueError:
-                return None  # unparseable commit date — treat as absent
-        idx = bisect.bisect_right(keys, ts) - 1
+        assert self._log_keys is not None
+        idx = bisect.bisect_right(self._log_keys, ts) - 1
         return log[idx][1] if idx >= 0 else None
 
     def _head_tree_blobs(self) -> dict[str, str]:
         if self._head_tree is None:
-            out = self._git(self._repo, "ls-tree", "-r", self._head)
+            # -z: NUL-separated entries with UNQUOTED paths. Plain
+            # ls-tree C-quotes non-ASCII paths ("src/\355\225\234..."),
+            # which would never match the evidence key and read as a
+            # deleted file (round-3 P0).
+            out = self._git(self._repo, "ls-tree", "-rz", self._head)
             tree: dict[str, str] = {}
-            for line in out.splitlines():
-                # "<mode> blob <sha>\t<path>"
-                meta, _, path = line.partition("\t")
+            for entry in out.split("\0"):
+                if not entry:
+                    continue
+                meta, _, path = entry.partition("\t")
                 fields = meta.split()
                 if len(fields) >= 3 and fields[1] == "blob" and path:
                     tree[path] = fields[2]
@@ -320,15 +336,20 @@ class _RepoView:
         return out != ""
 
     def cause_commit(self, path: str, since: str | None = None) -> str:
-        """Most recent commit touching ``path`` up to the pinned HEAD."""
-        try:
-            rev_range = f"{since}..{self._head}" if since else self._head
-            out = self._git(
-                self._repo, "log", "-1", "--format=%h", rev_range, "--", path,
-            )
-            return out or self._head[:7]
-        except GitError:
-            return self._head[:7]
+        """Most recent commit touching ``path`` up to the pinned HEAD.
+        Memoised per (path, since): a thousand qa anchored to the same
+        stale file must cost ONE lookup, not one per flag (round-3)."""
+        key = (path, since)
+        if key not in self._cause:
+            try:
+                rev_range = f"{since}..{self._head}" if since else self._head
+                out = self._git(
+                    self._repo, "log", "-1", "--format=%h", rev_range, "--", path,
+                )
+                self._cause[key] = out or self._head[:7]
+            except GitError:
+                self._cause[key] = self._head[:7]
+        return self._cause[key]
 
 
 def head_unchanged(

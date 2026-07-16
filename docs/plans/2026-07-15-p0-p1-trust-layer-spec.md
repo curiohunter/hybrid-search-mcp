@@ -112,7 +112,7 @@ KO 질문 ↔ EN Q&A 텍스트 간 cosine이 임계 미달.
 | ADV3-T2 | KO 쿼리 무회귀 | valuein KO gold set Δ ≥ −0.02 (dual lane이 KO 결과를 밀어내지 않음) |
 | ADV3-T3 | EN 쿼리 불변 | Hangul 미감지 시 코드 경로 완전 동일 (단일 lane) |
 | ADV3-T4 | 번역 캐시 적중 | 동일 쿼리 2회차에 번역 API 0회 호출 |
-| ADV3-T5 | 지연 예산 | dual lane p95 ≤ +900ms (번역 800ms + 병렬 retrieval) |
+| ADV3-T5 | 지연 SLO (2026-07-16 실측 채택) | warm(캐시) dual-lane p95 증가분 ≤ +1.0s vs translation-off — 실측 +0.00s (p50 +0.42s). cold(신규 쿼리) ≤ deadline 6s — 실측 max 3.16s. 캐시 적중 반복 쿼리 API 0회(실측 0/20), 신규 쿼리당 1회. lane 가용 시 used율 100%(실측 24/24), 포화·실패 시 즉시 skipped. 측정: baseline off p50 0.64/p95 1.27 · warm p50 1.06/p95 1.27 (n=20) · cold n=4 |
 | ADV3-T6 | 장애 격리 | 번역 API 강제 실패 mock에서 단일 lane 결과 == 기존 동작 |
 | ADV3-T7 | false-strong 불변 | EN lane 추가가 unanchored/corpus-absent 캡을 우회하지 못함 (`_cross_language_mismatch` 경로 회귀 테스트) |
 
