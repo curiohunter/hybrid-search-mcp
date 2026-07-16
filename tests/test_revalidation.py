@@ -571,7 +571,8 @@ class TestIncompleteProjection:
         from hybrid_search.memory.revalidation import _default_git
 
         def flaky(repo_path, *argv):
-            if argv[0] == "rev-list":
+            # The commit-log lookup backs every timestamp→base query.
+            if argv[0] == "log" and "--reverse" in argv:
                 raise GitError("timeout")
             return _default_git(repo_path, *argv)
 
@@ -625,6 +626,56 @@ class TestPinnedHead:
         plain = tmp_path / "plain"
         plain.mkdir()
         assert head_unchanged(plain, "abc123") is False
+
+
+# --- scale posture (round-3: projection cost vs qa corpus size) --------------------
+
+class TestProjectionScale:
+    def test_thousand_entry_corpus_stays_fast_and_subprocess_bounded(
+        self, repo: Repo,
+    ) -> None:
+        """The pass runs on every reindex — git subprocess count must not
+        grow with the qa corpus. 500 legacy (distinct timestamps) + 500
+        evidence entries over 40 files: the commit log and the HEAD tree
+        are each fetched ONCE; only per-unique-(base,path) lookups and
+        per-changed-path cat-files remain."""
+        import time as _time
+
+        from hybrid_search.memory.revalidation import _default_git
+
+        for i in range(40):
+            repo.write(f"src/mod_{i:02d}.py", f"x = {i}\n")
+        repo.commit("forty modules", "2026-07-02T00:00:00+00:00")
+        repo.write("src/mod_00.py", "x = 'changed'\n")
+        repo.commit("hot change", T1)
+
+        entries = []
+        for i in range(500):  # legacy: distinct timestamps
+            ts = f"2026-07-0{3 + (i % 5)}T{i % 24:02d}:{i % 60:02d}:00+00:00"
+            entries.append(_qa(ts, [f"src/mod_{i % 40:02d}.py"], chunk_id=f"legacy-{i}"))
+        for i in range(500):  # evidence: mostly-clean hashes + some stale
+            path = f"src/mod_{i % 40:02d}.py"
+            h = "stale-hash" if i % 40 == 0 else compute_file_hash(repo.root / path)
+            entries.append(_qa(
+                T_QA, [path], chunk_id=f"ev-{i}", anchor_hashes={path: h},
+            ))
+
+        calls = {"n": 0}
+
+        def counting(repo_path, *argv):
+            calls["n"] += 1
+            return _default_git(repo_path, *argv)
+
+        start = _time.monotonic()
+        result = project_revalidations(repo.root, entries, run_git=counting)
+        elapsed = _time.monotonic() - start
+
+        assert result.complete is True
+        assert any(r[0].startswith("ev-") for r in result.rows)
+        # Bound is generous for CI noise; the point is the ORDER: with a
+        # per-timestamp rev-list this corpus would need 500+ subprocesses.
+        assert calls["n"] < 150, f"subprocess count grew with corpus: {calls['n']}"
+        assert elapsed < 8.0, f"projection too slow at 1k entries: {elapsed:.1f}s"
 
 
 # --- anchor extraction ----------------------------------------------------------

@@ -77,6 +77,10 @@ R1은 그룹에 old만 존재하므로 grouping이 아니라 exposure 갭.
   전역 차단 (테스트가 네트워크를 절대 못 침).
 - 실측: cold 5.8s(번역 포함) → cached 1.3s. **스펙의 p95 +900ms 예산은
   비현실적이었음 — cold 1회 후 캐시로 상환하는 모델로 수정.** 번역 품질 실측 정확.
+- **라운드 2 반영 후 SLO (2026-07-16 실측)**: 레인 전체 end-to-end
+  deadline 6s (초과 시 폐기 + `cross_language_lane: skipped`), orphan
+  worker ≤ 2 (semaphore circuit). 실측 total: cold-cache 2.74s /
+  warm-cache 2.56s — deadline 여유 내.
 - ADV3-T1(실제 회수 품질)은 3차 holdout에서 검증.
 
 ### 문제 (실측)

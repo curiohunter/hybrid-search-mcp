@@ -186,7 +186,19 @@ class ProjectionResult:
 
 
 class _RepoView:
-    """Memoised git lookups pinned to one HEAD SHA for one pass."""
+    """Memoised git lookups pinned to one HEAD SHA for one pass.
+
+    Scale posture (round-3): the pass runs on every reindex, so git
+    subprocess count must not grow with the qa corpus. Two amortised
+    lookups keep it O(1)-ish in corpus size:
+
+    - the full commit log (one ``git log`` call) + bisect answers every
+      timestamp→base-commit query — v4's per-timestamp ``rev-list``
+      was one subprocess per distinct qa timestamp.
+    - the full HEAD tree (one ``git ls-tree -r`` call) answers every
+      blob-at-HEAD query; only non-HEAD commits (legacy base lookups)
+      pay a targeted ls-tree.
+    """
 
     def __init__(
         self,
@@ -199,23 +211,67 @@ class _RepoView:
         self._head = head
         self._git = run_git
         self._git_bytes = run_git_bytes
-        self._base_by_ts: dict[str, str | None] = {}
         self._blob: dict[tuple[str, str], str | None] = {}
         self._content_hash: dict[tuple[str, str], str | None] = {}
+        self._log: list[tuple[str, str]] | None = None  # (iso_ts, sha) ascending
+        self._head_tree: dict[str, str] | None = None
+
+    def _commit_log(self) -> list[tuple[str, str]]:
+        if self._log is None:
+            out = self._git(
+                self._repo, "log", "--format=%cI %H", "--reverse", self._head,
+            )
+            log: list[tuple[str, str]] = []
+            for line in out.splitlines():
+                parts = line.strip().split(" ", 1)
+                if len(parts) == 2:
+                    log.append((parts[0], parts[1]))
+            self._log = log
+        return self._log
 
     def base_commit(self, ts_iso: str) -> str | None:
         """Last commit on the pinned HEAD's history at or before ts.
         None = repo history starts later (absence, not error)."""
-        if ts_iso not in self._base_by_ts:
-            out = self._git(
-                self._repo, "rev-list", "-1", f"--before={ts_iso}", self._head,
-            )
-            self._base_by_ts[ts_iso] = out or None
-        return self._base_by_ts[ts_iso]
+        import bisect
+        from datetime import datetime as _dt, timezone as _tz
+
+        def _aware(value: _dt) -> _dt:
+            # git %cI always carries an offset; a naive qa timestamp is
+            # treated as UTC (same convention as the recency decay).
+            return value if value.tzinfo else value.replace(tzinfo=_tz.utc)
+
+        try:
+            ts = _aware(_dt.fromisoformat(ts_iso))
+        except ValueError:
+            return None
+        log = self._commit_log()
+        keys: list[_dt] = []
+        for iso, _ in log:
+            try:
+                keys.append(_aware(_dt.fromisoformat(iso)))
+            except ValueError:
+                return None  # unparseable commit date — treat as absent
+        idx = bisect.bisect_right(keys, ts) - 1
+        return log[idx][1] if idx >= 0 else None
+
+    def _head_tree_blobs(self) -> dict[str, str]:
+        if self._head_tree is None:
+            out = self._git(self._repo, "ls-tree", "-r", self._head)
+            tree: dict[str, str] = {}
+            for line in out.splitlines():
+                # "<mode> blob <sha>\t<path>"
+                meta, _, path = line.partition("\t")
+                fields = meta.split()
+                if len(fields) >= 3 and fields[1] == "blob" and path:
+                    tree[path] = fields[2]
+            self._head_tree = tree
+        return self._head_tree
 
     def blob(self, commit: str, path: str) -> str | None:
         """Blob sha of ``path`` at ``commit``; None when the path does
-        not exist there (clean absence via ls-tree exit 0 + empty)."""
+        not exist there (clean absence)."""
+        if commit == self._head:
+            return self._head_tree_blobs().get(path)
         key = (commit, path)
         if key not in self._blob:
             out = self._git(self._repo, "ls-tree", commit, "--", path)
