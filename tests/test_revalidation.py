@@ -677,6 +677,23 @@ class TestNonMonotonicCommitDates:
         entries = [_qa("2026-07-07T00:00:00+00:00", ["src/auth.py"])]
         assert _flags(repo, entries) == []
 
+    def test_same_timestamp_ties_break_to_the_child(self, repo: Repo) -> None:
+        """Round-3 re-review P0: two consecutive commits in the SAME
+        second (automation does this) — the base for a later qa must be
+        the CHILD, matching `rev-list --before`. A child-first log input
+        stable-sorted by date leaves the PARENT last in the tie group,
+        and bisect would pick it → false flag for qa that saw the
+        child's content."""
+        same_ts = "2026-07-05T00:00:00+00:00"
+        repo.write("src/auth.py", "def verify_token():\n    return 'mid'\n")
+        repo.commit("parent @ same second", same_ts)
+        repo.write("src/auth.py", "def verify_token():\n    return 'final'\n")
+        repo.commit("child @ same second", same_ts)
+
+        # qa after the pair: base must be the child ('final' == HEAD).
+        entries = [_qa("2026-07-07T00:00:00+00:00", ["src/auth.py"])]
+        assert _flags(repo, entries) == []
+
 
 class TestCauseCommitAmortised:
     def test_thousand_flags_same_anchor_constant_subprocesses(

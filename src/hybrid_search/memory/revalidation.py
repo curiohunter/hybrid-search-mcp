@@ -234,7 +234,16 @@ class _RepoView:
         if self._log is None:
             from datetime import datetime as _dt
 
-            out = self._git(self._repo, "log", "--format=%cI %H", self._head)
+            # --reverse feeds commits PARENT-FIRST; the stable sort by
+            # commit date then keeps parent→child order WITHIN an equal
+            # timestamp, so bisect_right's "last of the tie group" is
+            # the newest CHILD — matching `rev-list --before` semantics.
+            # Default (child-first) input would make bisect pick the
+            # parent for same-second consecutive commits and false-flag
+            # legacy qa that saw the child's content (round-3 P0).
+            out = self._git(
+                self._repo, "log", "--format=%cI %H", "--reverse", self._head,
+            )
             parsed: list[tuple[object, str]] = []
             for line in out.splitlines():
                 parts = line.strip().split(" ", 1)
@@ -244,7 +253,7 @@ class _RepoView:
                     parsed.append((self._aware(_dt.fromisoformat(parts[0])), parts[1]))
                 except ValueError:
                     continue  # unparseable commit date — leave it out
-            parsed.sort(key=lambda t: t[0])
+            parsed.sort(key=lambda t: t[0])  # stable: ties stay parent→child
             self._log = parsed
             self._log_keys = [t for t, _ in parsed]
         return self._log
