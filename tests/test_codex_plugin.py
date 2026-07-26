@@ -51,6 +51,32 @@ class TestManifest:
         assert "hybrid-search" in m["mcpServers"]
         assert m["mcpServers"]["hybrid-search"]["args"] == ["-m", "hybrid_search.server"]
 
+    def test_manifest_version_is_the_dist_version(self) -> None:
+        """F10 residual (Mac-mini E2E): a hardcoded __version__ shipped
+        "0.1.0" into every generated manifest and — because the writer
+        is content-idempotent — installed manifests never upgraded. The
+        manifest version must track the installed distribution."""
+        from importlib.metadata import version
+
+        m = build_plugin_manifest()
+        assert m["version"] == version("memory-layer-mcp")
+        assert m["version"] != "0.1.0"
+
+    def test_version_bump_rewrites_installed_manifest(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The idempotent write must REPLACE a stale-version manifest —
+        the upgrade path the Mac mini showed as '(unchanged)'."""
+        install_codex_plugin(project)
+        path = manifest_path(project)
+        stale = json.loads(path.read_text())
+        stale["version"] = "0.1.0"
+        path.write_text(json.dumps(stale, indent=2, ensure_ascii=False) + "\n")
+
+        result = install_codex_plugin(project)
+        assert result["manifest_changed"] is True
+        assert json.loads(path.read_text())["version"] != "0.1.0"
+
     def test_scoped_paths(self, project: Path) -> None:
         assert manifest_path(project) == project / ".codex-plugin" / "plugin.json"
         assert manifest_path(project, user=True) == (
