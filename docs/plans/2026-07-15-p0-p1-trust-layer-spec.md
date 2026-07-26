@@ -347,7 +347,26 @@ Codex 지적 수용: false-strong 0/27은 "strong을 거의 안 주는" 게임�
 
 측정 이탈(기록 유지): API 키 발급 시간 미계측 / claude -p·codex exec
 (TUI 아님) / teardown-clean이라 uv·py3.11 잔존 — 진짜 생짜 맥은 F1이 더
-나쁨. **재검증 전까지 CX-T5 게이트는 미통과 상태.**
+나쁨.
+
+**재검증 (2026-07-26, F2 수정 후)**: Codex 회상 **PASS** — `codex mcp
+list`에 hybrid-search 노출, MCP 핸드셰이크 정상, 회상이 4번 답변과
+파일 단위 일치, 양방향(codex→qa) 레코드 확인. 단서: codex exec 기본
+approval이 MCP를 자동 거부("user cancelled" 오해 문구 — 외부 이슈로
+기록), 훅은 `--dangerously-bypass-hook-trust` 필요하나 회상은 MCP
+레인만으로 성립.
+
+재검증에서 나온 후속:
+- **F4′**: 레코드는 살아남았으나 answer_excerpt가 툴 호출 전 서두 89자
+  — 원인: tool_result가 user-role 레코드로 와서 수집 walk가 첫 툴에서
+  중단. ✅ 수정: 진짜 프롬프트에서만 turn 종료 + excerpt tail-bias
+  (결론 우선). 회귀 테스트 3종.
+- **F10**: 브랜치 설치도 --version 0.7.2 출력 → ✅ 0.8.0.dev0으로 구분.
+
+**CX-T5 잔여 (미통과 유지)**: ① 대화형 TUI에서 MCP 승인·hook trust가
+1회 승인으로 끝나는지 미검증 ② "5분" 총시간은 첫 인덱싱 300s가 구속 —
+F2와 무관하므로 게이트 정의 재협상 필요(설치·연결 ≤5분 + 첫 인덱싱
+별도 예산 표기 제안).
 
 ## 실행 순서와 검증 규칙
 
