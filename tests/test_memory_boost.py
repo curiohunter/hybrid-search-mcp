@@ -449,3 +449,79 @@ class TestUnanchoredTerms:
 
     def test_empty_results_returns_nothing(self) -> None:
         assert _unanchored_terms("쿠폰 발급", []) == []
+
+
+# --- F11: self-referential recall pollution ---------------------------------
+
+class TestMetaRecallDemotion:
+    """F11 (2026-07-27 Mac-mini live use): '방금 뭐 얘기했지?' matches its
+    own past instances best, and their answers carry fossilized state —
+    an answer to a recall question can never be evidence for a recall
+    question."""
+
+    def test_meta_recall_text_detection(self) -> None:
+        from hybrid_search.search.orchestrator import _is_meta_recall_text
+
+        positives = [
+            "방금 Claude랑 뭐 얘기했지?",
+            "방금 Claude랑 뭐 얘기했지? 한 줄로.",
+            "방금 클코랑 나눈 대화 확인",
+            "우리 마지막 대화가 뭐였지?",
+            "클로드 코드와 내가 가장 최근에 한 일이 뭐지",
+            "what did we talk about just now?",
+            "summarize our latest conversation",
+        ]
+        negatives = [
+            "payssam 정산 어디서 처리해?",
+            "이 기능 왜 만들게 됐어",          # legit history question
+            "confidence weak 판정 로직은 어떻게 바뀌었어",
+            "소개 관계 그래프 UI 설계 알려줘",
+        ]
+        for q in positives:
+            assert _is_meta_recall_text(q) is True, q
+        for q in negatives:
+            assert _is_meta_recall_text(q) is False, q
+
+    def _qa(self, chunk_id: str, query: str, score: float) -> HybridResult:
+        return HybridResult(
+            chunk_id=chunk_id, rrf_score=score, bm25_rank=1, vector_rank=1,
+            file_path=f".hybrid-search/qa/{chunk_id}.md", project="p",
+            name=chunk_id, qualified_name=chunk_id, node_type="qa_log",
+            start_line=1, end_line=5,
+            content=f'---\nquery: "{query}"\n---\nbody', snippet="s",
+            file_mtime="2026-07-26T14:44:00+00:00",
+        )
+
+    def test_meta_recall_qa_demoted_below_content_qa(self) -> None:
+        meta = self._qa("meta", "방금 Claude랑 뭐 얘기했지?", 0.03)
+        content = self._qa("content", "소개 관계 그래프 테이블 설계", 0.02)
+        out = _apply_memory_boost([meta, content], memory_intent=True)
+        by_id = {r.chunk_id: r for r in out}
+        assert by_id["content"].rrf_score > by_id["meta"].rrf_score
+        assert "meta-recall" in (by_id["meta"].trust_meta or "")
+
+    def test_topical_queries_untouched(self) -> None:
+        """Demotion fires only on memory-intent queries — topical search
+        keeps today's ranking for every record."""
+        meta = self._qa("meta", "방금 Claude랑 뭐 얘기했지?", 0.03)
+        out = _apply_memory_boost([meta], memory_intent=False)
+        assert "meta-recall" not in (out[0].trust_meta or "")
+        assert out[0].rrf_score > 0.03 * 0.9  # ambient boost, not demotion
+
+    def test_conv_lane_meta_recall_demoted(self) -> None:
+        from hybrid_search.search.orchestrator import _demote_meta_recall_conv
+
+        def conv(chunk_id: str, text: str, score: float) -> HybridResult:
+            return HybridResult(
+                chunk_id=f"conv:{chunk_id}", rrf_score=score, bm25_rank=1,
+                vector_rank=1, file_path=f".conversations/codex/{chunk_id}.jsonl",
+                project="p", name=chunk_id, qualified_name=f"codex:{chunk_id}#0",
+                node_type="conv_turn", start_line=None, end_line=None,
+                content=text, snippet="s",
+            )
+
+        meta = conv("m", "[codex turn] 방금 Claude랑 뭐 얘기했지? ...", 0.03)
+        content = conv("c", "[claude turn] 소개 관계 그래프 student_referrals 설계 ...", 0.02)
+        out = _demote_meta_recall_conv([meta, content])
+        assert out[0].chunk_id == "conv:c"
+        assert "meta-recall" in (out[1].trust_meta or "")

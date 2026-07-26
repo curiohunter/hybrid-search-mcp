@@ -351,6 +351,44 @@ def _memory_status(result: HybridResult) -> str:
     return (_frontmatter_value(result.content, "status") or "active").lower()
 
 
+# F11 (2026-07-27 Mac-mini live use) — self-referential recall pollution.
+# "방금 뭐 얘기했지?" matches its own PAST INSTANCES better than the actual
+# content turns, and each past instance's answer carries the topic that
+# was current THEN — so the first answer fossilizes and every later
+# recall replays it (45-min-stale PaysSam answer while 7 newer
+# referral-graph turns sat unranked). Rule: **an answer to a recall
+# question can never be evidence for a recall question.** Meta-recall
+# records are hard-demoted on memory-intent queries; the primary content
+# turns they were derived from are in the index and rise instead. The
+# COMPLETE fix (time-ordered content turns for recency questions) is the
+# recency fast path reserved as next-PR P0.
+_META_RECALL_KO = (
+    "뭐 얘기", "무슨 얘기", "나눈 대화", "뭐 했", "뭐했", "뭐였지",
+    "뭐라고 했", "어떤 대화", "최근 대화", "마지막 대화", "지난 대화",
+    "최근에 한 일", "대화가 뭐", "대화 확인", "얘기했지",
+)
+_META_RECALL_EN_RE = re.compile(
+    r"\b(what\s+did\s+(?:i|we|you)\s+(?:talk|discuss|say|ask|do)"
+    r"|what\s+(?:did\s+)?we\s+talked\s+about"
+    r"|(?:our|the)\s+(?:last|latest|most\s+recent|recent)\s+conversation"
+    r"|what\s+was\s+(?:discussed|said))\b",
+    re.IGNORECASE,
+)
+_META_RECALL_DEMOTE = 0.15
+_META_RECALL_MARK = "[meta-recall — derivative answer to a past recall question, demoted]"
+
+
+def _is_meta_recall_text(text: str | None) -> bool:
+    """True when the text asks about the conversation ITSELF rather than
+    any topic — the question class whose past answers must never feed a
+    new recall."""
+    if not text:
+        return False
+    if any(tok in text for tok in _META_RECALL_KO):
+        return True
+    return bool(_META_RECALL_EN_RE.search(text))
+
+
 def _memory_verification(result: HybridResult) -> str | None:
     """P1-1 typed-memory trust level (verified/accepted/inferred/...).
 
@@ -586,6 +624,24 @@ def _apply_memory_boost(
         if _memory_verification(r) == "needs_revalidation":
             adjusted.append(_dc_replace(
                 r, rrf_score=round(r.rrf_score * _NEEDS_REVALIDATION_FACTOR, 6)
+            ))
+            continue
+        if (
+            memory_intent
+            and r.node_type == "qa_log"
+            and _is_meta_recall_text(_frontmatter_value(r.content, "query"))
+        ):
+            # F11 — a past "what did we talk about" record answers with
+            # the topic that was current THEN; letting it rank on a new
+            # recall query replays fossilized state and starves the real
+            # content turns. Hard demote + visible mark.
+            adjusted.append(_dc_replace(
+                r,
+                rrf_score=round(r.rrf_score * _META_RECALL_DEMOTE, 6),
+                trust_meta=(
+                    f"{r.trust_meta} {_META_RECALL_MARK}".strip()
+                    if r.trust_meta else _META_RECALL_MARK
+                ),
             ))
             continue
         if r.node_type == "domain_term":
@@ -873,6 +929,34 @@ def _mark_superseded(r: HybridResult) -> HybridResult:
             f"{_SUPERSEDED_MARK}\n{r.snippet}" if r.snippet else _SUPERSEDED_MARK
         ),
     )
+
+
+def _demote_meta_recall_conv(
+    conv_results: list[HybridResult],
+) -> list[HybridResult]:
+    """F11, conv lane — past recall-question TURNS outrank the content
+    turns for the same self-matching reason as qa records (the Mac-mini
+    repro had three of them at ranks 1–3). Demote and re-sort so content
+    turns take the conv head."""
+    out: list[HybridResult] = []
+    changed = False
+    for r in conv_results:
+        if _is_meta_recall_text((r.content or "")[:300]):
+            changed = True
+            out.append(_dc_replace(
+                r,
+                rrf_score=round(r.rrf_score * _META_RECALL_DEMOTE, 6),
+                trust_meta=(
+                    f"{r.trust_meta} {_META_RECALL_MARK}".strip()
+                    if r.trust_meta else _META_RECALL_MARK
+                ),
+            ))
+        else:
+            out.append(r)
+    if not changed:
+        return conv_results
+    out.sort(key=lambda r: -r.rrf_score)
+    return out
 
 
 def _merge_conv_results(
@@ -1258,6 +1342,7 @@ class SearchOrchestrator:
             conv_results = self._enrich_results(
                 conv_fused[:max(50, limit)], project_infos, query
             )
+            conv_results = _demote_meta_recall_conv(conv_results)
             # Phase 5 (conv): collect live-session turns the async per-turn
             # indexer hasn't caught yet. The Stop hook indexes detached, so the
             # freshest turns of an ongoing session — and the turn in progress —
