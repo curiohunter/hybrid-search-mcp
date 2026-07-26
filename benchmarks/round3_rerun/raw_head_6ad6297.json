@@ -1,0 +1,2646 @@
+{
+ "code_root": "/Users/ian/project/claude_project/hybrid-search-mcp",
+ "project": "valuein_homepage",
+ "queries": [
+  {
+   "id": "S1",
+   "category": "structure",
+   "query": "수강료 정산 시스템은 어떻게 구성되어 있나",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_031e9c395ca71e58",
+     "node_type": "module",
+     "file_path": "components/tuition/tuition-row.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "e3bfdc4637f0f99c",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+     "rrf_score": 0.016354,
+     "bm25_rank": 2,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_4b00c4653e7600ff",
+     "node_type": "module",
+     "file_path": "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "b7d8ac13df65ea5d",
+     "node_type": "function",
+     "file_path": "services/withdrawal/send-invoice.ts",
+     "rrf_score": 0.015517,
+     "bm25_rank": null,
+     "vector_rank": 12,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "module:mod_492101e658187450",
+     "node_type": "module",
+     "file_path": "docs/features/tuition-ledger.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "46dffef459c3ccdb",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-672f342c.md",
+     "rrf_score": 0.006142,
+     "bm25_rank": 5,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "c0c62575c58cbcc1",
+     "node_type": "section",
+     "file_path": "docs/archive/session-edit-add-delete-plan.md",
+     "rrf_score": 0.015347,
+     "bm25_rank": 3,
+     "vector_rank": 6,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_030d315fd3e7c0c4:archive/dead-code-2026-07/components/tuition/tuition-sidebar.tsx",
+     "node_type": "module_member",
+     "file_path": "archive/dead-code-2026-07/components/tuition/tuition-sidebar.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_8faccddc4eb7691c:components/tuition-wizard/step-review.tsx",
+     "node_type": "module_member",
+     "file_path": "components/tuition-wizard/step-review.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_8faccddc4eb7691c:components/tuition-wizard/step-discount.tsx",
+     "node_type": "module_member",
+     "file_path": "components/tuition-wizard/step-discount.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "S2",
+   "category": "structure",
+   "query": "학부모 학생 포털 인증 및 레이아웃 흐름",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_c740a702103de252",
+     "node_type": "module",
+     "file_path": "docs/features/2026-04-08-portal-parent-student.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "744ad1b4d0f01a7a",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-15-portal-v3.md",
+     "rrf_score": 0.016393,
+     "bm25_rank": 9,
+     "vector_rank": 5,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_68e250c8e84deaae",
+     "node_type": "module",
+     "file_path": "app/api/students/route.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "195dd03314fd283c",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/05/28-074805-036ee924.md",
+     "rrf_score": 0.016993,
+     "bm25_rank": 7,
+     "vector_rank": 1,
+     "trust_meta": "[qa - mcp_tool - 59d ago]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "module:mod_b74ba9fe95a461db",
+     "node_type": "module",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-1122a709.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "a088752ed9321fbc",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-15-portal-v3.md",
+     "rrf_score": 0.014919,
+     "bm25_rank": 2,
+     "vector_rank": 8,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "61555843e12ef658",
+     "node_type": "section",
+     "file_path": "docs/archive/remote-finish-room.md",
+     "rrf_score": 0.013492,
+     "bm25_rank": 6,
+     "vector_rank": 18,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_503c495964b1ec5f:supabase/migrations/20260528103000_portal_v3_parent_student_rls.sql",
+     "node_type": "module_member",
+     "file_path": "supabase/migrations/20260528103000_portal_v3_parent_student_rls.sql",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_ab6c70c7d8e9f9cf:lib/auth/get-user.ts",
+     "node_type": "module_member",
+     "file_path": "lib/auth/get-user.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_ab6c70c7d8e9f9cf:lib/auth/client.ts",
+     "node_type": "module_member",
+     "file_path": "lib/auth/client.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "S3",
+   "category": "structure",
+   "query": "AI 에이전트 아키텍처 전체 그림",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_2c01eaeef8de6702",
+     "node_type": "module",
+     "file_path": ".hybrid-search/qa/2026/07/15-015214-1504fb25.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "986b913192f34c75",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/05/13-075402-6695f1bd.md",
+     "rrf_score": 0.016824,
+     "bm25_rank": 5,
+     "vector_rank": 1,
+     "trust_meta": "[qa - stop_hook - 74d ago]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_40567e8aabd7ae6d",
+     "node_type": "module",
+     "file_path": "archive/portal-v2/detail/ConsultationDetail.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "30ac99bbee6db6b2",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/15-012235-e8d4cb2d.md",
+     "rrf_score": 0.017781,
+     "bm25_rank": 10,
+     "vector_rank": 4,
+     "trust_meta": "[qa - stop_hook - 11d ago]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "module:mod_c4e4948eaa989529",
+     "node_type": "module",
+     "file_path": "archive/crawler-grade-based-2025-01-09.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "b17ef35556a57fe4",
+     "node_type": "section",
+     "file_path": "docs/archive/withdrawal-operations-agent.md",
+     "rrf_score": 0.015255,
+     "bm25_rank": 7,
+     "vector_rank": 9,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "aafeb33ef553b450",
+     "node_type": "section",
+     "file_path": "docs/plans/_archive/agent-system-plan.md",
+     "rrf_score": 0.014934,
+     "bm25_rank": 13,
+     "vector_rank": 6,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_8ef285f22926fd1c:app/(dashboard)/marketing/campaigns/page.tsx",
+     "node_type": "module_member",
+     "file_path": "app/(dashboard)/marketing/campaigns/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_1c63b35754cc0908:.hybrid-search/qa/2026/07/24-061807-c2d1c7eb.md",
+     "node_type": "module_member",
+     "file_path": ".hybrid-search/qa/2026/07/24-061807-c2d1c7eb.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_1c63b35754cc0908:archive/ai-llm-2026-07/settings-comment-protocols-page.tsx",
+     "node_type": "module_member",
+     "file_path": "archive/ai-llm-2026-07/settings-comment-protocols-page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "S4",
+   "category": "structure",
+   "query": "원격 수업방 remote-room 모듈은 어떻게 구성되나",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_da952f06d39d501f",
+     "node_type": "module",
+     "file_path": "docs/dbdocs/tables/18-remote-room/remote_rooms.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "08d51149241f504e",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-08-learning-remote-room.md",
+     "rrf_score": 0.016393,
+     "bm25_rank": 1,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_c740a702103de252",
+     "node_type": "module",
+     "file_path": "docs/archive/remote-finish-room.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "7a49f91ef98aaa8f",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/09-115103-7f31fc88.md",
+     "rrf_score": 0.018595,
+     "bm25_rank": 1,
+     "vector_rank": 1,
+     "trust_meta": "[qa - mcp_tool - 17d ago]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "module:mod_6fc42a401e2d3c14",
+     "node_type": "module",
+     "file_path": "app/(dashboard)/learning/classroom/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "commit:6cea154b8b533bd72f8a78bbcde6ac3d9a4414a7",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.015296,
+     "bm25_rank": 24,
+     "vector_rank": 4,
+     "trust_meta": "[commit - 111d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "386de1adde2a3d74",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-08-learning-remote-room.md",
+     "rrf_score": 0.015223,
+     "bm25_rank": 4,
+     "vector_rank": 6,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_2e9681622c36c04f:docs/valueinmath_docs/학습/내신대비/가람고/2026_고1-1_중간/README.md",
+     "node_type": "module_member",
+     "file_path": "docs/valueinmath_docs/학습/내신대비/가람고/2026_고1-1_중간/README.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_fd006da624272ee6:lib/google/client.ts",
+     "node_type": "module_member",
+     "file_path": "lib/google/client.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_fd006da624272ee6:lib/google/calendar.ts",
+     "node_type": "module_member",
+     "file_path": "lib/google/calendar.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "S5",
+   "category": "structure",
+   "query": "입학 시험 결과 관리 모듈 구조",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_2005c67ce1c5ae40",
+     "node_type": "module",
+     "file_path": "components/learning/school-exams/school-exam-table.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "commit:3f44a66ebe6dbf1338205235da1451450cf73972",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.015911,
+     "bm25_rank": null,
+     "vector_rank": 2,
+     "trust_meta": "[commit - 101d ago]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_8d2f3c67855484ce",
+     "node_type": "module",
+     "file_path": "components/learning/school-exam-scores/school-exam-score-table.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "commit:d6307628315dac33ce98e441c5597aa2dc0be104",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.01467,
+     "bm25_rank": 28,
+     "vector_rank": 7,
+     "trust_meta": "[commit - 101d ago]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "module:mod_166ec1ba814f417c",
+     "node_type": "module",
+     "file_path": "components/admissions/admission-table.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "8aa39d78795b4c6f",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md",
+     "rrf_score": 0.005967,
+     "bm25_rank": 10,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "104e35e5dc8fd424",
+     "node_type": "section",
+     "file_path": "docs/valueinmath_docs/학습/내신대비/대원여고/2026_고1-1_중간/04_예상분석/2026_재출제_예상_분석.md",
+     "rrf_score": 0.013976,
+     "bm25_rank": 2,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_c5c93893f8eae4fd:database/migrations/20260327_create_admission_results.sql",
+     "node_type": "module_member",
+     "file_path": "database/migrations/20260327_create_admission_results.sql",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_a2935881181c8139:supabase/migrations/20260611090100_create_exam_schedule_review_students.sql",
+     "node_type": "module_member",
+     "file_path": "supabase/migrations/20260611090100_create_exam_schedule_review_students.sql",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_a2935881181c8139:supabase/migrations/20260611090000_add_teacher_to_exam_reviews.sql",
+     "node_type": "module_member",
+     "file_path": "supabase/migrations/20260611090000_add_teacher_to_exam_reviews.sql",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "F1",
+   "category": "exploration",
+   "query": "학생이 숙제 제출하면 어디서 분석되나",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_1674d0635d7596f4",
+     "node_type": "module",
+     "file_path": "components/learning/homework-analysis/HomeworkTab.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "147ff51c077f0426",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/05/13-062703-f40e30fc.md",
+     "rrf_score": 0.016748,
+     "bm25_rank": 1,
+     "vector_rank": 2,
+     "trust_meta": "[qa - stop_hook - 74d ago]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_fcbd856c455daf45",
+     "node_type": "module",
+     "file_path": ".hybrid-search/qa/2026/07/08-113321-49613c40.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "cd3bb0d4ce09ac06",
+     "node_type": "section",
+     "file_path": "docs/valueinmath_docs/마케팅/블로그/260327_블로그_수학학원-상담전-체크리스트.md",
+     "rrf_score": 0.016207,
+     "bm25_rank": 2,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "module:mod_62a62035aef56437",
+     "node_type": "module",
+     "file_path": "app/(dashboard)/learning/homework-analysis/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "a11cfb5961a9301d",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/08-110532-ca13d46b.md",
+     "rrf_score": 0.01804,
+     "bm25_rank": 7,
+     "vector_rank": 2,
+     "trust_meta": "[qa - stop_hook - 18d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "1741993de8020da0",
+     "node_type": "section",
+     "file_path": "docs/valueinmath_docs/마케팅/블로그/260327_블로그_소수정예-vs-대형학원.md",
+     "rrf_score": 0.015911,
+     "bm25_rank": 3,
+     "vector_rank": 8,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_e627a70fcd43faf4:supabase/migrations/20260130_mathflat_homework_cron.sql",
+     "node_type": "module_member",
+     "file_path": "supabase/migrations/20260130_mathflat_homework_cron.sql",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_c740a702103de252:actions/auth-actions.ts",
+     "node_type": "module_member",
+     "file_path": "actions/auth-actions.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_c740a702103de252:lib/mathflat/homework-collector.ts",
+     "node_type": "module_member",
+     "file_path": "lib/mathflat/homework-collector.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "F2",
+   "category": "exploration",
+   "query": "월별 학원 통계는 어떻게 집계되나",
+   "confidence": "weak",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_248ba90e746664a4",
+     "node_type": "module",
+     "file_path": "database/migrations/create_academy_monthly_stats.sql",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "a439e7d6a68ce9a4",
+     "node_type": "section",
+     "file_path": "docs/valueinmath_docs/인사/260107_인사_엄해미-인사평가-2025.md",
+     "rrf_score": 0.013934,
+     "bm25_rank": 3,
+     "vector_rank": 15,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_c740a702103de252",
+     "node_type": "module",
+     "file_path": "docs/dbdocs/tables/06-analytics/academy_monthly_stats.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "f9652eb45e24f6f3",
+     "node_type": "section",
+     "file_path": "docs/valueinmath_docs/운영/260108_운영_2026년_연간계획서작성_기초분석.md",
+     "rrf_score": 0.013714,
+     "bm25_rank": null,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "module:mod_0eed3d0123bc35f3",
+     "node_type": "module",
+     "file_path": ".hybrid-search/qa/2026/07/15-011632-30809767.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "34a0ee13763e9517",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/15-012526-152ed847.md",
+     "rrf_score": 0.007205,
+     "bm25_rank": 8,
+     "vector_rank": null,
+     "trust_meta": "[qa - stop_hook - 11d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "742b520e113e1547",
+     "node_type": "section",
+     "file_path": "docs/valueinmath_docs/운영/260109_운영_퇴원분석_2025-2026.md",
+     "rrf_score": 0.01371,
+     "bm25_rank": null,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_930505d288e3d7f2:docs/valueinmath_docs/분석/260119_분석_학원업무시간대분석-자동화전략.md",
+     "node_type": "module_member",
+     "file_path": "docs/valueinmath_docs/분석/260119_분석_학원업무시간대분석-자동화전략.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_4b00c4653e7600ff:components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx",
+     "node_type": "module_member",
+     "file_path": "components/student-hub/tabs/tuition/tuition-ledger-subtab.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_4b00c4653e7600ff:components/student-hub/tabs/tuition/tuition-history-subtab.tsx",
+     "node_type": "module_member",
+     "file_path": "components/student-hub/tabs/tuition/tuition-history-subtab.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "F3",
+   "category": "exploration",
+   "query": "출결 관리 기능은 어디에 있나",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_ed1dbbb20ddd2dfd",
+     "node_type": "module",
+     "file_path": "components/learning/attendance/attendance-table.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "5ef9acbd116d1212",
+     "node_type": "section",
+     "file_path": "docs/archive/student-monthly-session-plan.md",
+     "rrf_score": 0.016354,
+     "bm25_rank": 2,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_2fd534ba99ff7f04",
+     "node_type": "module",
+     "file_path": "components/dashboard/attendance-overview/attendance-dialogs.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "3378c44a0de7939e",
+     "node_type": "section",
+     "file_path": "docs/archive/business-vision-2026.md",
+     "rrf_score": 0.014084,
+     "bm25_rank": null,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "module:mod_11842d96ccd78506",
+     "node_type": "module",
+     "file_path": "app/(dashboard)/learning/attendance/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "8aa39d78795b4c6f",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md",
+     "rrf_score": 0.005967,
+     "bm25_rank": 10,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "edce4f7ed076341b",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-08-ops-meeting.md",
+     "rrf_score": 0.013716,
+     "bm25_rank": 25,
+     "vector_rank": 9,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_a2935881181c8139:app/(dashboard)/learning/school-exam-scores/page.tsx",
+     "node_type": "module_member",
+     "file_path": "app/(dashboard)/learning/school-exam-scores/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_c8dae032619a7409:.hybrid-search/qa/2026/05/20-082003-a812aa3e.md",
+     "node_type": "module_member",
+     "file_path": ".hybrid-search/qa/2026/05/20-082003-a812aa3e.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_c8dae032619a7409:app/(portal)/portal/learning/attendance/page.tsx",
+     "node_type": "module_member",
+     "file_path": "app/(portal)/portal/learning/attendance/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "F4",
+   "category": "exploration",
+   "query": "상담 예약과 관리 시스템은 어떻게 동작하나",
+   "confidence": "weak",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_1167ceb437073299",
+     "node_type": "module",
+     "file_path": "components/consultations/ConsultationStats.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "eff6a84d7a92a7da",
+     "node_type": "section",
+     "file_path": "docs/valueinmath_docs/마케팅/블로그/260327_블로그_광진구-수학학원-추천-비교.md",
+     "rrf_score": 0.015701,
+     "bm25_rank": 2,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_476dcf2d131e1c11",
+     "node_type": "module",
+     "file_path": "app/api/consultation-requests/route.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "edce4f7ed076341b",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-08-ops-meeting.md",
+     "rrf_score": 0.013934,
+     "bm25_rank": null,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "module:mod_166ec1ba814f417c",
+     "node_type": "module",
+     "file_path": "components/admissions/admission-form-modal.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "8aa39d78795b4c6f",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md",
+     "rrf_score": 0.00663,
+     "bm25_rank": 1,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "6f5b792e75d93b26",
+     "node_type": "section",
+     "file_path": "docs/archive/withdrawal-operations-agent.md",
+     "rrf_score": 0.01371,
+     "bm25_rank": null,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_14e1ef37d883e1b2:app/(dashboard)/consultations/page.tsx",
+     "node_type": "module_member",
+     "file_path": "app/(dashboard)/consultations/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_c5c93893f8eae4fd:database/migrations/20260327_create_admission_results.sql",
+     "node_type": "module_member",
+     "file_path": "database/migrations/20260327_create_admission_results.sql",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_c5c93893f8eae4fd:app/(dashboard)/students/admissions/page.tsx",
+     "node_type": "module_member",
+     "file_path": "app/(dashboard)/students/admissions/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "F5",
+   "category": "exploration",
+   "query": "변형 문제 variant problems 생성 로직",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_f15cafe15df8e50e",
+     "node_type": "module",
+     "file_path": ".hybrid-search/qa/2026/05/20-073705-75983af8.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "51c412d359289b43",
+     "node_type": "section",
+     "file_path": "docs/plans/2026-04-15-variant-problems-plan.md",
+     "rrf_score": 0.015625,
+     "bm25_rank": 1,
+     "vector_rank": 10,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_f9b631168f88864c",
+     "node_type": "module",
+     "file_path": "supabase/functions/mathflat-daily-work-problems/index.ts",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "5d73b5c3226fc957",
+     "node_type": "section",
+     "file_path": "docs/plans/2026-04-15-variant-problems-plan.md",
+     "rrf_score": 0.015129,
+     "bm25_rank": 21,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "d47b8dc8bc943942",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/04/29-092419-7efde239.md",
+     "rrf_score": 0.006727,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - stop_hook - 88d ago - supersedes a stale answer below]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "6e0c9150d262956e",
+     "node_type": "section",
+     "file_path": "docs/plans/2026-04-15-variant-problems-plan.md",
+     "rrf_score": 0.014774,
+     "bm25_rank": 4,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "32e19b01686add62",
+     "node_type": "section",
+     "file_path": "docs/plans/2026-04-15-variant-problems-plan.md",
+     "rrf_score": 0.014048,
+     "bm25_rank": 14,
+     "vector_rank": 16,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_3a0f51fb55b60635:docs/valueinmath_docs/학습/variant-data/problems.json",
+     "node_type": "module_member",
+     "file_path": "docs/valueinmath_docs/학습/variant-data/problems.json",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_fe10752339f40d12:docs/valueinmath_docs/학습/variant-rule/keep-full-question.md",
+     "node_type": "module_member",
+     "file_path": "docs/valueinmath_docs/학습/variant-rule/keep-full-question.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_fe10752339f40d12:docs/valueinmath_docs/학습/variant-rule/coefficient-depth.md",
+     "node_type": "module_member",
+     "file_path": "docs/valueinmath_docs/학습/variant-rule/coefficient-depth.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "P1",
+   "category": "precision",
+   "query": "TuitionChargeSection 컴포넌트",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "4cc24a3bfecc9332",
+     "node_type": "section",
+     "file_path": "harness/app/dashboard/pages/students.md",
+     "rrf_score": 0.014865,
+     "bm25_rank": 21,
+     "vector_rank": 6,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "99ca56766725d4a9",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-08-tuition-withdrawal-refund.md",
+     "rrf_score": 0.014029,
+     "bm25_rank": 11,
+     "vector_rank": 5,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "46dffef459c3ccdb",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-672f342c.md",
+     "rrf_score": 0.006526,
+     "bm25_rank": 4,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "a2642b1d1e305ff0",
+     "node_type": "merged",
+     "file_path": "components/tuition/tuition-charge-section.tsx",
+     "rrf_score": 0.010833,
+     "bm25_rank": null,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "a7997c21ca55a655",
+     "node_type": "section",
+     "file_path": "harness/app/dashboard/pages/students.md",
+     "rrf_score": 0.010783,
+     "bm25_rank": null,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "fdfc904e9c861252",
+     "node_type": "function",
+     "file_path": "services/tuition-service.ts",
+     "rrf_score": 0.009836,
+     "bm25_rank": null,
+     "vector_rank": 12,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "be208f4a58dbd59d",
+     "node_type": "function",
+     "file_path": "services/tuition-service.ts",
+     "rrf_score": 0.009677,
+     "bm25_rank": null,
+     "vector_rank": 9,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "d0baa397c7dfcdc2",
+     "node_type": "function",
+     "file_path": "app/tuition-fees/page.tsx",
+     "rrf_score": 0.00963,
+     "bm25_rank": null,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "18ea1a9857f6ada1",
+     "node_type": "function",
+     "file_path": "services/tuition-service.ts",
+     "rrf_score": 0.009524,
+     "bm25_rank": null,
+     "vector_rank": 21,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "2ea0c7c2fd53a5a2",
+     "node_type": "function",
+     "file_path": "services/tuition-service.ts",
+     "rrf_score": 0.009512,
+     "bm25_rank": null,
+     "vector_rank": 22,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "P2",
+   "category": "precision",
+   "query": "admission_results 테이블 스키마",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "d5e665983b4ab90f",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/05/13-075433-4b9ba6b9.md",
+     "rrf_score": 0.016765,
+     "bm25_rank": 3,
+     "vector_rank": 1,
+     "trust_meta": "[qa - stop_hook - 74d ago]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "2730918dcbc0a2c5",
+     "node_type": "merged",
+     "file_path": "database/migrations/20260327_create_admission_results.sql",
+     "rrf_score": 0.014665,
+     "bm25_rank": 1,
+     "vector_rank": 14,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "b564710fc0466be1",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+     "rrf_score": 0.006053,
+     "bm25_rank": 6,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "5e31cdb7cdaa0f44",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-08-learning-attendance.md",
+     "rrf_score": 0.012701,
+     "bm25_rank": 8,
+     "vector_rank": 28,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "5eb6e4a0e039bb13",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-08-learning-test-logs.md",
+     "rrf_score": 0.012045,
+     "bm25_rank": 28,
+     "vector_rank": 20,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "e5364fe33c0410bb",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-17-entrance-test-management.md",
+     "rrf_score": 0.009677,
+     "bm25_rank": null,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "commit:499a5abe552f8d3db7b7aa8fee2e36b5611e2a47",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.009524,
+     "bm25_rank": null,
+     "vector_rank": 6,
+     "trust_meta": "[commit - 94d ago]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "1d93b05c24a7729a",
+     "node_type": "section",
+     "file_path": "harness/app/dashboard/pages/students.md",
+     "rrf_score": 0.009375,
+     "bm25_rank": null,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "b20128b8879e0561",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-17-entrance-test-management.md",
+     "rrf_score": 0.009295,
+     "bm25_rank": null,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "3853323face267ac",
+     "node_type": "variable",
+     "file_path": "app/(dashboard)/students/admissions/page.tsx",
+     "rrf_score": 0.009231,
+     "bm25_rank": null,
+     "vector_rank": 5,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "P3",
+   "category": "precision",
+   "query": "pending-approval 페이지",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "module:mod_53e94ff62e353ea6",
+     "node_type": "module",
+     "file_path": "app/(auth)/pending-approval/logout-button.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "a38ba1294a247dd0",
+     "node_type": "function",
+     "file_path": "app/(auth)/pending-approval/pending-approval-client.tsx",
+     "rrf_score": 0.015079,
+     "bm25_rank": 12,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "module:mod_d6f2a00758601049",
+     "node_type": "module",
+     "file_path": ".hybrid-search/qa/2026/05/01-030459-1ccfdcb4.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "c78d51e373be73ec",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/25-054507-4e515d8c.md",
+     "rrf_score": 0.007825,
+     "bm25_rank": 1,
+     "vector_rank": null,
+     "trust_meta": "[qa - user_prompt_submit - hypothesis - 1d ago]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "3e91f00ecf311aed",
+     "node_type": "class",
+     "file_path": "app/(auth)/pending-approval/pending-approval-client.tsx",
+     "rrf_score": 0.013326,
+     "bm25_rank": 11,
+     "vector_rank": 18,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "3cd81a3099f624e4",
+     "node_type": "variable",
+     "file_path": "components/employees/parent-student-approval-section.tsx",
+     "rrf_score": 0.010941,
+     "bm25_rank": null,
+     "vector_rank": 8,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "d2bb7bc653617a59",
+     "node_type": "variable",
+     "file_path": "components/employees/parent-student-approval-modal.tsx",
+     "rrf_score": 0.010479,
+     "bm25_rank": null,
+     "vector_rank": 11,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "member:mod_d644e518a7551521:app/(auth)/reset-password/page.tsx",
+     "node_type": "module_member",
+     "file_path": "app/(auth)/reset-password/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "member:mod_71c44321459139df:harness/app/auth/rules.md",
+     "node_type": "module_member",
+     "file_path": "harness/app/auth/rules.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "member:mod_71c44321459139df:app/auth/error/page.tsx",
+     "node_type": "module_member",
+     "file_path": "app/auth/error/page.tsx",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": ""
+    }
+   ]
+  },
+  {
+   "id": "P4",
+   "category": "precision",
+   "query": "create_academy_monthly_stats 함수",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "2a604bc67ea2e1d7",
+     "node_type": "statement",
+     "file_path": "database/migrations/create_academy_monthly_stats.sql",
+     "rrf_score": 0.016235,
+     "bm25_rank": 1,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "63aff08447a36104",
+     "node_type": "merged",
+     "file_path": "database/migrations/create_academy_monthly_stats.sql",
+     "rrf_score": 0.0104,
+     "bm25_rank": null,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "78485a6544e25d20",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/22-053657-3da4ac20.md",
+     "rrf_score": 0.007739,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - stop_hook - hypothesis - 4d ago - supersedes a stale answer below]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "5bc841b9cd0db362",
+     "node_type": "function",
+     "file_path": "app/actions/analytics-snapshot.ts",
+     "rrf_score": 0.010263,
+     "bm25_rank": null,
+     "vector_rank": 15,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "e8644ca88176a76f",
+     "node_type": "function",
+     "file_path": "components/analytics/_hooks/use-operation-stats.ts",
+     "rrf_score": 0.009836,
+     "bm25_rank": null,
+     "vector_rank": 16,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "e6d96d919c055acb",
+     "node_type": "section",
+     "file_path": "docs/dbdocs/tables/06-analytics/academy_monthly_stats.md",
+     "rrf_score": 0.009662,
+     "bm25_rank": null,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "1b254123155ec53c",
+     "node_type": "function",
+     "file_path": "lib/student-metrics.ts",
+     "rrf_score": 0.009524,
+     "bm25_rank": null,
+     "vector_rank": 17,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "48f724a02d8c4708",
+     "node_type": "section",
+     "file_path": "docs/dbdocs/tables/06-analytics/academy_monthly_stats.md",
+     "rrf_score": 0.009375,
+     "bm25_rank": null,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "b569f19d0801f89d",
+     "node_type": "function",
+     "file_path": "components/analytics/_hooks/use-operation-stats.ts",
+     "rrf_score": 0.009231,
+     "bm25_rank": null,
+     "vector_rank": 5,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "74bdb2fad93ddc38",
+     "node_type": "section",
+     "file_path": "docs/dbdocs/tables/06-analytics/academy_monthly_stats.md",
+     "rrf_score": 0.009091,
+     "bm25_rank": null,
+     "vector_rank": 6,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "P5",
+   "category": "precision",
+   "query": "standardize_rls_policies 마이그레이션",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "edea9ce52ed0a300",
+     "node_type": "merged",
+     "file_path": "database/migrations/20251022_standardize_rls_policies.sql",
+     "rrf_score": 0.015513,
+     "bm25_rank": 1,
+     "vector_rank": 7,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "0eb1ebf985cd7290",
+     "node_type": "section",
+     "file_path": "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+     "rrf_score": 0.012857,
+     "bm25_rank": 10,
+     "vector_rank": 24,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "b564710fc0466be1",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-3ea0a38f.md",
+     "rrf_score": 0.00663,
+     "bm25_rank": 3,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "d4efd264830a6ca6",
+     "node_type": "section",
+     "file_path": "docs/archive/saas확장위한변경이력추적마이그레이션.md",
+     "rrf_score": 0.009836,
+     "bm25_rank": null,
+     "vector_rank": 9,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "69901b81efdda248",
+     "node_type": "section",
+     "file_path": "database/README.md",
+     "rrf_score": 0.009677,
+     "bm25_rank": null,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "3d79cfa61bb5527e",
+     "node_type": "section",
+     "file_path": "docs/archive/withdrawal-risk-detection-system.md",
+     "rrf_score": 0.009524,
+     "bm25_rank": null,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "f4e9921324cdc052",
+     "node_type": "section",
+     "file_path": "docs/dbdocs/tables/01-core/profiles.md",
+     "rrf_score": 0.009375,
+     "bm25_rank": null,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "ee376ef24af72e9f",
+     "node_type": "section",
+     "file_path": "docs/archive/superclaude-valuein-optimization-guide.md",
+     "rrf_score": 0.009231,
+     "bm25_rank": null,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "dc891d3d9f15df8d",
+     "node_type": "section",
+     "file_path": "docs/dbdocs/tables/03-consultation/consultation_requests.md",
+     "rrf_score": 0.009091,
+     "bm25_rank": null,
+     "vector_rank": 5,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "a3ca578f47deea33",
+     "node_type": "section",
+     "file_path": "docs/dbdocs/tables/02-learning/makeup_classes.md",
+     "rrf_score": 0.008824,
+     "bm25_rank": null,
+     "vector_rank": 6,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "R1",
+   "category": "rationale",
+   "query": "portal v3로 리팩토링하는 이유는 무엇인가",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "d7554bae564df6f9",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/05/13-065501-4c44bbd5.md",
+     "rrf_score": 0.01698,
+     "bm25_rank": 1,
+     "vector_rank": 1,
+     "trust_meta": "[qa - stop_hook - 74d ago]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "7ce6dbca93cc7c48",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/05/13-065441-b6314bc1.md",
+     "rrf_score": 0.015836,
+     "bm25_rank": 3,
+     "vector_rank": 12,
+     "trust_meta": "[qa - mcp_tool - 74d ago] [superseded — newer answer on this topic ranks above]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "ac93af3f98908a9e",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-c3cfb20c.md",
+     "rrf_score": 0.016426,
+     "bm25_rank": 7,
+     "vector_rank": 3,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "ed60c63540910e05",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
+     "rrf_score": 0.014695,
+     "bm25_rank": 4,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "5b0ba76f156c9411",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
+     "rrf_score": 0.014211,
+     "bm25_rank": 7,
+     "vector_rank": 11,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "b537dd7b1041745c",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
+     "rrf_score": 0.01371,
+     "bm25_rank": null,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "cefa906eac804391",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
+     "rrf_score": 0.013281,
+     "bm25_rank": null,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "826ef23997b16925",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-15-portal-v3-refactoring.md",
+     "rrf_score": 0.013077,
+     "bm25_rank": null,
+     "vector_rank": 5,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "R2",
+   "category": "rationale",
+   "query": "ledger writepath ABC 설계를 택한 배경은",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "commit:a752dfef019264b2c9108f623566349beb70897f",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.01573,
+     "bm25_rank": 1,
+     "vector_rank": 8,
+     "trust_meta": "[commit - 94d ago]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "commit:e26e2ad0165be2bc87656c22bca1272ac1098d17",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.015641,
+     "bm25_rank": 11,
+     "vector_rank": 2,
+     "trust_meta": "[commit - 96d ago]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "d2f42d06e3c83f36",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-7ff3c39b.md",
+     "rrf_score": 0.006526,
+     "bm25_rank": 5,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "f416cf228d4472b7",
+     "node_type": "section",
+     "file_path": "docs/features/ledger-writepath.md",
+     "rrf_score": 0.015406,
+     "bm25_rank": 8,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "3d564618a706e229",
+     "node_type": "section",
+     "file_path": "docs/handoff/tuition-ledger-writepath-abc.md",
+     "rrf_score": 0.014452,
+     "bm25_rank": 2,
+     "vector_rank": 15,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "49819c944335a55b",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-21-ledger-writepath-abc.md",
+     "rrf_score": 0.014394,
+     "bm25_rank": 6,
+     "vector_rank": 12,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "aab19ea54b5d0c49",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-21-ledger-writepath-abc.md",
+     "rrf_score": 0.014375,
+     "bm25_rank": 20,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "44054dd45ed7beea",
+     "node_type": "section",
+     "file_path": "docs/handoff/paid-fee-guard.md",
+     "rrf_score": 0.013514,
+     "bm25_rank": 19,
+     "vector_rank": 11,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "R3",
+   "category": "rationale",
+   "query": "tuition hub를 새로 만드는 이유",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "d8130bcd48176ac8",
+     "node_type": "section",
+     "file_path": "docs/plans/2026-04-01-tuition-create-page.md",
+     "rrf_score": 0.014157,
+     "bm25_rank": 15,
+     "vector_rank": 8,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "commit:e80e82264c107c8dd342bb41c3716b4156d1226f",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.010054,
+     "bm25_rank": null,
+     "vector_rank": 1,
+     "trust_meta": "[commit - 95d ago]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "2d35a505a60112bd",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-2819af91.md",
+     "rrf_score": 0.015303,
+     "bm25_rank": 23,
+     "vector_rank": 1,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "d62b49df0b9a6f5d",
+     "node_type": "function",
+     "file_path": "services/tuition-session/session-generation.ts",
+     "rrf_score": 0.01,
+     "bm25_rank": null,
+     "vector_rank": 18,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "commit:b3951738b685106896d8fb917ef61d3506a67d6b",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.009894,
+     "bm25_rank": null,
+     "vector_rank": 2,
+     "trust_meta": "[commit - 94d ago]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "18ea1a9857f6ada1",
+     "node_type": "function",
+     "file_path": "services/tuition-service.ts",
+     "rrf_score": 0.009873,
+     "bm25_rank": null,
+     "vector_rank": 19,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "97c60ed1579a85d4",
+     "node_type": "function",
+     "file_path": "services/tuition-service.ts",
+     "rrf_score": 0.009512,
+     "bm25_rank": null,
+     "vector_rank": 22,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "38bce96b19bdfbff",
+     "node_type": "function",
+     "file_path": "app/(dashboard)/students/tuition-history/[id]/_hooks/use-fee-detail.ts",
+     "rrf_score": 0.009176,
+     "bm25_rank": null,
+     "vector_rank": 25,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "R4",
+   "category": "rationale",
+   "query": "AI 콘텐츠 팩토리를 만드는 목적",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "6e1882efd9326bdf",
+     "node_type": "section",
+     "file_path": "harness/app/dashboard/pages/marketing.md",
+     "rrf_score": 0.016354,
+     "bm25_rank": 2,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "a51ea4ba9a2bdcdf",
+     "node_type": "section",
+     "file_path": "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+     "rrf_score": 0.016091,
+     "bm25_rank": 3,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "30ac99bbee6db6b2",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/15-012235-e8d4cb2d.md",
+     "rrf_score": 0.017425,
+     "bm25_rank": 67,
+     "vector_rank": 1,
+     "trust_meta": "[qa - stop_hook - 11d ago]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "fb33c647e4c10376",
+     "node_type": "section",
+     "file_path": "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+     "rrf_score": 0.015698,
+     "bm25_rank": 8,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "ee8923fd543493b4",
+     "node_type": "function",
+     "file_path": "components/marketing/content-studio/hooks/use-content-posts.ts",
+     "rrf_score": 0.015347,
+     "bm25_rank": null,
+     "vector_rank": 12,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "6519396c3dde71fb",
+     "node_type": "section",
+     "file_path": "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+     "rrf_score": 0.014994,
+     "bm25_rank": 5,
+     "vector_rank": 7,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "6f69ea41599e46e0",
+     "node_type": "section",
+     "file_path": "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+     "rrf_score": 0.014934,
+     "bm25_rank": 13,
+     "vector_rank": 6,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "8055a9f806bd01f9",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-08-ai-blog-content.md",
+     "rrf_score": 0.014423,
+     "bm25_rank": 1,
+     "vector_rank": 15,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "b9840b80b987b8b1",
+     "node_type": "section",
+     "file_path": "docs/plans/_archive/2026-04-08-ai-content-factory-plan.md",
+     "rrf_score": 0.014267,
+     "bm25_rank": null,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "17d33dfd9f5fa8cb",
+     "node_type": "section",
+     "file_path": "marketing/briefs/2026-04-07-pre-stitch-dryrun-arch-l-01.md",
+     "rrf_score": 0.013792,
+     "bm25_rank": 18,
+     "vector_rank": 8,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "R5",
+   "category": "rationale",
+   "query": "entrance test 관리 플랜은 왜 세워졌나",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "150dea6b81aaac90",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-17-entrance-test-management.md",
+     "rrf_score": 0.015873,
+     "bm25_rank": 3,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "bec881ff021a7003",
+     "node_type": "section",
+     "file_path": "docs/handoff/entrance-test-management.md",
+     "rrf_score": 0.014487,
+     "bm25_rank": 5,
+     "vector_rank": 12,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "8aa39d78795b4c6f",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-035746-19a5aaff.md",
+     "rrf_score": 0.006329,
+     "bm25_rank": 5,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "f87e597ac1ec333c",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-17-entrance-test-management.md",
+     "rrf_score": 0.014438,
+     "bm25_rank": 19,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "commit:0eb514d85d56561c37fc9d7b9fbc9e5ced92be23",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.014367,
+     "bm25_rank": 20,
+     "vector_rank": 6,
+     "trust_meta": "[commit - 100d ago]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "983df592aa0663bb",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-17-entrance-test-management.md",
+     "rrf_score": 0.014109,
+     "bm25_rank": 22,
+     "vector_rank": 5,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "b382d0ead2d85aaf",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-17-entrance-test-management.md",
+     "rrf_score": 0.013942,
+     "bm25_rank": 26,
+     "vector_rank": 7,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "e5364fe33c0410bb",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-17-entrance-test-management.md",
+     "rrf_score": 0.013606,
+     "bm25_rank": 4,
+     "vector_rank": 18,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "408159c7871d4dae",
+     "node_type": "section",
+     "file_path": "docs/features/2026-04-17-entrance-test-management.md",
+     "rrf_score": 0.013556,
+     "bm25_rank": 12,
+     "vector_rank": 15,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "38f2100bdecfedc3",
+     "node_type": "section",
+     "file_path": "docs/handoff/entrance-test-management.md",
+     "rrf_score": 0.011946,
+     "bm25_rank": 18,
+     "vector_rank": 28,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "M1",
+   "category": "memory",
+   "query": "Codex hook 저장 구조 어떻게 결정했지?",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "conv:claude:a79e2ce1-9dda-47f4-9e8d-38cbe5199667:0009:5dd3e05f",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/a79e2ce1-9dda-47f4-9e8d-38cbe5199667.jsonl",
+     "rrf_score": 0.015934,
+     "bm25_rank": 15,
+     "vector_rank": 1,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "conv:claude:34a19c03-2bfc-4d20-ac0b-650b8cf6aea8:0010:5dd3e05f",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/34a19c03-2bfc-4d20-ac0b-650b8cf6aea8.jsonl",
+     "rrf_score": 0.015683,
+     "bm25_rank": 16,
+     "vector_rank": 2,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "conv:claude:34a19c03-2bfc-4d20-ac0b-650b8cf6aea8:0015:b1e17031",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/34a19c03-2bfc-4d20-ac0b-650b8cf6aea8.jsonl",
+     "rrf_score": 0.014977,
+     "bm25_rank": 41,
+     "vector_rank": 3,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "e2f1d402dbca1ecb",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/05/31-cross-tool-conversation-retrieval.md",
+     "rrf_score": 0.015509,
+     "bm25_rank": 37,
+     "vector_rank": 20,
+     "trust_meta": "[card - confidence=high - 57d ago]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "a02d8e64657ee085",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-010340-2168034b.md",
+     "rrf_score": 0.007983,
+     "bm25_rank": null,
+     "vector_rank": 27,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "4f4034acf58ddb03",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-010340-03ab7b71.md",
+     "rrf_score": 0.002592,
+     "bm25_rank": 7,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "793fc6c61c04c2f0",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-26-codex-memory-hooks.md",
+     "rrf_score": 0.016017,
+     "bm25_rank": 5,
+     "vector_rank": 2,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "9c64396c4d51bcf6",
+     "node_type": "function",
+     "file_path": "src/hybrid_search/codex_hooks.py",
+     "rrf_score": 0.015026,
+     "bm25_rank": 1,
+     "vector_rank": 28,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "commit:893039415687fbe2a0f10638f66cd60956b2945c",
+     "node_type": "commit",
+     "file_path": ".git-history/commits",
+     "rrf_score": 0.014882,
+     "bm25_rank": null,
+     "vector_rank": 4,
+     "trust_meta": "[commit - 91d ago]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "2b343d644c328281",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-26-codex-memory-hooks.md",
+     "rrf_score": 0.014739,
+     "bm25_rank": 7,
+     "vector_rank": 8,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "M2",
+   "category": "memory",
+   "query": "Claude와 Codex memory hook 차이가 뭐였지?",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "conv:claude:a79e2ce1-9dda-47f4-9e8d-38cbe5199667:0053:0f78db23",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/a79e2ce1-9dda-47f4-9e8d-38cbe5199667.jsonl",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[conversation - claude - recent-activity, time-ordered; virtual path, not a file — turn content is in this result]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "recent:qa:26-162244-199c0fb8",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/26-162244-199c0fb8.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - recent-activity, time-ordered]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "recent:qa:26-161917-7256eb5f",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/26-161917-7256eb5f.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - recent-activity, time-ordered]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "recent:qa:26-155115-bcdaed81",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/26-155115-bcdaed81.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - recent-activity, time-ordered]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "recent:qa:26-154218-be091d23",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/26-154218-be091d23.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - recent-activity, time-ordered]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "conv:claude:34a19c03-2bfc-4d20-ac0b-650b8cf6aea8:0008:48c13d42",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/34a19c03-2bfc-4d20-ac0b-650b8cf6aea8.jsonl",
+     "rrf_score": 0.014719,
+     "bm25_rank": 17,
+     "vector_rank": 3,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "e2f1d402dbca1ecb",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/05/31-cross-tool-conversation-retrieval.md",
+     "rrf_score": 0.015323,
+     "bm25_rank": 36,
+     "vector_rank": 22,
+     "trust_meta": "[card - confidence=high - 57d ago]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "4f4034acf58ddb03",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-010340-03ab7b71.md",
+     "rrf_score": 0.014768,
+     "bm25_rank": 11,
+     "vector_rank": 25,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "a02d8e64657ee085",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-010340-2168034b.md",
+     "rrf_score": 0.012063,
+     "bm25_rank": 51,
+     "vector_rank": 28,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "4e0d368d8b89034f",
+     "node_type": "document",
+     "file_path": "benchmarks/memory_gold.json",
+     "rrf_score": 0.015897,
+     "bm25_rank": 1,
+     "vector_rank": 7,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "M3",
+   "category": "memory",
+   "query": "왜 Stop만 Codex qa_log writer로 정했지?",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "conv:claude:34a19c03-2bfc-4d20-ac0b-650b8cf6aea8:0040:b4b10080",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/34a19c03-2bfc-4d20-ac0b-650b8cf6aea8.jsonl",
+     "rrf_score": 0.015682,
+     "bm25_rank": 2,
+     "vector_rank": 5,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "conv:claude:a79e2ce1-9dda-47f4-9e8d-38cbe5199667:0038:b4b10080",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/a79e2ce1-9dda-47f4-9e8d-38cbe5199667.jsonl",
+     "rrf_score": 0.015648,
+     "bm25_rank": 1,
+     "vector_rank": 6,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "conv:claude:34a19c03-2bfc-4d20-ac0b-650b8cf6aea8:0015:b1e17031",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/34a19c03-2bfc-4d20-ac0b-650b8cf6aea8.jsonl",
+     "rrf_score": 0.015392,
+     "bm25_rank": 12,
+     "vector_rank": 1,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "a02d8e64657ee085",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-010340-2168034b.md",
+     "rrf_score": 0.006342,
+     "bm25_rank": 13,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "e2f1d402dbca1ecb",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/05/31-cross-tool-conversation-retrieval.md",
+     "rrf_score": 0.004523,
+     "bm25_rank": 58,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=high - 57d ago]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "7d3e7ac928353df6",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/15-125231-b4c8d1af.md",
+     "rrf_score": 0.023988,
+     "bm25_rank": 11,
+     "vector_rank": 10,
+     "trust_meta": "[qa - mcp_tool - observation - 11d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "e0bb4d0ce7232915",
+     "node_type": "block",
+     "file_path": "benchmarks/memory_layer_v2_2026-04-28.json",
+     "rrf_score": 0.015774,
+     "bm25_rank": 4,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "444aa3e27b4ffcaf",
+     "node_type": "block",
+     "file_path": "benchmarks/valuein_gold.json",
+     "rrf_score": 0.015045,
+     "bm25_rank": 3,
+     "vector_rank": 9,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "4e0d368d8b89034f",
+     "node_type": "document",
+     "file_path": "benchmarks/memory_gold.json",
+     "rrf_score": 0.01457,
+     "bm25_rank": 1,
+     "vector_rank": 18,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "850aa0f5e029cf9f",
+     "node_type": "section",
+     "file_path": "docs/plans/completed/2026-04-26-codex-memory-hooks.md",
+     "rrf_score": 0.01425,
+     "bm25_rank": 17,
+     "vector_rank": 4,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  },
+  {
+   "id": "M4",
+   "category": "memory",
+   "query": "메모리 레이어에서 qa_log와 memory card는 어떻게 달라?",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "conv:claude:34a19c03-2bfc-4d20-ac0b-650b8cf6aea8:0006:e920943d",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/34a19c03-2bfc-4d20-ac0b-650b8cf6aea8.jsonl",
+     "rrf_score": 0.015406,
+     "bm25_rank": 8,
+     "vector_rank": 3,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "conv:claude:a79e2ce1-9dda-47f4-9e8d-38cbe5199667:0006:e920943d",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/a79e2ce1-9dda-47f4-9e8d-38cbe5199667.jsonl",
+     "rrf_score": 0.015345,
+     "bm25_rank": 7,
+     "vector_rank": 4,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "conv:claude:a79e2ce1-9dda-47f4-9e8d-38cbe5199667:0044:f2583fb7",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/a79e2ce1-9dda-47f4-9e8d-38cbe5199667.jsonl",
+     "rrf_score": 0.013918,
+     "bm25_rank": 38,
+     "vector_rank": 1,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "4f4034acf58ddb03",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-010340-03ab7b71.md",
+     "rrf_score": 0.017906,
+     "bm25_rank": 11,
+     "vector_rank": 1,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "ad9b4b7e9f679bdf",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-062250-a8a4f08d.md",
+     "rrf_score": 0.016271,
+     "bm25_rank": 6,
+     "vector_rank": 7,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "e2f1d402dbca1ecb",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/05/31-cross-tool-conversation-retrieval.md",
+     "rrf_score": 0.014622,
+     "bm25_rank": 13,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=high - 57d ago]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "f642880a9e4e65eb",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/11-021811-724c2115.md",
+     "rrf_score": 0.021109,
+     "bm25_rank": 21,
+     "vector_rank": 20,
+     "trust_meta": "[qa - mcp_tool - 15d ago]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "4e0d368d8b89034f",
+     "node_type": "document",
+     "file_path": "benchmarks/memory_gold.json",
+     "rrf_score": 0.016799,
+     "bm25_rank": 1,
+     "vector_rank": 3,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "e74543d28a9a3c8b",
+     "node_type": "block",
+     "file_path": "benchmarks/memory_layer_v2_2026-04-28.json",
+     "rrf_score": 0.016081,
+     "bm25_rank": 5,
+     "vector_rank": 1,
+     "trust_meta": "[code - indexed]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "4166aee576d40043",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/05/31-025013-7985c00f.md",
+     "rrf_score": 0.01599,
+     "bm25_rank": 26,
+     "vector_rank": 10,
+     "trust_meta": "[qa - mcp_tool - 56d ago]"
+    }
+   ]
+  },
+  {
+   "id": "M5",
+   "category": "memory",
+   "query": "이 프로젝트에서 hook 설치 검증 순서가 뭐였지?",
+   "confidence": "mixed",
+   "results": [
+    {
+     "display_rank": 1,
+     "chunk_id": "conv:claude:a79e2ce1-9dda-47f4-9e8d-38cbe5199667:0053:0f78db23",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/a79e2ce1-9dda-47f4-9e8d-38cbe5199667.jsonl",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[conversation - claude - recent-activity, time-ordered; virtual path, not a file — turn content is in this result]"
+    },
+    {
+     "display_rank": 2,
+     "chunk_id": "recent:qa:26-162244-199c0fb8",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/26-162244-199c0fb8.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - recent-activity, time-ordered]"
+    },
+    {
+     "display_rank": 3,
+     "chunk_id": "recent:qa:26-161917-7256eb5f",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/26-161917-7256eb5f.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - recent-activity, time-ordered]"
+    },
+    {
+     "display_rank": 4,
+     "chunk_id": "recent:qa:26-155115-bcdaed81",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/26-155115-bcdaed81.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - recent-activity, time-ordered]"
+    },
+    {
+     "display_rank": 5,
+     "chunk_id": "recent:qa:26-154218-be091d23",
+     "node_type": "qa_log",
+     "file_path": ".hybrid-search/qa/2026/07/26-154218-be091d23.md",
+     "rrf_score": 0.0,
+     "bm25_rank": null,
+     "vector_rank": null,
+     "trust_meta": "[qa - recent-activity, time-ordered]"
+    },
+    {
+     "display_rank": 6,
+     "chunk_id": "conv:claude:34a19c03-2bfc-4d20-ac0b-650b8cf6aea8:0039:afd1222a",
+     "node_type": "conv_turn",
+     "file_path": ".conversations/claude/34a19c03-2bfc-4d20-ac0b-650b8cf6aea8.jsonl",
+     "rrf_score": 0.016354,
+     "bm25_rank": 2,
+     "vector_rank": 1,
+     "trust_meta": "[conversation - claude; virtual path, not a file — turn content is in this result, do not Read the path]"
+    },
+    {
+     "display_rank": 7,
+     "chunk_id": "e2f1d402dbca1ecb",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/05/31-cross-tool-conversation-retrieval.md",
+     "rrf_score": 0.00643,
+     "bm25_rank": 23,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=high - 57d ago]"
+    },
+    {
+     "display_rank": 8,
+     "chunk_id": "4f4034acf58ddb03",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-010340-03ab7b71.md",
+     "rrf_score": 0.002226,
+     "bm25_rank": 18,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 9,
+     "chunk_id": "e5398f3652f5bd32",
+     "node_type": "memory_card",
+     "file_path": ".hybrid-search/memory/cards/2026/04/28-062250-d20cafe7.md",
+     "rrf_score": 0.00151,
+     "bm25_rank": 55,
+     "vector_rank": null,
+     "trust_meta": "[card - confidence=medium - 89d ago]"
+    },
+    {
+     "display_rank": 10,
+     "chunk_id": "444aa3e27b4ffcaf",
+     "node_type": "block",
+     "file_path": "benchmarks/valuein_gold.json",
+     "rrf_score": 0.016315,
+     "bm25_rank": 2,
+     "vector_rank": 9,
+     "trust_meta": "[code - indexed]"
+    }
+   ]
+  }
+ ]
+}

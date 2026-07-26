@@ -362,8 +362,13 @@ def _memory_status(result: HybridResult) -> str:
 # turns they were derived from are in the index and rise instead. The
 # COMPLETE fix (time-ordered content turns for recency questions) is the
 # recency fast path reserved as next-PR P0.
+# NOTE: bare "뭐였지" is deliberately ABSENT — it rides on topical
+# history questions ("hook 차이가 뭐였지?") where the recency head would
+# displace the actual topical answer (round-3 rerun, M2/M5 regression).
+# Meta-recall means asking about the CONVERSATION itself; every pattern
+# here binds to a conversation/action object.
 _META_RECALL_KO = (
-    "뭐 얘기", "무슨 얘기", "나눈 대화", "뭐 했", "뭐했", "뭐였지",
+    "뭐 얘기", "무슨 얘기", "나눈 대화", "뭐 했", "뭐했",
     "뭐라고 했", "어떤 대화", "최근 대화", "마지막 대화", "지난 대화",
     "최근에 한 일", "대화가 뭐", "대화 확인", "얘기했지",
 )

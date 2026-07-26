@@ -476,6 +476,10 @@ class TestMetaRecallDemotion:
             "이 기능 왜 만들게 됐어",          # legit history question
             "confidence weak 판정 로직은 어떻게 바뀌었어",
             "소개 관계 그래프 UI 설계 알려줘",
+            # Round-3 rerun M2/M5 regression: bare "뭐였지" rides on
+            # TOPICAL history questions — the recency head must not fire.
+            "Claude와 Codex memory hook 차이가 뭐였지?",
+            "이 프로젝트에서 hook 설치 검증 순서가 뭐였지?",
         ]
         for q in positives:
             assert _is_meta_recall_text(q) is True, q
