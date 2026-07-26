@@ -931,6 +931,38 @@ def _mark_superseded(r: HybridResult) -> HybridResult:
     )
 
 
+# Turns with no informational content — interruption stubs, empty
+# confirmations. They rank on structural tokens alone and waste recall
+# slots (the F11 repro's #1 hit was "[Request interrupted by user for
+# tool use]" with nothing else).
+# Low floor on purpose: Korean is dense — a 30-char turn can carry a
+# real decision. The floor only exists to drop bare acknowledgements
+# ("ok", "응") and turns that are NOTHING BUT bracketed stubs
+# ("[claude turn] [Request interrupted by user for tool use]").
+_EMPTY_TURN_MIN_CHARS = 15
+
+
+def _is_empty_turn(content: str | None) -> bool:
+    text = (content or "").strip()
+    # Peel every LEADING bracketed tag/stub — lane prefixes
+    # ("[claude turn]", "[in-flight ...]") and interruption stubs
+    # ("[Request interrupted ...]") alike. What remains is the turn's
+    # actual content; judge only that.
+    while text.startswith("["):
+        close = text.find("]")
+        if close == -1:
+            break
+        text = text[close + 1:].strip()
+    return len(text) < _EMPTY_TURN_MIN_CHARS
+
+
+def _filter_conv_noise(conv_results: list[HybridResult]) -> list[HybridResult]:
+    """Drop no-content turns from the conv lane entirely — a turn that
+    says nothing can answer nothing, whatever its lexical score."""
+    kept = [r for r in conv_results if not _is_empty_turn(r.content)]
+    return kept if len(kept) != len(conv_results) else conv_results
+
+
 def _demote_meta_recall_conv(
     conv_results: list[HybridResult],
 ) -> list[HybridResult]:
@@ -1131,6 +1163,13 @@ class SearchOrchestrator:
         retrieval_depth = limit * 3
 
         memory_intent = _has_memory_intent(query)
+        # A meta-recall question IS a memory question by definition —
+        # phrasings like "what did we talk about" must never run as a
+        # topical search (F12's trigger case was exactly a memory-shaped
+        # query classified topical, letting module cards flood the slots).
+        meta_recall = _is_meta_recall_text(query)
+        if meta_recall:
+            memory_intent = True
 
         # Search each project
         if len(project_infos) == 1:
@@ -1342,6 +1381,7 @@ class SearchOrchestrator:
             conv_results = self._enrich_results(
                 conv_fused[:max(50, limit)], project_infos, query
             )
+            conv_results = _filter_conv_noise(conv_results)
             conv_results = _demote_meta_recall_conv(conv_results)
             # Phase 5 (conv): collect live-session turns the async per-turn
             # indexer hasn't caught yet. The Stop hook indexes detached, so the
@@ -1391,6 +1431,21 @@ class SearchOrchestrator:
             if graph_card is not None:
                 results = [*results[:1], graph_card, *results[1:]][:max(limit, 2)]
 
+        # F11 complete fix — recency fast path head. Deterministic
+        # time-ordered content leads the response for meta-recall
+        # queries; retrieval results backfill the remaining slots.
+        recent_head: list[HybridResult] = []
+        if meta_recall and node_types is None and len(project_infos) == 1:
+            recent_head = self._recent_activity_results(project_infos[0], query)
+            if recent_head:
+                head_paths = {r.file_path for r in recent_head}
+                head_ids = {r.chunk_id for r in recent_head}
+                body = [
+                    r for r in results
+                    if r.chunk_id not in head_ids and r.file_path not in head_paths
+                ]
+                results = (recent_head + body)[:max(limit, len(recent_head))]
+
         elapsed_ms = (time.monotonic() - start) * 1000
         response = self._make_response(
             query=query,
@@ -1405,6 +1460,16 @@ class SearchOrchestrator:
             memory_intent=memory_intent,
             corpus_lacks=lambda terms: self._first_corpus_absent_term(project_infos, terms),
         )
+        if recent_head and response.confidence == "weak":
+            # The deterministic recency lane anchored the answer with
+            # provably-fresh, content-bearing records (rrf 0.0 keeps them
+            # out of the similarity-based confidence inputs). "weak +
+            # fallback_hint" would send the agent AWAY from exactly the
+            # content it asked for. Timestamps are facts, not similarity
+            # guesses — floor to mixed, never to strong.
+            response = _dc_replace(
+                response, confidence="mixed", fallback_hint=None,
+            )
         # R1 fix — runs AFTER confidence classification so a spliced
         # correction can never alter gap/coherence inputs (holdout rule:
         # the splice repairs exposure, not retrieval strength).
@@ -1423,6 +1488,132 @@ class SearchOrchestrator:
         if cross_language_state is not None:
             response = _dc_replace(response, cross_language_lane=cross_language_state)
         return response
+
+    # F11 complete fix — recency fast path. Meta-recall questions carry
+    # no topical tokens, so similarity retrieval structurally cannot
+    # answer them: it matches past instances of the question itself
+    # (fossilized answers) or older-but-wordier content. Time order CAN
+    # answer them, deterministically. When the query is meta-recall, a
+    # head of the newest CONTENT turns/answers (empty and meta-recall
+    # records excluded) is assembled by timestamp and placed first.
+    _RECENT_ACTIVITY_HEAD = 5
+    _RECENT_ACTIVITY_SCAN = 40
+    _RECENT_ACTIVITY_MARK = "recent-activity, time-ordered"
+
+    def _recent_activity_results(
+        self, pinfo: "ProjectInfo", query: str,
+    ) -> list[HybridResult]:
+        """Newest content records for one project, newest-first.
+
+        Sources: indexed conversation turns (conversation_meta.ts DESC)
+        and answer-bearing qa records (frontmatter timestamp, reader
+        iterates newest-first). Fail-open: any error returns [] and the
+        query degrades to plain retrieval."""
+        items: list[tuple[str, HybridResult]] = []  # (ts, result)
+        try:
+            idx_paths = IndexPaths(
+                get_project_dir(self._config.projects_dir, pinfo.id)
+            )
+            if idx_paths.store_db.exists():
+                db = StoreDB(idx_paths.store_db)
+                try:
+                    for chunk, ts, source in db.get_recent_conv_turns(
+                        pinfo.id, self._RECENT_ACTIVITY_SCAN,
+                    ):
+                        if _is_empty_turn(chunk.content):
+                            continue
+                        if _is_meta_recall_text((chunk.content or "")[:300]):
+                            continue
+                        trust = (
+                            f"[conversation - {source} - "
+                            f"{self._RECENT_ACTIVITY_MARK}; virtual path, "
+                            "not a file — turn content is in this result]"
+                        )
+                        items.append((ts or "", HybridResult(
+                            chunk_id=chunk.id,
+                            rrf_score=0.0,  # deterministic lane: excluded
+                            bm25_rank=None,  # from ranked/confidence inputs
+                            vector_rank=None,
+                            file_path=(
+                                db.get_file(chunk.file_id).relative_path
+                                if db.get_file(chunk.file_id) else chunk.file_id
+                            ),
+                            project=pinfo.name,
+                            name=chunk.name,
+                            qualified_name=chunk.qualified_name,
+                            node_type=chunk.node_type,
+                            start_line=None,
+                            end_line=None,
+                            content=chunk.content,
+                            snippet=(
+                                trust + "\n"
+                                + make_snippet(None, chunk.content, query,
+                                               node_type=chunk.node_type)
+                            ),
+                            file_mtime=ts,
+                            trust_meta=trust,
+                        )))
+                finally:
+                    db.close()
+
+            from hybrid_search.memory import reader
+
+            scanned = 0
+            for qa in reader.iter_qa_indexes(Path(pinfo.path)):
+                scanned += 1
+                if scanned > self._RECENT_ACTIVITY_SCAN:
+                    break
+                if not (qa.answer_excerpt_chars or 0):
+                    continue  # question-only records carry no state
+                if _is_meta_recall_text(qa.query):
+                    continue
+                try:
+                    content = qa.path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                ts = qa.timestamp.isoformat() if qa.timestamp else ""
+                rel = str(qa.path)
+                try:
+                    rel = str(qa.path.relative_to(Path(pinfo.path)))
+                except ValueError:
+                    pass
+                trust = f"[qa - {self._RECENT_ACTIVITY_MARK}]"
+                items.append((ts, HybridResult(
+                    chunk_id=f"recent:qa:{qa.path.stem}",
+                    rrf_score=0.0,
+                    bm25_rank=None,
+                    vector_rank=None,
+                    file_path=rel,
+                    project=pinfo.name,
+                    name=qa.path.stem,
+                    qualified_name=rel,
+                    node_type="qa_log",
+                    start_line=None,
+                    end_line=None,
+                    content=content,
+                    snippet=(
+                        trust + "\n"
+                        + make_snippet(None, content, query, node_type="qa_log")
+                    ),
+                    file_mtime=ts,
+                    trust_meta=trust,
+                )))
+        except Exception:  # pragma: no cover — fail open to retrieval
+            logger.debug("recent-activity head failed", exc_info=True)
+            return []
+
+        items.sort(key=lambda t: t[0], reverse=True)
+        head: list[HybridResult] = []
+        seen_paths: set[str] = set()
+        for _, r in items:
+            key = r.file_path or r.chunk_id
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            head.append(r)
+            if len(head) >= self._RECENT_ACTIVITY_HEAD:
+                break
+        return head
 
     def _translate_query(self, query: str) -> str | None:
         """KO→EN translation with disk cache; None on any failure."""

@@ -1097,6 +1097,32 @@ class StoreDB:
         row = cur.fetchone()
         return self._row_to_conversation_meta(row) if row else None
 
+    def get_recent_conv_turns(
+        self, project_id: str, limit: int = 30
+    ) -> list[tuple[ChunkRecord, str | None, str]]:
+        """Newest conversation turns by timestamp — the F11 recency fast
+        path's data source. Returns ``(chunk, ts, source)`` ordered
+        newest-first. Relevance search structurally cannot answer "what
+        did we just do" (no topical tokens); commit-time order can.
+        ISO-8601 strings compare lexicographically (all writers emit
+        UTC offsets)."""
+        cur = self._conn.execute(
+            """
+            SELECT c.*, m.ts AS conv_ts, m.source AS conv_source
+            FROM conversation_meta m JOIN chunks c ON c.id = m.chunk_id
+            WHERE m.project_id = ? AND m.ts IS NOT NULL
+            ORDER BY m.ts DESC
+            LIMIT ?
+            """,
+            (project_id, limit),
+        )
+        out: list[tuple[ChunkRecord, str | None, str]] = []
+        for row in cur.fetchall():
+            out.append((
+                self._row_to_chunk(row), row["conv_ts"], row["conv_source"],
+            ))
+        return out
+
     def get_conversation_meta_batch(
         self, chunk_ids: list[str]
     ) -> dict[str, ConversationMeta]:
