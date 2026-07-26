@@ -93,18 +93,47 @@ def install_codex_plugin(
         manifest_changed = True
 
     legacy = codex_hooks.install_codex_hook(project_root, user=user, force=force)
+
+    # 2026-07 Mac-mini E2E F2 (root cause of the recall failure): codex
+    # 0.145.0 reads MCP servers and feature flags from the USER config
+    # (~/.codex/config.toml) ONLY — a project-scoped config.toml is
+    # invisible to the consumer. Project scope keeps hooks/AGENTS/
+    # gitignore, but MCP + features MUST also land at user level.
+    user_config_changed = False
+    if not user:
+        try:
+            user_feature, user_mcp = codex_hooks._update_config_toml(
+                Path.home() / ".codex" / "config.toml"
+            )
+            user_config_changed = user_feature or user_mcp
+        except Exception:  # pragma: no cover — never fail install on this
+            pass
+        # F7: the manifest dir is machine-local install surface, not
+        # project content — keep the repo clean.
+        codex_hooks._append_unique_line(
+            project_root / ".gitignore", ".codex-plugin/"
+        )
+
     return {
         "manifest_path": path,
         "manifest_changed": manifest_changed,
         "legacy": legacy,
-        "status": "wrote" if manifest_changed or legacy.get("status") == "wrote" else "exists",
+        "user_config_changed": user_config_changed,
+        "status": (
+            "wrote"
+            if manifest_changed or user_config_changed
+            or legacy.get("status") == "wrote"
+            else "exists"
+        ),
     }
 
 
 # --- smoke test -----------------------------------------------------------
 
 
-def smoke_test(project_root: Path, *, user: bool = False) -> list[SmokeCheck]:
+def smoke_test(
+    project_root: Path, *, user: bool = False, probe_consumer: bool = True,
+) -> list[SmokeCheck]:
     """CONFIG/HANDLER smoke — not an install E2E (round-1 review).
 
     What this proves: hook config is registered, the Stop handler writes
@@ -129,13 +158,10 @@ def smoke_test(project_root: Path, *, user: bool = False) -> list[SmokeCheck]:
     ))
 
     checks.append(_stop_roundtrip_check(project_root))
-
-    mcp_codex = bool(status.get(f"{scope}_mcp"))
-    mcp_claude = _claude_mcp_registered()
+    checks.append(_codex_mcp_check(status, probe_consumer=probe_consumer))
     checks.append(SmokeCheck(
-        "mcp-both-agents", mcp_codex and mcp_claude,
-        f"codex={'ok' if mcp_codex else 'missing'} "
-        f"claude={'ok' if mcp_claude else 'missing'}",
+        "mcp-claude", _claude_mcp_registered(),
+        str(Path.home() / ".claude.json"),
     ))
 
     checks.append(_shared_root_check(project_root))
@@ -189,6 +215,48 @@ def _stop_roundtrip_check(project_root: Path) -> SmokeCheck:
     except OSError:
         pass
     return SmokeCheck("stop-event-roundtrip", True, f"qa written + cleaned ({found.name})")
+
+
+def _codex_mcp_check(status: dict, *, probe_consumer: bool = True) -> SmokeCheck:
+    """The consumer-side MCP check (2026-07 Mac-mini E2E F3).
+
+    The old check inspected the file this tool had just written — a
+    check that could not fail for the reason that mattered. Truth order:
+
+    1. ``codex mcp list`` — what the consumer ACTUALLY sees. Strongest.
+    2. USER-level config (~/.codex/config.toml) — what codex 0.145.0
+       reads. Config-only evidence, marked as such.
+
+    Project-level config presence is intentionally NOT accepted: it was
+    exactly the false-green that let the E2E fail with 4/4 PASS.
+    """
+    import subprocess
+
+    try:
+        if not probe_consumer:
+            raise FileNotFoundError  # tests: deterministic config path
+        proc = subprocess.run(
+            ["codex", "mcp", "list"], capture_output=True, text=True,
+            timeout=15,
+        )
+        if proc.returncode == 0:
+            ok = "hybrid-search" in proc.stdout
+            return SmokeCheck(
+                "mcp-codex-consumer", ok,
+                "`codex mcp list` "
+                + ("lists hybrid-search" if ok else "does NOT list hybrid-search"),
+            )
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    user_mcp = bool(status.get("user_mcp"))
+    return SmokeCheck(
+        "mcp-codex-consumer", user_mcp,
+        ("user-level config only (codex CLI unavailable for a live probe): "
+         + ("~/.codex/config.toml has hybrid-search" if user_mcp
+            else "~/.codex/config.toml MISSING hybrid-search — codex will not see the server")),
+    )
 
 
 def _claude_mcp_registered() -> bool:

@@ -470,11 +470,22 @@ _NEAR_DUP_JACCARD = 0.85
 _NEAR_DUP_SCAN_CAP = 200
 
 
-def _near_dup_qa_exists(project_root: Path, query: str) -> bool:
-    """True when a recent qa entry asks (nearly) the same question.
+def _near_dup_qa_exists(
+    project_root: Path, query: str, *, incoming_has_answer: bool = False,
+) -> bool:
+    """True when a recent qa entry asks (nearly) the same question AND
+    already carries at least as much information as the incoming record.
 
     Token-Jaccard on the frontmatter query — no embeddings, so it is cheap
     enough for the fire-and-forget hook path. Scans newest-first, capped.
+
+    The asymmetry matters (2026-07 Mac-mini E2E, F4): the prompt-submit
+    prefetch writes a question+results record FIRST; the Stop hook's
+    answer-bearing record for the same query then looked like a near-dup
+    and was silently dropped — so the corpus knew what was ASKED but
+    never what was ANSWERED, which is the half the cross-agent handoff
+    actually needs. An answer-bearing incoming record is only suppressed
+    by a dup that also has an answer.
     """
     from hybrid_search.memory import quality, reader
 
@@ -493,6 +504,8 @@ def _near_dup_qa_exists(project_root: Path, query: str) -> bool:
                 if age_days > _NEAR_DUP_WINDOW_DAYS:
                     break  # newest-first: everything after is older
             if quality.jaccard(tokens, quality.query_tokens(idx.query)) >= _NEAR_DUP_JACCARD:
+                if incoming_has_answer and not (idx.answer_excerpt_chars or 0):
+                    continue  # question-only dup must not eat the answer
                 return True
     except Exception:  # pragma: no cover — never block a save on read errors
         return False
@@ -503,12 +516,16 @@ def _recent_qa_hash_exists(
     project_root: Path,
     query_hash: str,
     within_seconds: int = _DEDUP_WINDOW_SECONDS,
+    *,
+    incoming_has_answer: bool = False,
 ) -> bool:
     """True when a qa file with the given hash was written in the last N seconds.
 
     Cheap directory scan — qa dirs are small (at most thousands of entries
     even on very active projects; auto-prune caps at 2000). Skips the scan
-    silently if the qa dir doesn't exist.
+    silently if the qa dir doesn't exist. Same F4 asymmetry as the
+    near-dup check: a question-only record inside the window must not
+    suppress the answer-bearing record for the same turn.
     """
     qa_root = project_root / ".hybrid-search" / "qa"
     if not qa_root.is_dir():
@@ -527,6 +544,13 @@ def _recent_qa_hash_exists(
             for md in month.glob(f"*-{query_hash}.md"):
                 try:
                     if md.stat().st_mtime >= threshold:
+                        if incoming_has_answer:
+                            try:
+                                head = md.read_text(encoding="utf-8")[:2000]
+                            except OSError:
+                                head = ""
+                            if "answer_excerpt_chars:" not in head:
+                                continue  # question-only — don't eat the answer
                         return True
                 except OSError:
                     continue
@@ -568,14 +592,19 @@ def record_turn(
         if root is None:
             return None
 
-        if dedup and _recent_qa_hash_exists(root, _hash_query(query)):
-            return None
-        if dedup and _near_dup_qa_exists(root, query):
-            return None
-
         excerpt = _truncate_answer_excerpt(answer_excerpt)
         if excerpt and is_sensitive_query(excerpt):
             excerpt = None
+        has_answer = bool(excerpt and excerpt.strip())
+
+        if dedup and _recent_qa_hash_exists(
+            root, _hash_query(query), incoming_has_answer=has_answer,
+        ):
+            return None
+        if dedup and _near_dup_qa_exists(
+            root, query, incoming_has_answer=has_answer,
+        ):
+            return None
 
         from hybrid_search.memory import memory_types
 

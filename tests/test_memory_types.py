@@ -107,6 +107,62 @@ class TestWritePath:
         assert "verification: accepted" in text
 
 
+# --- F4: answer-bearing records must survive question-only dedup -------------------
+
+class TestAnswerRecordNotSuppressed:
+    """2026-07 Mac-mini E2E F4: prompt-submit prefetch writes a
+    question-only record first; the Stop hook's answer-bearing record
+    for the same query was then dropped as a near-dup — the corpus knew
+    what was ASKED but never what was ANSWERED."""
+
+    def _mk_root(self, tmp_path: Path) -> Path:
+        root = tmp_path / "proj"
+        (root / ".hybrid-search").mkdir(parents=True)
+        return root
+
+    def _record(self, root: Path, query: str, answer: str | None,
+                dedup: bool = True) -> Path | None:
+        return qa_log.record_turn(
+            query=query, cwd=str(root),
+            answer_chars=len(answer) if answer else None,
+            answer_excerpt=answer,
+            async_write=False, dedup=dedup,
+        )
+
+    def test_answer_record_survives_question_only_dup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(qa_log.ENV_TOGGLE, "1")
+        root = self._mk_root(tmp_path)
+        q = "핸드오프 패킷 설계가 뭐지?"
+        first = self._record(root, q, None)      # prefetch: question only
+        assert first is not None
+        second = self._record(root, q, "패킷은 journal + projection입니다.")
+        assert second is not None, "answer-bearing record was suppressed (F4)"
+        assert "## Answer excerpt" in second.read_text(encoding="utf-8")
+
+    def test_answer_backed_dup_still_suppresses_repeat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Dedup still works once the answer is on disk — no double
+        answers, no gap-collapsing noise."""
+        monkeypatch.setenv(qa_log.ENV_TOGGLE, "1")
+        root = self._mk_root(tmp_path)
+        q = "핸드오프 패킷 설계가 뭐지?"
+        assert self._record(root, q, "패킷은 journal + projection입니다.") is not None
+        again = self._record(root, q, "패킷은 journal + projection입니다. (반복)")
+        assert again is None
+
+    def test_question_only_repeat_still_deduped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(qa_log.ENV_TOGGLE, "1")
+        root = self._mk_root(tmp_path)
+        q = "핸드오프 패킷 설계가 뭐지?"
+        assert self._record(root, q, None) is not None
+        assert self._record(root, q, None) is None
+
+
 # --- read-time quarantine ---------------------------------------------------------
 
 def _qa_result(chunk_id: str, verification: str | None, score: float) -> HybridResult:

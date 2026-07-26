@@ -327,6 +327,28 @@ Codex 지적 수용: false-strong 0/27은 "strong을 거의 안 주는" 게임�
   → 별도 계획 문서로.
 - Agent Handoff Trust Bench → `2026-07-15-agent-handoff-trust-bench.md`
 
+## 맥미니 clean-install E2E 실측 (2026-07-26, 릴리스 게이트) — **양쪽 실패**
+
+목표 5분 / 실측 **7분 56초**, Codex 회상 **완전 실패**. 게이트가 잡아낸
+발견과 처리:
+
+| # | 발견 | 처리 |
+|---|---|---|
+| F1 | stock Mac에서 문서화된 pip 설치 실패 + 오답 유도 에러(3.9 pip이 tree-sitter-css 탓) | ✅ README Requirements에 오진 자기진단 단서 추가 (pipx/uv 우선은 기존 문서대로) |
+| F2 | **[근본 원인]** setup --codex가 project config.toml에만 MCP 기록 — codex 0.145.0은 ~/.codex/config.toml만 읽음 | ✅ install이 user-level config에 MCP+features 병행 기록 |
+| F3 | smoke 4/4 green인데 소비자(codex)는 못 봄 — 자기 파일 검사였음 | ✅ `mcp-codex-consumer` 검사: `codex mcp list` 라이브 프로브 우선, 폴백은 user-config만 인정 (project-only는 명시적 FAIL) |
+| F4 | qa에 답변 없음 — prompt-submit 선기록이 Stop의 답변 레코드를 near-dup으로 억제 | ✅ dedup 비대칭화: 답변 있는 레코드는 답변 없는 dup에 억제되지 않음 (hash창+near-dup 양쪽) |
+| F5 | "원장" 쿼리가 "원장반"에 매칭 — top-10의 40% 낭비 | 백로그 (한국어 형태소 경계 — 다음 사이클 검색 품질) |
+| F6 | TS 1,595파일에서 call graph 0 resolved / 25,188 unresolved | 백로그 P0급 별건 — README "who calls X" 광고와 실체 불일치, 별도 이슈로 |
+| F7 | 레포 오염 (M AGENTS.md, ?? .codex-plugin/) | ✅ .codex-plugin/ gitignore 자동 추가. AGENTS.md 수정은 by-design(라우팅 블록) — README에 이미 문서화 |
+| F8 | --version 없음 → usage 46줄 | ✅ `--version` 추가 (installed dist 버전) |
+| F9 | teardown이 0.7.1 이전 잔재(하드코딩 venv 경로 post-commit 훅) 미제거 | 백로그 (업그레이드 마이그레이션 — 다음 사이클) |
+| — | 첫 reindex 300s가 5분 예산 단독 초과 (1,595files/11,957chunks) | 백로그: 설치 문서에 첫 인덱싱 소요 명시 + 진행 표시 (기능 아닌 기대치 관리) |
+
+측정 이탈(기록 유지): API 키 발급 시간 미계측 / claude -p·codex exec
+(TUI 아님) / teardown-clean이라 uv·py3.11 잔존 — 진짜 생짜 맥은 F1이 더
+나쁨. **재검증 전까지 CX-T5 게이트는 미통과 상태.**
+
 ## 실행 순서와 검증 규칙
 
 1. P0-1 → P0-2 → P0-3 (각각 독립 PR, 4라운드 리뷰 프로세스 유지)

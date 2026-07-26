@@ -217,7 +217,11 @@ export HYBRID_SEARCH_ROUTER=0     # stop per-prompt pre-fetch injection
 
 ### Requirements
 
-- Python 3.11+
+- Python 3.11+ — **heads-up:** on a stock Mac the system `pip3` runs
+  Python 3.9 and fails with a *misleading* resolver error (e.g.
+  `Could not find a version that satisfies tree-sitter-css>=0.25`).
+  That error means "your pip is on an old Python", not a missing
+  dependency. Use `pipx`/`uv`, or `brew install python@3.12` first.
 - OpenAI API key ([get one here](https://platform.openai.com/api-keys))
 
 ### Claude Code plugin (two commands)

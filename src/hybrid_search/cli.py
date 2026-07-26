@@ -56,6 +56,20 @@ from hybrid_search.storage.indexes import IndexPaths, get_project_dir
 logger = logging.getLogger("hybrid_search.cli")
 
 
+def _dist_version() -> str:
+    """Installed distribution version (F8 — `--version` instead of a
+    46-line usage dump). Falls back to the module constant in editable/
+    source checkouts."""
+    try:
+        from importlib.metadata import version
+
+        return version("memory-layer-mcp")
+    except Exception:
+        from hybrid_search import __version__
+
+        return f"{__version__} (source)"
+
+
 def _load_gold_queries(path: Path) -> list[dict]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(raw, list):
@@ -5153,6 +5167,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="hybrid-search-mcp",
         description="Hybrid BM25 + Vector search for codebases",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {_dist_version()}",
     )
     sub = parser.add_subparsers(dest="command")
 
