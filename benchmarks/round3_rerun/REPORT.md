@@ -26,8 +26,13 @@ base 벤치가 돌았고, head 벤치는 그 전 상태에서 돌았다. 그 결
 - **confidence: 11건 strong→mixed** (S4, P2, P4, P5, R1~R4, M1, M3, M4).
   원시 검증: 해당 쿼리의 score-top이 **legacy qa(무 verification, 예:
   74d ago)** — 라운드 1 요구사항 "legacy는 strong 앵커 불가" quarantine의
-  의도된 보수화. 검색 결과 자체는 동일, 라벨만 강등. **strong coverage에
-  영향** — calibration 게이트(CC-T3) 측정 시 반영 필요.
+  의도된 보수화. 검색 결과 자체는 동일, 라벨만 강등.
+  **coverage 실측 (라운드 3 판정 확인)**: answerable 기준 strong
+  44.4% → **5.6%** — CC-T3 게이트(≥20%) 미달. 안전성 버그 아님(의도
+  동작)이나 제품 지표로는 coverage 회귀이며, 게이트 계약대로
+  **README의 "calibrated" 표현은 제거됨** (최종 head calibration
+  재측정·통과 전까지 사용 불가). legacy 코퍼스가 typed 레코드로
+  대체되며 자연 회복되는 구조이나, 회복 속도는 미측정.
 - **표시 순서: 18/25에서 재배열** — superseded/meta-recall 마커·강등,
   splice 등에 의한 non-gold 슬롯 이동. gold 지표 영향은 위와 같이 2건.
 
@@ -43,9 +48,11 @@ compounding은 cold 단계에서 qa 제거+전체 reindex로 시작하므로 인
 | paraphrase/cold | 0.650 (=) | 0.000 (=) | 0.000 (=) | 0.433 (=) | 0.512 (=) |
 | paraphrase/warm | 0.900 (+0.050) | 0.450 (−0.050) | 0.750 (−0.050) | 0.450 (=) | 0.412 (=) |
 
-OR-지표(answer_found)에 기대지 않은 분해 지표에서 **base와 등가**
-(paraphrase ±0.05는 1쌍 단위 노이즈). 이전 제출의 "품질 회귀 아님"
-주장은 철회하고, 이 분해 등가로 대체한다.
+**정정 (라운드 3 판정 반영)**: "등가"는 과장이다 — paraphrase warm의
+qa_hit 0.50→0.45, memory_primary 0.80→0.75는 실제 1쌍 감소이며, 반복
+측정도 사전 등가 마진도 없으므로 "노이즈"라 부를 근거가 없다. 정확한
+서술: **기존 수치 게이트를 통과했다** (answer_found·recall·MRR 유지,
+qa_hit/memory_primary 1쌍 폭 변동). 통계적 등가 주장은 하지 않는다.
 
 ## 재실행이 잡은 추가 결함 (수정 포함)
 
