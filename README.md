@@ -47,7 +47,7 @@ first-class search result for every future query, in either agent.
 **Trade-offs you should know up-front** (we've measured them):
 - First-query latency adds **~400 ms** of pre-fetch overhead (vs ~50 ms `grep`). Worth it for exploratory questions; not for `grep`-shaped lookups (and the router knows the difference).
 - Embedder = **OpenAI `text-embedding-3-small`** (API key required). **No local embedding backend — by choice, not neglect.** The first version ran local models; bulk-embedding tens of thousands of chunks pinned an M3 MacBook's fans for the entire run and made the machine unusable (CPU path was no better). A full reindex of a 2,000-file project via the API costs cents. If zero-API-key is a hard constraint, this tool isn't for you today; a `backend` config field is reserved and a local ONNX contribution is welcome.
-- "0-config" is *almost* true: one `pip install` + one `setup` command after, but you also need `OPENAI_API_KEY` and (for Codex) a separate `install-codex-hook`.
+- **This is not "0-config", and we don't claim it.** Explicit prerequisites: macOS/Linux with **Python 3.11+** and **pipx or uv** already installed, plus an `OPENAI_API_KEY`. From there it's one install + `setup` (Claude) + `setup --codex` (Codex). A stock Mac without those prerequisites will fail at install — see Requirements above for the misleading pip error this produces.
 
 **Who this is for:** 1인 개발자가 Claude Code를 주력으로 + 가끔 Codex도 쓰면서, 같은 코드베이스에서 반복 질문을 줄이고 싶은 사람. Korean + English 코드베이스에서 검증됨 (valuein_homepage 708-commit, 1,307 files).
 

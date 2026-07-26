@@ -158,7 +158,11 @@ KO 질문 ↔ EN Q&A 텍스트 간 cosine이 임계 미달.
 | CX-T2 | smoke 4항목 전부 green | `tests/test_codex_plugin_setup.py` (훅 이벤트 fixture 주입) |
 | CX-T3 | 공유 root 검증 | Claude 세션이 쓴 qa를 Codex 훅 컨텍스트 주입이 회수 (E2E fixture) |
 | CX-T4 | teardown 대칭 | `teardown`이 Codex 매니페스트까지 제거 |
-| CX-T5 | 수동 검증 | 맥미니 클린 설치 실측 ≤ 5분 (체크리스트 문서화, CI 외) |
+| CX-T5 | **개정됨 (2026-07-27, 사전 계약)** — 아래 CX-T5a~d로 대체. **소급 금지**: 2026-07-26의 7'56" 실측은 구 조문 기준 FAIL로 남으며, 개정 게이트는 최종 head에서 새로 측정한다. | |
+| CX-T5a | 설치·연결 (릴리스 차단) | fresh 머신에서 설치 → `setup` → `setup --codex` → smoke green + `codex mcp list` 확인까지 **≤ 5분**, **문서화된 전제조건만으로 성공**. 전제조건 계약 = **(A) 명시형 (2026-07-27 확정)**: macOS/Linux + Python 3.11+ + pipx/uv + OPENAI_API_KEY를 문서에 명시하고 "0-config"/"아무것도 없는 Mac" 계열 표현 제거. stock-Mac 지원(B)은 범위 밖 (트랙션 후 별도). 현재 상태: FAIL (F1 — 설치 문서 단일 경로화 필요) |
+| CX-T5b | 첫 회상 (릴리스 차단) | 인덱싱 완료 후 ⑴ 첫 주제 회상 ⑵ 주제 전환 후 회상(F11 클래스) — **무우회**(--dangerously-* 금지) 포함 ≤ 2분. 현재: PASS (2026-07-27, 6ad6297, G3 4조건) — 단 fresh 머신 재측정 필요 |
+| CX-T5c | 첫 인덱싱 처리량 (게이트 아님, 회귀 지표) | 청크당 시간 기준 (3규모 기준선: 18.1~23.2 ms/chunk, 반복 분산 ±11.6%). 상한 없음 — 규모 비례를 문서에 명시하고 진행 표시 제공 |
+| CX-T5d | 승인·신뢰 지속성 (릴리스 차단) | TUI 1회 승인 후 재세션·비대화형에서 프롬프트 0개. 현재: PASS (2026-07-27) |
 
 ---
 
