@@ -1366,15 +1366,23 @@ def _check_global_status() -> None:
     else:
         print(f"  ✗ Skills directory missing        ({skills_dir})")
 
-    # API key
-    import os
-    api_ok = bool(os.environ.get("OPENAI_API_KEY"))
+    # API key — for whichever provider is actually configured, not a
+    # hard-coded OPENAI_API_KEY. Reporting the wrong variable sends the
+    # reader to fix a key the embedder never reads.
+    from hybrid_search import providers
+    try:
+        backend = load_config().embedding.backend
+    except Exception:
+        backend = None
+    spec = providers.resolve(backend)
+    api_ok = bool(providers.api_key(spec))
     if not api_ok:
         src_root = Path(__file__).resolve().parents[2]
         env_file = src_root / ".env.local"
-        if env_file.exists() and "OPENAI_API_KEY" in env_file.read_text():
+        if env_file.exists() and spec.key_env in env_file.read_text():
             api_ok = True
-    print(f"  {_status_mark(api_ok)} OPENAI_API_KEY configured     ({'env or .env.local' if api_ok else 'MISSING'})")
+    label = f"{spec.key_env} configured"
+    print(f"  {_status_mark(api_ok)} {label:<30} ({'env or .env.local' if api_ok else 'MISSING'})")
 
 
 def _check_project_status(project_path: Path) -> None:
