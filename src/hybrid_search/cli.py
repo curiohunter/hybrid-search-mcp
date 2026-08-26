@@ -3499,6 +3499,40 @@ def cmd_qa_prune(args: argparse.Namespace) -> None:
             print(f"  warning: could not write confirm marker ({exc})", file=sys.stderr)
 
 
+def cmd_usage(args: argparse.Namespace) -> None:
+    """Report what this tool actually sent to the paid API."""
+    import time as _time
+
+    from hybrid_search import providers, usage
+
+    hours = getattr(args, "hours", 24) or 24
+    since = _time.time() - hours * 3600
+    data = usage.summarize(since=since)
+    totals = data["totals"]
+    if not totals:
+        print(f"No recorded API calls in the last {hours}h.")
+        print(f"Log: {usage.log_path()}")
+        return
+
+    print(f"API calls recorded in the last {hours}h  ({usage.log_path()})")
+    print(f"{'kind':<7}{'model':<26}{'calls':>8}{'inputs':>10}{'tokens':>12}{'USD':>9}")
+    grand = 0.0
+    for (kind, model), agg in sorted(totals.items(), key=lambda kv: -kv[1]["tokens"]):
+        price = providers.input_price(model)
+        usd = agg["tokens"] / 1e6 * price if price is not None else None
+        grand += usd or 0.0
+        shown = f"${usd:.4f}" if usd is not None else "—"
+        print(
+            f"{kind:<7}{model[:25]:<26}{agg['calls']:>8,}{agg['items']:>10,}"
+            f"{agg['tokens']:>12,}{shown:>9}"
+        )
+    print(f"{'':<51}{'total':>12}{f'${grand:.4f}':>9}")
+    print(
+        "\nThis counts only what this tool sent. A provider dashboard showing "
+        "more than this is usage from somewhere else."
+    )
+
+
 def cmd_qa_hook(args: argparse.Namespace) -> None:
     """Hook entry — read JSON from stdin, emit context JSON on stdout, exit 0."""
     from hybrid_search import hooks
@@ -5437,6 +5471,13 @@ def main() -> None:
 
     p_reindex = sub.add_parser("reindex", help="Delta reindex a project")
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
+    p_usage = sub.add_parser(
+        "usage", help="Report API calls this tool made (local record)"
+    )
+    p_usage.add_argument(
+        "--hours", type=int, default=24, help="Window in hours (default: 24)"
+    )
+
     p_reindex.add_argument("--force", action="store_true", help="Force full reindex")
     p_reindex.add_argument(
         "--yes", "-y", action="store_true",
@@ -5802,6 +5843,8 @@ def main() -> None:
         cmd_index_conversations(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "usage":
+        cmd_usage(args)
     elif args.command == "recalibrate":
         cmd_recalibrate(args)
     elif args.command == "serve":

@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from hybrid_search import providers
+from hybrid_search import providers, usage
 
 logger = logging.getLogger(__name__)
 
@@ -177,4 +177,9 @@ class QueryTranslator:
         )
         with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+        u = data.get("usage") or {}
+        usage.record(
+            kind="chat", provider=self._spec.name, model=self._model, items=1,
+            tokens=int(u.get("prompt_tokens", 0)) + int(u.get("completion_tokens", 0)),
+        )
         return data["choices"][0]["message"]["content"]

@@ -16,7 +16,7 @@ import urllib.error
 
 import numpy as np
 
-from hybrid_search import providers
+from hybrid_search import providers, usage
 from hybrid_search.config import EmbeddingConfig
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,13 @@ class Embedder:
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
+                # Accounting, not content: how much was sent, never what.
+                usage.record(
+                    kind="embed", provider=self._spec.name, model=model,
+                    items=len(texts),
+                    tokens=int((data.get("usage") or {}).get("prompt_tokens")
+                               or self._estimate_tokens(texts)),
+                )
                 return [item["embedding"] for item in data["data"]]
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", errors="replace")
@@ -172,6 +179,13 @@ class Embedder:
         )
 
     _enc = None  # lazy-loaded tiktoken encoder
+
+    def _estimate_tokens(self, texts: list[str]) -> int:
+        """Fallback when the provider does not report usage."""
+        if Embedder._enc is None:
+            import tiktoken
+            Embedder._enc = tiktoken.encoding_for_model("text-embedding-3-small")
+        return sum(len(Embedder._enc.encode(t)) for t in texts)
 
     def _token_budget(self) -> int:
         """Per-input token ceiling, discounted for tokenizer mismatch.
