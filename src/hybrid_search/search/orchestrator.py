@@ -1650,7 +1650,11 @@ class SearchOrchestrator:
         try:
             if self._translator is None:
                 self._translator = QueryTranslator(
-                    self._config.data_dir / "cache" / "query_translations.jsonl"
+                    self._config.data_dir / "cache" / "query_translations.jsonl",
+                    # Follow the embedding provider by default: one key,
+                    # one account, one failure domain. Splitting them is
+                    # possible but must be asked for explicitly.
+                    provider=self._config.embedding.backend,
                 )
             return self._translator.translate(query)
         except Exception:  # pragma: no cover — fail open to single lane

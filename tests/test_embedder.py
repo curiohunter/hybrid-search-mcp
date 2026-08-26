@@ -36,7 +36,7 @@ class TestOpenAIBackend:
         emb = Embedder(cfg)
         emb._api_key = None
         with patch.dict("os.environ", {}, clear=True):
-            with patch("hybrid_search.index.embedder._load_dotenv_key", return_value=""):
+            with patch("hybrid_search.providers.load_dotenv_key", return_value=""):
                 try:
                     emb._get_api_key()
                     assert False, "Should have raised ValueError"
@@ -90,7 +90,7 @@ class TestOpenAIBackend:
                 emb._openai_embed_request(["test"])
                 assert False, "Should have raised ConnectionError"
             except ConnectionError as e:
-                assert "OpenAI API error 429" in str(e)
+                assert "429" in str(e) and "openai" in str(e)
 
 
 class TestHotReloadableConfig:

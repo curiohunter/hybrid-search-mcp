@@ -8,8 +8,9 @@ an English translation and merge. Query-side means no index rebuild and
 no behavior change for English queries.
 
 Design constraints (spec P0-2):
-- Same key and failure domain as the embedder (OpenAI, raw urllib — the
-  project deliberately has no SDK dependency).
+- Same key and failure domain as the embedder: both resolve their
+  endpoint through ``providers.py`` and speak raw urllib, so switching
+  the embedding provider carries the translation lane with it.
 - Fail open: any error or timeout returns None and the caller falls back
   to the single-lane behavior, which is exactly the pre-fix state.
 - Translations are cached on disk keyed by query hash — repeat recall
@@ -26,13 +27,18 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from hybrid_search import providers
+
 logger = logging.getLogger(__name__)
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
-# Small, fast instruction model. Override via env when needed — this is a
-# one-sentence translation, not a reasoning task.
+# Small, fast instruction model. The provider's default is used unless
+# overridden — this is a one-sentence translation, not a reasoning task.
 DEFAULT_TRANSLATION_MODEL = "gpt-4o-mini"
 _MODEL_ENV = "HYBRID_SEARCH_TRANSLATION_MODEL"
+# Which provider serves this lane. Defaults to the embedding provider so
+# one key covers both; set only to split them deliberately.
+_PROVIDER_ENV = "HYBRID_SEARCH_TRANSLATION_PROVIDER"
 # Hard wall for the first (uncached) call. A missed translation degrades
 # to the pre-fix behavior, so the walltime cost of waiting longer is
 # worse than the recall cost of skipping.
@@ -85,9 +91,15 @@ class QueryTranslator:
         model: str | None = None,
         timeout_s: float = _TIMEOUT_S,
         request_fn=None,
+        provider: str | None = None,
     ) -> None:
         self._cache_path = cache_path
-        self._model = model or os.environ.get(_MODEL_ENV) or DEFAULT_TRANSLATION_MODEL
+        self._spec = providers.resolve(
+            provider or os.environ.get(_PROVIDER_ENV) or None
+        )
+        self._model = (
+            model or os.environ.get(_MODEL_ENV) or self._spec.chat_model
+        )
         self._timeout_s = timeout_s
         self._request_fn = request_fn or self._openai_request
         self._cache: dict[str, str] | None = None
@@ -144,13 +156,9 @@ class QueryTranslator:
         return translated
 
     def _openai_request(self, query: str) -> str:
-        from hybrid_search.index.embedder import _load_dotenv_key
-
-        api_key = os.environ.get("OPENAI_API_KEY", "") or _load_dotenv_key(
-            "OPENAI_API_KEY"
-        )
+        api_key = providers.api_key(self._spec)
         if not api_key:
-            raise ValueError("OPENAI_API_KEY not found")
+            raise ValueError(f"{self._spec.key_env} not found")
         payload = json.dumps({
             "model": self._model,
             "messages": [
@@ -160,7 +168,7 @@ class QueryTranslator:
             "temperature": 0,
         }).encode("utf-8")
         req = urllib.request.Request(
-            OPENAI_CHAT_URL,
+            self._spec.base_url + "/chat/completions",
             data=payload,
             headers={
                 "Content-Type": "application/json",

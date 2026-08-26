@@ -1,0 +1,135 @@
+"""Provider selection for the embedding and translation lanes.
+
+The OpenAI account outage made the single-provider hard-coding a
+liability: endpoint, key env, model, output width, and per-input token
+ceiling were all baked into the embedder. These tests pin the seams that
+replaced them.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from hybrid_search import providers
+from hybrid_search.config import EmbeddingConfig
+from hybrid_search.index.embedder import Embedder
+from hybrid_search.search.translation import QueryTranslator
+
+
+class TestResolve:
+    def test_default_is_openai(self):
+        assert providers.resolve(None).name == "openai"
+
+    def test_unknown_name_falls_back_rather_than_raising(self):
+        """A typo in config.toml must degrade, not take the index offline."""
+        assert providers.resolve("gemnii").name == "openai"
+
+    def test_env_overrides_config(self):
+        with patch.dict("os.environ", {providers.PROVIDER_ENV: "gemini"}):
+            assert providers.resolve("openai").name == "gemini"
+
+
+class TestEmbedderWiring:
+    def test_gemini_endpoint_model_and_width(self):
+        emb = Embedder(EmbeddingConfig(backend="gemini"))
+        assert emb._embed_url.endswith("/v1beta/openai/embeddings")
+        assert emb._model == "gemini-embedding-2"
+        # 1536 is an MRL prefix of Gemini's native 3072 — chosen so the
+        # on-disk vector width is unchanged.
+        assert emb.embedding_dim == 1536
+
+    def test_openai_default_model_does_not_leak_to_gemini(self):
+        """openai_model carries a non-empty default; it must not be sent
+        to a provider that has never heard of it."""
+        cfg = EmbeddingConfig(backend="gemini")
+        assert cfg.openai_model == "text-embedding-3-small"
+        assert Embedder(cfg)._model == "gemini-embedding-2"
+
+    def test_token_budget_discounts_tokenizer_skew(self):
+        """Budgets are counted with tiktoken whatever the provider, so a
+        provider whose tokenizer runs hotter gets a smaller budget."""
+        assert Embedder(EmbeddingConfig(backend="openai"))._token_budget() == 8000
+        assert Embedder(EmbeddingConfig(backend="gemini"))._token_budget() == 6553
+
+    @staticmethod
+    def _capture_payload(emb: Embedder) -> dict:
+        resp = MagicMock()
+        resp.read.return_value = b'{"data": [{"embedding": [0.1], "index": 0}]}'
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        emb._api_key = "k"
+        with patch("urllib.request.urlopen", return_value=resp) as opened:
+            emb._openai_embed_request(["hello"])
+        return json.loads(opened.call_args[0][0].data.decode())
+
+    def test_gemini_request_asks_for_the_index_width(self):
+        payload = self._capture_payload(Embedder(EmbeddingConfig(backend="gemini")))
+        assert payload["dimensions"] == 1536
+
+    def test_openai_request_omits_dimensions(self):
+        """text-embedding-3-small is fixed-width; sending the field would
+        be noise at best."""
+        payload = self._capture_payload(Embedder(EmbeddingConfig(backend="openai")))
+        assert "dimensions" not in payload
+
+
+class TestModelAwareInputLimit:
+    """The model is overridable while the provider is not, so the ceiling
+    has to follow the model — gemini-embedding-001 takes 2048 where
+    gemini-embedding-2 takes 8192."""
+
+    def test_pinning_the_older_model_lowers_the_budget(self):
+        with patch.dict(
+            "os.environ", {"HYBRID_SEARCH_EMBED_MODEL": "gemini-embedding-001"}
+        ):
+            emb = Embedder(EmbeddingConfig(backend="gemini"))
+        assert emb._model == "gemini-embedding-001"
+        assert emb._token_budget() == 1638
+
+    def test_unknown_model_falls_back_to_provider_ceiling(self):
+        with patch.dict(
+            "os.environ", {"HYBRID_SEARCH_EMBED_MODEL": "gemini-embedding-99"}
+        ):
+            emb = Embedder(EmbeddingConfig(backend="gemini"))
+        assert emb._token_budget() == 6553
+
+
+class TestTruncationIsCounted:
+    def test_overlong_text_is_cut_to_budget_and_counted(self):
+        """Gemini truncates past its ceiling silently — a 4k-token input to
+        gemini-embedding-001 returns HTTP 200 with a full-length vector.
+        The tail is gone with no error, so the embedder has to notice."""
+        with patch.dict(
+            "os.environ", {"HYBRID_SEARCH_EMBED_MODEL": "gemini-embedding-001"}
+        ):
+            emb = Embedder(EmbeddingConfig(backend="gemini"))
+        long_text = "word " * 4000
+        out = emb._truncate(long_text)
+        assert len(out) < len(long_text)
+        assert emb._truncated == 1
+
+    def test_text_within_budget_is_untouched(self):
+        emb = Embedder(EmbeddingConfig(backend="gemini"))
+        assert emb._truncate("short enough") == "short enough"
+        assert emb._truncated == 0
+
+
+class TestTranslationFollowsProvider:
+    def test_gemini_uses_gemini_chat_endpoint_and_model(self):
+        tr = QueryTranslator(Path("/tmp/unused.jsonl"), provider="gemini")
+        assert tr._spec.base_url.endswith("/v1beta/openai")
+        assert tr._model == "gemini-flash-lite-latest"
+        assert tr._spec.key_env == "GEMINI_API_KEY"
+
+    def test_openai_keeps_its_own_model(self):
+        tr = QueryTranslator(Path("/tmp/unused.jsonl"), provider="openai")
+        assert tr._model == "gpt-4o-mini"
+        assert tr._spec.key_env == "OPENAI_API_KEY"
+
+    def test_explicit_model_overrides_provider_default(self):
+        tr = QueryTranslator(
+            Path("/tmp/unused.jsonl"), provider="gemini", model="gemini-3.5-flash"
+        )
+        assert tr._model == "gemini-3.5-flash"
