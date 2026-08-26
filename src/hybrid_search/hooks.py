@@ -284,17 +284,27 @@ def _extract_assistant_summary(
 ) -> tuple[list[str], int, str]:
     """Walk forward from ``from_idx`` through assistant records.
 
-    Accumulates (tool_names, text_chars) until the next user turn or end
-    of list. Duplicate tool names are preserved in order of first use.
+    Accumulates (tool_names, text_chars) until the next GENUINE user
+    prompt or end of list. Tool results ride in user-role records —
+    breaking on those (pre-F4′) cut the walk at the first tool call,
+    leaving the pre-tool preamble ("...를 먼저 호출합니다") as the whole
+    recorded "answer" while the actual conclusion was never captured
+    (2026-07-26 Mac-mini E2E).
+
+    The excerpt is TAIL-biased: a tool-using turn ends with its
+    conclusion, and the conclusion — not the preamble — is what a later
+    agent needs from the record. Head text survives only within the
+    leftover budget.
     """
     seen_tools: list[str] = []
     text_chars = 0
-    excerpts: list[str] = []
-    excerpt_chars = 0
+    texts: list[str] = []
     for i in range(from_idx, len(records)):
         rec = records[i]
         if rec.get("type") == "user":
-            break
+            if _extract_user_text(rec) is not None:
+                break  # genuine next prompt — the turn is over
+            continue  # tool_result payload — the turn continues
         if rec.get("type") != "assistant":
             continue
         msg = rec.get("message") or {}
@@ -308,15 +318,25 @@ def _extract_assistant_summary(
             if t == "text":
                 txt = block.get("text") or ""
                 text_chars += len(txt)
-                if txt and excerpt_chars < _ANSWER_EXCERPT_COLLECT_MAX_CHARS:
-                    remaining = _ANSWER_EXCERPT_COLLECT_MAX_CHARS - excerpt_chars
-                    excerpts.append(txt[:remaining])
-                    excerpt_chars += min(len(txt), remaining)
+                if txt:
+                    texts.append(txt)
             elif t == "tool_use":
                 name = block.get("name") or ""
                 if name and name not in seen_tools:
                     seen_tools.append(name)
-    return seen_tools, text_chars, "\n\n".join(e.strip() for e in excerpts if e.strip())
+
+    # Tail-biased excerpt assembly: newest blocks claim the budget first,
+    # output order stays chronological.
+    budget = _ANSWER_EXCERPT_COLLECT_MAX_CHARS
+    tail: list[str] = []
+    for txt in reversed(texts):
+        if budget <= 0:
+            break
+        piece = txt[-budget:] if len(txt) > budget else txt
+        tail.append(piece)
+        budget -= len(piece)
+    excerpt = "\n\n".join(e.strip() for e in reversed(tail) if e.strip())
+    return seen_tools, text_chars, excerpt
 
 
 def _find_last_turn(records: list[dict]) -> tuple[str | None, list[str], int, str]:

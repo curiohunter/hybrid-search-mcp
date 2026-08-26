@@ -51,6 +51,10 @@ def _make_orchestrator(
     # Same for the corpus-absent probe: a MagicMock projects_dir would make
     # sqlite3.connect create a literal "<MagicMock ...>" file on disk.
     orch._first_corpus_absent_term = MagicMock(return_value=None)
+    # Same reason: the staleness probe opens each project's store DB, and a
+    # MagicMock projects_dir turns that into a literal "<MagicMock ...>"
+    # file in the repo.
+    orch._all_vector_spaces_stale = MagicMock(return_value=False)
     return orch
 
 

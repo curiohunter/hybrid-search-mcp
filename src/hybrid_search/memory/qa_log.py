@@ -95,6 +95,16 @@ class QARecord:
     answer_chars: int | None = None         # length of Claude's final text response
     answer_excerpt: str | None = None       # bounded, sanitized final-answer excerpt
     client: str | None = None               # "claude" | "codex" | None for legacy records
+    # v3 (P1-1) — typed memory schema; see memory/memory_types.py.
+    memory_type: str | None = None          # observation|decision|hypothesis|task_state|procedure|review_finding
+    verification: str | None = None         # verified|accepted|inferred|needs_revalidation|superseded
+    # v4 (P1-2) — what the qa was actually grounded in:
+    # {"hashes": {path: indexed_file_hash}} taken from the SEARCH RESULTS
+    # (the index's content fingerprint at retrieval time — not the
+    # working tree at write time, which may be ahead of the index). The
+    # revalidation projection compares these against HEAD content.
+    # None → legacy timestamp fallback.
+    anchor_evidence: dict | None = None
 
 
 def is_enabled() -> bool:
@@ -234,6 +244,24 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"answer_excerpt_chars: {len(record.answer_excerpt)}")
     if record.client:
         lines.append(f"client: {record.client}")
+    if record.memory_type:
+        lines.append(f"memory_type: {record.memory_type}")
+    if record.verification:
+        lines.append(f"verification: {record.verification}")
+    if record.anchor_evidence and record.anchor_evidence.get("hashes"):
+        import json as _json
+        # The algo marker versions the hash semantics: "index" = the
+        # scanner's content fingerprint (compute_content_hash), taken
+        # from the search results themselves. Readers must ignore
+        # evidence whose algo they don't recognise.
+        lines.append("anchor_hash_algo: index")
+        # Single-quoted so the JSON's double quotes survive the
+        # frontmatter reader's quote stripping.
+        lines.append(
+            "anchor_hashes: '"
+            + _json.dumps(record.anchor_evidence["hashes"], ensure_ascii=False)
+            + "'"
+        )
     lines += [
         "---",
         "",
@@ -369,8 +397,41 @@ def record(
                 "start_line": getattr(r, "start_line", None),
                 "end_line": getattr(r, "end_line", None),
                 "snippet": getattr(r, "snippet", None),
+                "indexed_file_hash": getattr(r, "indexed_file_hash", None),
             })
 
+        from hybrid_search.memory import memory_types
+
+        mtype, verification = memory_types.classify(
+            query=query, answer_excerpt=None, trigger=trigger,
+        )
+        # Anchor evidence = the index content hashes the search RESULTS
+        # actually carried (round-2 review: hashing the working tree here
+        # records what the disk looked like, not what the qa was grounded
+        # in — and the git subprocesses blocked the hot path). Zero
+        # subprocess calls: the hashes rode in on the results.
+        # Only SOURCE-GROUNDED results anchor (round-2 final P0):
+        # qa_log/conv_turn/commit/memory lanes live at virtual paths that
+        # git HEAD never contains — anchoring on them would flag every
+        # recall-of-a-recall as deleted on the next reindex. Each anchor
+        # keeps its project so the projection never compares another
+        # project's path against this repo's HEAD.
+        from hybrid_search.memory.revalidation import is_source_anchor
+
+        anchor_hashes: dict[str, dict[str, str]] = {}
+        for r in results_payload:
+            p, h = r.get("file_path"), r.get("indexed_file_hash")
+            if not (p and h) or p in anchor_hashes:
+                continue
+            if not is_source_anchor(r.get("node_type"), p):
+                continue
+            entry: dict[str, str] = {"h": h}
+            if r.get("project"):
+                entry["p"] = r["project"]
+            anchor_hashes[p] = entry
+            if len(anchor_hashes) >= 3:
+                break
+        evidence = {"hashes": anchor_hashes} if anchor_hashes else None
         rec = QARecord(
             query=query,
             query_type=getattr(response, "query_type", "UNKNOWN"),
@@ -381,6 +442,9 @@ def record(
             timestamp=datetime.now(timezone.utc),
             project_root=root,
             trigger=trigger,
+            memory_type=mtype,
+            verification=verification,
+            anchor_evidence=evidence,
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("qa_log prepare failed: %s", exc)
@@ -406,11 +470,22 @@ _NEAR_DUP_JACCARD = 0.85
 _NEAR_DUP_SCAN_CAP = 200
 
 
-def _near_dup_qa_exists(project_root: Path, query: str) -> bool:
-    """True when a recent qa entry asks (nearly) the same question.
+def _near_dup_qa_exists(
+    project_root: Path, query: str, *, incoming_has_answer: bool = False,
+) -> bool:
+    """True when a recent qa entry asks (nearly) the same question AND
+    already carries at least as much information as the incoming record.
 
     Token-Jaccard on the frontmatter query — no embeddings, so it is cheap
     enough for the fire-and-forget hook path. Scans newest-first, capped.
+
+    The asymmetry matters (2026-07 Mac-mini E2E, F4): the prompt-submit
+    prefetch writes a question+results record FIRST; the Stop hook's
+    answer-bearing record for the same query then looked like a near-dup
+    and was silently dropped — so the corpus knew what was ASKED but
+    never what was ANSWERED, which is the half the cross-agent handoff
+    actually needs. An answer-bearing incoming record is only suppressed
+    by a dup that also has an answer.
     """
     from hybrid_search.memory import quality, reader
 
@@ -429,6 +504,8 @@ def _near_dup_qa_exists(project_root: Path, query: str) -> bool:
                 if age_days > _NEAR_DUP_WINDOW_DAYS:
                     break  # newest-first: everything after is older
             if quality.jaccard(tokens, quality.query_tokens(idx.query)) >= _NEAR_DUP_JACCARD:
+                if incoming_has_answer and not (idx.answer_excerpt_chars or 0):
+                    continue  # question-only dup must not eat the answer
                 return True
     except Exception:  # pragma: no cover — never block a save on read errors
         return False
@@ -439,12 +516,16 @@ def _recent_qa_hash_exists(
     project_root: Path,
     query_hash: str,
     within_seconds: int = _DEDUP_WINDOW_SECONDS,
+    *,
+    incoming_has_answer: bool = False,
 ) -> bool:
     """True when a qa file with the given hash was written in the last N seconds.
 
     Cheap directory scan — qa dirs are small (at most thousands of entries
     even on very active projects; auto-prune caps at 2000). Skips the scan
-    silently if the qa dir doesn't exist.
+    silently if the qa dir doesn't exist. Same F4 asymmetry as the
+    near-dup check: a question-only record inside the window must not
+    suppress the answer-bearing record for the same turn.
     """
     qa_root = project_root / ".hybrid-search" / "qa"
     if not qa_root.is_dir():
@@ -463,6 +544,13 @@ def _recent_qa_hash_exists(
             for md in month.glob(f"*-{query_hash}.md"):
                 try:
                     if md.stat().st_mtime >= threshold:
+                        if incoming_has_answer:
+                            try:
+                                head = md.read_text(encoding="utf-8")[:2000]
+                            except OSError:
+                                head = ""
+                            if "answer_excerpt_chars:" not in head:
+                                continue  # question-only — don't eat the answer
                         return True
                 except OSError:
                     continue
@@ -504,15 +592,29 @@ def record_turn(
         if root is None:
             return None
 
-        if dedup and _recent_qa_hash_exists(root, _hash_query(query)):
-            return None
-        if dedup and _near_dup_qa_exists(root, query):
-            return None
-
         excerpt = _truncate_answer_excerpt(answer_excerpt)
         if excerpt and is_sensitive_query(excerpt):
             excerpt = None
+        has_answer = bool(excerpt and excerpt.strip())
 
+        if dedup and _recent_qa_hash_exists(
+            root, _hash_query(query), incoming_has_answer=has_answer,
+        ):
+            return None
+        if dedup and _near_dup_qa_exists(
+            root, query, incoming_has_answer=has_answer,
+        ):
+            return None
+
+        from hybrid_search.memory import memory_types
+
+        mtype, verification = memory_types.classify(
+            query=query,
+            answer_excerpt=excerpt,
+            tools_used=tuple(tools_used),
+            trigger=trigger,
+            client=client,
+        )
         rec = QARecord(
             query=query,
             query_type="TURN",
@@ -527,6 +629,8 @@ def record_turn(
             answer_chars=answer_chars,
             answer_excerpt=excerpt,
             client=client,
+            memory_type=mtype,
+            verification=verification,
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("qa_log record_turn prepare failed: %s", exc)
