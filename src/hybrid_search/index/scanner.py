@@ -104,6 +104,18 @@ COMMIT_PATH_PREFIX = ".git-history/"
 _VIRTUAL_PATH_PREFIXES = (CONVERSATION_PATH_PREFIX, COMMIT_PATH_PREFIX)
 
 
+def count_indexable_files(project_root: Path, config: IndexingConfig) -> int:
+    """How many files on disk this config would index.
+
+    Diagnostics compare this against the store DB's file count. An index
+    holding a small fraction of what the scanner can see is not "a project
+    with little code" — it is a scan that stopped early, and it looks
+    exactly like poor search quality from the outside.
+    """
+    project_root = project_root.resolve()
+    return len(_walk_files(project_root, _build_ignore_spec(project_root, config), config))
+
+
 def scan_project(
     project_root: Path,
     project_id: str,

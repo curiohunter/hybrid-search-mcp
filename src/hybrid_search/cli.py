@@ -20,7 +20,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hybrid_search.config import load_config
+from hybrid_search.config import Config, load_config
 from hybrid_search.index.conversation_indexer import ConversationIndexer
 from hybrid_search.index.dag import generate_all_wiki_pages
 from hybrid_search.index.embedder import Embedder
@@ -1387,6 +1387,55 @@ def _check_global_status() -> None:
     print(f"  {_status_mark(api_ok)} {label:<30} ({'env or .env.local' if api_ok else 'MISSING'})")
 
 
+# An index holding almost nothing looks, from the outside, exactly like bad
+# search quality — three projects here had silently collapsed to a few
+# percent of their files and nothing said so. The bar is deliberately low:
+# measured coverage on healthy indexes ranges 0.31-0.99 (the scanner walks
+# files the pipeline later drops for language, size, or content rules), so
+# anything stricter reports exclusions as faults. This catches collapse,
+# not incompleteness.
+_COVERAGE_ALARM = 0.25
+
+
+# Memory-lane trees are written by the memory layer, not the scanner, so
+# they inflate the DB side of the comparison. Both sides must count the
+# same thing.
+_MEMORY_LANE_PREFIXES = (".hybrid-search/", ".conversations/", ".git-history/")
+
+
+def _print_index_coverage(config: Config, pinfo, project_path: Path) -> None:
+    """Compare indexed code files against what the scanner can see on disk."""
+    import sqlite3
+
+    from hybrid_search.index.scanner import count_indexable_files
+    from hybrid_search.storage.indexes import get_project_dir
+
+    try:
+        on_disk = count_indexable_files(project_path, config.indexing)
+        db_path = get_project_dir(config.projects_dir, pinfo.id) / "store.db"
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            paths = [r[0] for r in conn.execute("SELECT relative_path FROM files")]
+        finally:
+            conn.close()
+    except Exception:
+        return  # a diagnostic must never be the thing that fails
+    if on_disk < 20:
+        return  # too small for the ratio to mean anything
+
+    indexed = sum(1 for x in paths if not x.startswith(_MEMORY_LANE_PREFIXES))
+    ratio = indexed / on_disk
+    if ratio >= _COVERAGE_ALARM:
+        print(f"  ✓ Index coverage:               {indexed}/{on_disk} scannable files")
+        return
+    print(
+        f"  ⚠ Index coverage:               {indexed}/{on_disk} scannable files "
+        f"({ratio:.0%}) — far below what the scanner sees. This usually means "
+        f"an interrupted or failed index, not a small project. "
+        f"Run `hybrid-search-mcp index . --force`."
+    )
+
+
 def _check_project_status(project_path: Path) -> None:
     """Print per-project health (index, wiki, git hook, .gitignore, CLAUDE.md)."""
     config = load_config()
@@ -1407,6 +1456,7 @@ def _check_project_status(project_path: Path) -> None:
 
     # Index
     print(f"  ✓ Indexed as {name!r}: {pinfo.file_count} files, {pinfo.chunk_count} chunks")
+    _print_index_coverage(config, pinfo, project_path)
     if pinfo.last_indexed_at:
         print(f"    Last indexed: {pinfo.last_indexed_at}")
 
