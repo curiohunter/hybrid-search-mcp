@@ -183,6 +183,16 @@ class HybridSearchResponse:
     effective_gap: float | None = None
 
 
+# Surfaced when the embedding provider could not be reached. Semantic
+# matching is off, so results are lexical only — the caller must be told,
+# otherwise a thin BM25 answer looks like a confident hybrid one.
+_VECTOR_LANE_DOWN_HINT = (
+    "DEGRADED: embedding provider unreachable — BM25 (keyword) lane only, "
+    "no semantic matching. Paraphrased or cross-language queries will miss. "
+    "Verify with Grep/Read, and check the embedding API key."
+)
+
+
 # --- Memory Layer boost ------------------------------------------------
 # Half-life in days for the recency decay applied to qa_log chunks.
 # At 30d a past Q&A keeps half its boost; at 90d it's at 12.5%. Picked
@@ -838,8 +848,20 @@ class SearchOrchestrator:
                 query_time_ms=0, total_chunks_searched=0,
             )
 
-        # Embed query once
-        query_vector = self._embedder.embed_query(query)
+        # Embed query once. The vector lane is an enhancement, not a
+        # precondition: when the embedding provider is unreachable (revoked
+        # key, quota, network) the BM25 lane can still answer. Raising here
+        # turned a provider outage into a total search outage — every lane,
+        # including plain symbol lookup, died on one dead HTTP call.
+        try:
+            query_vector = self._embedder.embed_query(query)
+        except Exception:
+            logger.warning(
+                "query embedding failed — serving BM25-only degraded results",
+                exc_info=True,
+            )
+            query_vector = None
+        vector_lane_down = query_vector is None
         retrieval_depth = limit * 3
 
         memory_intent = _has_memory_intent(query)
@@ -1090,6 +1112,7 @@ class SearchOrchestrator:
             top_cosine=top_cosine,
             memory_intent=memory_intent,
             corpus_lacks=lambda terms: self._first_corpus_absent_term(project_infos, terms),
+            vector_lane_down=vector_lane_down,
         )
 
     def _first_corpus_absent_term(
@@ -1144,6 +1167,7 @@ class SearchOrchestrator:
         top_cosine: float | None = None,
         memory_intent: bool = False,
         corpus_lacks: "Callable[[list[str]], str | None] | None" = None,
+        vector_lane_down: bool = False,
     ) -> HybridSearchResponse:
         ranked = sorted(
             (r for r in results if r.rrf_score > 0),
@@ -1215,11 +1239,19 @@ class SearchOrchestrator:
         ):
             if corpus_lacks(unanchored) is not None:
                 confidence = "weak"
+        if vector_lane_down:
+            # Confidence thresholds are calibrated on two-lane RRF fusion.
+            # With the vector lane gone the score distribution is a different
+            # animal, so no classification derived from it can be trusted —
+            # report weak and let the caller's fallback contract take over.
+            confidence = "weak"
         hint = (
             fallback_hint(query, top_hit=ranked[0].file_path if ranked else None)
             if confidence == "weak"
             else None
         )
+        if vector_lane_down:
+            hint = _VECTOR_LANE_DOWN_HINT + (f" {hint}" if hint else "")
         generated_ratio = _generated_ratio(results)
         # Recall/history questions legitimately answer from memory content —
         # a high ratio there is the feature working, not pollution.
@@ -1534,7 +1566,7 @@ class SearchOrchestrator:
         idx_paths = IndexPaths(project_dir)
 
         if not idx_paths.store_db.exists():
-            return [], [], 0, [], {}
+            return [], [], 0, [], {}, {}
 
         db = StoreDB(idx_paths.store_db)
         bm25_eng = BM25Engine(idx_paths.tantivy_dir, read_only=True)
@@ -1554,10 +1586,16 @@ class SearchOrchestrator:
             if chunk_filter:
                 bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
 
-            # Vector search
-            vec_results = vec_eng.search(query_vector, limit=depth, chunk_ids_filter=chunk_filter)
-            vector_ids = [r.chunk_id for r in vec_results]
-            vector_scores = {r.chunk_id: r.score for r in vec_results}
+            # Vector search — skipped when the query could not be embedded.
+            if query_vector is None:
+                vector_ids: list[str] = []
+                vector_scores: dict[str, float] = {}
+            else:
+                vec_results = vec_eng.search(
+                    query_vector, limit=depth, chunk_ids_filter=chunk_filter,
+                )
+                vector_ids = [r.chunk_id for r in vec_results]
+                vector_scores = {r.chunk_id: r.score for r in vec_results}
 
             total = vec_eng.count
             authority = db.get_chunk_authority_scores(pinfo.id)
@@ -1629,8 +1667,13 @@ class SearchOrchestrator:
                 if chunk_filter:
                     bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
 
-                vec_res = vec_eng.search(query_vector, limit=depth, chunk_ids_filter=chunk_filter)
-                vec_pairs = [(r.chunk_id, r.score) for r in vec_res]
+                if query_vector is None:
+                    vec_pairs: list[tuple[str, float]] = []
+                else:
+                    vec_res = vec_eng.search(
+                        query_vector, limit=depth, chunk_ids_filter=chunk_filter,
+                    )
+                    vec_pairs = [(r.chunk_id, r.score) for r in vec_res]
                 count = vec_eng.count
                 authority = db.get_chunk_authority_scores(pinfo.id)
             finally:
