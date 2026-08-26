@@ -88,6 +88,27 @@ def input_limit(spec: "ProviderSpec", model: str) -> int:
     return MODEL_INPUT_LIMITS.get(model, spec.max_input_tokens)
 
 
+# index_meta key holding the vector space an index was written in.
+EMBEDDING_FINGERPRINT_KEY = "embedding_fingerprint"
+
+# Indexes built before fingerprints were recorded. Every one of them came
+# from the single hard-coded backend, so a missing value is not "unknown"
+# — it is precisely this. Treating it as unknown-and-therefore-fine is
+# what would let a provider switch quietly compare across vector spaces.
+LEGACY_FINGERPRINT = "openai:text-embedding-3-small:1536"
+
+
+def vector_space_matches(stored: str | None, current: str) -> bool:
+    """Whether an index's stored vectors are comparable to ``current``.
+
+    Equal width is not enough: a 1536-wide Gemini vector and a 1536-wide
+    OpenAI vector share no axes, so their cosine is noise rather than a
+    weaker signal. Callers must drop the vector lane on a mismatch, not
+    down-weight it.
+    """
+    return (stored or LEGACY_FINGERPRINT) == current
+
+
 DEFAULT_PROVIDER = "openai"
 
 # Env override so a provider can be swapped for an A/B run without editing

@@ -32,6 +32,10 @@ from hybrid_search.search.in_flight import (
 )
 from hybrid_search.search import qa_topics
 from hybrid_search.search import translation
+from hybrid_search.providers import (
+    EMBEDDING_FINGERPRINT_KEY,
+    vector_space_matches,
+)
 from hybrid_search.search.translation import QueryTranslator, is_korean_dominant
 from hybrid_search.search.modules_search import search_modules
 from hybrid_search.search.rerank import lexical_rerank
@@ -204,10 +208,32 @@ class HybridSearchResponse:
 # Surfaced when the embedding provider could not be reached. Semantic
 # matching is off, so results are lexical only — the caller must be told,
 # otherwise a thin BM25 answer looks like a confident hybrid one.
+def _vector_space_current(db, embedder) -> bool:
+    """Whether ``db``'s stored vectors came from the embedder in use."""
+    try:
+        stored = db.get_meta(EMBEDDING_FINGERPRINT_KEY)
+        current = embedder.fingerprint
+    except Exception:  # a meta read must never fail or degrade a search
+        return True
+    if not isinstance(stored, (str, type(None))) or not isinstance(current, str):
+        return True  # a stubbed embedder in tests — not a real mismatch
+    return vector_space_matches(stored, current)
+
+
 _VECTOR_LANE_DOWN_HINT = (
     "DEGRADED: embedding provider unreachable — BM25 (keyword) lane only, "
     "no semantic matching. Paraphrased or cross-language queries will miss. "
     "Verify with Grep/Read, and check the embedding API key."
+)
+
+# A different failure with the same shape and a different fix: the index
+# is intact, it was just written by another embedding model. Saying
+# "check your API key" here would send the reader after the wrong thing.
+_VECTOR_LANE_STALE_HINT = (
+    "DEGRADED: this index was built with a different embedding model, so "
+    "its vectors are not comparable to the current one — BM25 (keyword) "
+    "lane only. Rebuild with `hybrid-search-mcp index . --force` followed "
+    "by `recalibrate`. Verify with Grep/Read meanwhile."
 )
 
 
@@ -1186,7 +1212,15 @@ class SearchOrchestrator:
                 exc_info=True,
             )
             query_vector = None
+        # Two different ways to lose the vector lane: the provider is
+        # unreachable, or every index in scope was written by a different
+        # model. Same degraded result, different fix — so they are
+        # reported apart.
         vector_lane_down = query_vector is None
+        stale_vectors = not vector_lane_down and self._all_vector_spaces_stale(
+            project_infos
+        )
+        vector_lane_down = vector_lane_down or stale_vectors
         retrieval_depth = limit * 3
 
         memory_intent = _has_memory_intent(query)
@@ -1487,6 +1521,7 @@ class SearchOrchestrator:
             memory_intent=memory_intent,
             corpus_lacks=lambda terms: self._first_corpus_absent_term(project_infos, terms),
             vector_lane_down=vector_lane_down,
+            vector_lane_stale=stale_vectors,
         )
         if recent_head and response.confidence == "weak":
             # The deterministic recency lane anchored the answer with
@@ -1773,6 +1808,34 @@ class SearchOrchestrator:
             ]
         return results, "used"
 
+    def _all_vector_spaces_stale(self, project_infos: list[ProjectInfo]) -> bool:
+        """True when no index in scope matches the current embedding model.
+
+        Partial mismatches are handled per project inside the search lanes
+        — those simply drop their vector hits. This only decides whether
+        the *response* should stop claiming a semantic lane at all.
+        """
+        checked = 0
+        for pinfo in project_infos:
+            try:
+                idx_paths = IndexPaths(
+                    get_project_dir(self._config.projects_dir, pinfo.id)
+                )
+                if not idx_paths.store_db.exists():
+                    continue
+                db = StoreDB(idx_paths.store_db)
+                try:
+                    if _vector_space_current(db, self._embedder):
+                        return False
+                finally:
+                    db.close()
+            except Exception:
+                # Cannot read the marker — say nothing rather than
+                # declaring every result degraded on a bookkeeping fault.
+                return False
+            checked += 1
+        return checked > 0
+
     def _first_corpus_absent_term(
         self, project_infos: list["ProjectInfo"], terms: list[str]
     ) -> str | None:
@@ -1926,6 +1989,7 @@ class SearchOrchestrator:
         memory_intent: bool = False,
         corpus_lacks: "Callable[[list[str]], str | None] | None" = None,
         vector_lane_down: bool = False,
+        vector_lane_stale: bool = False,
     ) -> HybridSearchResponse:
         ranked = sorted(
             (r for r in results if r.rrf_score > 0),
@@ -2026,7 +2090,8 @@ class SearchOrchestrator:
             else None
         )
         if vector_lane_down:
-            hint = _VECTOR_LANE_DOWN_HINT + (f" {hint}" if hint else "")
+            reason = _VECTOR_LANE_STALE_HINT if vector_lane_stale else _VECTOR_LANE_DOWN_HINT
+            hint = reason + (f" {hint}" if hint else "")
         generated_ratio = _generated_ratio(results)
         # Recall/history questions legitimately answer from memory content —
         # a high ratio there is the feature working, not pollution.
@@ -2361,8 +2426,10 @@ class SearchOrchestrator:
             if chunk_filter:
                 bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
 
-            # Vector search — skipped when the query could not be embedded.
-            if query_vector is None:
+            # Vector search — skipped when the query could not be embedded,
+            # or when this index was written by a different embedding model
+            # (its vectors share no axes with the query's).
+            if query_vector is None or not _vector_space_current(db, self._embedder):
                 vector_ids: list[str] = []
                 vector_scores: dict[str, float] = {}
             else:
@@ -2442,7 +2509,7 @@ class SearchOrchestrator:
                 if chunk_filter:
                     bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
 
-                if query_vector is None:
+                if query_vector is None or not _vector_space_current(db, self._embedder):
                     vec_pairs: list[tuple[str, float]] = []
                 else:
                     vec_res = vec_eng.search(

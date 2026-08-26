@@ -32,6 +32,7 @@ from hybrid_search.index.scanner import (
     scan_project_subset,
 )
 from hybrid_search.project import ProjectRegistry, project_hash
+from hybrid_search.providers import EMBEDDING_FINGERPRINT_KEY
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.vector import VectorEngine, VectorMigrationError
 from hybrid_search.storage.db import ChunkRecord, FileRecord, StoreDB
@@ -229,6 +230,17 @@ class IndexingPipeline:
             result.files_added = len(scan.added)
             result.files_changed = len(scan.changed)
             result.files_deleted = len(scan.deleted)
+
+            # Record which vector space this index is written in, so a
+            # later provider or model change is detected instead of
+            # silently comparing cosines across incompatible spaces.
+            # Bookkeeping only — never the reason an index fails to build.
+            fingerprint = getattr(self._embedder, "fingerprint", None)
+            if fingerprint:
+                try:
+                    db.set_meta(EMBEDDING_FINGERPRINT_KEY, str(fingerprint))
+                except Exception:  # pragma: no cover
+                    logger.debug("embedding fingerprint not recorded", exc_info=True)
 
             self._process_deletions(db, vector_engine, bm25_engine, project_id, scan.deleted)
 

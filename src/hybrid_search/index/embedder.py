@@ -59,6 +59,16 @@ class Embedder:
     def embedding_dim(self) -> int:
         return self._embedding_dim
 
+    @property
+    def fingerprint(self) -> str:
+        """Identity of the vector space this embedder produces.
+
+        Two embedders agreeing on width still produce incomparable
+        vectors when the model differs, so the stored index records this
+        and the search side refuses to mix spaces.
+        """
+        return f"{self._spec.name}:{self._model}:{self._embedding_dim}"
+
     def embed_texts(self, texts: list[str]) -> np.ndarray:
         """Embed a list of texts. Returns (N, dim) float32 array."""
         if not texts:

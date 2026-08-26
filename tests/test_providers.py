@@ -133,3 +133,36 @@ class TestTranslationFollowsProvider:
             Path("/tmp/unused.jsonl"), provider="gemini", model="gemini-3.5-flash"
         )
         assert tr._model == "gemini-3.5-flash"
+
+
+class TestVectorSpaceFingerprint:
+    """Equal width is not equal meaning. A provider switch must drop the
+    vector lane rather than compare cosines across incompatible spaces."""
+
+    def test_missing_fingerprint_reads_as_the_old_hard_coded_backend(self):
+        """Every index predating this field came from one backend, so an
+        absent value is known, not unknown — trusting it blindly is the
+        bug this guards."""
+        assert providers.vector_space_matches(None, providers.LEGACY_FINGERPRINT)
+        assert not providers.vector_space_matches(
+            None, "gemini:gemini-embedding-2:1536"
+        )
+
+    def test_same_width_different_model_does_not_match(self):
+        assert not providers.vector_space_matches(
+            "openai:text-embedding-3-small:1536", "gemini:gemini-embedding-2:1536"
+        )
+
+    def test_identical_space_matches(self):
+        fp = "gemini:gemini-embedding-2:1536"
+        assert providers.vector_space_matches(fp, fp)
+
+    def test_embedder_fingerprint_tracks_provider_model_and_width(self):
+        assert (
+            Embedder(EmbeddingConfig(backend="gemini")).fingerprint
+            == "gemini:gemini-embedding-2:1536"
+        )
+        assert (
+            Embedder(EmbeddingConfig(backend="openai")).fingerprint
+            == providers.LEGACY_FINGERPRINT
+        )
