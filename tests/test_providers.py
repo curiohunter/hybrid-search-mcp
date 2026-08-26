@@ -117,10 +117,16 @@ class TestTruncationIsCounted:
 
 
 class TestTranslationFollowsProvider:
+    def test_the_chat_model_is_pinned_not_an_alias(self):
+        """A `-latest` alias moves under you: usage reports name a model
+        nobody chose and a repoint changes the price without notice."""
+        tr = QueryTranslator(Path("/tmp/unused.jsonl"), provider="gemini")
+        assert "latest" not in tr._model
+
     def test_gemini_uses_gemini_chat_endpoint_and_model(self):
         tr = QueryTranslator(Path("/tmp/unused.jsonl"), provider="gemini")
         assert tr._spec.base_url.endswith("/v1beta/openai")
-        assert tr._model == "gemini-flash-lite-latest"
+        assert tr._model == "gemini-3.5-flash-lite"
         assert tr._spec.key_env == "GEMINI_API_KEY"
 
     def test_openai_keeps_its_own_model(self):

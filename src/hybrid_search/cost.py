@@ -38,13 +38,19 @@ class CostEstimate:
     usd: float | None  # None when the model has no published price here
 
     def render(self) -> str:
+        # An upper bound: a rebuild reuses vectors for any chunk whose text
+        # is unchanged, so the actual spend is usually a small fraction of
+        # this. Quoting the ceiling is the useful direction to be wrong in.
         head = (
             f"{self.files:,} files / {self.chars / 1e6:.1f}M chars "
             f"≈ {self.tokens / 1e6:.1f}M tokens"
         )
         if self.usd is None:
             return f"{head} ({self.model}, price unknown)"
-        return f"{head} ≈ ${self.usd:.2f} ({self.model})"
+        return (
+            f"{head} ≈ ${self.usd:.2f} at most ({self.model}; "
+            f"unchanged chunks are reused, not re-embedded)"
+        )
 
 
 def _chars_per_token(paths: list[Path]) -> float:

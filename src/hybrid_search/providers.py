@@ -60,7 +60,14 @@ PROVIDERS: dict[str, ProviderSpec] = {
         # model can be overridden without changing provider.
         max_input_tokens=8192,
         supports_dimensions=True,
-        chat_model="gemini-flash-lite-latest",
+        # Pinned, not an alias. `gemini-flash-lite-latest` resolves
+        # server-side to whatever Google points it at — the usage report
+        # then names a model nobody chose, and a repoint changes the price
+        # silently. This is the model that alias was already resolving to
+        # ($0.30/M as of 2026-08-27); pinning changes nothing about cost
+        # today and removes the moving target. 2.5-flash-lite would be
+        # cheaper but returns 404 — "no longer available to new users".
+        chat_model="gemini-3.5-flash-lite",
         # Measured Gemini/tiktoken ratio on this corpus: 0.75x (Korean
         # prose), 0.90x (KO/EN mixed), 1.12x (Python source). 1.25 clears
         # the worst case observed with room to spare — deliberately
