@@ -257,8 +257,42 @@ def _write_gap_flag(cwd: str, files_added: int) -> None:
     print(f"Wiki gaps: {files_added} new files flagged → {gap_file}")
 
 
+# A full rebuild below this is not worth interrupting anyone over.
+_COST_PROMPT_USD = 0.50
+
+
+def _confirm_rebuild_cost(args: argparse.Namespace, config: Config, project_path: str) -> bool:
+    """Show what a forced rebuild will re-embed, and ask when it is not cheap.
+
+    Only forced rebuilds re-embed the whole corpus; delta runs touch a
+    handful of files and are hook-driven, so they are never interrupted.
+    """
+    from hybrid_search.cost import estimate_rebuild
+
+    estimate = estimate_rebuild(Path(project_path), config)
+    if estimate is None:
+        return True
+    print(f"Full rebuild: {estimate.render()}")
+    if estimate.usd is None or estimate.usd < _COST_PROMPT_USD:
+        return True
+    if getattr(args, "yes", False):
+        return True
+    if not sys.stdin.isatty():
+        # Hooks, CI and scripts must not block on a prompt — the estimate
+        # above still lands in their logs.
+        return True
+    answer = input("Continue? [y/N] ").strip().lower()
+    if answer in ("y", "yes"):
+        return True
+    print("Cancelled — nothing was re-embedded.")
+    return False
+
+
 def cmd_reindex(args: argparse.Namespace) -> None:
     """Delta reindex the project at cwd."""
+    from hybrid_search.project import project_hash
+    from hybrid_search.storage.indexes import get_project_dir
+
     config = load_config()
     if getattr(args, "include_content", False):
         config = replace(
@@ -279,6 +313,46 @@ def cmd_reindex(args: argparse.Namespace) -> None:
         project_path = cwd
         project_name = Path(cwd).name
 
+    if getattr(args, "force", False) and not _confirm_rebuild_cost(
+        args, config, project_path
+    ):
+        return
+
+    project_dir = get_project_dir(
+        config.projects_dir, project_hash(str(Path(project_path).resolve()))
+    )
+    lock_path = _writer_lock_path(project_dir)
+    holder = _lock_holder(lock_path) if lock_path.exists() else None
+    if holder is not None:
+        print(
+            f"Another indexer is already writing this project (PID {holder}). "
+            f"Nothing was changed — re-run once it finishes."
+        )
+        raise SystemExit(1)
+    if not _acquire_conv_lock(lock_path):
+        print("Could not take the index writer lock; nothing was changed.")
+        raise SystemExit(1)
+
+    try:
+        _reindex_locked(
+            args, config, registry, project_path, project_name, cwd,
+        )
+    finally:
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
+def _reindex_locked(
+    args: argparse.Namespace,
+    config: Config,
+    registry: ProjectRegistry,
+    project_path: str,
+    project_name: str,
+    cwd: str,
+) -> None:
+    """The reindex body, run while holding the project's writer lock."""
     embedder = Embedder(config.embedding, config.models_dir)
     pipeline = IndexingPipeline(config, registry, embedder)
     changed_paths: list[str] | None = None
@@ -4348,24 +4422,56 @@ def cmd_index(args: argparse.Namespace) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Whether ``pid`` is a running process.
+
+    ``os.kill(pid, 0)`` distinguishes two failures that must not be
+    conflated: ProcessLookupError means the process is gone, while
+    PermissionError means it is very much alive and simply owned by
+    someone else. Treating the latter as dead lets a lock be stolen from
+    a running indexer.
+    """
     try:
         os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
         return True
     except OSError:
         return False
+    return True
+
+
+def _lock_holder(lock_path: Path) -> int | None:
+    """PID currently holding ``lock_path``, or None if free/stale."""
+    try:
+        holder = int(lock_path.read_text().strip())
+    except (ValueError, OSError):
+        return None
+    if holder != os.getpid() and _pid_alive(holder):
+        return holder
+    return None
+
+
+def _writer_lock_path(project_dir: Path) -> Path:
+    """One lock per project index, shared by every writing command.
+
+    Tantivy allows a single IndexWriter per directory. Conversation
+    indexing took a PID lock for that reason; `index` and `reindex` never
+    did, and the `.reindex.lock` the git hook writes is only read by the
+    hook's own shell wrapper. So a post-commit reindex and a manual
+    `index --force` would start together and the loser died partway
+    through with "Failed to acquire Lockfile", leaving the run aborted.
+    All writers now queue on this one.
+    """
+    return project_dir / ".writer.lock"
 
 
 def _acquire_conv_lock(lock_path: Path) -> bool:
-    """Best-effort PID lock so concurrent conv-index runs don't clash on the
+    """Best-effort PID lock so concurrent index runs don't clash on the
     Tantivy/USearch writers. Returns False when another live run holds it."""
     try:
-        if lock_path.exists():
-            try:
-                holder = int(lock_path.read_text().strip())
-            except (ValueError, OSError):
-                holder = None
-            if holder and holder != os.getpid() and _pid_alive(holder):
-                return False
+        if lock_path.exists() and _lock_holder(lock_path) is not None:
+            return False
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(str(os.getpid()))
         return True
@@ -5244,6 +5350,10 @@ def main() -> None:
     p_index.add_argument("path", nargs="?", default=".", help="Project directory (default: .)")
     p_index.add_argument("--force", action="store_true", help="Force full reindex")
     p_index.add_argument("--wiki", action="store_true", help="Auto-generate wiki after index")
+    p_index.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip the cost confirmation on a full rebuild",
+    )
 
     p_conv = sub.add_parser(
         "index-conversations",
@@ -5328,6 +5438,10 @@ def main() -> None:
     p_reindex = sub.add_parser("reindex", help="Delta reindex a project")
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
     p_reindex.add_argument("--force", action="store_true", help="Force full reindex")
+    p_reindex.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip the cost confirmation on a full rebuild",
+    )
     p_reindex.add_argument("--git-delta", action="store_true", help="Use git diff for changed-file detection with full-scan fallback")
     p_reindex.add_argument(
         "--include-content",
