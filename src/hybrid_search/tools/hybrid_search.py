@@ -132,6 +132,9 @@ def handle_hybrid_search(
     }
     if getattr(response, "fallback_hint", None):
         result["fallback_hint"] = sanitize_snippet(response.fallback_hint)
+    # ADV3 observability: "used"|"skipped" for Hangul-dominant queries.
+    if getattr(response, "cross_language_lane", None):
+        result["cross_language_lane"] = response.cross_language_lane
 
     if response.reranked and len(response.results) > safe_limit:
         result["rerank_hint"] = _RERANK_HINT.format(

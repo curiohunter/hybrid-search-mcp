@@ -47,7 +47,7 @@ first-class search result for every future query, in either agent.
 **Trade-offs you should know up-front** (we've measured them):
 - First-query latency adds **~400 ms** of pre-fetch overhead (vs ~50 ms `grep`). Worth it for exploratory questions; not for `grep`-shaped lookups (and the router knows the difference).
 - Embedder = **OpenAI `text-embedding-3-small`** (API key required). **No local embedding backend — by choice, not neglect.** The first version ran local models; bulk-embedding tens of thousands of chunks pinned an M3 MacBook's fans for the entire run and made the machine unusable (CPU path was no better). A full reindex of a 2,000-file project via the API costs cents. If zero-API-key is a hard constraint, this tool isn't for you today; a `backend` config field is reserved and a local ONNX contribution is welcome.
-- "0-config" is *almost* true: one `pip install` + one `setup` command after, but you also need `OPENAI_API_KEY` and (for Codex) a separate `install-codex-hook`.
+- **This is not "0-config", and we don't claim it.** Explicit prerequisites: macOS/Linux with **Python 3.11+** and **pipx or uv** already installed, plus an `OPENAI_API_KEY`. From there it's one install + `setup` (Claude) + `setup --codex` (Codex). A stock Mac without those prerequisites will fail at install — see Requirements above for the misleading pip error this produces.
 
 **Who this is for:** 1인 개발자가 Claude Code를 주력으로 + 가끔 Codex도 쓰면서, 같은 코드베이스에서 반복 질문을 줄이고 싶은 사람. Korean + English 코드베이스에서 검증됨 (valuein_homepage 708-commit, 1,307 files).
 
@@ -217,7 +217,11 @@ export HYBRID_SEARCH_ROUTER=0     # stop per-prompt pre-fetch injection
 
 ### Requirements
 
-- Python 3.11+
+- Python 3.11+ — **heads-up:** on a stock Mac the system `pip3` runs
+  Python 3.9 and fails with a *misleading* resolver error (e.g.
+  `Could not find a version that satisfies tree-sitter-css>=0.25`).
+  That error means "your pip is on an old Python", not a missing
+  dependency. Use `pipx`/`uv`, or `brew install python@3.12` first.
 - OpenAI API key ([get one here](https://platform.openai.com/api-keys))
 
 ### Claude Code plugin (two commands)
@@ -241,7 +245,8 @@ pipx install memory-layer-mcp                # PyPI name; the CLI is `hybrid-sea
 
 echo "OPENAI_API_KEY=sk-..." >> ~/.env.local # once per machine — shared by all projects
 
-cd your-project/ && hybrid-search-mcp setup  # once per project
+cd your-project/ && hybrid-search-mcp setup  # once per project (Claude Code)
+hybrid-search-mcp setup --codex              # add this if you also use Codex
 ```
 
 `pip install memory-layer-mcp` works too — but Homebrew/system Pythons
@@ -357,16 +362,20 @@ Restart Claude Code after setup.
 
 ## Codex Integration (Optional)
 
-Codex can share the same project memory layer with Claude Code. Install the
-Codex hook/config pair inside a project:
+Codex can share the same project memory layer with Claude Code. One
+command inside a project:
 
 ```bash
-hybrid-search-mcp install-codex-hook --cwd .
+hybrid-search-mcp setup --codex --cwd .
 ```
 
-This writes `.codex/hooks.json`, enables `[features].hooks = true` in
-`.codex/config.toml`, registers the MCP server as
-`[mcp_servers.hybrid-search]`, and adds a small `AGENTS.md` routing note.
+This writes the `.codex-plugin/plugin.json` manifest and project
+`.codex/hooks.json`, registers the MCP server and `[features].hooks` in
+**your user-level `~/.codex/config.toml`** (codex 0.145+ reads MCP
+config from there, not from the project), adds an `AGENTS.md` routing
+note, and runs a config/handler smoke test including a live
+`codex mcp list` probe. (`install-codex-hook` remains as a deprecated
+alias of the install step, without the smoke test.)
 
 The Codex path uses `UserPromptSubmit` for pre-answer memory injection and
 `Stop` for completed-turn persistence. `Stop` writes qa logs tagged
@@ -561,8 +570,13 @@ stays at zero. The absent probe that reads `mixed` asks about a
 *combination* the project lacks ("구독 결제 갱신") while every
 individual word exists in the source — capping that to `weak` would
 require phrase-level reasoning. And yes, the present controls currently
-top out at `mixed`, not `strong` — the calibrated `strong` bar is
-strict; that trade-off is visible above instead of averaged away.
+top out at `mixed`, not `strong` — the `strong` bar is strict by
+design, and after the trust-contract change (only verified/accepted
+memories may anchor `strong`) its coverage is materially lower on
+qa-heavy corpora. **We do not currently claim "calibrated" confidence:**
+that word is gated on a calibration report (precision AND coverage) at
+the release head, which has not been re-run since the contract change.
+The trade-off is visible above instead of averaged away.
 
 ```bash
 python benchmarks/run_memory_bench_v2.py
@@ -691,11 +705,12 @@ tokens reported in real sessions by combining SessionStart + PreToolUse).
 Codex hooks are installed separately from Claude Code hooks:
 
 ```bash
-hybrid-search-mcp install-codex-hook --cwd your-project/
+hybrid-search-mcp setup --codex --cwd your-project/
 ```
 
 Codex project hooks live in `.codex/hooks.json`; MCP registration and the
-`hooks` feature flag live in `.codex/config.toml`. Project-local Codex
+`hooks` feature flag live in your **user-level `~/.codex/config.toml`**
+(codex 0.145+ ignores project-level MCP config). Project-local Codex
 hooks only run after Codex trusts the project config layer, so use
 `hybrid-search-mcp status --cwd your-project/` and a smoke test before relying
 on a new install.
@@ -860,7 +875,7 @@ pre-fetch entirely.
 | `stale --cwd .` | Check stale wiki pages |
 | `viewer --cwd . [--open]` | Local memory dashboard (`.hybrid-search/viewer.html`) |
 | `install-hook --cwd .` | Install post-commit + post-checkout hooks + `.gitignore` entries |
-| `install-codex-hook --cwd .` | Install Codex hooks + Codex TOML MCP config |
+| `setup --codex --cwd .` | Codex: plugin manifest + hooks + user-level MCP config + smoke test |
 | `annotate-wiki --cwd .` | Inject god-nodes Top-N into wiki/index.md (idempotent) |
 | `god-nodes --cwd .` | Top-N authority chunks by call-graph in-degree |
 | `shortest-path <a> <b>` | Shortest call-graph path between two symbols |

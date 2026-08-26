@@ -1,7 +1,9 @@
-"""Embedding generation via OpenAI API.
+"""Embedding generation via an OpenAI-shaped HTTP API.
 
-Uses text-embedding-3-small for lightweight, zero-local-resource embedding.
-No model loading, no GPU, no CPU overhead — just HTTP calls.
+Zero local resource usage — no model loading, no GPU, no CPU overhead,
+just HTTP calls. The concrete endpoint comes from ``providers.py``, so
+any OpenAI-compatible service (OpenAI, Gemini's /v1beta/openai surface)
+works without a second client.
 """
 
 from __future__ import annotations
@@ -11,10 +13,10 @@ import logging
 import os
 import urllib.request
 import urllib.error
-from pathlib import Path
 
 import numpy as np
 
+from hybrid_search import providers
 from hybrid_search.config import EmbeddingConfig
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,12 @@ OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings"
 DEFAULT_MODEL = "text-embedding-3-small"
 DEFAULT_DIM = 1536
 MAX_BATCH_TOKENS = 250_000  # OpenAI limit is ~300k; leave headroom
+
+# Env overrides — let an A/B run switch endpoint or model without editing
+# config.toml. See providers.PROVIDER_ENV for the provider itself.
+BASE_URL_ENV = "HYBRID_SEARCH_EMBED_BASE_URL"
+MODEL_ENV = "HYBRID_SEARCH_EMBED_MODEL"
+DIM_ENV = "HYBRID_SEARCH_EMBED_DIM"
 
 
 class _BatchTooLargeError(Exception):
@@ -36,11 +44,30 @@ class Embedder:
     def __init__(self, config: EmbeddingConfig, models_dir=None) -> None:
         self._config = config
         self._api_key: str | None = None
-        self._embedding_dim: int = DEFAULT_DIM
+        self._spec = providers.resolve(config.backend)
+        self._embed_url = (
+            os.environ.get(BASE_URL_ENV, "").rstrip("/") or self._spec.base_url
+        ) + "/embeddings"
+        self._model = _resolve_model(config, self._spec)
+        self._embedding_dim = _resolve_dim(config, self._spec)
+        # Texts dropped to the model's per-input ceiling since construction.
+        # Truncation is lossy and, on Gemini, silent — surfaced as one
+        # summary warning per run instead of a line per chunk.
+        self._truncated = 0
 
     @property
     def embedding_dim(self) -> int:
         return self._embedding_dim
+
+    @property
+    def fingerprint(self) -> str:
+        """Identity of the vector space this embedder produces.
+
+        Two embedders agreeing on width still produce incomparable
+        vectors when the model differs, so the stored index records this
+        and the search side refuses to mix spaces.
+        """
+        return f"{self._spec.name}:{self._model}:{self._embedding_dim}"
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
         """Embed a list of texts. Returns (N, dim) float32 array."""
@@ -56,17 +83,11 @@ class Embedder:
     def _get_api_key(self) -> str:
         if self._api_key:
             return self._api_key
-
-        # 1. Environment variable
-        key = os.environ.get("OPENAI_API_KEY", "")
-
-        # 2. .env.local in project root (walk up from cwd)
-        if not key:
-            key = _load_dotenv_key("OPENAI_API_KEY")
-
+        key = providers.api_key(self._spec)
         if not key:
             raise ValueError(
-                "OPENAI_API_KEY not found. Set it in environment or .env.local"
+                f"{self._spec.key_env} not found. Set it in environment "
+                f"or .env.local (embedding provider: {self._spec.name})"
             )
         self._api_key = key
         return key
@@ -77,7 +98,7 @@ class Embedder:
             return []
 
         api_key = self._get_api_key()
-        model = self._config.openai_model or DEFAULT_MODEL
+        model = self._model
         truncated = [self._truncate(t) for t in texts]
 
         # Try the full batch first; on 400 error, halve and retry recursively
@@ -86,8 +107,9 @@ class Embedder:
         except _BatchTooLargeError:
             if len(truncated) == 1:
                 # Single text still too large — truncate more aggressively
-                logger.warning("Single text too large, truncating to 4000 tokens")
-                truncated = [self._truncate(texts[0], max_tokens=4000)]
+                half = max(256, self._token_budget() // 2)
+                logger.warning("Single text too large, truncating to %d tokens", half)
+                truncated = [self._truncate(texts[0], max_tokens=half)]
                 return self._openai_embed_single_batch(truncated, model, api_key)
 
             mid = len(truncated) // 2
@@ -100,15 +122,17 @@ class Embedder:
         self, texts: list[str], model: str, api_key: str,
     ) -> list[list[float]]:
         """Send a single batch to OpenAI. Raises _BatchTooLargeError on 400."""
-        payload = json.dumps({
-            "model": model,
-            "input": texts,
-        }).encode("utf-8")
+        body: dict = {"model": model, "input": texts}
+        if self._spec.supports_dimensions:
+            # Gemini's default output is 3072-wide; asking for the index's
+            # width (MRL) is what keeps the on-disk layout unchanged.
+            body["dimensions"] = self._embedding_dim
+        payload = json.dumps(body).encode("utf-8")
 
         max_retries = 12
         for attempt in range(max_retries):
             req = urllib.request.Request(
-                OPENAI_EMBED_URL,
+                self._embed_url,
                 data=payload,
                 headers={
                     "Content-Type": "application/json",
@@ -137,25 +161,40 @@ class Embedder:
                     _time.sleep(wait)
                     continue
                 raise ConnectionError(
-                    f"OpenAI API error {e.code}: {body}"
+                    f"{self._spec.name} embeddings error {e.code}: {body}"
                 ) from e
             except urllib.error.URLError as e:
                 raise ConnectionError(
-                    f"OpenAI API not reachable: {e}"
+                    f"{self._spec.name} embeddings not reachable: {e}"
                 ) from e
-        raise ConnectionError("OpenAI API: max retries exhausted")
+        raise ConnectionError(
+            f"{self._spec.name} embeddings: max retries exhausted"
+        )
 
     _enc = None  # lazy-loaded tiktoken encoder
 
-    def _truncate(self, text: str, max_tokens: int = 8000) -> str:
-        """Truncate text to fit within OpenAI's 8192 token limit."""
+    def _token_budget(self) -> int:
+        """Per-input token ceiling, discounted for tokenizer mismatch.
+
+        Counting happens with tiktoken regardless of provider, so the raw
+        model limit is divided by the provider's measured skew. Erring low
+        costs a little tail text; erring high loses it invisibly on
+        providers that truncate without saying so.
+        """
+        limit = providers.input_limit(self._spec, self._model)
+        return max(256, int(limit / self._spec.tokenizer_skew))
+
+    def _truncate(self, text: str, max_tokens: int | None = None) -> str:
+        """Truncate ``text`` to the provider's per-input token ceiling."""
+        budget = max_tokens if max_tokens is not None else self._token_budget()
         if Embedder._enc is None:
             import tiktoken
             Embedder._enc = tiktoken.encoding_for_model("text-embedding-3-small")
         tokens = Embedder._enc.encode(text)
-        if len(tokens) <= max_tokens:
+        if len(tokens) <= budget:
             return text
-        return Embedder._enc.decode(tokens[:max_tokens])
+        self._truncated += 1
+        return Embedder._enc.decode(tokens[:budget])
 
     def _split_into_token_batches(self, texts: list[str]) -> list[list[str]]:
         """Split texts into batches respecting both count and token limits."""
@@ -197,24 +236,45 @@ class Embedder:
             if i < len(batches) - 1:
                 _time.sleep(0.2)
 
+        if self._truncated:
+            # Not a crash and not recoverable after the fact — but a silent
+            # drop would show up much later as "why is this code missing
+            # from search", so it gets said out loud exactly once.
+            logger.warning(
+                "%d text(s) exceeded the %s per-input limit (%d tokens) and "
+                "were truncated — their tails are not in the embedding",
+                self._truncated, self._spec.name, self._token_budget(),
+            )
+            self._truncated = 0
+
         embeddings = np.vstack(all_embeddings)
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms = np.clip(norms, a_min=1e-9, a_max=None)
         return (embeddings / norms).astype(np.float32)
 
 
-def _load_dotenv_key(key: str) -> str:
-    """Load a key from .env.local file, searching up from cwd."""
-    current = Path.cwd()
-    for _ in range(10):  # max 10 levels up
-        env_file = current / ".env.local"
-        if env_file.exists():
-            for line in env_file.read_text().splitlines():
-                line = line.strip()
-                if line.startswith(f"{key}="):
-                    return line.split("=", 1)[1].strip()
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-    return ""
+def _resolve_model(config: EmbeddingConfig, spec: providers.ProviderSpec) -> str:
+    """Embedding model name: env, then config, then the provider default.
+
+    ``openai_model`` carries a non-empty default, so it may only speak for
+    the OpenAI provider — otherwise switching backends would silently ask
+    Gemini for text-embedding-3-small.
+    """
+    env = os.environ.get(MODEL_ENV, "").strip()
+    if env:
+        return env
+    if spec.name == "openai":
+        return config.openai_model or spec.embed_model
+    return config.model or spec.embed_model
+
+
+def _resolve_dim(config: EmbeddingConfig, spec: providers.ProviderSpec) -> int:
+    """Embedding width: env, then config, then the provider default."""
+    env = os.environ.get(DIM_ENV, "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    return config.dimensions or spec.embed_dim
+
+
+# Kept as a module-level name: tests patch it, and translation.py imports it.
+_load_dotenv_key = providers.load_dotenv_key
