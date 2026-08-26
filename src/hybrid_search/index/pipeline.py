@@ -25,13 +25,17 @@ from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.module_synth import synthesize_modules
 from hybrid_search.index.modules import discover_modules
 from hybrid_search.index.scanner import (
-    ScanResult,
     compute_file_hash,
     detect_language,
     scan_project,
     scan_project_subset,
 )
 from hybrid_search.project import ProjectRegistry, project_hash
+from hybrid_search.providers import (
+    EMBEDDING_FINGERPRINT_KEY,
+    LEGACY_FINGERPRINT,
+    vector_space_matches,
+)
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.vector import VectorEngine, VectorMigrationError
 from hybrid_search.storage.db import ChunkRecord, FileRecord, StoreDB
@@ -85,6 +89,90 @@ class _ConsistencyMismatchError(RuntimeError):
 
 # Type for progress callbacks: (current_file_index, total_files, file_path)
 ProgressCallback = Callable[[int, int, str], None]
+
+
+class _VectorReuse:
+    """Serve vectors from the previous index instead of re-embedding them.
+
+    A forced rebuild used to re-embed every chunk unconditionally. Most
+    rebuilds are not triggered by content changing — they are triggered by
+    *our* code changing (chunking, module discovery, naming), which leaves
+    the embedded text byte-identical. Three rebuilds of one project in a
+    single day re-embedded the same ~16k chunks each time and bought
+    nothing with it.
+
+    Vectors are keyed by a hash of the exact text that produced them, so a
+    hit is safe by construction: same text, same model, same vector. The
+    embedding fingerprint is checked first — a different model means the
+    old vectors live in another space and none of them may be reused.
+    """
+
+    def __init__(self, db, vectors, index: dict[str, str]) -> None:
+        self._db = db
+        self._vectors = vectors
+        self._index = index
+        self.hits = 0
+        self.misses = 0
+
+    @staticmethod
+    def _key(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def open(cls, previous_dir: Path, embedder, project_id: str) -> "_VectorReuse | None":
+        from hybrid_search.providers import EMBEDDING_FINGERPRINT_KEY, vector_space_matches
+
+        paths = IndexPaths(previous_dir)
+        if not paths.store_db.exists():
+            return None
+        db = vectors = None
+        try:
+            db = StoreDB(paths.store_db)
+            fingerprint = getattr(embedder, "fingerprint", None)
+            if not isinstance(fingerprint, str) or not vector_space_matches(
+                db.get_meta(EMBEDDING_FINGERPRINT_KEY), fingerprint
+            ):
+                db.close()
+                return None
+            vectors = VectorEngine(paths.vectors_dir, embedder.embedding_dim)
+            if vectors.migration_failed:
+                db.close()
+                return None
+            index: dict[str, str] = {}
+            for chunk in db.get_chunks_by_project(project_id):
+                text = getattr(chunk, "embedding_input", None)
+                if text:
+                    index[cls._key(text)] = chunk.id
+            if not index:
+                db.close()
+                return None
+            return cls(db, vectors, index)
+        except Exception:
+            logger.debug("vector reuse unavailable", exc_info=True)
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+            return None
+
+    def get(self, text: str) -> "np.ndarray | None":
+        chunk_id = self._index.get(self._key(text))
+        if chunk_id is None:
+            self.misses += 1
+            return None
+        vec = self._vectors.get_vector(chunk_id)
+        if vec is None:
+            self.misses += 1
+            return None
+        self.hits += 1
+        return vec
+
+    def close(self) -> None:
+        try:
+            self._db.close()
+        except Exception:
+            pass
 
 
 class IndexingPipeline:
@@ -196,6 +284,8 @@ class IndexingPipeline:
         deleted_paths: list[str] | None,
         on_progress: ProgressCallback | None,
         update_registry_stats: bool,
+        full_rebuild: bool = False,
+        reuse_from: Path | None = None,
     ) -> IndexingResult:
         idx_paths = IndexPaths(project_dir)
         idx_paths.ensure_dirs()
@@ -204,6 +294,12 @@ class IndexingPipeline:
         vector_engine = VectorEngine(idx_paths.vectors_dir, self._embedder.embedding_dim)
         bm25_engine = BM25Engine(idx_paths.tantivy_dir)
         result = IndexingResult(project_id=project_id, project_name=project_name)
+
+        self._reuse = (
+            _VectorReuse.open(reuse_from, self._embedder, project_id)
+            if reuse_from is not None
+            else None
+        )
 
         try:
             if vector_engine.migration_failed:
@@ -229,6 +325,17 @@ class IndexingPipeline:
             result.files_added = len(scan.added)
             result.files_changed = len(scan.changed)
             result.files_deleted = len(scan.deleted)
+
+            # Record which vector space this index is written in, so a
+            # later provider or model change is detected instead of
+            # silently comparing cosines across incompatible spaces.
+            #
+            # ONLY a full rebuild may claim it. An incremental pass embeds
+            # the changed files and leaves every other vector untouched, so
+            # stamping there would relabel a mixed index as clean and switch
+            # the very guard that protects it back on.
+            # Bookkeeping only — never the reason an index fails to build.
+            self._record_vector_space(db, full_rebuild)
 
             self._process_deletions(db, vector_engine, bm25_engine, project_id, scan.deleted)
 
@@ -311,6 +418,18 @@ class IndexingPipeline:
                 self._registry.update_stats(project_id, file_count, chunk_count)
             return result
         finally:
+            if getattr(self, "_reuse", None) is not None:
+                total = self._reuse.hits + self._reuse.misses
+                logger.info(
+                    "Vector reuse: %d of %d embeddings served from the previous "
+                    "index (unchanged text, same model)", self._reuse.hits, total,
+                )
+                print(
+                    f"Vector reuse: {self._reuse.hits:,}/{total:,} embeddings "
+                    f"reused (unchanged text) — {self._reuse.misses:,} newly embedded"
+                )
+                self._reuse.close()
+                self._reuse = None
             db.close()
 
     def _rebuild_project_atomically(
@@ -338,6 +457,11 @@ class IndexingPipeline:
                 deleted_paths=None,
                 on_progress=on_progress,
                 update_registry_stats=False,
+                full_rebuild=True,
+                # The live index is untouched until the swap below, so its
+                # vectors are still readable — and for a rebuild driven by
+                # a code change most of them are still correct.
+                reuse_from=project_dir,
             )
             gc.collect()
             self._swap_project_dirs(project_dir, rebuilding_dir, backup_dir)
@@ -347,6 +471,30 @@ class IndexingPipeline:
         except Exception:
             shutil.rmtree(rebuilding_dir, ignore_errors=True)
             raise
+
+    def _record_vector_space(self, db, full_rebuild: bool) -> None:
+        """Stamp the index's vector space, or warn that it is now mixed."""
+        fingerprint = getattr(self._embedder, "fingerprint", None)
+        if not isinstance(fingerprint, str) or not fingerprint:
+            return
+        try:
+            if full_rebuild:
+                db.set_meta(EMBEDDING_FINGERPRINT_KEY, fingerprint)
+                return
+            stored = db.get_meta(EMBEDDING_FINGERPRINT_KEY)
+            if not vector_space_matches(stored, fingerprint):
+                # The marker is deliberately left alone: while it disagrees
+                # with the current model the search side keeps the vector
+                # lane off, which is the honest state for an index whose
+                # vectors now come from two different models.
+                logger.warning(
+                    "Incremental index wrote %s vectors into an index built "
+                    "as %s — the vector lane stays disabled until "
+                    "`index --force` rebuilds it.",
+                    fingerprint, stored or LEGACY_FINGERPRINT,
+                )
+        except Exception:  # pragma: no cover
+            logger.debug("embedding fingerprint not recorded", exc_info=True)
 
     def _recover_atomic_rebuild(self, project_dir: Path) -> None:
         rebuilding_dir = project_dir.parent / f"{project_dir.name}.rebuilding"
@@ -433,6 +581,33 @@ class IndexingPipeline:
 
     # ── Pass 2: batch embed + store ──
 
+    def _embed_with_reuse(self, texts: list[str]) -> np.ndarray:
+        """Embed ``texts``, serving unchanged ones from the previous index."""
+        reuse = getattr(self, "_reuse", None)
+        if reuse is None or not texts:
+            return self._embedder.embed_texts(texts)
+
+        cached: dict[int, np.ndarray] = {}
+        todo: list[str] = []
+        todo_positions: list[int] = []
+        for i, text in enumerate(texts):
+            vec = reuse.get(text)
+            if vec is None:
+                todo.append(text)
+                todo_positions.append(i)
+            else:
+                cached[i] = vec
+        if not todo:
+            return np.stack([cached[i] for i in range(len(texts))])
+
+        fresh = self._embedder.embed_texts(todo)
+        out = np.empty((len(texts), fresh.shape[1]), dtype=np.float32)
+        for i, vec in cached.items():
+            out[i] = vec
+        for slot, pos in enumerate(todo_positions):
+            out[pos] = fresh[slot]
+        return out
+
     def _flush_pending(
         self,
         pending: list[_FileChunkResult],
@@ -449,8 +624,10 @@ class IndexingPipeline:
             for chunk in fcr.chunks:
                 all_texts.append(chunk.embedding_input)
 
-        # Single batched embedding call across all pending files
-        all_embeddings = self._embedder.embed_texts(all_texts)
+        # Single batched embedding call across all pending files — minus
+        # anything the previous index already holds for the exact same
+        # text under the same model.
+        all_embeddings = self._embed_with_reuse(all_texts)
 
         # Distribute embeddings back to files and write to stores
         embed_offset = 0

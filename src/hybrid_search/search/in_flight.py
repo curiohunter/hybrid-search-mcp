@@ -39,6 +39,9 @@ class InFlightFile:
     content: str
     content_hash: str
     truncated: bool = False
+    # Index-equivalent content fingerprint (scanner.compute_content_hash)
+    # of the live file — anchor-evidence provenance for overlay results.
+    index_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,7 +122,7 @@ def collect_in_flight_overlay(
         loaded = _read_text_window(abs_path, max_bytes=max_bytes_per_file)
         if loaded is None:
             continue
-        content, raw_hash, truncated = loaded
+        content, raw_hash, truncated, index_hash = loaded
         files.append(
             InFlightFile(
                 relative_path=rel_path,
@@ -127,6 +130,7 @@ def collect_in_flight_overlay(
                 content=content,
                 content_hash=raw_hash,
                 truncated=truncated,
+                index_hash=index_hash,
             )
         )
 
@@ -185,6 +189,7 @@ def score_in_flight_files(
                 content=item.content[:CONTENT_CHARS],
                 snippet=snippet,
                 trust_meta="[in-flight dirty worktree; not indexed]",
+                indexed_file_hash=item.index_hash,
             )
         )
     return results
@@ -231,6 +236,14 @@ def _read_text_window(
         return None
 
     raw_hash = hashlib.sha256(raw).hexdigest()
+    # Index-equivalent fingerprint of the live content — same function
+    # the scanner stores in files.file_hash, so anchor evidence built
+    # from an in-flight result compares cleanly against HEAD later.
+    from hybrid_search.index.scanner import compute_content_hash
+
+    index_hash = compute_content_hash(
+        raw, is_markdown=file_path.suffix.lower() == ".md",
+    )
     truncated = len(raw) > max_bytes
     window = raw[:max_bytes]
     try:
@@ -239,7 +252,7 @@ def _read_text_window(
         text = window.decode("utf-8", errors="ignore")
     if not text.strip():
         return None
-    return text, raw_hash, truncated
+    return text, raw_hash, truncated, index_hash
 
 
 def _tokens(text: str) -> set[str]:

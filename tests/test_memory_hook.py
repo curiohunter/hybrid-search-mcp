@@ -700,3 +700,67 @@ class TestStopHook:
         hooks.run_hook(json.dumps(event))
         after = list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
         assert len(after) == len(before), "dedup should prevent double-save"
+
+
+class TestAnswerExcerptCapturesConclusion:
+    """F4′ (2026-07-26 Mac-mini E2E): a tool-using turn interleaves
+    assistant text with tool_result records that ride in USER-role
+    records. The walk must not stop at the first tool result, and the
+    excerpt must carry the CONCLUSION (tail), not just the pre-tool
+    preamble."""
+
+    def _records(self):
+        return [
+            {"type": "user",
+             "message": {"role": "user",
+                         "content": "payssam 정산 어디서 처리해?"}},
+            {"type": "assistant",
+             "message": {"content": [
+                 {"type": "text",
+                  "text": "탐색형 질문이라 mcp__hybrid-search__hybrid_search를 먼저 호출합니다"},
+                 {"type": "tool_use", "name": "mcp__hybrid-search__hybrid_search"},
+             ]}},
+            # tool_result: user-role record WITHOUT genuine prompt text
+            {"type": "user",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "content": "[...검색 결과...]"},
+             ]}},
+            {"type": "assistant",
+             "message": {"content": [
+                 {"type": "text",
+                  "text": "정산 연동은 lib/payssam-client.ts와 services/payssam-service.ts에서 처리됩니다."},
+             ]}},
+        ]
+
+    def test_walk_survives_tool_results_and_keeps_conclusion(self) -> None:
+        from hybrid_search.hooks import _find_last_turn
+
+        prompt, tools, chars, excerpt = _find_last_turn(self._records())
+        assert prompt == "payssam 정산 어디서 처리해?"
+        assert "mcp__hybrid-search__hybrid_search" in tools
+        assert "payssam-client.ts" in excerpt, "conclusion missing (F4′)"
+        # Both fit in the 4k budget: preamble kept, conclusion last.
+        assert excerpt.rstrip().endswith("처리됩니다.")
+        assert chars > 89  # full turn counted, not just the preamble
+
+    def test_tail_bias_under_tight_budget(self, monkeypatch) -> None:
+        import hybrid_search.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_ANSWER_EXCERPT_COLLECT_MAX_CHARS", 40)
+        _, _, _, excerpt = hooks_mod._find_last_turn(self._records())
+        # Budget too small for both → the conclusion wins, preamble drops.
+        assert "payssam-client.ts" in excerpt or "처리됩니다" in excerpt
+        assert "먼저 호출합니다" not in excerpt
+
+    def test_genuine_next_prompt_still_ends_the_turn(self) -> None:
+        from hybrid_search.hooks import _find_last_turn
+
+        records = self._records() + [
+            {"type": "user",
+             "message": {"role": "user", "content": "다음 질문이야"}},
+            {"type": "assistant",
+             "message": {"content": [{"type": "text", "text": "다음 답"}]}},
+        ]
+        prompt, _, _, excerpt = _find_last_turn(records)
+        assert prompt == "다음 질문이야"
+        assert excerpt == "다음 답"

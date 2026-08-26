@@ -20,7 +20,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hybrid_search.config import load_config
+from hybrid_search.config import Config, load_config
 from hybrid_search.index.conversation_indexer import ConversationIndexer
 from hybrid_search.index.dag import generate_all_wiki_pages
 from hybrid_search.index.embedder import Embedder
@@ -38,6 +38,7 @@ from hybrid_search.memory.routing_template import (
     apply_update,
     claude_block,
 )
+from hybrid_search.memory_lane import MEMORY_LANE_PREFIXES
 
 # M3: Post-commit hook captures ``git diff --name-status HEAD~1 HEAD`` at the
 # exact commit moment and exports it via this env var. ``cmd_reindex`` then
@@ -54,6 +55,20 @@ from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
 
 logger = logging.getLogger("hybrid_search.cli")
+
+
+def _dist_version() -> str:
+    """Installed distribution version (F8 — `--version` instead of a
+    46-line usage dump). Falls back to the module constant in editable/
+    source checkouts."""
+    try:
+        from importlib.metadata import version
+
+        return version("memory-layer-mcp")
+    except Exception:
+        from hybrid_search import __version__
+
+        return f"{__version__} (source)"
 
 
 def _load_gold_queries(path: Path) -> list[dict]:
@@ -242,8 +257,42 @@ def _write_gap_flag(cwd: str, files_added: int) -> None:
     print(f"Wiki gaps: {files_added} new files flagged → {gap_file}")
 
 
+# A full rebuild below this is not worth interrupting anyone over.
+_COST_PROMPT_USD = 0.50
+
+
+def _confirm_rebuild_cost(args: argparse.Namespace, config: Config, project_path: str) -> bool:
+    """Show what a forced rebuild will re-embed, and ask when it is not cheap.
+
+    Only forced rebuilds re-embed the whole corpus; delta runs touch a
+    handful of files and are hook-driven, so they are never interrupted.
+    """
+    from hybrid_search.cost import estimate_rebuild
+
+    estimate = estimate_rebuild(Path(project_path), config)
+    if estimate is None:
+        return True
+    print(f"Full rebuild: {estimate.render()}")
+    if estimate.usd is None or estimate.usd < _COST_PROMPT_USD:
+        return True
+    if getattr(args, "yes", False):
+        return True
+    if not sys.stdin.isatty():
+        # Hooks, CI and scripts must not block on a prompt — the estimate
+        # above still lands in their logs.
+        return True
+    answer = input("Continue? [y/N] ").strip().lower()
+    if answer in ("y", "yes"):
+        return True
+    print("Cancelled — nothing was re-embedded.")
+    return False
+
+
 def cmd_reindex(args: argparse.Namespace) -> None:
     """Delta reindex the project at cwd."""
+    from hybrid_search.project import project_hash
+    from hybrid_search.storage.indexes import get_project_dir
+
     config = load_config()
     if getattr(args, "include_content", False):
         config = replace(
@@ -264,6 +313,46 @@ def cmd_reindex(args: argparse.Namespace) -> None:
         project_path = cwd
         project_name = Path(cwd).name
 
+    if getattr(args, "force", False) and not _confirm_rebuild_cost(
+        args, config, project_path
+    ):
+        return
+
+    project_dir = get_project_dir(
+        config.projects_dir, project_hash(str(Path(project_path).resolve()))
+    )
+    lock_path = _writer_lock_path(project_dir)
+    holder = _lock_holder(lock_path) if lock_path.exists() else None
+    if holder is not None:
+        print(
+            f"Another indexer is already writing this project (PID {holder}). "
+            f"Nothing was changed — re-run once it finishes."
+        )
+        raise SystemExit(1)
+    if not _acquire_conv_lock(lock_path):
+        print("Could not take the index writer lock; nothing was changed.")
+        raise SystemExit(1)
+
+    try:
+        _reindex_locked(
+            args, config, registry, project_path, project_name, cwd,
+        )
+    finally:
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
+def _reindex_locked(
+    args: argparse.Namespace,
+    config: Config,
+    registry: ProjectRegistry,
+    project_path: str,
+    project_name: str,
+    cwd: str,
+) -> None:
+    """The reindex body, run while holding the project's writer lock."""
     embedder = Embedder(config.embedding, config.models_dir)
     pipeline = IndexingPipeline(config, registry, embedder)
     changed_paths: list[str] | None = None
@@ -424,6 +513,14 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     # v0.4.0 — Memory integrity pass: stale qa, semantic dedup, archive TTL.
     _run_memory_integrity(config, registry, project_name, Path(project_path))
 
+    # R1 fix — corpus-wide qa supersession mapping. Runs after integrity so
+    # freshly-archived stale qa doesn't participate in grouping.
+    _run_qa_supersession(config, registry, project_name)
+
+    # P1-2 — commit-aware invalidation: qa anchored to files changed by
+    # HEAD gets flagged needs_revalidation.
+    _run_qa_revalidation(config, registry, project_name, Path(project_path))
+
     if result.errors:
         print(f"Errors: {len(result.errors)}")
         for err in result.errors[:5]:
@@ -553,6 +650,110 @@ def _run_memory_integrity(
         print("Memory integrity: " + "; ".join(parts) + ".")
 
 
+def _run_qa_supersession(
+    config: Config,
+    registry: ProjectRegistry,
+    project_name: str,
+) -> None:
+    """Recompute the index-time qa supersession mapping (R1 fix).
+
+    Groups the whole qa_log corpus with the calibrated topic matcher and
+    persists "stale chunk -> newest same-topic chunk" so query-time
+    retrieval can splice a correction next to a stale verbatim hit it
+    surfaced on its own. Never blocks a reindex.
+    """
+    try:
+        from hybrid_search.memory.supersession import compute_supersession
+
+        pinfo = registry.get_by_name(project_name)
+        if pinfo is None:
+            return
+        idx = IndexPaths(get_project_dir(config.projects_dir, pinfo.id))
+        if not idx.store_db.exists():
+            return
+        db = StoreDB(idx.store_db)
+        try:
+            qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
+            entries = [(c.id, c.content or "") for c in qa_chunks]
+            mapping = compute_supersession(entries)
+            with db.transaction() as conn:
+                db.replace_qa_supersession(conn, pinfo.id, mapping)
+        finally:
+            db.close()
+        if mapping:
+            print(f"QA supersession: {len(mapping)} stale entr(ies) mapped.")
+    except Exception as exc:  # never block reindex on the mapping pass
+        logger.debug("qa supersession pass skipped: %s", exc)
+
+
+def _run_qa_revalidation(
+    config: Config,
+    registry: ProjectRegistry,
+    project_name: str,
+    project_path: Path,
+) -> None:
+    """Recompute the needs_revalidation projection against current HEAD.
+
+    P1-2 v2 (round-2 lifecycle contract): the flag set is a pure function
+    of (HEAD, qa corpus) — recomputed from scratch and swapped atomically
+    every pass. No cursor, no commit walk: rebuild restores exactly the
+    flags that still hold, checkouts can't leak flags across branches,
+    reverts clear flags, and there is no per-commit failure to skip.
+    No-op outside git; never blocks a reindex.
+    """
+    try:
+        from hybrid_search.memory.revalidation import (
+            project_revalidations,
+            replace_projection_guarded,
+        )
+
+        pinfo = registry.get_by_name(project_name)
+        if pinfo is None:
+            return
+        idx = IndexPaths(get_project_dir(config.projects_dir, pinfo.id))
+        if not idx.store_db.exists():
+            return
+
+        db = StoreDB(idx.store_db)
+        try:
+            qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
+            entries = [(c.id, c.content or "") for c in qa_chunks]
+            result = project_revalidations(
+                project_path, entries, project=pinfo.name,
+            )
+            if result.head is None:
+                return  # not a git repo / no commits — keep prior state
+            if not result.complete:
+                # A transient git failure means flags may be MISSING from
+                # this projection — replacing would silently un-flag.
+                # Keep the previous projection; the next reindex retries.
+                logger.warning(
+                    "qa revalidation projection incomplete — keeping "
+                    "previous projection (will retry next reindex)"
+                )
+                return
+            # CAS: HEAD re-verified INSIDE the transaction, immediately
+            # before and after the write — a post-write mismatch rolls
+            # back, so a projection for the wrong HEAD is never
+            # committed. Discarded results cost nothing: the checkout/
+            # commit that moved HEAD triggers the next pass anyway.
+            replaced = replace_projection_guarded(
+                db, pinfo.id, result, project_path,
+            )
+            if not replaced:
+                return
+        finally:
+            db.close()
+        if result.rows:
+            print(
+                f"QA revalidation: {len(result.rows)} memor"
+                f"{'y' if len(result.rows) == 1 else 'ies'} need revalidation "
+                f"(projection @ {result.head[:7]})."
+            )
+    except Exception as exc:  # never block reindex on the flagging pass
+        logger.debug("qa revalidation pass skipped: %s", exc)
+
+
 def _run_wiki_cleanup(project_path: Path) -> None:
     """Delete wiki pages whose source files are no longer in the DB.
 
@@ -570,6 +771,8 @@ def _run_wiki_cleanup(project_path: Path) -> None:
         return
 
     result = wiki_cleanup.cleanup_orphans(wiki_dir, indexed)
+    if result.refused:
+        print(f"Wiki cleanup: SKIPPED — {result.refused}")
     if result.deleted:
         print(f"Wiki cleanup: removed {len(result.deleted)} orphan page(s).")
     if result.skipped_errors:
@@ -1240,15 +1443,72 @@ def _check_global_status() -> None:
     else:
         print(f"  ✗ Skills directory missing        ({skills_dir})")
 
-    # API key
-    import os
-    api_ok = bool(os.environ.get("OPENAI_API_KEY"))
+    # API key — for whichever provider is actually configured, not a
+    # hard-coded OPENAI_API_KEY. Reporting the wrong variable sends the
+    # reader to fix a key the embedder never reads.
+    from hybrid_search import providers
+    try:
+        backend = load_config().embedding.backend
+    except Exception:
+        backend = None
+    spec = providers.resolve(backend)
+    api_ok = bool(providers.api_key(spec))
     if not api_ok:
         src_root = Path(__file__).resolve().parents[2]
         env_file = src_root / ".env.local"
-        if env_file.exists() and "OPENAI_API_KEY" in env_file.read_text():
+        if env_file.exists() and spec.key_env in env_file.read_text():
             api_ok = True
-    print(f"  {_status_mark(api_ok)} OPENAI_API_KEY configured     ({'env or .env.local' if api_ok else 'MISSING'})")
+    label = f"{spec.key_env} configured"
+    print(f"  {_status_mark(api_ok)} {label:<30} ({'env or .env.local' if api_ok else 'MISSING'})")
+
+
+# An index holding almost nothing looks, from the outside, exactly like bad
+# search quality — three projects here had silently collapsed to a few
+# percent of their files and nothing said so. The bar is deliberately low:
+# measured coverage on healthy indexes ranges 0.31-0.99 (the scanner walks
+# files the pipeline later drops for language, size, or content rules), so
+# anything stricter reports exclusions as faults. This catches collapse,
+# not incompleteness.
+_COVERAGE_ALARM = 0.25
+
+
+# Memory-lane trees are written by the memory layer, not the scanner, so
+# they inflate the DB side of the comparison. Both sides must count the
+# same thing.
+_MEMORY_LANE_PREFIXES = MEMORY_LANE_PREFIXES
+
+
+def _print_index_coverage(config: Config, pinfo, project_path: Path) -> None:
+    """Compare indexed code files against what the scanner can see on disk."""
+    import sqlite3
+
+    from hybrid_search.index.scanner import count_indexable_files
+    from hybrid_search.storage.indexes import get_project_dir
+
+    try:
+        on_disk = count_indexable_files(project_path, config.indexing)
+        db_path = get_project_dir(config.projects_dir, pinfo.id) / "store.db"
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            paths = [r[0] for r in conn.execute("SELECT relative_path FROM files")]
+        finally:
+            conn.close()
+    except Exception:
+        return  # a diagnostic must never be the thing that fails
+    if on_disk < 20:
+        return  # too small for the ratio to mean anything
+
+    indexed = sum(1 for x in paths if not x.startswith(_MEMORY_LANE_PREFIXES))
+    ratio = indexed / on_disk
+    if ratio >= _COVERAGE_ALARM:
+        print(f"  ✓ Index coverage:               {indexed}/{on_disk} scannable files")
+        return
+    print(
+        f"  ⚠ Index coverage:               {indexed}/{on_disk} scannable files "
+        f"({ratio:.0%}) — far below what the scanner sees. This usually means "
+        f"an interrupted or failed index, not a small project. "
+        f"Run `hybrid-search-mcp index . --force`."
+    )
 
 
 def _check_project_status(project_path: Path) -> None:
@@ -1271,6 +1531,7 @@ def _check_project_status(project_path: Path) -> None:
 
     # Index
     print(f"  ✓ Indexed as {name!r}: {pinfo.file_count} files, {pinfo.chunk_count} chunks")
+    _print_index_coverage(config, pinfo, project_path)
     if pinfo.last_indexed_at:
         print(f"    Last indexed: {pinfo.last_indexed_at}")
 
@@ -2017,6 +2278,7 @@ def cmd_generate_wiki_plan(args: argparse.Namespace) -> None:
 def cmd_verify_wiki(args: argparse.Namespace) -> None:
     """Verify wiki coverage against the module tree."""
     import json as json_mod
+
     from hybrid_search.index.dag import generate_wiki_plan
     from hybrid_search.storage.wiki import normalize_query
 
@@ -2389,6 +2651,7 @@ def cmd_verify_synthesis(args: argparse.Namespace) -> None:
     Reports verified/failed/removed counts per page and overall health.
     """
     import json as json_mod
+
     from hybrid_search.index.synthesizer import verify_references, verify_symbols
 
     config = load_config()
@@ -3328,15 +3591,30 @@ def cmd_install_memory_hook(args: argparse.Namespace) -> None:
 
 
 def cmd_install_codex_hook(args: argparse.Namespace) -> None:
-    """Install Codex lifecycle hooks and MCP config."""
-    from hybrid_search import codex_hooks
+    """Install Codex lifecycle hooks and MCP config.
+
+    P0-3: also writes the ``.codex-plugin/plugin.json`` manifest so
+    plugin-aware Codex versions get hooks + MCP from one file. This
+    command remains the compatibility alias; ``setup --codex`` is the
+    first-class path (install + smoke test).
+    """
+    from hybrid_search import codex_hooks, codex_plugin
 
     project_root = Path(args.cwd).resolve()
-    result = codex_hooks.install_codex_hook(
-        project_root,
-        user=bool(getattr(args, "user", False)),
-        dry_run=bool(getattr(args, "dry_run", False)),
-    )
+    user = bool(getattr(args, "user", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    if dry_run:
+        result = codex_hooks.install_codex_hook(
+            project_root, user=user, dry_run=True,
+        )
+    else:
+        combined = codex_plugin.install_codex_plugin(project_root, user=user)
+        result = dict(combined["legacy"])
+        result["status"] = combined["status"]
+        print(
+            f"Plugin manifest: {combined['manifest_path']}"
+            + (" (written)" if combined["manifest_changed"] else " (unchanged)")
+        )
     scope = "user" if result.get("user") else "project"
     if result["status"] == "dry-run":
         print(
@@ -3376,6 +3654,7 @@ def cmd_qa_stats(args: argparse.Namespace) -> None:
     until TTL expires).
     """
     from collections import Counter
+
     from hybrid_search.memory import integrity, reader
 
     root = _resolve_qa_root(args)
@@ -3645,7 +3924,42 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     root = _resolve_memory_root(args)
     if root is None:
         sys.exit(1)
+    if getattr(args, "codex", False):
+        _run_codex_smoke(root)
+        return
     _print_doctor_report(_memory_health(root))
+
+
+def _run_codex_smoke(project_root: Path) -> None:
+    """P0-3 config/handler smoke — NOT an install E2E (see CX-T2/T3)."""
+    from hybrid_search import codex_plugin
+
+    checks = codex_plugin.smoke_test(project_root)
+    print("Codex config/handler smoke")
+    print()
+    failed = 0
+    skipped = 0
+    for c in checks:
+        if getattr(c, "skipped", False):
+            mark = "SKIP"
+            skipped += 1
+        elif c.ok:
+            mark = "PASS"
+        else:
+            mark = "FAIL"
+            failed += 1
+        print(f"  [{mark}] {c.name}: {c.detail}")
+    print()
+    if failed:
+        print(f"{failed} check(s) failed. Run `hybrid-search-mcp setup --codex --cwd .` "
+              "then restart Codex in this project.")
+        sys.exit(1)
+    passed = len(checks) - failed - skipped
+    print(f"Config/handler smoke green ({passed} pass"
+          + (f", {skipped} skip" if skipped else "") + ").")
+    print("Note: this verifies configuration and handlers, not a live install — "
+          "the full E2E (subprocess hook, MCP handshake, cross-agent recall) "
+          "is a separate release gate.")
 
 
 def cmd_memory_refresh(args: argparse.Namespace) -> None:
@@ -4108,24 +4422,56 @@ def cmd_index(args: argparse.Namespace) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Whether ``pid`` is a running process.
+
+    ``os.kill(pid, 0)`` distinguishes two failures that must not be
+    conflated: ProcessLookupError means the process is gone, while
+    PermissionError means it is very much alive and simply owned by
+    someone else. Treating the latter as dead lets a lock be stolen from
+    a running indexer.
+    """
     try:
         os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
         return True
     except OSError:
         return False
+    return True
+
+
+def _lock_holder(lock_path: Path) -> int | None:
+    """PID currently holding ``lock_path``, or None if free/stale."""
+    try:
+        holder = int(lock_path.read_text().strip())
+    except (ValueError, OSError):
+        return None
+    if holder != os.getpid() and _pid_alive(holder):
+        return holder
+    return None
+
+
+def _writer_lock_path(project_dir: Path) -> Path:
+    """One lock per project index, shared by every writing command.
+
+    Tantivy allows a single IndexWriter per directory. Conversation
+    indexing took a PID lock for that reason; `index` and `reindex` never
+    did, and the `.reindex.lock` the git hook writes is only read by the
+    hook's own shell wrapper. So a post-commit reindex and a manual
+    `index --force` would start together and the loser died partway
+    through with "Failed to acquire Lockfile", leaving the run aborted.
+    All writers now queue on this one.
+    """
+    return project_dir / ".writer.lock"
 
 
 def _acquire_conv_lock(lock_path: Path) -> bool:
-    """Best-effort PID lock so concurrent conv-index runs don't clash on the
+    """Best-effort PID lock so concurrent index runs don't clash on the
     Tantivy/USearch writers. Returns False when another live run holds it."""
     try:
-        if lock_path.exists():
-            try:
-                holder = int(lock_path.read_text().strip())
-            except (ValueError, OSError):
-                holder = None
-            if holder and holder != os.getpid() and _pid_alive(holder):
-                return False
+        if lock_path.exists() and _lock_holder(lock_path) is not None:
+            return False
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(str(os.getpid()))
         return True
@@ -4267,6 +4613,7 @@ def _md_files(path: Path) -> list[Path]:
 def cmd_serve(_args: argparse.Namespace) -> None:
     """Start MCP server over stdio (for Claude Code / MCP clients)."""
     import asyncio
+
     from hybrid_search.server import _run_server
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -4281,6 +4628,28 @@ def cmd_setup(args: argparse.Namespace) -> None:
     project_path = Path(getattr(args, "cwd", ".")).resolve()
     dry_run = bool(getattr(args, "dry_run", False))
     force = bool(getattr(args, "force", False))
+
+    # P0-3 — first-class Codex path: manifest + hooks + MCP + smoke test
+    # in one command. The Claude side is the plain `setup`; the goal is
+    # "both agents connected in five minutes", one command each.
+    if getattr(args, "codex", False):
+        from hybrid_search import codex_plugin
+
+        if dry_run:
+            print(f"Would write {codex_plugin.manifest_path(project_path)} "
+                  "plus Codex hooks/config, then run the smoke test.")
+            return
+        result = codex_plugin.install_codex_plugin(project_path, force=force)
+        print(
+            f"Plugin manifest: {result['manifest_path']}"
+            + (" (written)" if result["manifest_changed"] else " (unchanged)")
+        )
+        legacy = result["legacy"]
+        print(f"Hooks: {legacy['hooks_path']}")
+        print(f"Config: {legacy['config_path']}")
+        print()
+        _run_codex_smoke(project_path)
+        return
 
     if dry_run:
         try:
@@ -4514,7 +4883,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
         return
 
     try:
-        from hybrid_search import codex_hooks, hooks as memory_hooks
+        from hybrid_search import codex_hooks
+        from hybrid_search import hooks as memory_hooks
 
         project_settings = project_path / ".claude" / "settings.local.json"
         mem_result = memory_hooks.install_memory_hook(project_settings)
@@ -4700,6 +5070,19 @@ def cmd_teardown(args: argparse.Namespace) -> None:
         _save_skill_manifest(skills_dst, manifest)
     else:
         (skills_dst / _SKILL_MANIFEST_NAME).unlink(missing_ok=True)
+
+    # P0-3 — user-scoped Codex plugin manifest is global surface too.
+    # Project-scoped .codex-plugin/ stays, same policy as .codex/hooks.json.
+    from hybrid_search import codex_plugin as _codex_plugin
+
+    user_manifest = _codex_plugin.manifest_path(Path("."), user=True)
+    if user_manifest.exists():
+        user_manifest.unlink()
+        try:
+            user_manifest.parent.rmdir()
+        except OSError:
+            pass
+        removed.append(f"Codex plugin manifest ({user_manifest})")
 
     if removed:
         for item in removed:
@@ -4957,6 +5340,9 @@ def main() -> None:
         prog="hybrid-search-mcp",
         description="Hybrid BM25 + Vector search for codebases",
     )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {_dist_version()}",
+    )
     sub = parser.add_subparsers(dest="command")
 
     # ── Primary commands (standalone usage) ──
@@ -4964,6 +5350,10 @@ def main() -> None:
     p_index.add_argument("path", nargs="?", default=".", help="Project directory (default: .)")
     p_index.add_argument("--force", action="store_true", help="Force full reindex")
     p_index.add_argument("--wiki", action="store_true", help="Auto-generate wiki after index")
+    p_index.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip the cost confirmation on a full rebuild",
+    )
 
     p_conv = sub.add_parser(
         "index-conversations",
@@ -5011,6 +5401,11 @@ def main() -> None:
         action="store_true",
         help="Register only the global surface (MCP, hooks, skills); skip project files",
     )
+    p_setup.add_argument(
+        "--codex",
+        action="store_true",
+        help="Codex side: write .codex-plugin manifest + hooks + MCP, then smoke test",
+    )
 
     sub.add_parser(
         "teardown",
@@ -5020,6 +5415,11 @@ def main() -> None:
     p_doctor = sub.add_parser("doctor", help="Diagnose Memory Layer setup and corpus health")
     p_doctor.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
     p_doctor.add_argument("--project", help="Project name (overrides --cwd)")
+    p_doctor.add_argument(
+        "--codex",
+        action="store_true",
+        help="Run the Codex smoke test: hooks, Stop-event roundtrip, MCP, shared root",
+    )
 
     p_maintain = sub.add_parser("maintain", help="Codex-friendly index/wiki maintenance")
     p_maintain.add_argument("--cwd", default=".", help="Project directory")
@@ -5038,6 +5438,10 @@ def main() -> None:
     p_reindex = sub.add_parser("reindex", help="Delta reindex a project")
     p_reindex.add_argument("--cwd", default=".", help="Project directory")
     p_reindex.add_argument("--force", action="store_true", help="Force full reindex")
+    p_reindex.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip the cost confirmation on a full rebuild",
+    )
     p_reindex.add_argument("--git-delta", action="store_true", help="Use git diff for changed-file detection with full-scan fallback")
     p_reindex.add_argument(
         "--include-content",
