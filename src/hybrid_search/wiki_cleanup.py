@@ -23,15 +23,16 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from hybrid_search.memory_lane import MEMORY_LANE_PREFIXES
 
 _FILES_HEADING_RE = re.compile(r"^##\s+Files\s*$", re.MULTILINE)
 _FILE_BULLET_RE = re.compile(r"^- `([^`]+)`\s*$", re.MULTILINE)
 _NEXT_HEADING_RE = re.compile(r"^##\s", re.MULTILINE)
 
-# Memory-lane trees are retrieval content, never wiki material (see
-# index/dag.py) — pages derived from them can no longer be regenerated, so
-# they are orphans even while their source files stay indexed.
-_MEMORY_LANE_PREFIXES = (".hybrid-search/", ".conversations/", ".git-history/")
+# Memory-lane trees are retrieval content, never wiki material — pages
+# derived from them can no longer be regenerated, so they are orphans even
+# while their source files stay indexed.
+_MEMORY_LANE_PREFIXES = MEMORY_LANE_PREFIXES
 
 
 def extract_file_refs(body: str) -> list[str]:

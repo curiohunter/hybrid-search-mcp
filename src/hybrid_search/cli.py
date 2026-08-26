@@ -38,6 +38,7 @@ from hybrid_search.memory.routing_template import (
     apply_update,
     claude_block,
 )
+from hybrid_search.memory_lane import MEMORY_LANE_PREFIXES
 
 # M3: Post-commit hook captures ``git diff --name-status HEAD~1 HEAD`` at the
 # exact commit moment and exports it via this env var. ``cmd_reindex`` then
@@ -1400,7 +1401,7 @@ _COVERAGE_ALARM = 0.25
 # Memory-lane trees are written by the memory layer, not the scanner, so
 # they inflate the DB side of the comparison. Both sides must count the
 # same thing.
-_MEMORY_LANE_PREFIXES = (".hybrid-search/", ".conversations/", ".git-history/")
+_MEMORY_LANE_PREFIXES = MEMORY_LANE_PREFIXES
 
 
 def _print_index_coverage(config: Config, pinfo, project_path: Path) -> None:
@@ -2203,6 +2204,7 @@ def cmd_generate_wiki_plan(args: argparse.Namespace) -> None:
 def cmd_verify_wiki(args: argparse.Namespace) -> None:
     """Verify wiki coverage against the module tree."""
     import json as json_mod
+
     from hybrid_search.index.dag import generate_wiki_plan
     from hybrid_search.storage.wiki import normalize_query
 
@@ -2575,6 +2577,7 @@ def cmd_verify_synthesis(args: argparse.Namespace) -> None:
     Reports verified/failed/removed counts per page and overall health.
     """
     import json as json_mod
+
     from hybrid_search.index.synthesizer import verify_references, verify_symbols
 
     config = load_config()
@@ -3577,6 +3580,7 @@ def cmd_qa_stats(args: argparse.Namespace) -> None:
     until TTL expires).
     """
     from collections import Counter
+
     from hybrid_search.memory import integrity, reader
 
     root = _resolve_qa_root(args)
@@ -4503,6 +4507,7 @@ def _md_files(path: Path) -> list[Path]:
 def cmd_serve(_args: argparse.Namespace) -> None:
     """Start MCP server over stdio (for Claude Code / MCP clients)."""
     import asyncio
+
     from hybrid_search.server import _run_server
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -4772,7 +4777,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
         return
 
     try:
-        from hybrid_search import codex_hooks, hooks as memory_hooks
+        from hybrid_search import codex_hooks
+        from hybrid_search import hooks as memory_hooks
 
         project_settings = project_path / ".claude" / "settings.local.json"
         mem_result = memory_hooks.install_memory_hook(project_settings)

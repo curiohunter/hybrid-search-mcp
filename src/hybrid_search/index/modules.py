@@ -24,6 +24,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from hybrid_search.memory_lane import is_memory_lane_path
 from hybrid_search.storage.db import FileRecord, ModuleRecord, StoreDB
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,18 @@ def discover_modules(
     project_root: Path,
 ) -> dict:
     """Build modules + file_modules for the project. Returns stats dict."""
-    all_files: list[FileRecord] = db.get_all_files(project_id)
+    # The memory layer writes qa logs, cards and conversations into the
+    # project tree. They are retrieval content, not architecture — and
+    # they are markdown, so the doc-mention pass below happily union-finds
+    # them into whatever module they happen to name. On one live project
+    # that fused 1,869 qa logs into a single 2,442-file module whose
+    # summary ran 100,476 chars (median: 334) and then won three unrelated
+    # gold queries on sheer volume. Modules describe the code; this is the
+    # same rule the wiki DAG already applies.
+    all_files: list[FileRecord] = [
+        f for f in db.get_all_files(project_id)
+        if not is_memory_lane_path(f.relative_path)
+    ]
     if not all_files:
         return {"modules": 0, "files_assigned": 0}
 
