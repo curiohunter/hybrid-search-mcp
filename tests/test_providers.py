@@ -166,3 +166,44 @@ class TestVectorSpaceFingerprint:
             Embedder(EmbeddingConfig(backend="openai")).fingerprint
             == providers.LEGACY_FINGERPRINT
         )
+
+
+class TestOnlyFullRebuildsClaimTheVectorSpace:
+    """An incremental pass re-embeds the changed files and nothing else.
+    Stamping the fingerprint there would relabel a half-converted index as
+    clean and switch off the guard that was protecting it — which is
+    exactly what happened to a live project mid-migration."""
+
+    @staticmethod
+    def _pipeline(fingerprint="gemini:gemini-embedding-2:1536"):
+        from hybrid_search.index.pipeline import IndexingPipeline
+        pipe = IndexingPipeline.__new__(IndexingPipeline)
+        pipe._embedder = MagicMock()
+        pipe._embedder.fingerprint = fingerprint
+        return pipe
+
+    def test_full_rebuild_stamps(self):
+        db = MagicMock()
+        self._pipeline()._record_vector_space(db, full_rebuild=True)
+        db.set_meta.assert_called_once_with(
+            providers.EMBEDDING_FINGERPRINT_KEY, "gemini:gemini-embedding-2:1536"
+        )
+
+    def test_incremental_over_a_legacy_index_does_not_stamp(self):
+        db = MagicMock()
+        db.get_meta.return_value = None  # legacy index
+        self._pipeline()._record_vector_space(db, full_rebuild=False)
+        db.set_meta.assert_not_called()
+
+    def test_incremental_in_the_same_space_does_not_stamp_either(self):
+        """Nothing to record — the marker already says this."""
+        db = MagicMock()
+        db.get_meta.return_value = "gemini:gemini-embedding-2:1536"
+        self._pipeline()._record_vector_space(db, full_rebuild=False)
+        db.set_meta.assert_not_called()
+
+    def test_a_stubbed_embedder_is_ignored(self):
+        db = MagicMock()
+        pipe = self._pipeline(fingerprint=MagicMock())
+        pipe._record_vector_space(db, full_rebuild=True)
+        db.set_meta.assert_not_called()
