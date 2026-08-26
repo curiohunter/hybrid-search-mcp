@@ -83,6 +83,23 @@ MODEL_INPUT_LIMITS: dict[str, int] = {
 }
 
 
+# USD per million input tokens, per embedding model. Used only to show an
+# estimate before a rebuild — a wrong number here misleads, it never
+# charges anyone, so unknown models simply produce no estimate.
+MODEL_INPUT_USD_PER_MTOK: dict[str, float] = {
+    "gemini-embedding-2": 0.20,
+    "gemini-embedding-2-preview": 0.20,
+    "gemini-embedding-001": 0.15,
+    "text-embedding-3-small": 0.02,
+    "text-embedding-3-large": 0.13,
+}
+
+
+def input_price(model: str) -> float | None:
+    """USD per million input tokens for ``model``, or None if unknown."""
+    return MODEL_INPUT_USD_PER_MTOK.get(model)
+
+
 def input_limit(spec: "ProviderSpec", model: str) -> int:
     """Per-input token ceiling for ``model``, defaulting to the provider's."""
     return MODEL_INPUT_LIMITS.get(model, spec.max_input_tokens)
