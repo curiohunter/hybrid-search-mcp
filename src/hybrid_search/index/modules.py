@@ -24,6 +24,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from hybrid_search.memory_lane import is_memory_lane_path
 from hybrid_search.storage.db import FileRecord, ModuleRecord, StoreDB
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,18 @@ def discover_modules(
     project_root: Path,
 ) -> dict:
     """Build modules + file_modules for the project. Returns stats dict."""
-    all_files: list[FileRecord] = db.get_all_files(project_id)
+    # The memory layer writes qa logs, cards and conversations into the
+    # project tree. They are retrieval content, not architecture — and
+    # they are markdown, so the doc-mention pass below happily union-finds
+    # them into whatever module they happen to name. On one live project
+    # that fused 1,869 qa logs into a single 2,442-file module whose
+    # summary ran 100,476 chars (median: 334) and then won three unrelated
+    # gold queries on sheer volume. Modules describe the code; this is the
+    # same rule the wiki DAG already applies.
+    all_files: list[FileRecord] = [
+        f for f in db.get_all_files(project_id)
+        if not is_memory_lane_path(f.relative_path)
+    ]
     if not all_files:
         return {"modules": 0, "files_assigned": 0}
 
@@ -345,6 +357,13 @@ def discover_modules(
     for root in list(resolved_crossrefs):
         resolved_crossrefs[root] = resolved_crossrefs[root][:_MAX_CROSSREFS_PER_MODULE]
 
+    # Names are resolved up front so collisions can be qualified against
+    # the whole set — a module cannot know it shares a name until every
+    # other module's name exists.
+    resolved_names = disambiguate_names(
+        {root: _derive_name(root, members) for root, members in members_by_root.items()}
+    )
+
     for root, members in members_by_root.items():
         members = sorted(members)
         promoted_via_doc = False
@@ -372,7 +391,7 @@ def discover_modules(
                     continue
                 promoted_via_doc = True
         module_id = _module_id(project_id, members)
-        name = _derive_name(root, members)
+        name = resolved_names.get(root) or _derive_name(root, members)
         signals_base = {"directory"} | _signal_flags(root, members, docs_with_mentions)
         crossrefs_for_mod = [
             d for d in resolved_crossrefs.get(root, []) if d not in members
@@ -534,6 +553,61 @@ def _derive_name(root_key: str, members: list[str]) -> str:
         return root_key
     # Take the deepest segment as the canonical name.
     return segments[-1]
+
+
+def disambiguate_names(name_by_key: dict[str, str]) -> dict[str, str]:
+    """Qualify module names that collide, using their own directory paths.
+
+    ``_derive_name`` keeps only the deepest segment, so every ``_hooks/``
+    directory in a tree becomes a module called ``hooks``. On one project
+    214 of 386 modules (55%) shared a name with another — ``hooks`` x14,
+    ``_components`` x10, ``tuition`` x6.
+
+    That is not a cosmetic problem. Scoring treats a name hit as its
+    strongest signal, so a query naming a subsystem pulls every same-named
+    module toward the top at once, and the reader gets several cards
+    labelled identically with no way to tell which is which.
+
+    Colliding names grow leftward one directory segment at a time until
+    they are unique (``students/tuition`` vs ``archive/tuition``). Names
+    that were already unique are left exactly as they were — a query
+    token still matches the leaf inside a qualified name, so scoring is
+    unaffected for everything that was fine.
+    """
+    from collections import defaultdict
+
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for key, name in name_by_key.items():
+        by_name[name].append(key)
+
+    resolved: dict[str, str] = {}
+    for name, keys in by_name.items():
+        if len(keys) == 1 or name.startswith("(root "):
+            resolved[keys[0] if len(keys) == 1 else keys[0]] = name
+            if len(keys) == 1:
+                continue
+            for k in keys[1:]:
+                resolved[k] = name
+            continue
+        depth = 1
+        remaining = list(keys)
+        while remaining and depth < 6:
+            depth += 1
+            candidate = {k: "/".join(k.split("/")[-depth:]) for k in remaining}
+            counts: dict[str, int] = defaultdict(int)
+            for v in candidate.values():
+                counts[v] += 1
+            still: list[str] = []
+            for k, v in candidate.items():
+                if counts[v] == 1:
+                    resolved[k] = v
+                else:
+                    still.append(k)
+            remaining = still
+        # Anything still colliding at max depth keeps its full key.
+        for k in remaining:
+            resolved[k] = k
+    return resolved
 
 
 def _signal_flags(

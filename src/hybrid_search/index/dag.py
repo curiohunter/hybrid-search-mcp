@@ -18,7 +18,8 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-from hybrid_search.storage.db import StoreDB, ChunkRecord, FileRecord
+from hybrid_search.memory_lane import is_memory_lane_path
+from hybrid_search.storage.db import ChunkRecord, FileRecord, StoreDB
 
 logger = logging.getLogger(__name__)
 
@@ -235,9 +236,7 @@ def _is_memory_layer_file(file_id: str, file_map: dict[str, FileRecord]) -> bool
     file_rec = file_map.get(file_id)
     if not file_rec:
         return False
-    return file_rec.relative_path.startswith(
-        (".hybrid-search/", ".conversations/", ".git-history/")
-    )
+    return is_memory_lane_path(file_rec.relative_path)
 
 
 def _group_isolated_by_directory(

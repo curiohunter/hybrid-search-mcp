@@ -233,6 +233,17 @@ VECTOR_WEIGHT = 15.0
 # noise from cross-language chatter pushing unrelated modules up.
 VECTOR_MIN_COSINE = 0.25
 
+# Occurrence saturation. Raw ``text.count()`` makes module score scale with
+# module *size*, so a sprawling module wins on volume rather than fit. This
+# corpus has one module whose summary runs 100,476 chars against a median of
+# 334 — it took top-1 on 3 of 25 gold queries, all unrelated to its content
+# (a portal-auth question, a ledger-design question, and a memory-layer
+# question all landed on the same blob). Capping the count per token drops
+# that to 0 of 25 while the median top-1 score barely moves (25.2 -> 22.5):
+# a term appearing three times already says "this module is about the term",
+# and the fourth mention says only "this module is long".
+OCCURRENCE_CAP = 3
+
 
 def search_modules(
     db: StoreDB,
@@ -280,7 +291,7 @@ def search_modules(
         token_score = 0.0
         for t in expanded:
             tl = t.lower()
-            occ = text.count(tl)
+            occ = min(text.count(tl), OCCURRENCE_CAP)
             if occ == 0:
                 continue
             # Name hit is the strongest signal that this module is the answer;

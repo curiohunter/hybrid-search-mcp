@@ -104,6 +104,18 @@ COMMIT_PATH_PREFIX = ".git-history/"
 _VIRTUAL_PATH_PREFIXES = (CONVERSATION_PATH_PREFIX, COMMIT_PATH_PREFIX)
 
 
+def count_indexable_files(project_root: Path, config: IndexingConfig) -> int:
+    """How many files on disk this config would index.
+
+    Diagnostics compare this against the store DB's file count. An index
+    holding a small fraction of what the scanner can see is not "a project
+    with little code" — it is a scan that stopped early, and it looks
+    exactly like poor search quality from the outside.
+    """
+    project_root = project_root.resolve()
+    return len(_walk_files(project_root, _build_ignore_spec(project_root, config), config))
+
+
 def scan_project(
     project_root: Path,
     project_id: str,
@@ -285,6 +297,20 @@ def _strip_frontmatter(raw: bytes) -> bytes:
     return _FRONTMATTER_RE.sub(b"", raw, count=1)
 
 
+def compute_content_hash(raw: bytes, *, is_markdown: bool) -> str:
+    """The index's content fingerprint for raw file bytes.
+
+    Single source of truth for "same content as indexed": the file hash
+    stored in ``files.file_hash``, the in-flight overlay's index hash,
+    and the revalidation projection's HEAD-content comparison must all
+    agree, so they all call this. Markdown strips frontmatter (metadata
+    edits must not read as content changes).
+    """
+    if is_markdown:
+        raw = _strip_frontmatter(raw)
+    return hashlib.sha256(raw).hexdigest()
+
+
 def compute_file_hash(file_path: Path) -> str:
     """Compute SHA256 hash of file content.
 
@@ -293,8 +319,7 @@ def compute_file_hash(file_path: Path) -> str:
     trigger re-embedding. Non-Markdown files are hashed in streaming mode.
     """
     if file_path.suffix.lower() == ".md":
-        raw = file_path.read_bytes()
-        return hashlib.sha256(_strip_frontmatter(raw)).hexdigest()
+        return compute_content_hash(file_path.read_bytes(), is_markdown=True)
 
     h = hashlib.sha256()
     with open(file_path, "rb") as f:

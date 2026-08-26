@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import logging
 from dataclasses import dataclass, field, replace as _dc_replace
@@ -30,6 +31,12 @@ from hybrid_search.search.in_flight import (
     score_in_flight_files,
 )
 from hybrid_search.search import qa_topics
+from hybrid_search.search import translation
+from hybrid_search.providers import (
+    EMBEDDING_FINGERPRINT_KEY,
+    vector_space_matches,
+)
+from hybrid_search.search.translation import QueryTranslator, is_korean_dominant
 from hybrid_search.search.modules_search import search_modules
 from hybrid_search.search.rerank import lexical_rerank
 from hybrid_search.search.snippet import make_snippet
@@ -156,6 +163,16 @@ class HybridResult:
     # leaves this None and pays no attention to it.
     file_mtime: str | None = None
     trust_meta: str | None = None
+    # P1-2 — set at enrich time from the qa_revalidation side table when
+    # the memory's anchored files changed in a later commit. Short cause
+    # commit sha; None for everything else.
+    revalidation_cause: str | None = None
+    # Provenance: the index's content hash of the file THIS RESULT was
+    # served from (files.file_hash for indexed chunks, live index hash
+    # for in-flight overlay results). Anchor evidence must record what
+    # the search actually returned — not the working tree at qa-write
+    # time, which may already be ahead of the index (round-2 review).
+    indexed_file_hash: str | None = None
 
 
 @dataclass
@@ -181,15 +198,42 @@ class HybridSearchResponse:
     # Gap from the top hit to the first different-file result — the value
     # classification actually uses (score_gap keeps the raw top1-top2).
     effective_gap: float | None = None
+    # ADV3 observability contract: "used" when the KO→EN dual-query
+    # memory lane ran with a translation, "skipped" when a
+    # Hangul-dominant query fell back to the single lane (translation
+    # missing/failed/disabled), None when the lane was not applicable.
+    cross_language_lane: str | None = None
 
 
 # Surfaced when the embedding provider could not be reached. Semantic
 # matching is off, so results are lexical only — the caller must be told,
 # otherwise a thin BM25 answer looks like a confident hybrid one.
+def _vector_space_current(db, embedder) -> bool:
+    """Whether ``db``'s stored vectors came from the embedder in use."""
+    try:
+        stored = db.get_meta(EMBEDDING_FINGERPRINT_KEY)
+        current = embedder.fingerprint
+    except Exception:  # a meta read must never fail or degrade a search
+        return True
+    if not isinstance(stored, (str, type(None))) or not isinstance(current, str):
+        return True  # a stubbed embedder in tests — not a real mismatch
+    return vector_space_matches(stored, current)
+
+
 _VECTOR_LANE_DOWN_HINT = (
     "DEGRADED: embedding provider unreachable — BM25 (keyword) lane only, "
     "no semantic matching. Paraphrased or cross-language queries will miss. "
     "Verify with Grep/Read, and check the embedding API key."
+)
+
+# A different failure with the same shape and a different fix: the index
+# is intact, it was just written by another embedding model. Saying
+# "check your API key" here would send the reader after the wrong thing.
+_VECTOR_LANE_STALE_HINT = (
+    "DEGRADED: this index was built with a different embedding model, so "
+    "its vectors are not comparable to the current one — BM25 (keyword) "
+    "lane only. Rebuild with `hybrid-search-mcp index . --force` followed "
+    "by `recalibrate`. Verify with Grep/Read meanwhile."
 )
 
 
@@ -226,6 +270,18 @@ _MEMORY_INTENT_BOOST = 1.00
 _MEMORY_INTENT_KO = (
     "지난번", "이전에", "아까", "방금", "전에", "저번에", "그때",
     "뭐였지", "했지", "결정했지", "정했지", "기억", "메모리",
+    # Superlative-recency phrasings. "가장 최근에 한 일이 뭐지" carried
+    # zero of the tokens above, so the conv lane + in-flight overlay —
+    # the exact machinery built for the cross-agent handoff loop —
+    # never fired and the ambient qa lane served May records
+    # (2026-07-15 Codex field check). COMPOUND forms only, and the
+    # recency word must bind to a WORK/CONVERSATION object: bare "최근/
+    # 최신" false-positives on topical queries ("최근 Python 버전 차이"),
+    # and so do superlatives without an object ("가장 최근 OpenAI 모델")
+    # and noun collisions ("최신 상태 관리 라이브러리") — round-2 review.
+    "최근 작업", "최근 대화", "최근 진행", "최근 세션", "최근 커밋",
+    "최근에 한", "최근에 뭐", "최근에 나눈", "최근에 했",
+    "최신 작업", "최신 진행", "최신 대화",
     # History-shaped questions. "How was this built / why did it change"
     # is answered by past conversations, plans, and commits — the same
     # lanes recall questions use. Without these tokens the conv lane never
@@ -236,7 +292,18 @@ _MEMORY_INTENT_KO = (
 )
 _MEMORY_INTENT_EN_RE = re.compile(
     r"\b(previously|earlier|before|last\s+time|the\s+other\s+day"
-    r"|what\s+did\s+(?:i|we|you)\s+(?:ask|say)"
+    # Recency binds to a work/conversation object — round-2 review:
+    # standalone "most recent" false-positives on topical lookups
+    # ("most recent Python release"), and the object nouns must be
+    # spelled to their word end or the trailing \b of this whole group
+    # rejects plurals ("recent changes" failed on the "chang" stem).
+    r"|most\s+recent\s+(?:things?|works?|tasks?|changes?|commits?"
+    r"|conversations?|sessions?|activit(?:y|ies)|updates?|progress)"
+    r"|recent(?:ly)?\s+(?:works?|tasks?|progress|conversations?|sessions?"
+    r"|changes?|commits?|activit(?:y|ies)|updates?)"
+    r"|latest\s+(?:progress|works?|tasks?|status|conversations?|sessions?"
+    r"|updates?|changes?|commits?)"
+    r"|what\s+did\s+(?:i|we|you)\s+(?:ask|say|do|work)"
     r"|how\s+(?:was|did)\s+\w+.*\s(?:built|made|implemented|changed?|evolve)"
     r"|why\s+(?:was|did)\s+\w+.*\s(?:added|built|changed?|removed)"
     r"|history\s+of)\b",
@@ -318,6 +385,69 @@ def _frontmatter_value(content: str | None, key: str) -> str | None:
 
 def _memory_status(result: HybridResult) -> str:
     return (_frontmatter_value(result.content, "status") or "active").lower()
+
+
+# F11 (2026-07-27 Mac-mini live use) — self-referential recall pollution.
+# "방금 뭐 얘기했지?" matches its own PAST INSTANCES better than the actual
+# content turns, and each past instance's answer carries the topic that
+# was current THEN — so the first answer fossilizes and every later
+# recall replays it (45-min-stale PaysSam answer while 7 newer
+# referral-graph turns sat unranked). Rule: **an answer to a recall
+# question can never be evidence for a recall question.** Meta-recall
+# records are hard-demoted on memory-intent queries; the primary content
+# turns they were derived from are in the index and rise instead. The
+# COMPLETE fix (time-ordered content turns for recency questions) is the
+# recency fast path reserved as next-PR P0.
+# NOTE: bare "뭐였지" is deliberately ABSENT — it rides on topical
+# history questions ("hook 차이가 뭐였지?") where the recency head would
+# displace the actual topical answer (round-3 rerun, M2/M5 regression).
+# Meta-recall means asking about the CONVERSATION itself; every pattern
+# here binds to a conversation/action object.
+_META_RECALL_KO = (
+    "뭐 얘기", "무슨 얘기", "나눈 대화", "뭐 했", "뭐했",
+    "뭐라고 했", "어떤 대화", "최근 대화", "마지막 대화", "지난 대화",
+    "최근에 한 일", "대화가 뭐", "대화 확인", "얘기했지",
+)
+_META_RECALL_EN_RE = re.compile(
+    r"\b(what\s+did\s+(?:i|we|you)\s+(?:talk|discuss|say|ask|do)"
+    r"|what\s+(?:did\s+)?we\s+talked\s+about"
+    r"|(?:our|the)\s+(?:last|latest|most\s+recent|recent)\s+conversation"
+    r"|what\s+was\s+(?:discussed|said))\b",
+    re.IGNORECASE,
+)
+_META_RECALL_DEMOTE = 0.15
+_META_RECALL_MARK = "[meta-recall — derivative answer to a past recall question, demoted]"
+
+
+def _is_meta_recall_text(text: str | None) -> bool:
+    """True when the text asks about the conversation ITSELF rather than
+    any topic — the question class whose past answers must never feed a
+    new recall."""
+    if not text:
+        return False
+    if any(tok in text for tok in _META_RECALL_KO):
+        return True
+    return bool(_META_RECALL_EN_RE.search(text))
+
+
+def _memory_verification(result: HybridResult) -> str | None:
+    """P1-1 typed-memory trust level (verified/accepted/inferred/...).
+
+    None for legacy records without the field — they keep today's
+    ranking behavior; only newly-typed records participate in the
+    quarantine rules. A P1-2 revalidation flag (side table, set at
+    enrich time) overrides the written value: whatever the record
+    claimed, its anchored code has changed since."""
+    if result.revalidation_cause:
+        return "needs_revalidation"
+    value = _frontmatter_value(result.content, "verification")
+    return value.lower() if value else None
+
+
+# Demotion for memories whose anchored code changed since they were
+# written (P1-2 sets the flag). Softer than superseded (0.35): the fact
+# is not known-wrong, just unverified against current code.
+_NEEDS_REVALIDATION_FACTOR = 0.6
 
 
 # Instruction/interrogative query tokens that carry no content: their absence
@@ -409,6 +539,16 @@ def _trust_meta(
         parts.append(status)
     if trigger and kind == "qa":
         parts.append(trigger)
+    if kind == "qa" and content:
+        # P1-1 typed memory: agents should see WHAT kind of memory this
+        # is and any trust deviation. "inferred" is the default for new
+        # records — showing it everywhere would be noise.
+        mtype = _frontmatter_value(content, "memory_type")
+        if mtype:
+            parts.append(mtype)
+        verification = _frontmatter_value(content, "verification")
+        if verification and verification.lower() != "inferred":
+            parts.append(verification.lower())
     age = _parse_mtime_days_ago(mtime)
     if age is not None:
         if age < 1:
@@ -521,6 +661,29 @@ def _apply_memory_boost(
             continue
         if _memory_status(r) in {"superseded", "archived"}:
             adjusted.append(_dc_replace(r, rrf_score=round(r.rrf_score * 0.35, 6)))
+            continue
+        if _memory_verification(r) == "needs_revalidation":
+            adjusted.append(_dc_replace(
+                r, rrf_score=round(r.rrf_score * _NEEDS_REVALIDATION_FACTOR, 6)
+            ))
+            continue
+        if (
+            memory_intent
+            and r.node_type == "qa_log"
+            and _is_meta_recall_text(_frontmatter_value(r.content, "query"))
+        ):
+            # F11 — a past "what did we talk about" record answers with
+            # the topic that was current THEN; letting it rank on a new
+            # recall query replays fossilized state and starves the real
+            # content turns. Hard demote + visible mark.
+            adjusted.append(_dc_replace(
+                r,
+                rrf_score=round(r.rrf_score * _META_RECALL_DEMOTE, 6),
+                trust_meta=(
+                    f"{r.trust_meta} {_META_RECALL_MARK}".strip()
+                    if r.trust_meta else _META_RECALL_MARK
+                ),
+            ))
             continue
         if r.node_type == "domain_term":
             boost = _DOMAIN_TERM_INTENT_BOOST if memory_intent else _DOMAIN_TERM_AMBIENT_BOOST
@@ -692,6 +855,183 @@ def _qa_topic_groups(qa: list[HybridResult]) -> list[list[HybridResult]]:
     ]
 
 
+# R1 fix — supersession completion. `_order_qa_by_recency` above can only
+# reorder qa chunks retrieval actually surfaced; the ripgrep holdout R1
+# case has the stale qa at #1 with its correction crowded out of the
+# candidate set entirely. The index-time mapping (memory/supersession.py,
+# qa_supersession table) knows the correction's chunk_id; this splices it
+# in directly above the stale hit. Bounded so a query can never turn into
+# a chain of DB fetches.
+_SUPERSESSION_SPLICE_CAP = 2
+_SUPERSEDED_MARK = "[superseded — newer answer on this topic ranks above]"
+_SUPERSEDING_NOTE = "supersedes a stale answer below"
+
+
+def _splice_superseding(
+    results: list[HybridResult],
+    superseding: dict[str, str],
+    fetch: "Callable[[str, HybridResult], HybridResult | None]",
+    cap: int = _SUPERSESSION_SPLICE_CAP,
+    limit: int | None = None,
+) -> list[HybridResult]:
+    """Surface the newest same-topic qa wherever a stale qa hit appears.
+
+    ``superseding`` maps stale chunk_id → newest chunk_id (index-time).
+    ``fetch(newer_id, stale_hit)`` materialises the newer chunk as a
+    HybridResult, or None when it no longer exists.
+
+    Slot invariant (round-1 review): code hits never lose their slots to
+    a splice. With spare capacity (len < limit) the correction is
+    INSERTED above the stale hit, which stays visible with a superseded
+    mark. At full capacity the correction REPLACES the stale hit in
+    place — the stale answer drops out entirely rather than displacing
+    the tail code hit. Runs after confidence classification, so spliced
+    entries never feed the gap/coherence inputs.
+    """
+    if not superseding:
+        return results
+    limit = len(results) if limit is None else max(limit, 1)
+    position = {r.chunk_id: i for i, r in enumerate(results)}
+    out: list[HybridResult] = []
+    spliced = 0
+    marked = 0
+    inserted = 0
+    for i, r in enumerate(results):
+        newer_id = superseding.get(r.chunk_id)
+        if r.node_type == "qa_log" and newer_id:
+            if newer_id not in position and spliced < cap:
+                newer = fetch(newer_id, r)
+                if newer is not None:
+                    position[newer_id] = i
+                    spliced += 1
+                    out.append(newer)
+                    if len(results) + inserted < limit:
+                        inserted += 1
+                        out.append(_mark_superseded(r))
+                    # else: full — the correction takes the stale slot.
+                    continue
+            elif position.get(newer_id, i) < i:
+                # The newest answer was retrieved on its own and already
+                # ranks above — no splice needed, but the stale hit still
+                # carries the mark so agents don't quote it as current.
+                r = _mark_superseded(r)
+                marked += 1
+        out.append(r)
+    if spliced == 0 and marked == 0:
+        return results
+    return out
+
+
+def _apply_revalidation_flag(
+    r: HybridResult, flag: tuple[str, str] | None
+) -> HybridResult:
+    """Stamp a qa result flagged by the qa_revalidation side table."""
+    if flag is None:
+        return r
+    cause_commit, changed_path = flag
+    note = f"[needs_revalidation — {changed_path} changed in {cause_commit}]"
+    return _dc_replace(
+        r,
+        revalidation_cause=cause_commit,
+        trust_meta=f"{r.trust_meta} {note}".strip() if r.trust_meta else note,
+        snippet=f"{note}\n{r.snippet}" if r.snippet else note,
+    )
+
+
+def _cap_confidence_for_displayed_top(
+    response: "HybridSearchResponse",
+) -> "HybridSearchResponse":
+    """Demote-only trust cap on the DISPLAYED top hit (round-1 review).
+
+    `_make_response` caps on the score-ranked top; the supersession
+    splice can then change what actually sits at position 0. If that
+    displayed top is a qa memory that could not have anchored STRONG had
+    retrieval surfaced it (not verified/accepted — includes legacy,
+    inferred, and revalidation-flagged records), the label must drop to
+    mixed. Never upgrades, never recomputes gap/coherence."""
+    if response.confidence != "strong" or not response.results:
+        return response
+    top = response.results[0]
+    if top.node_type == "qa_log" and _memory_verification(top) not in {
+        "verified", "accepted",
+    }:
+        return _dc_replace(response, confidence="mixed")
+    return response
+
+
+def _mark_superseded(r: HybridResult) -> HybridResult:
+    return _dc_replace(
+        r,
+        trust_meta=(
+            f"{r.trust_meta} {_SUPERSEDED_MARK}".strip()
+            if r.trust_meta else _SUPERSEDED_MARK
+        ),
+        snippet=(
+            f"{_SUPERSEDED_MARK}\n{r.snippet}" if r.snippet else _SUPERSEDED_MARK
+        ),
+    )
+
+
+# Turns with no informational content — interruption stubs, empty
+# confirmations. They rank on structural tokens alone and waste recall
+# slots (the F11 repro's #1 hit was "[Request interrupted by user for
+# tool use]" with nothing else).
+# Low floor on purpose: Korean is dense — a 30-char turn can carry a
+# real decision. The floor only exists to drop bare acknowledgements
+# ("ok", "응") and turns that are NOTHING BUT bracketed stubs
+# ("[claude turn] [Request interrupted by user for tool use]").
+_EMPTY_TURN_MIN_CHARS = 15
+
+
+def _is_empty_turn(content: str | None) -> bool:
+    text = (content or "").strip()
+    # Peel every LEADING bracketed tag/stub — lane prefixes
+    # ("[claude turn]", "[in-flight ...]") and interruption stubs
+    # ("[Request interrupted ...]") alike. What remains is the turn's
+    # actual content; judge only that.
+    while text.startswith("["):
+        close = text.find("]")
+        if close == -1:
+            break
+        text = text[close + 1:].strip()
+    return len(text) < _EMPTY_TURN_MIN_CHARS
+
+
+def _filter_conv_noise(conv_results: list[HybridResult]) -> list[HybridResult]:
+    """Drop no-content turns from the conv lane entirely — a turn that
+    says nothing can answer nothing, whatever its lexical score."""
+    kept = [r for r in conv_results if not _is_empty_turn(r.content)]
+    return kept if len(kept) != len(conv_results) else conv_results
+
+
+def _demote_meta_recall_conv(
+    conv_results: list[HybridResult],
+) -> list[HybridResult]:
+    """F11, conv lane — past recall-question TURNS outrank the content
+    turns for the same self-matching reason as qa records (the Mac-mini
+    repro had three of them at ranks 1–3). Demote and re-sort so content
+    turns take the conv head."""
+    out: list[HybridResult] = []
+    changed = False
+    for r in conv_results:
+        if _is_meta_recall_text((r.content or "")[:300]):
+            changed = True
+            out.append(_dc_replace(
+                r,
+                rrf_score=round(r.rrf_score * _META_RECALL_DEMOTE, 6),
+                trust_meta=(
+                    f"{r.trust_meta} {_META_RECALL_MARK}".strip()
+                    if r.trust_meta else _META_RECALL_MARK
+                ),
+            ))
+        else:
+            out.append(r)
+    if not changed:
+        return conv_results
+    out.sort(key=lambda r: -r.rrf_score)
+    return out
+
+
 def _merge_conv_results(
     chunk_results: list[HybridResult],
     conv_results: list[HybridResult],
@@ -802,6 +1142,17 @@ class SearchOrchestrator:
         self._config = config
         self._registry = registry
         self._embedder = embedder
+        # ADV3 fix — lazy KO→EN translator for the cross-language memory
+        # lane. Built on first use so search paths that never need it pay
+        # nothing; injectable in tests via direct assignment.
+        self._translator: QueryTranslator | None = None
+        # Cross-language lane concurrency circuit (round-2 re-review):
+        # timed-out workers can't be cancelled, only orphaned — the slot
+        # semaphore bounds live workers; saturated → lane skipped.
+        self._xlang_executor: ThreadPoolExecutor | None = None
+        self._xlang_slots = threading.BoundedSemaphore(
+            self._CROSS_LANGUAGE_MAX_WORKERS
+        )
 
     def hybrid_search(
         self,
@@ -861,10 +1212,25 @@ class SearchOrchestrator:
                 exc_info=True,
             )
             query_vector = None
+        # Two different ways to lose the vector lane: the provider is
+        # unreachable, or every index in scope was written by a different
+        # model. Same degraded result, different fix — so they are
+        # reported apart.
         vector_lane_down = query_vector is None
+        stale_vectors = not vector_lane_down and self._all_vector_spaces_stale(
+            project_infos
+        )
+        vector_lane_down = vector_lane_down or stale_vectors
         retrieval_depth = limit * 3
 
         memory_intent = _has_memory_intent(query)
+        # A meta-recall question IS a memory question by definition —
+        # phrasings like "what did we talk about" must never run as a
+        # topical search (F12's trigger case was exactly a memory-shaped
+        # query classified topical, letting module cards flood the slots).
+        meta_recall = _is_meta_recall_text(query)
+        if meta_recall:
+            memory_intent = True
 
         # Search each project
         if len(project_infos) == 1:
@@ -945,6 +1311,7 @@ class SearchOrchestrator:
                 )
 
         memory_results: list[HybridResult] = []
+        cross_language_state: str | None = None
         if node_types is None:
             if memory_intent:
                 memory_depth = max(retrieval_depth, 50)
@@ -985,6 +1352,30 @@ class SearchOrchestrator:
                     if (r.bm25_rank is not None and r.bm25_rank <= 10)
                     or (r.vector_rank is not None and r.vector_rank <= 10)
                 ]
+            # ADV3 fix — cross-language memory lane. A Hangul-dominant
+            # query can miss English qa memories entirely (no lexical
+            # bridge, KO↔EN cosine under the retrieval bar), so retrieve
+            # the memory lane once more with an English translation.
+            # Additions flow through the same boost/gate/merge machinery
+            # below — no new positional guarantee, and confidence still
+            # classifies on the ORIGINAL query's anchoring rules, so the
+            # strong demotion / corpus-absent caps are untouched.
+            if is_korean_dominant(query):
+                en_results, cross_language_state = self._cross_language_with_deadline(
+                    query, project_infos,
+                    depth=memory_depth,
+                    memory_node_types=memory_node_types,
+                    file_pattern=file_pattern,
+                    exclude_pattern=exclude_pattern,
+                    primary_project_id=primary_project_id,
+                    memory_intent=memory_intent,
+                    limit=limit,
+                )
+                if en_results:
+                    seen_ids = {r.chunk_id for r in memory_results}
+                    memory_results = memory_results + [
+                        r for r in en_results if r.chunk_id not in seen_ids
+                    ]
 
         # Memory Layer — time-decay & intent boost for qa_log chunks.
         # A past Q&A should surface in future searches (that's the whole
@@ -1051,6 +1442,8 @@ class SearchOrchestrator:
             conv_results = self._enrich_results(
                 conv_fused[:max(50, limit)], project_infos, query
             )
+            conv_results = _filter_conv_noise(conv_results)
+            conv_results = _demote_meta_recall_conv(conv_results)
             # Phase 5 (conv): collect live-session turns the async per-turn
             # indexer hasn't caught yet. The Stop hook indexes detached, so the
             # freshest turns of an ongoing session — and the turn in progress —
@@ -1099,8 +1492,23 @@ class SearchOrchestrator:
             if graph_card is not None:
                 results = [*results[:1], graph_card, *results[1:]][:max(limit, 2)]
 
+        # F11 complete fix — recency fast path head. Deterministic
+        # time-ordered content leads the response for meta-recall
+        # queries; retrieval results backfill the remaining slots.
+        recent_head: list[HybridResult] = []
+        if meta_recall and node_types is None and len(project_infos) == 1:
+            recent_head = self._recent_activity_results(project_infos[0], query)
+            if recent_head:
+                head_paths = {r.file_path for r in recent_head}
+                head_ids = {r.chunk_id for r in recent_head}
+                body = [
+                    r for r in results
+                    if r.chunk_id not in head_ids and r.file_path not in head_paths
+                ]
+                results = (recent_head + body)[:max(limit, len(recent_head))]
+
         elapsed_ms = (time.monotonic() - start) * 1000
-        return self._make_response(
+        response = self._make_response(
             query=query,
             results=results,
             query_type=qtype,
@@ -1113,7 +1521,320 @@ class SearchOrchestrator:
             memory_intent=memory_intent,
             corpus_lacks=lambda terms: self._first_corpus_absent_term(project_infos, terms),
             vector_lane_down=vector_lane_down,
+            vector_lane_stale=stale_vectors,
         )
+        if recent_head and response.confidence == "weak":
+            # The deterministic recency lane anchored the answer with
+            # provably-fresh, content-bearing records (rrf 0.0 keeps them
+            # out of the similarity-based confidence inputs). "weak +
+            # fallback_hint" would send the agent AWAY from exactly the
+            # content it asked for. Timestamps are facts, not similarity
+            # guesses — floor to mixed, never to strong.
+            response = _dc_replace(
+                response, confidence="mixed", fallback_hint=None,
+            )
+        # R1 fix — runs AFTER confidence classification so a spliced
+        # correction can never alter gap/coherence inputs (holdout rule:
+        # the splice repairs exposure, not retrieval strength).
+        if node_types is None:
+            final = self._complete_supersession(
+                response.results, project_infos, query, limit=limit,
+            )
+            if final is not response.results:
+                response = _dc_replace(response, results=final)
+                # Round-1 review: the splice changed the DISPLAYED top
+                # hit after classification, so re-apply the trust cap on
+                # what the agent will actually read. Demote-only — a
+                # splice can never raise confidence, and gap/coherence
+                # are never recomputed.
+                response = _cap_confidence_for_displayed_top(response)
+        if cross_language_state is not None:
+            response = _dc_replace(response, cross_language_lane=cross_language_state)
+        return response
+
+    # F11 complete fix — recency fast path. Meta-recall questions carry
+    # no topical tokens, so similarity retrieval structurally cannot
+    # answer them: it matches past instances of the question itself
+    # (fossilized answers) or older-but-wordier content. Time order CAN
+    # answer them, deterministically. When the query is meta-recall, a
+    # head of the newest CONTENT turns/answers (empty and meta-recall
+    # records excluded) is assembled by timestamp and placed first.
+    _RECENT_ACTIVITY_HEAD = 5
+    _RECENT_ACTIVITY_SCAN = 40
+    _RECENT_ACTIVITY_MARK = "recent-activity, time-ordered"
+
+    def _recent_activity_results(
+        self, pinfo: "ProjectInfo", query: str,
+    ) -> list[HybridResult]:
+        """Newest content records for one project, newest-first.
+
+        Sources: indexed conversation turns (conversation_meta.ts DESC)
+        and answer-bearing qa records (frontmatter timestamp, reader
+        iterates newest-first). Fail-open: any error returns [] and the
+        query degrades to plain retrieval."""
+        items: list[tuple[str, HybridResult]] = []  # (ts, result)
+        try:
+            idx_paths = IndexPaths(
+                get_project_dir(self._config.projects_dir, pinfo.id)
+            )
+            if idx_paths.store_db.exists():
+                db = StoreDB(idx_paths.store_db)
+                try:
+                    for chunk, ts, source in db.get_recent_conv_turns(
+                        pinfo.id, self._RECENT_ACTIVITY_SCAN,
+                    ):
+                        if _is_empty_turn(chunk.content):
+                            continue
+                        if _is_meta_recall_text((chunk.content or "")[:300]):
+                            continue
+                        trust = (
+                            f"[conversation - {source} - "
+                            f"{self._RECENT_ACTIVITY_MARK}; virtual path, "
+                            "not a file — turn content is in this result]"
+                        )
+                        items.append((ts or "", HybridResult(
+                            chunk_id=chunk.id,
+                            rrf_score=0.0,  # deterministic lane: excluded
+                            bm25_rank=None,  # from ranked/confidence inputs
+                            vector_rank=None,
+                            file_path=(
+                                db.get_file(chunk.file_id).relative_path
+                                if db.get_file(chunk.file_id) else chunk.file_id
+                            ),
+                            project=pinfo.name,
+                            name=chunk.name,
+                            qualified_name=chunk.qualified_name,
+                            node_type=chunk.node_type,
+                            start_line=None,
+                            end_line=None,
+                            content=chunk.content,
+                            snippet=(
+                                trust + "\n"
+                                + make_snippet(None, chunk.content, query,
+                                               node_type=chunk.node_type)
+                            ),
+                            file_mtime=ts,
+                            trust_meta=trust,
+                        )))
+                finally:
+                    db.close()
+
+            from hybrid_search.memory import reader
+
+            scanned = 0
+            for qa in reader.iter_qa_indexes(Path(pinfo.path)):
+                scanned += 1
+                if scanned > self._RECENT_ACTIVITY_SCAN:
+                    break
+                if not (qa.answer_excerpt_chars or 0):
+                    continue  # question-only records carry no state
+                if _is_meta_recall_text(qa.query):
+                    continue
+                try:
+                    content = qa.path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                ts = qa.timestamp.isoformat() if qa.timestamp else ""
+                rel = str(qa.path)
+                try:
+                    rel = str(qa.path.relative_to(Path(pinfo.path)))
+                except ValueError:
+                    pass
+                trust = f"[qa - {self._RECENT_ACTIVITY_MARK}]"
+                items.append((ts, HybridResult(
+                    chunk_id=f"recent:qa:{qa.path.stem}",
+                    rrf_score=0.0,
+                    bm25_rank=None,
+                    vector_rank=None,
+                    file_path=rel,
+                    project=pinfo.name,
+                    name=qa.path.stem,
+                    qualified_name=rel,
+                    node_type="qa_log",
+                    start_line=None,
+                    end_line=None,
+                    content=content,
+                    snippet=(
+                        trust + "\n"
+                        + make_snippet(None, content, query, node_type="qa_log")
+                    ),
+                    file_mtime=ts,
+                    trust_meta=trust,
+                )))
+        except Exception:  # pragma: no cover — fail open to retrieval
+            logger.debug("recent-activity head failed", exc_info=True)
+            return []
+
+        items.sort(key=lambda t: t[0], reverse=True)
+        head: list[HybridResult] = []
+        seen_paths: set[str] = set()
+        for _, r in items:
+            key = r.file_path or r.chunk_id
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            head.append(r)
+            if len(head) >= self._RECENT_ACTIVITY_HEAD:
+                break
+        return head
+
+    def _translate_query(self, query: str) -> str | None:
+        """KO→EN translation with disk cache; None on any failure."""
+        if not translation.is_enabled():
+            return None
+        try:
+            if self._translator is None:
+                self._translator = QueryTranslator(
+                    self._config.data_dir / "cache" / "query_translations.jsonl",
+                    # Follow the embedding provider by default: one key,
+                    # one account, one failure domain. Splitting them is
+                    # possible but must be asked for explicitly.
+                    provider=self._config.embedding.backend,
+                )
+            return self._translator.translate(query)
+        except Exception:  # pragma: no cover — fail open to single lane
+            logger.debug("query translation unavailable", exc_info=True)
+            return None
+
+    # End-to-end wall for the WHOLE cross-language lane: translation +
+    # translated-query embedding + extra retrieval. The per-request
+    # translation timeout (2.5s) alone did not bound search latency —
+    # the embedding call after it could wait up to 120s (round-2 review;
+    # the 5.8s cold measurement was this). Past this wall the lane is
+    # dropped and reported "skipped".
+    _CROSS_LANGUAGE_DEADLINE_S = 6.0
+    # Circuit breaker (round-2 re-review): a timed-out worker keeps
+    # running until its own I/O timeouts fire — it cannot be cancelled,
+    # only ORPHANED. The shared executor + slot semaphore bound the
+    # number of live workers: when every slot is held by an orphan, new
+    # queries skip the lane immediately instead of stacking threads,
+    # API calls, and cache writes behind the deadline.
+    _CROSS_LANGUAGE_MAX_WORKERS = 2
+
+    def _cross_language_with_deadline(
+        self, *args, deadline_s: float | None = None, **kwargs
+    ) -> tuple[list[HybridResult], str]:
+        deadline = deadline_s or self._CROSS_LANGUAGE_DEADLINE_S
+        if not self._xlang_slots.acquire(blocking=False):
+            logger.debug(
+                "cross-language lane saturated (orphaned workers) — skipped"
+            )
+            return [], "skipped"
+        if self._xlang_executor is None:
+            self._xlang_executor = ThreadPoolExecutor(
+                max_workers=self._CROSS_LANGUAGE_MAX_WORKERS,
+                thread_name_prefix="xlang-lane",
+            )
+
+        def _run() -> tuple[list[HybridResult], str]:
+            try:
+                return self._cross_language_memory_results(*args, **kwargs)
+            finally:
+                self._xlang_slots.release()
+
+        future = self._xlang_executor.submit(_run)
+        try:
+            return future.result(timeout=deadline)
+        except FutureTimeoutError:
+            logger.debug(
+                "cross-language lane exceeded %.1fs deadline — skipped",
+                deadline,
+            )
+            return [], "skipped"
+        except Exception:
+            logger.debug("cross-language lane failed", exc_info=True)
+            return [], "skipped"
+
+    def _cross_language_memory_results(
+        self,
+        query: str,
+        project_infos: list["ProjectInfo"],
+        *,
+        depth: int,
+        memory_node_types: list[str],
+        file_pattern: str | None,
+        exclude_pattern: str | None,
+        primary_project_id: str | None,
+        memory_intent: bool,
+        limit: int,
+    ) -> tuple[list[HybridResult], str]:
+        """Memory-lane retrieval with the English translation of ``query``.
+
+        Returns ``(results, state)`` — state is the ADV3 observability
+        contract: "used" when the translated lane actually ran, "skipped"
+        on any fail-open path (no translation, embed failure, retrieval
+        failure). Fail-open at every step: skipped == exactly the pre-fix
+        single-lane behavior. The translated lane classifies its own BM25
+        weight (the EN text CAN match lexically, unlike the Korean
+        original) and applies the same ambient rank gate as the primary
+        memory lane.
+        """
+        translated = self._translate_query(query)
+        if not translated:
+            return [], "skipped"
+        try:
+            en_vector = self._embedder.embed_query(translated)
+        except Exception:
+            logger.debug("cross-language embed failed", exc_info=True)
+            return [], "skipped"
+        en_weight, _ = get_bm25_weight(translated, None)
+        try:
+            if len(project_infos) == 1:
+                bm25_ids, vector_ids, _, _, _, _ = self._search_single(
+                    project_infos[0], translated, en_vector, depth,
+                    file_pattern, memory_node_types, exclude_pattern,
+                )
+            else:
+                bm25_ids, vector_ids, _, _, _, _ = self._search_cross_project(
+                    project_infos, translated, en_vector, depth,
+                    file_pattern, memory_node_types,
+                    primary_project_id=primary_project_id,
+                    exclude_pattern=exclude_pattern,
+                )
+        except Exception:
+            logger.debug("cross-language retrieval failed", exc_info=True)
+            return [], "skipped"
+        fused = reciprocal_rank_fusion(
+            bm25_ids, vector_ids,
+            k=self._config.search.rrf_k,
+            bm25_weight=en_weight,
+        )
+        results = self._enrich_results(fused[:max(100, limit)], project_infos, query)
+        if not memory_intent:
+            results = [
+                r for r in results
+                if (r.bm25_rank is not None and r.bm25_rank <= 10)
+                or (r.vector_rank is not None and r.vector_rank <= 10)
+            ]
+        return results, "used"
+
+    def _all_vector_spaces_stale(self, project_infos: list[ProjectInfo]) -> bool:
+        """True when no index in scope matches the current embedding model.
+
+        Partial mismatches are handled per project inside the search lanes
+        — those simply drop their vector hits. This only decides whether
+        the *response* should stop claiming a semantic lane at all.
+        """
+        checked = 0
+        for pinfo in project_infos:
+            try:
+                idx_paths = IndexPaths(
+                    get_project_dir(self._config.projects_dir, pinfo.id)
+                )
+                if not idx_paths.store_db.exists():
+                    continue
+                db = StoreDB(idx_paths.store_db)
+                try:
+                    if _vector_space_current(db, self._embedder):
+                        return False
+                finally:
+                    db.close()
+            except Exception:
+                # Cannot read the marker — say nothing rather than
+                # declaring every result degraded on a bookkeeping fault.
+                return False
+            checked += 1
+        return checked > 0
 
     def _first_corpus_absent_term(
         self, project_infos: list["ProjectInfo"], terms: list[str]
@@ -1153,6 +1874,106 @@ class SearchOrchestrator:
                     pass
         return None
 
+    def _complete_supersession(
+        self,
+        results: list[HybridResult],
+        project_infos: list["ProjectInfo"],
+        query: str,
+        limit: int | None = None,
+    ) -> list[HybridResult]:
+        """R1 fix — splice the newest same-topic qa above stale qa hits.
+
+        Reads the index-time ``qa_supersession`` mapping and materialises
+        the superseding chunk when it isn't already in the results. A
+        spliced-in chunk passes the same trust checks as a retrieved one
+        (round-1 review): its ``qa_revalidation`` flag is looked up and
+        stamped, so the display layer and the post-splice confidence cap
+        see it exactly as retrieval would have. Any failure returns the
+        results untouched — a search must never break on its own repair
+        layer.
+        """
+        qa_ids = [r.chunk_id for r in results if r.node_type == "qa_log"]
+        if not qa_ids:
+            return results
+        db_cache: dict[str, tuple[StoreDB, str]] = {}
+        try:
+            for pinfo in project_infos:
+                idx_paths = IndexPaths(get_project_dir(self._config.projects_dir, pinfo.id))
+                if idx_paths.store_db.exists():
+                    db_cache[pinfo.id] = (StoreDB(idx_paths.store_db), pinfo.name)
+            if not db_cache:
+                return results
+            superseding: dict[str, str] = {}
+            for db, _ in db_cache.values():
+                superseding.update(db.get_qa_superseding(qa_ids))
+            if not superseding:
+                return results
+
+            def fetch(newer_id: str, stale: HybridResult) -> HybridResult | None:
+                for db, pname in db_cache.values():
+                    chunk = db.get_chunk(newer_id)
+                    if chunk is None or chunk.node_type != "qa_log":
+                        continue
+                    file_rec = db.get_file(chunk.file_id)
+                    file_path = file_rec.relative_path if file_rec else chunk.file_id
+                    mtime = _frontmatter_value(chunk.content, "timestamp") or (
+                        file_rec.file_mtime if file_rec else None
+                    )
+                    trust_meta = _trust_meta(
+                        node_type=chunk.node_type,
+                        trigger=_frontmatter_value(chunk.content, "trigger"),
+                        confidence=None,
+                        status=_frontmatter_value(chunk.content, "status"),
+                        mtime=mtime,
+                        content=chunk.content,
+                    )
+                    trust_meta = f"{trust_meta[:-1]} - {_SUPERSEDING_NOTE}]"
+                    snippet = make_snippet(
+                        chunk.docstring, chunk.content, query,
+                        node_type=chunk.node_type,
+                    )
+                    if snippet:
+                        snippet = f"{trust_meta}\n{snippet}"
+                    # The stale hit's score: the pair occupies adjacent
+                    # slots as one answer unit, and an artificial higher
+                    # score would leak into nothing (confidence already
+                    # classified) but would misreport retrieval strength.
+                    built = HybridResult(
+                        chunk_id=newer_id,
+                        rrf_score=stale.rrf_score,
+                        bm25_rank=None,
+                        vector_rank=None,
+                        file_path=file_path,
+                        project=pname,
+                        name=chunk.name,
+                        qualified_name=chunk.qualified_name,
+                        node_type=chunk.node_type,
+                        start_line=chunk.start_line,
+                        end_line=chunk.end_line,
+                        content=chunk.content,
+                        snippet=snippet,
+                        file_mtime=mtime,
+                        trust_meta=trust_meta,
+                    )
+                    # Round-1 review: a spliced-in memory must pass the
+                    # same revalidation lookup a retrieved one gets in
+                    # _enrich_results — otherwise a stale-anchored
+                    # correction arrives unflagged.
+                    reval = db.get_qa_revalidations([newer_id])
+                    return _apply_revalidation_flag(built, reval.get(newer_id))
+                return None
+
+            return _splice_superseding(results, superseding, fetch, limit=limit)
+        except Exception:  # pragma: no cover — never fail a search on this
+            logger.debug("supersession splice skipped", exc_info=True)
+            return results
+        finally:
+            for db, _ in db_cache.values():
+                try:
+                    db.close()
+                except Exception:  # pragma: no cover
+                    pass
+
     def _make_response(
         self,
         *,
@@ -1168,6 +1989,7 @@ class SearchOrchestrator:
         memory_intent: bool = False,
         corpus_lacks: "Callable[[list[str]], str | None] | None" = None,
         vector_lane_down: bool = False,
+        vector_lane_stale: bool = False,
     ) -> HybridSearchResponse:
         ranked = sorted(
             (r for r in results if r.rrf_score > 0),
@@ -1199,6 +2021,23 @@ class SearchOrchestrator:
             # be right, but without literal grounding it earns mixed, not
             # strong — promoting those needs a calibrated bilingual cosine
             # bar, not an exemption.
+            confidence = "mixed"
+        if (
+            confidence == "strong"
+            and ranked
+            and ranked[0].node_type == "qa_log"
+            and _memory_verification(ranked[0])
+            not in {"verified", "accepted"}
+        ):
+            # P1-1 quarantine: a memory can be the top hit, but only
+            # VERIFIED (executed evidence) or ACCEPTED (user-approved)
+            # memories may anchor a STRONG claim. inferred and
+            # needs_revalidation are model output / stale anchors;
+            # legacy untyped records (None) get no free pass either —
+            # otherwise every pre-schema auto-captured turn would keep a
+            # privilege new records must earn (2026-07-15 review
+            # condition). Demote-only: ranking and retrieval of legacy
+            # records are untouched.
             confidence = "mixed"
         if confidence == "weak" and _has_quality_anchor(query, results, top_score, thresholds):
             confidence = "mixed"
@@ -1251,7 +2090,8 @@ class SearchOrchestrator:
             else None
         )
         if vector_lane_down:
-            hint = _VECTOR_LANE_DOWN_HINT + (f" {hint}" if hint else "")
+            reason = _VECTOR_LANE_STALE_HINT if vector_lane_stale else _VECTOR_LANE_DOWN_HINT
+            hint = reason + (f" {hint}" if hint else "")
         generated_ratio = _generated_ratio(results)
         # Recall/history questions legitimately answer from memory content —
         # a high ratio there is the feature working, not pollution.
@@ -1586,8 +2426,10 @@ class SearchOrchestrator:
             if chunk_filter:
                 bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
 
-            # Vector search — skipped when the query could not be embedded.
-            if query_vector is None:
+            # Vector search — skipped when the query could not be embedded,
+            # or when this index was written by a different embedding model
+            # (its vectors share no axes with the query's).
+            if query_vector is None or not _vector_space_current(db, self._embedder):
                 vector_ids: list[str] = []
                 vector_scores: dict[str, float] = {}
             else:
@@ -1667,7 +2509,7 @@ class SearchOrchestrator:
                 if chunk_filter:
                     bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
 
-                if query_vector is None:
+                if query_vector is None or not _vector_space_current(db, self._embedder):
                     vec_pairs: list[tuple[str, float]] = []
                 else:
                     vec_res = vec_eng.search(
@@ -1823,8 +2665,25 @@ class SearchOrchestrator:
                         snippet=snippet,
                         file_mtime=mtime,
                         trust_meta=trust_meta,
+                        indexed_file_hash=(
+                            file_rec.file_hash if file_rec else None
+                        ),
                     ))
                     break  # Found the chunk, no need to check other projects
+
+            # P1-2 — commit-aware invalidation flags. One batched lookup
+            # per search; flagged qa carries the cause into trust_meta so
+            # agents see WHY the memory is demoted, not just that it is.
+            qa_ids = [r.chunk_id for r in results if r.node_type == "qa_log"]
+            if qa_ids:
+                reval: dict[str, tuple[str, str]] = {}
+                for db, _ in db_cache.values():
+                    reval.update(db.get_qa_revalidations(qa_ids))
+                if reval:
+                    results = [
+                        _apply_revalidation_flag(r, reval.get(r.chunk_id))
+                        for r in results
+                    ]
         finally:
             for db, _ in db_cache.values():
                 db.close()
@@ -1983,7 +2842,15 @@ def _interleave_modules(
         return chunks[:limit]
 
     # L5 two-tier: never let modules occupy more than half the result slots.
-    slots = min(slots, max(1, limit // 2))
+    #
+    # The budget covers cards AND members together. They used to be capped
+    # independently — cards at limit//2, members at limit//3 — and nothing
+    # compared the two, so the invariant this comment states was never
+    # actually enforced: limit=5 yielded 2 cards + 1 member (3 of 5 rows,
+    # 60%) and limit=10 yielded 3 + 3 (6 of 10). A caller asking for 5
+    # results got 2 chunks.
+    module_budget = max(1, limit // 2)
+    slots = min(slots, module_budget)
     head_modules = modules[:slots]
     module_files = {m.file_path for m in head_modules}
 
@@ -2005,7 +2872,11 @@ def _interleave_modules(
     # F3/F4 get more chunk slots to spare, and the S5 admissions SQL
     # + F2 monthly-snapshot-cron both need a member slot to reach
     # top-10.
-    members_budget = max(0, limit // 3)
+    # Cards are spent first: the ablation on this corpus showed cards
+    # carrying the retrieval win (F2 and F4 are found only when the module
+    # lane runs), while members mattered for one case. Members take what
+    # the budget has left.
+    members_budget = max(0, min(limit // 3, module_budget - len(head_modules)))
     deduped_members = deduped_members[:members_budget]
 
     # Dedup chunks against cards + members.

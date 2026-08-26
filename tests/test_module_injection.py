@@ -371,16 +371,23 @@ def test_members_dedup_against_module_cards():
     assert out[0].node_type == "module" and out[0].file_path == shared
 
 
-def test_members_budget_caps_at_limit_third():
-    """At limit=10, at most 3 members reach the result to keep chunks
-    at a numeric majority (7 slots for cards+chunks)."""
+def test_members_share_one_budget_with_cards():
+    """Members and cards draw on a single module budget of ``limit // 2``.
+
+    This test previously asserted 3 members alongside 3 cards while its
+    own docstring claimed chunks stayed in the majority — 6 module rows
+    of 10 leaves 4 chunks, so the assertion and the intent disagreed and
+    the assertion won. The budgets are now compared against each other.
+    """
     chunks = [_mk_chunk(f"c{i}.ts") for i in range(10)]
     modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
     members = [_mk_member(f"mem/m{i}.tsx", f"non{i}") for i in range(8)]
     out = _interleave_modules(chunks, modules, slots=3, limit=10, members=members)
+    cards = sum(1 for r in out if r.node_type == "module")
     member_count = sum(1 for r in out if r.node_type == "module_member")
-    # limit=10 // 3 = 3 members max.
-    assert member_count == 3
+    assert cards == 3
+    assert member_count == 2  # limit//2 == 5 total, cards funded first
+    assert cards + member_count <= 10 // 2
 
 
 def test_members_absorb_slack_when_chunks_short():
