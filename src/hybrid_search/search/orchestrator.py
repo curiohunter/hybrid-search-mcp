@@ -2842,7 +2842,15 @@ def _interleave_modules(
         return chunks[:limit]
 
     # L5 two-tier: never let modules occupy more than half the result slots.
-    slots = min(slots, max(1, limit // 2))
+    #
+    # The budget covers cards AND members together. They used to be capped
+    # independently — cards at limit//2, members at limit//3 — and nothing
+    # compared the two, so the invariant this comment states was never
+    # actually enforced: limit=5 yielded 2 cards + 1 member (3 of 5 rows,
+    # 60%) and limit=10 yielded 3 + 3 (6 of 10). A caller asking for 5
+    # results got 2 chunks.
+    module_budget = max(1, limit // 2)
+    slots = min(slots, module_budget)
     head_modules = modules[:slots]
     module_files = {m.file_path for m in head_modules}
 
@@ -2864,7 +2872,11 @@ def _interleave_modules(
     # F3/F4 get more chunk slots to spare, and the S5 admissions SQL
     # + F2 monthly-snapshot-cron both need a member slot to reach
     # top-10.
-    members_budget = max(0, limit // 3)
+    # Cards are spent first: the ablation on this corpus showed cards
+    # carrying the retrieval win (F2 and F4 are found only when the module
+    # lane runs), while members mattered for one case. Members take what
+    # the budget has left.
+    members_budget = max(0, min(limit // 3, module_budget - len(head_modules)))
     deduped_members = deduped_members[:members_budget]
 
     # Dedup chunks against cards + members.
