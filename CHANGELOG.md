@@ -4,6 +4,86 @@ All notable changes to hybrid-search-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.0 — provider-portable embeddings, and the failures that hid behind them
+
+An OpenAI account suspension took search down completely: the vector lane
+died, and it took the BM25 lane with it. Recovering exposed several layers
+of the same mistake — a single hard-coded provider, and passes that trusted
+their own output.
+
+### Added
+
+- **Provider abstraction** (`providers.py`): an OpenAI-shaped HTTP API is
+  described by base URL, key env, model defaults and limits. Gemini's
+  `/v1beta/openai` surface drops in without a second client. The KO→EN
+  translation lane follows the embedding provider by default — one key,
+  one account, one failure domain.
+- **Vector reuse on rebuild**: vectors are keyed by a hash of the text
+  that produced them, so a forced rebuild re-embeds only what actually
+  changed. Most rebuilds are triggered by *our* code changing (chunking,
+  module discovery, naming), which leaves the embedded text identical.
+  Measured: 2,920 of 2,936 embeddings served from the previous index,
+  rebuild 3 minutes → 11.6s. The embedding fingerprint gates it — a
+  different model reuses nothing.
+- **Rebuild cost preview**: a full rebuild prints files, chars, tokens and
+  an upper-bound price, and asks before spending above a threshold. The
+  chars-per-token ratio is measured on a sample, not assumed — assuming a
+  code-like 3.5 under-counted a Korean-heavy corpus by 47% (measured 2.38).
+  Hooks and CI are never blocked; the estimate still reaches their logs.
+- **Vector space fingerprint**: an index records the provider, model and
+  width it was written in. Search compares per project and drops the vector
+  lane on a mismatch — equal width is not equal meaning, and a cosine across
+  two spaces is noise rather than a weaker signal. Only a full rebuild may
+  claim a fingerprint; an incremental pass that finds a mismatch says so
+  and leaves the marker alone.
+- **Index writer lock**: Tantivy allows one IndexWriter per directory.
+  Every writing command now queues on one lock per project and refuses
+  *before* the pipeline runs rather than dying halfway through it.
+- **Index coverage warning** in `status`: an index holding a few percent of
+  its project is indistinguishable from bad search quality. Three projects
+  here had silently collapsed (571 → 12,692 chunks on rebuild). The bar is
+  25% — measured healthy coverage ranges 31–99%, so anything stricter
+  reports normal exclusions as faults.
+
+### Fixed
+
+- **Provider outage no longer ends search**: `embed_query` was called
+  unguarded, so a dead API key raised out of the search entry point and
+  killed the BM25 lane with it — even for exact-symbol lookups that need
+  no embedding. The lane now degrades, reports `weak`, and names the fix.
+  Outage and stale-index are reported apart: one wants an API key, the
+  other a rebuild.
+- **Module discovery no longer reads the memory layer as architecture**:
+  qa logs and memory cards are markdown inside the project tree, and the
+  doc-mention pass union-found them into whatever module they named. On one
+  project 56.8% of file-to-module assignments (2,590/4,563) were memory-layer
+  output, including a single 2,442-file module whose 100,476-char summary
+  (median: 334) won three unrelated gold queries on volume. The wiki DAG
+  already refused this content; discovery did not. Definitions unified in
+  `memory_lane.py`.
+- **Module names are unique**: names came from the deepest directory
+  segment, so every `_hooks/` in a tree produced a module called `hooks` —
+  214 of 386 modules (55%) shared a name. Since a name hit is the scorer's
+  strongest signal, one query pulled every same-named module up at once and
+  the reader saw identical labels. Colliding names now qualify by path.
+- **Module scoring no longer rewards size**: raw `text.count()` made score
+  scale with module length. Occurrences saturate at 3.
+- **Module rows never exceed half the result slots**: the invariant was
+  documented but never enforced — cards (`limit//2`) and members
+  (`limit//3`) were capped independently, so `limit=5` returned 3 module
+  rows and 2 chunks. One shared budget, cards funded first. Measured
+  27% → 18% of slots at `limit=5` with target-hit rate unchanged.
+- **Wiki cleanup refuses a total wipe**: rebuilding a project whose sources
+  had been deleted marked all 526 synthesised pages orphaned and unlinked
+  them. Every eligible page looking orphaned is a symptom of a broken scan,
+  not an instruction to delete.
+- **`_pid_alive` no longer reads a live process as dead**: `os.kill(pid, 0)`
+  raises `PermissionError` for a process owned by someone else, which was
+  treated the same as `ProcessLookupError` — enough to steal a lock from a
+  running indexer.
+- **`status` checks the configured provider's key**, not a hard-coded
+  `OPENAI_API_KEY`.
+
 ## 0.7.2 — language-general topic-aware supersession
 
 ### Fixed
