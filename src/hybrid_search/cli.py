@@ -696,6 +696,8 @@ def _run_wiki_cleanup(project_path: Path) -> None:
         return
 
     result = wiki_cleanup.cleanup_orphans(wiki_dir, indexed)
+    if result.refused:
+        print(f"Wiki cleanup: SKIPPED — {result.refused}")
     if result.deleted:
         print(f"Wiki cleanup: removed {len(result.deleted)} orphan page(s).")
     if result.skipped_errors:

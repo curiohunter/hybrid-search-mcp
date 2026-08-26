@@ -51,6 +51,9 @@ class WikiCleanupResult:
     orphans: list[Path]
     deleted: list[Path]
     skipped_errors: list[tuple[Path, str]]
+    # Set when the wipe guard refused a delete that would have taken
+    # (nearly) every page. Carries the reason for the caller to print.
+    refused: str | None = None
 
 
 def _normalise_ref(ref: str) -> str:
@@ -90,6 +93,27 @@ def find_orphans(
     return orphans, scanned
 
 
+def count_judgeable(wiki_dir: Path) -> int:
+    """Pages that carry a ``## Files`` section, i.e. can ever be orphans.
+
+    ``find_orphans`` reports every page it looked at, including structural
+    ones like ``index.md`` that have no file bullets and are preserved by
+    design. Ratios must be taken against this number instead, or a single
+    always-kept page is enough to stop a wipe from ever looking total.
+    """
+    if not wiki_dir.is_dir():
+        return 0
+    n = 0
+    for page in wiki_dir.glob("*.md"):
+        try:
+            body = page.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if extract_file_refs(body):
+            n += 1
+    return n
+
+
 def _is_wiki_source(ref: str, indexed_paths: set[str]) -> bool:
     path = _normalise_ref(ref)
     if path.startswith(_MEMORY_LANE_PREFIXES):
@@ -97,13 +121,33 @@ def _is_wiki_source(ref: str, indexed_paths: set[str]) -> bool:
     return path in indexed_paths
 
 
+# Below this many pages a full sweep is unremarkable — a small wiki can
+# legitimately go to zero. Above it, losing everything at once is far
+# more likely to be a broken scan than genuine staleness.
+_WIPE_GUARD_MIN_PAGES = 10
+# Fraction of the wiki that may be deleted in one pass before the guard
+# trips. Deleting most of a wiki is normal after a big refactor; deleting
+# all of it means nothing in the index matched, which is what an empty or
+# mis-scanned project looks like.
+_WIPE_GUARD_RATIO = 1.0
+
+
 def cleanup_orphans(
     wiki_dir: Path,
     indexed_paths: set[str],
     *,
     dry_run: bool = False,
+    allow_wipe: bool = False,
 ) -> WikiCleanupResult:
-    """Delete orphan wiki pages. Returns the full audit trail."""
+    """Delete orphan wiki pages. Returns the full audit trail.
+
+    Refuses to delete when *every* page looks orphaned and the wiki is
+    large enough that this cannot be routine. Synthesised pages are the
+    only surviving record once a project's sources are gone, and the
+    deletion is irreversible — so an all-or-nothing sweep is treated as a
+    symptom (empty checkout, bad exclude rules, failed scan) rather than
+    an instruction. ``allow_wipe`` is the deliberate override.
+    """
     orphans, scanned = find_orphans(wiki_dir, indexed_paths)
 
     if dry_run or not orphans:
@@ -112,6 +156,26 @@ def cleanup_orphans(
             orphans=orphans,
             deleted=[],
             skipped_errors=[],
+        )
+
+    judgeable = count_judgeable(wiki_dir)
+    if (
+        not allow_wipe
+        and judgeable >= _WIPE_GUARD_MIN_PAGES
+        and len(orphans) >= judgeable * _WIPE_GUARD_RATIO
+    ):
+        return WikiCleanupResult(
+            scanned=scanned,
+            orphans=orphans,
+            deleted=[],
+            skipped_errors=[],
+            refused=(
+                f"all {judgeable} eligible wiki page(s) look orphaned — refusing to "
+                f"delete. Nothing in the index matched them, which usually "
+                f"means the sources are missing or the scan was wrong, not "
+                f"that the pages are stale. Check the project, then re-run "
+                f"with allow_wipe if the deletion is intended."
+            ),
         )
 
     deleted: list[Path] = []
