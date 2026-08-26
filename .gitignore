@@ -18,3 +18,8 @@ build/
 
 # PoC embedding cache — derived from conversation content, regenerated on run
 scripts/.poc_cache/
+.hybrid-search/runtime/
+
+# Generated per machine by `setup --codex` — the manifest embeds absolute
+# interpreter paths, so it is local configuration, not something to ship.
+.codex-plugin/
