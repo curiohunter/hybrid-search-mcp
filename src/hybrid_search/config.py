@@ -65,6 +65,9 @@ MODEL_MAX_TOKENS: dict[str, int] = {
 class EmbeddingConfig:
     openai_model: str = "text-embedding-3-small"
     batch_size: int = 100  # OpenAI supports up to 2048 inputs per request
+    # Output width requested from providers that support it (Gemini/MRL).
+    # 0 = use the provider default. Changing this invalidates the index.
+    dimensions: int = 0
     # Legacy fields — kept for config.toml backwards compat
     ollama_model: str = ""
     model: str = ""
@@ -246,6 +249,7 @@ def load_config(config_path: Path | None = None) -> Config:
     emb_raw = raw.get("embedding", {})
     embedding = EmbeddingConfig(
         openai_model=emb_raw.get("openai_model", "text-embedding-3-small"),
+        dimensions=int(emb_raw.get("dimensions", 0)),
         batch_size=emb_raw.get("batch_size", 100),
         ollama_model=emb_raw.get("ollama_model", ""),
         model=emb_raw.get("model", ""),
@@ -391,8 +395,22 @@ data_dir = "~/.hybrid-search"
 log_level = "info"
 
 [embedding]
+# backend: which OpenAI-shaped provider serves embeddings AND the KO→EN
+# translation lane. "openai" (OPENAI_API_KEY) or "gemini" (GEMINI_API_KEY,
+# via Google's /v1beta/openai compatibility surface).
+# Switching providers invalidates every stored vector — the width may
+# match, but the semantic space does not. Run `index . --force` and then
+# `recalibrate` after changing this.
 backend = "openai"
 openai_model = "text-embedding-3-small"
+# model: embedding model for non-OpenAI backends. Empty = provider
+# default (gemini -> gemini-embedding-2, 8192-token inputs). Pin
+# "gemini-embedding-001" only to reproduce an older index; its input
+# ceiling is 2048 and Gemini truncates past it without an error.
+model = ""
+# dimensions: output width for providers that support MRL truncation.
+# 0 = provider default (1536 here, matching the existing index layout).
+dimensions = 0
 batch_size = 100
 
 [search]

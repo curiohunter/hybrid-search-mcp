@@ -56,6 +56,8 @@ def _make_orchestrator(*, embed_fails: bool) -> SearchOrchestrator:
     orch._enrich_results = MagicMock(return_value=[])
     orch._module_results_for_query = MagicMock(return_value=([], []))
     orch._first_corpus_absent_term = MagicMock(return_value=None)
+    # Real staleness needs an on-disk index; the lanes are stubbed here.
+    orch._all_vector_spaces_stale = MagicMock(return_value=False)
     return orch
 
 
@@ -114,3 +116,29 @@ class TestSearchSingleArity:
         bm25_ids, vector_ids, total, skipped, authority, vector_scores = result
         assert (bm25_ids, vector_ids, total, skipped) == ([], [], 0, [])
         assert authority == {} and vector_scores == {}
+
+
+class TestStaleVectorSpaceIsReportedApart:
+    """Losing the vector lane to a model change looks identical to losing
+    it to an outage, but the fix is a rebuild, not a new API key — so the
+    hint must not send the reader after the wrong one."""
+
+    def test_stale_index_degrades_with_a_rebuild_hint(self):
+        orch = _make_orchestrator(embed_fails=False)
+        orch._all_vector_spaces_stale = MagicMock(return_value=True)
+        resp = orch.hybrid_search("compute_file_hash")
+        assert resp.confidence == "weak"
+        assert "different embedding model" in resp.fallback_hint
+        assert "--force" in resp.fallback_hint
+
+    def test_outage_hint_is_not_used_for_a_stale_index(self):
+        orch = _make_orchestrator(embed_fails=False)
+        orch._all_vector_spaces_stale = MagicMock(return_value=True)
+        resp = orch.hybrid_search("compute_file_hash")
+        assert "provider unreachable" not in resp.fallback_hint
+
+    def test_outage_keeps_its_own_hint(self):
+        orch = _make_orchestrator(embed_fails=True)
+        resp = orch.hybrid_search("compute_file_hash")
+        assert "provider unreachable" in resp.fallback_hint
+        assert "different embedding model" not in resp.fallback_hint
