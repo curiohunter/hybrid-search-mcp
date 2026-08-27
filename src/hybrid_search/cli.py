@@ -491,7 +491,9 @@ def _reindex_locked(
         "hybrid_search.cli" in (hooks_dir / "post-commit").read_text()
     checkout_ok = (hooks_dir / "post-checkout").exists() and \
         "hybrid_search.cli" in (hooks_dir / "post-checkout").read_text()
-    if not (commit_ok and checkout_ok):
+    merge_ok = (hooks_dir / "post-merge").exists() and \
+        "hybrid_search.cli" in (hooks_dir / "post-merge").read_text()
+    if not (commit_ok and checkout_ok and merge_ok):
         import argparse as _ap
         _hook_args = _ap.Namespace(cwd=project_path)
         cmd_install_hook(_hook_args)
@@ -1570,7 +1572,7 @@ def _check_project_status(project_path: Path) -> None:
 
     # post-commit + post-checkout hooks (respect core.hooksPath — Husky compat)
     hooks_dir = _git_hooks_dir(project_path)
-    for hook_name in ("post-commit", "post-checkout"):
+    for hook_name in ("post-commit", "post-checkout", "post-merge"):
         hook_path = hooks_dir / hook_name
         hook_ok = hook_path.exists() and _HOOK_IDENTITY_MARKER in hook_path.read_text()
         label = f"{hook_name} hook:"
@@ -4790,6 +4792,13 @@ def cmd_setup(args: argparse.Namespace) -> None:
                 "command": (
                     f'ROOT=$(git rev-parse --show-toplevel 2>/dev/null); '
                     f'VENV={venv_str}; '
+                    # A linked worktree is a full second copy of the tree with no
+                    # .hybrid-search/wiki of its own, so this bootstrap used to fire
+                    # inside one and index the whole project again under a new id.
+                    # Eight ghost projects came from exactly that.
+                    f'GD=$(git rev-parse --absolute-git-dir 2>/dev/null); '
+                    f'CD=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); '
+                    f'[ "$GD" = "$CD" ] && '
                     f'[ -n "$ROOT" ] && [ -f "$VENV" ] && [ ! -d "$ROOT/.hybrid-search/wiki" ] && '
                     f'mkdir -p "$ROOT/.hybrid-search" && '
                     f'nohup sh -c \'"$1" -m hybrid_search.cli reindex --synthesize --cwd "$2" && '
@@ -5165,6 +5174,31 @@ def _git_hooks_dir(repo_root: Path) -> Path:
 # recognized. Keep string literal in sync with the script templates below.
 _HOOK_IDENTITY_MARKER = "hybrid_search.cli"
 
+# Bumped whenever the generated hook bodies change in a way existing
+# installs must pick up. Without it `_install_hook_file` saw its own
+# marker, reported "already-installed", and left stale scripts in place
+# forever — the worktree guard added in v2 would never have reached any
+# repository that already had hooks.
+_HOOK_VERSION = "v2"
+_HOOK_VERSION_MARKER = f"hybrid-search-mcp:hook {_HOOK_VERSION}"
+
+# Shared preamble for every git hook we install. Defined once so the
+# three scripts cannot drift apart on the question of which
+# checkout owns the index.
+_WORKTREE_GUARD = """# Resolve the MAIN checkout, not this one. A linked worktree shares
+# .git/hooks with its parent, so committing inside one fires these hooks
+# with --show-toplevel pointing at the worktree. The project id is a hash
+# of that path, so each worktree used to register as a *separate project*
+# and get indexed from scratch — a full copy of the tree, embedded again.
+# Eight such ghost projects accumulated here before anyone noticed.
+GIT_DIR="$(git rev-parse --absolute-git-dir 2>/dev/null)"
+COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+if [ -n "$COMMON_DIR" ] && [ "$GIT_DIR" != "$COMMON_DIR" ]; then
+  exit 0  # linked worktree: the main checkout owns the index
+fi
+PROJECT_DIR="$(git rev-parse --show-toplevel)"
+"""
+
 
 def _build_post_commit_script(venv_python: Path) -> str:
     """Build the post-commit hook body (delta reindex + gap detection).
@@ -5179,8 +5213,9 @@ def _build_post_commit_script(venv_python: Path) -> str:
     ``cmd_reindex --git-delta`` falls back to its internal full-scan path.
     """
     return f"""#!/bin/bash
-# hybrid-search-mcp:post-commit — auto delta-reindex on commit (background, non-blocking)
-PROJECT_DIR="$(git rev-parse --show-toplevel)"
+# hybrid-search-mcp:hook {_HOOK_VERSION} — post-commit
+# auto delta-reindex on commit (background, non-blocking)
+{_WORKTREE_GUARD}
 mkdir -p "$PROJECT_DIR/.hybrid-search"
 
 # M3: capture diff synchronously so deferred reindex sees THIS commit's diff,
@@ -5214,6 +5249,43 @@ nohup bash -c '
 """
 
 
+def _build_post_merge_script(venv_python: Path) -> str:
+    """Build the post-merge hook body.
+
+    Git does not run ``post-commit`` for a merge commit — ``post-merge`` is
+    its counterpart, and ``git pull`` (fetch + merge) fires it too. Without
+    this hook the two events that actually move a branch forward, merging a
+    feature and pulling a collaborator's work, left the index untouched:
+    files changed on disk and nothing said so. A later ``--git-delta`` run
+    only covers *its own* commit, so the merged files were never picked up.
+
+    A full scan rather than a diff: a merge can move any number of files,
+    and unchanged ones cost nothing to skip (the scanner compares hashes).
+    """
+    return f"""#!/bin/bash
+# hybrid-search-mcp:hook {_HOOK_VERSION} — post-merge
+# reindex after merge / pull (background)
+{_WORKTREE_GUARD}
+[ -d "$PROJECT_DIR/.hybrid-search" ] || exit 0
+
+LOCK_FILE="$PROJECT_DIR/.hybrid-search/.reindex.lock"
+if [ -f "$LOCK_FILE" ]; then
+  LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+  if kill -0 "$LOCK_PID" 2>/dev/null; then
+    exit 0
+  fi
+  rm -f "$LOCK_FILE"
+fi
+nohup bash -c '
+  echo $$ > "'"$LOCK_FILE"'"
+  "'"{venv_python}"'" -m hybrid_search.cli reindex \
+    --wiki-scope affected --cwd "'"$PROJECT_DIR"'" || true
+  rm -f "'"$LOCK_FILE"'"
+' >/dev/null 2>&1 &
+exit 0
+"""
+
+
 def _build_post_checkout_script(venv_python: Path) -> str:
     """Build the post-checkout hook body (branch-switch-only reindex).
 
@@ -5227,12 +5299,13 @@ def _build_post_checkout_script(venv_python: Path) -> str:
     state", which the hash/mtime prefilter already provides.
     """
     return f"""#!/bin/bash
-# hybrid-search-mcp:post-checkout — auto delta-reindex on branch switch (background)
+# hybrid-search-mcp:hook {_HOOK_VERSION} — post-checkout
+# auto delta-reindex on branch switch (background)
 
 # Args: $1=prev_head, $2=new_head, $3=flag (1=branch switch, 0=file checkout)
 [ "$3" = "1" ] || exit 0
 
-PROJECT_DIR="$(git rev-parse --show-toplevel)"
+{_WORKTREE_GUARD}
 
 # Skip when hybrid-search isn't initialized here (no auto-bootstrap)
 [ -d "$PROJECT_DIR/.hybrid-search" ] || exit 0
@@ -5267,8 +5340,28 @@ def _install_hook_file(
     status: str
     if hook_path.exists():
         existing = hook_path.read_text()
-        if _HOOK_IDENTITY_MARKER in existing:
+        if _HOOK_VERSION_MARKER in existing:
             status = "already-installed"
+        elif _HOOK_IDENTITY_MARKER in existing:
+            # Ours, but from an older generation. Refresh it — otherwise a
+            # fix to the hook body only ever reaches fresh checkouts.
+            if existing.lstrip().startswith("#!"):
+                marker_line = existing.split("\n", 1)[1].lstrip()
+                purely_ours = marker_line.startswith("# hybrid-search-mcp:")
+            else:
+                purely_ours = False
+            if purely_ours:
+                hook_path.write_text(hook_content)
+            else:
+                # Someone else's hook with our section appended at the end;
+                # cut our section and re-append the current one.
+                head = existing.split(f"# --- {section_header} ---", 1)[0]
+                hook_path.write_text(
+                    head.rstrip("\n")
+                    + f"\n\n# --- {section_header} ---\n"
+                    + hook_content.split("\n", 1)[1]
+                )
+            status = "updated"
         else:
             with open(hook_path, "a") as f:
                 f.write(f"\n# --- {section_header} ---\n")
@@ -5316,9 +5409,15 @@ def cmd_install_hook(args: argparse.Namespace) -> None:
         _build_post_checkout_script(venv_python),
         section_header="Hybrid Search auto-reindex (post-checkout)",
     )
+    merge_status = _install_hook_file(
+        hooks_dir / "post-merge",
+        _build_post_merge_script(venv_python),
+        section_header="Hybrid Search auto-reindex (post-merge)",
+    )
 
     print(f"post-commit:   {commit_status}  ({hooks_dir / 'post-commit'})")
     print(f"post-checkout: {checkout_status}  ({hooks_dir / 'post-checkout'})")
+    print(f"post-merge:    {merge_status}  ({hooks_dir / 'post-merge'})")
     print(
         "Hooks will auto-reindex on commit AND branch switch "
         "(background, non-blocking, shared lock)."
