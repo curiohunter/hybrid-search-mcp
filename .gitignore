@@ -23,3 +23,13 @@ scripts/.poc_cache/
 # Generated per machine by `setup --codex` — the manifest embeds absolute
 # interpreter paths, so it is local configuration, not something to ship.
 .codex-plugin/
+
+# hybrid-search-mcp (auto-added — wiki is machine-local)
+.hybrid-search/wiki/
+.hybrid-search/wiki-gaps.*
+.hybrid-search/coverage.json
+.hybrid-search/.reindex.lock
+.hybrid-search/.gaps-shown
+.hybrid-search/needs_synthesis
+.hybrid-search/qa/
+.hybrid-search/qa-archive/
