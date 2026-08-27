@@ -35,6 +35,9 @@ class ProviderSpec:
     # measured with tiktoken (OpenAI's tokenizer, the only one vendored).
     # 1.0 means the counts are exact for this provider.
     tokenizer_skew: float = 1.0
+    # Local servers (Ollama) accept any bearer token; a placeholder is
+    # sent so the request shape stays identical across providers.
+    requires_key: bool = True
 
 
 PROVIDERS: dict[str, ProviderSpec] = {
@@ -74,6 +77,27 @@ PROVIDERS: dict[str, ProviderSpec] = {
         # conservative, because over-budget text is dropped without a word.
         tokenizer_skew=1.25,
     ),
+    "ollama": ProviderSpec(
+        name="ollama",
+        base_url="http://localhost:11434/v1",
+        key_env="OLLAMA_API_KEY",
+        embed_model="qwen3-embedding:0.6b",
+        embed_dim=1024,
+        # Ollama serves the model with num_ctx=4096 by default and
+        # truncates anything past it without an error, same failure mode
+        # as Gemini — the ceiling here is the server's window, not the
+        # model's 32k.
+        max_input_tokens=4096,
+        supports_dimensions=False,
+        # No chat lane: translation resolves its provider independently
+        # and must not land on a server with only an embedding model.
+        chat_model="",
+        # Qwen3/tiktoken ratio is near 1.0 on code and below 1.0 on
+        # Korean prose; 1.25 clears the observed worst case, matching the
+        # margin used for Gemini.
+        tokenizer_skew=1.25,
+        requires_key=False,
+    ),
 }
 
 # Per-input token ceilings that differ from the provider default. The
@@ -87,6 +111,7 @@ MODEL_INPUT_LIMITS: dict[str, int] = {
     "gemini-embedding-2-preview": 8192,
     "text-embedding-3-small": 8000,
     "text-embedding-3-large": 8000,
+    "qwen3-embedding:0.6b": 4096,
 }
 
 
@@ -99,6 +124,7 @@ MODEL_INPUT_USD_PER_MTOK: dict[str, float] = {
     "gemini-embedding-001": 0.15,
     "text-embedding-3-small": 0.02,
     "text-embedding-3-large": 0.13,
+    "qwen3-embedding:0.6b": 0.0,
 }
 
 
@@ -174,4 +200,7 @@ def load_dotenv_key(key: str) -> str:
 
 def api_key(spec: ProviderSpec) -> str:
     """Key for ``spec`` from the environment, then ``.env.local``."""
-    return os.environ.get(spec.key_env, "") or load_dotenv_key(spec.key_env)
+    found = os.environ.get(spec.key_env, "") or load_dotenv_key(spec.key_env)
+    if not found and not spec.requires_key:
+        return "local"
+    return found
