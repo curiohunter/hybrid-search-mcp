@@ -65,6 +65,11 @@ MODEL_MAX_TOKENS: dict[str, int] = {
 class EmbeddingConfig:
     openai_model: str = "text-embedding-3-small"
     batch_size: int = 100  # OpenAI supports up to 2048 inputs per request
+    # Endpoint override for a provider that does not live at its default
+    # address — a local Ollama on another machine, say. Config rather than
+    # env only: the MCP server is spawned directly by the host, not through
+    # a login shell, so it never sees ~/.zshenv.
+    base_url: str = ""
     # Output width requested from providers that support it (Gemini/MRL).
     # 0 = use the provider default. Changing this invalidates the index.
     dimensions: int = 0
@@ -249,6 +254,7 @@ def load_config(config_path: Path | None = None) -> Config:
     emb_raw = raw.get("embedding", {})
     embedding = EmbeddingConfig(
         openai_model=emb_raw.get("openai_model", "text-embedding-3-small"),
+        base_url=emb_raw.get("base_url", ""),
         dimensions=int(emb_raw.get("dimensions", 0)),
         batch_size=emb_raw.get("batch_size", 100),
         ollama_model=emb_raw.get("ollama_model", ""),
