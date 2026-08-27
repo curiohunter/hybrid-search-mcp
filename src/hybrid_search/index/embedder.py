@@ -46,7 +46,9 @@ class Embedder:
         self._api_key: str | None = None
         self._spec = providers.resolve(config.backend)
         self._embed_url = (
-            os.environ.get(BASE_URL_ENV, "").rstrip("/") or self._spec.base_url
+            os.environ.get(BASE_URL_ENV, "").rstrip("/")
+            or (config.base_url or "").rstrip("/")
+            or self._spec.base_url
         ) + "/embeddings"
         self._model = _resolve_model(config, self._spec)
         self._embedding_dim = _resolve_dim(config, self._spec)
