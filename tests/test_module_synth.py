@@ -338,13 +338,18 @@ def test_synthesize_embeds_when_embedder_provided(tmp_path):
     emb = _FakeEmbedder()
     stats = synthesize_modules(db, PROJECT_ID, embedder=emb)
     assert stats["embedded"] == 1
-    assert emb.call_count == 1
+    # Two batches per pass: the card text and the module names. They are
+    # embedded separately because concatenating them lets each erase the
+    # other at query time.
+    assert emb.call_count == 2
 
     m = db.get_modules(PROJECT_ID)[0]
     assert m.summary_vector is not None
     vec = np.frombuffer(m.summary_vector, dtype=np.float32)
     assert vec.size == 8
     assert m.vector_input_hash and len(m.vector_input_hash) == 16
+    assert m.name_vector is not None
+    assert np.frombuffer(m.name_vector, dtype=np.float32).size == 8
 
 
 def test_embedding_skipped_on_rerun_when_text_unchanged(tmp_path):
@@ -357,8 +362,9 @@ def test_embedding_skipped_on_rerun_when_text_unchanged(tmp_path):
     # First run embeds, second run short-circuits on vector_input_hash match.
     assert s1["embedded"] >= 1
     assert s2["embedded"] == 0
-    # _FakeEmbedder only called on the first run.
-    assert emb.call_count == 1
+    # _FakeEmbedder only called on the first run (two batches: card text
+    # and names).
+    assert emb.call_count == 2
 
 
 def test_embedding_noop_when_embedder_is_none(tmp_path):

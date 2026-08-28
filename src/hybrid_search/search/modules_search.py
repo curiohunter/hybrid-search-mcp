@@ -302,13 +302,26 @@ def search_modules(
                 token_score += occ
 
         vec_score = 0.0
-        if use_vector and m.summary_vector:
+        if use_vector:
+            # Name and content are separate signals, compared separately.
+            # They used to be concatenated before embedding, which let each
+            # erase the other: a module whose name answers the query
+            # exactly ("문제은행" → problem-bank, cosine 0.657 on the name
+            # alone) fell to 15th once its file listing was folded in
+            # (0.476), losing to an unrelated module. The stronger of the
+            # two wins — a name match and a content match are both
+            # legitimate reasons to surface a module, and neither should
+            # have to survive dilution by the other.
             try:
-                mv = np.frombuffer(m.summary_vector, dtype=np.float32)
-                if mv.size == q.size:
-                    cosine = float(np.dot(q, mv))
-                    if cosine >= VECTOR_MIN_COSINE:
-                        vec_score = cosine * VECTOR_WEIGHT
+                best = 0.0
+                for blob in (m.name_vector, m.summary_vector):
+                    if not blob:
+                        continue
+                    mv = np.frombuffer(blob, dtype=np.float32)
+                    if mv.size == q.size:
+                        best = max(best, float(np.dot(q, mv)))
+                if best >= VECTOR_MIN_COSINE:
+                    vec_score = best * VECTOR_WEIGHT
             except (ValueError, TypeError):
                 pass
 
