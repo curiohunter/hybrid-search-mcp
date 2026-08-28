@@ -11,7 +11,7 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "8"
+SCHEMA_VERSION = "9"
 
 # Semantic labels for call-edge confidence (M1.1).
 # Order: weakest → strongest; _confidence_filter relies on this ordering.
@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS modules (
     member_hash TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     summary_vector BLOB,
+    name_vector BLOB,
     vector_input_hash TEXT
 );
 
@@ -255,6 +256,12 @@ class ModuleRecord:
     # vector was computed over, so re-embedding is skipped when the card
     # text has not changed.
     summary_vector: bytes | None = None
+    # Phase 6: the module *name* embedded on its own. Name and content are
+    # different signals; concatenating them before embedding lets each
+    # erase the other — a module whose name matches the query exactly was
+    # diluted to 15th place by its own file listing. Scored separately and
+    # combined at query time instead.
+    name_vector: bytes | None = None
     vector_input_hash: str | None = None
 
 
@@ -443,6 +450,19 @@ class StoreDB:
                 """
             )
             logger.info("Migrated schema v7 → v8 (conversation_meta table)")
+
+        if cur_ver < 9 <= target_ver:
+            # v8 → v9: modules.name_vector. The module name carries the
+            # cross-language signal a multilingual embedding model can use
+            # directly ("문제은행" → "problem-bank", cosine 0.657) — but only
+            # when it is embedded alone. Mixed into the card text it was
+            # lost among filenames.
+            existing = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(modules)")
+            }
+            if "name_vector" not in existing:
+                self._conn.execute("ALTER TABLE modules ADD COLUMN name_vector BLOB")
+            logger.info("Migrated schema v8 → v9 (modules.name_vector)")
 
         self._conn.execute(
             "UPDATE index_meta SET value = ? WHERE key = 'schema_version'",
@@ -1184,12 +1204,21 @@ class StoreDB:
         module_id: str,
         summary_vector: bytes,
         vector_input_hash: str,
+        name_vector: bytes | None = None,
     ) -> None:
         """Write only the embedding fields — avoids rewriting text columns
         when synthesis hasn't otherwise changed the card."""
+        if name_vector is None:
+            conn.execute(
+                "UPDATE modules SET summary_vector = ?, vector_input_hash = ? "
+                "WHERE id = ?",
+                (summary_vector, vector_input_hash, module_id),
+            )
+            return
         conn.execute(
-            "UPDATE modules SET summary_vector = ?, vector_input_hash = ? WHERE id = ?",
-            (summary_vector, vector_input_hash, module_id),
+            "UPDATE modules SET summary_vector = ?, vector_input_hash = ?, "
+            "name_vector = ? WHERE id = ?",
+            (summary_vector, vector_input_hash, name_vector, module_id),
         )
 
     def set_file_modules(
@@ -1274,4 +1303,5 @@ class StoreDB:
             updated_at=row["updated_at"],
             summary_vector=row["summary_vector"] if "summary_vector" in keys else None,
             vector_input_hash=row["vector_input_hash"] if "vector_input_hash" in keys else None,
+            name_vector=row["name_vector"] if "name_vector" in keys else None,
         )
