@@ -151,24 +151,44 @@ def _embed_modules(
         if not text:
             continue
         inp_hash = _vector_input_hash(text)
-        if m.vector_input_hash == inp_hash and m.summary_vector:
+        # An index written before name vectors existed has a matching
+        # fingerprint but no name vector; re-embed those once so the
+        # feature reaches indexes that are otherwise up to date.
+        if (
+            m.vector_input_hash == inp_hash
+            and m.summary_vector
+            and getattr(m, "name_vector", None)
+        ):
             continue
         pending.append((mid, text, inp_hash))
 
     if not pending:
         return 0
 
+    # The name is embedded on its own, not folded into the card text. A
+    # multilingual model already relates "문제은행" to "problem-bank"
+    # (cosine 0.657) — but only when the name is the whole input. Mixed
+    # with a file listing that signal drops to 0.476 and loses to an
+    # unrelated module. Two vectors, compared separately at query time.
+    name_by_id = {mid: (records[mid].name or "") for mid, _t, _h in pending}
     try:
         vectors = embedder.embed_texts([t for _, t, _ in pending])
+        names = [name_by_id[mid] or "" for mid, _t, _h in pending]
+        name_vectors = embedder.embed_texts(names) if any(names) else None
     except Exception as e:  # noqa: BLE001 — embedding is non-fatal
         logger.warning("Module embedding failed (non-fatal): %s", e)
         return 0
 
     written = 0
     with db.transaction() as conn:
-        for (mid, _text, inp_hash), vec in zip(pending, vectors):
+        for i, ((mid, _text, inp_hash), vec) in enumerate(zip(pending, vectors)):
             blob = np.asarray(vec, dtype=np.float32).tobytes()
-            db.update_module_vector(conn, mid, blob, inp_hash)
+            nblob = (
+                np.asarray(name_vectors[i], dtype=np.float32).tobytes()
+                if name_vectors is not None
+                else None
+            )
+            db.update_module_vector(conn, mid, blob, inp_hash, nblob)
             written += 1
     return written
 
