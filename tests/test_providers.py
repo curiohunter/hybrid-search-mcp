@@ -178,7 +178,11 @@ class TestOnlyFullRebuildsClaimTheVectorSpace:
     """An incremental pass re-embeds the changed files and nothing else.
     Stamping the fingerprint there would relabel a half-converted index as
     clean and switch off the guard that was protecting it — which is
-    exactly what happened to a live project mid-migration."""
+    exactly what happened to a live project mid-migration.
+
+    The one exception is an index with no chunks at all: a first `index`
+    run is a full rebuild in everything but the flag, and has no prior
+    vectors it could mislabel."""
 
     @staticmethod
     def _pipeline(fingerprint="gemini:gemini-embedding-2:1536"):
@@ -188,28 +192,45 @@ class TestOnlyFullRebuildsClaimTheVectorSpace:
         pipe._embedder.fingerprint = fingerprint
         return pipe
 
-    def test_full_rebuild_stamps(self):
+    @staticmethod
+    def _db(*, chunks: int, stored: str | None = None):
         db = MagicMock()
-        self._pipeline()._record_vector_space(db, full_rebuild=True)
+        db.get_chunk_count.return_value = chunks
+        db.get_meta.return_value = stored
+        return db
+
+    def test_full_rebuild_stamps(self):
+        db = self._db(chunks=900)
+        self._pipeline()._record_vector_space(db, full_rebuild=True, project_id="p")
+        db.set_meta.assert_called_once_with(
+            providers.EMBEDDING_FINGERPRINT_KEY, "gemini:gemini-embedding-2:1536"
+        )
+
+    def test_first_index_stamps_even_unforced(self):
+        """A new project has no vectors to relabel. Leaving the marker unset
+        made the search side read the absence as LEGACY_FINGERPRINT and drop
+        the vector lane on an index built entirely by the current model."""
+        db = self._db(chunks=0)
+        self._pipeline()._record_vector_space(db, full_rebuild=False, project_id="p")
         db.set_meta.assert_called_once_with(
             providers.EMBEDDING_FINGERPRINT_KEY, "gemini:gemini-embedding-2:1536"
         )
 
     def test_incremental_over_a_legacy_index_does_not_stamp(self):
-        db = MagicMock()
-        db.get_meta.return_value = None  # legacy index
-        self._pipeline()._record_vector_space(db, full_rebuild=False)
+        """Missing marker + existing chunks is a pre-fingerprint index, not a
+        new one. This is the case the emptiness test must not swallow."""
+        db = self._db(chunks=900, stored=None)
+        self._pipeline()._record_vector_space(db, full_rebuild=False, project_id="p")
         db.set_meta.assert_not_called()
 
     def test_incremental_in_the_same_space_does_not_stamp_either(self):
         """Nothing to record — the marker already says this."""
-        db = MagicMock()
-        db.get_meta.return_value = "gemini:gemini-embedding-2:1536"
-        self._pipeline()._record_vector_space(db, full_rebuild=False)
+        db = self._db(chunks=900, stored="gemini:gemini-embedding-2:1536")
+        self._pipeline()._record_vector_space(db, full_rebuild=False, project_id="p")
         db.set_meta.assert_not_called()
 
     def test_a_stubbed_embedder_is_ignored(self):
-        db = MagicMock()
+        db = self._db(chunks=0)
         pipe = self._pipeline(fingerprint=MagicMock())
-        pipe._record_vector_space(db, full_rebuild=True)
+        pipe._record_vector_space(db, full_rebuild=True, project_id="p")
         db.set_meta.assert_not_called()
