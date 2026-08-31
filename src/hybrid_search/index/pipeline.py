@@ -330,12 +330,16 @@ class IndexingPipeline:
             # later provider or model change is detected instead of
             # silently comparing cosines across incompatible spaces.
             #
-            # ONLY a full rebuild may claim it. An incremental pass embeds
-            # the changed files and leaves every other vector untouched, so
-            # stamping there would relabel a mixed index as clean and switch
-            # the very guard that protects it back on.
+            # Only a full rebuild — or a first index, which has no prior
+            # vectors to speak for — may claim it. An incremental pass over
+            # an existing index embeds the changed files and leaves every
+            # other vector untouched, so stamping there would relabel a
+            # mixed index as clean and switch the very guard that protects
+            # it back on.
+            # Runs before any chunk is written, so the emptiness test inside
+            # sees the index as it was on entry.
             # Bookkeeping only — never the reason an index fails to build.
-            self._record_vector_space(db, full_rebuild)
+            self._record_vector_space(db, full_rebuild, project_id)
 
             self._process_deletions(db, vector_engine, bm25_engine, project_id, scan.deleted)
 
@@ -472,13 +476,23 @@ class IndexingPipeline:
             shutil.rmtree(rebuilding_dir, ignore_errors=True)
             raise
 
-    def _record_vector_space(self, db, full_rebuild: bool) -> None:
+    def _record_vector_space(self, db, full_rebuild: bool, project_id: str) -> None:
         """Stamp the index's vector space, or warn that it is now mixed."""
         fingerprint = getattr(self._embedder, "fingerprint", None)
         if not isinstance(fingerprint, str) or not fingerprint:
             return
         try:
-            if full_rebuild:
+            # A first index is a full rebuild in everything but the flag: it
+            # holds no prior vectors, so there is nothing for this pass to
+            # relabel. Without this an unforced `index` on a new project
+            # leaves the marker unset, and the search side then reads the
+            # absence as LEGACY_FINGERPRINT and disables the vector lane on
+            # an index whose vectors all came from one model, in one run.
+            #
+            # The emptiness test is what keeps LEGACY_FINGERPRINT honest.
+            # A pre-fingerprint index is missing the marker too, but it has
+            # chunks — so it stays unstamped and keeps its guard.
+            if full_rebuild or db.get_chunk_count(project_id) == 0:
                 db.set_meta(EMBEDDING_FINGERPRINT_KEY, fingerprint)
                 return
             stored = db.get_meta(EMBEDDING_FINGERPRINT_KEY)
