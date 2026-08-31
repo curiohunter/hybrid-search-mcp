@@ -17,7 +17,7 @@
 | 항목 | 결과 |
 |---|---|
 | `git pull` | `a3ea92c` → `c95f7c4`, fast-forward 5커밋 |
-| 테스트 | pull 직후 **1510 passed**, 수정 후 **1511 passed** (167.6s) |
+| 테스트 | pull 직후 **1510 passed** → 수정 둘을 거쳐 **1515 passed** (167.0s) |
 | 훅 재설치 | 3개 프로젝트 post-commit/checkout **updated(v2)** + **post-merge 신설** |
 | 스키마 v9 | 양쪽 DB `modules.name_vector` 컬럼 마이그레이션 |
 | name_vector 충전 | gate-ripgrep 32/32, valueinmath-web 382/382 |
@@ -25,6 +25,7 @@
 | 이 레포 memory hooks | **4/4 설치** → `.claude/settings.local.json` |
 | 이 레포 인덱싱 | 신규 등록, 293파일 / 2818청크 / 1322.7s |
 | `_record_vector_space` 결함 | **수정** — 신규 인덱스가 fingerprint를 기록한다 |
+| `_install_hook_file` 결함 | **수정** — 훅이 두 벌로 깔리던 것, 그리고 그게 자가 치유가 안 되던 것 |
 
 ---
 
@@ -351,6 +352,93 @@ usage: hybrid-search-mcp index [-h] [--force] [--wiki] [--yes] [path]
 
 ---
 
+## 발견 4 — 커밋해보니 훅이 두 벌이었다
+
+3-2 수정을 커밋한 순간 post-commit이 죽었다.
+
+```
+.git/hooks/post-commit: line 7:
+  /Users/ian/.local/share/uv/tools/hybrid-search-mcp/bin/python:
+  No such file or directory
+```
+
+**오늘 재설치한 훅인데도** 그렇다. 열어보니 파일에 완전한 두 벌이
+들어 있었다.
+
+| 구간 | 내용 |
+|---|---|
+| 1–23행 | pre-v2 본문. python 경로가 `uv/tools/**hybrid-search-mcp**/` — 패키지가 `memory-layer-mcp`로 개명되며 사라진 경로다 |
+| 24행~ | 올바른 v2 본문. 워크트리 가드 있음, `<repo>/.venv/bin/python` |
+
+### 노이즈가 아니다
+
+두 구간이 **같은 `LOCK_FILE`을 쓴다.** 1–23행의 `nohup` 블록은 락을 먼저
+쓰고(19행) 죽은 python을 부른 뒤 락을 지운다. 그 사이 v2 구간이 락을
+발견하고 PID가 살아 있으면 **`exit 0`으로 재인덱싱을 통째로 건너뛴다.**
+죽은 훅이 살아 있는 훅을 막는다.
+
+### 원인 — `purely_ours`가 우리 자신을 못 알아본다
+
+`cli.py`의 판정이 **두 번째 줄이 `# hybrid-search-mcp:`로 시작하는지**만
+봤다. v1 훅의 두 번째 줄은 이렇다.
+
+```
+# Hybrid Search — auto delta-reindex on commit (background, non-blocking)
+```
+
+버전 마커는 `ecae799`(v2)에서 처음 생겼으므로 v1에는 있을 수가 없다.
+결과적으로 **우리 자신의 구버전 훅이 "남의 훅"으로 분류되어 보존**되고,
+그 뒤에 v2가 덧붙는다.
+
+gate-ripgrep과 valueinmath-web은 배너가 달라 통과했다 — 이 레포만
+걸렸지만 결함은 일반적이다.
+
+### 더 나쁜 것 — 한번 망가지면 자가 치유가 안 된다
+
+망가진 파일은 24행 뒤에 **v2 마커를 갖고 있다.** 그래서 재설치가
+`already-installed`로 빠져나가고 **영원히 고쳐지지 않는다.**
+`ecae799`가 "훅 본문 수정이 기존 설치에 도달하지 못한다"를 고치려고 도입한
+마커가, 이 경우엔 정확히 그 문제를 다시 만든다.
+
+이건 테스트를 쓰다가 드러났다. 코드만 고쳤다면 새 설치만 나아지고
+기존 설치는 그대로였을 것이다.
+
+### 적용한 수정
+
+`src/hybrid_search/cli.py:_install_hook_file`
+
+- 소유권을 **파일 전체가 아니라 우리 섹션 헤더 앞부분(`head`)** 으로
+  판정한다. 덧붙인 뒤에는 전부 우리 것이어도 헤더가 있기 때문이다.
+- 배너를 두 세대 모두 인정한다 — `# hybrid-search-mcp:` 와 `# Hybrid Search`.
+- `duplicated = head_is_ours and section_marker in existing`. 참이면
+  버전 마커가 있어도 `already-installed`로 빠지지 않고 통째로 다시 쓴다.
+
+실측 — 재설치 한 번으로 치유됐다.
+
+```
+죽은 경로: 0 건        (이전 2건)
+LOCK_FILE= : 1 건      (이전 2건)
+python 경로: /Users/ian/projects/hybrid-search-mcp/.venv/bin/python
+```
+
+테스트 4건 추가 (`tests/test_hook_worktree_guard.py`):
+pre-v2 배너 교체 / 이미 중복된 훅의 치유 / 남의 훅 + 우리 구세대 섹션은
+제자리 갱신 / 남의 훅 + 현재 섹션은 그대로 둠. 전체 **1515 passed**.
+
+### 이것이 오늘 세 번째다
+
+같은 계열이 하루에 세 번 나왔다.
+
+| 층위 | 낡은 것이 계속 살아남은 이유 |
+|---|---|
+| 패키지 (발견 1) | uv 캐시가 재빌드를 삼킴 → `--no-cache` |
+| 훅 파일 (발견 4) | 배너 불일치로 자기 자신을 남으로 오인 |
+| 훅 마커 (발견 4) | 버전 마커가 치유 경로까지 막음 |
+
+`ecae799`가 훅 층위에서 고쳤다고 본 문제가 **아직 두 갈래 남아 있었다.**
+
+---
+
 ## 하지 말 것 — 전체 재인덱싱
 
 `name_vector`를 채우려고 `reindex`를 돌렸다. **10분 타임아웃에 죽었고
@@ -517,6 +605,17 @@ hybrid-search-mcp status | grep "All registered"
 ### C. `docs/handoff/2026-08-29-result-slot-allocation.md` — 설계 대기
 
 결과 슬롯 배분 재설계. 이번 세션에서 손대지 않았다.
+
+### C-2. 다른 기계의 훅 — 미확인
+
+발견 4는 v1 배너를 가진 설치본에서만 터진다. 맥북에도 v1 시절 훅이
+남아 있다면 같은 상태일 수 있다. 확인은 한 줄이면 된다.
+
+```bash
+grep -c 'LOCK_FILE=' .git/hooks/post-commit    # 2 이상이면 중복
+```
+
+수정된 `install-hook`을 한 번 돌리면 치유된다.
 
 ### D. 설치본 드리프트의 항구적 방지 — 미착수
 
