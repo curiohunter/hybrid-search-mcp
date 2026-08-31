@@ -99,3 +99,75 @@ class TestStaleHooksGetRefreshed:
         )
         assert status == "appended"
         assert "npx husky run" in h.read_text()
+
+    # The pre-v2 banner. It predates the version marker, so a test that
+    # only ever wrote "# hybrid-search-mcp:" never exercised this shape.
+    _V1 = (
+        "#!/bin/bash\n"
+        "# Hybrid Search — auto delta-reindex on commit (background, non-blocking)\n"
+        '"/gone/uv/tools/hybrid-search-mcp/bin/python" -m hybrid_search.cli reindex\n'
+    )
+
+    def test_the_pre_v2_banner_is_replaced_not_appended_to(self, tmp_path):
+        """The v1 body was misread as a stranger's hook and kept. Both
+        bodies then wrote the same lock file — the dead one could take the
+        lock and make the live one skip its reindex — and the dead one
+        still called a uv tool path that had since been renamed."""
+        h = tmp_path / "post-commit"
+        h.write_text(self._V1)
+        status = cli._install_hook_file(
+            h, cli._build_post_commit_script(Path("/v")), section_header="X"
+        )
+        assert status == "updated"
+        body = h.read_text()
+        assert "/gone/uv/tools" not in body
+        assert body.count("LOCK_FILE=") == 1
+
+    def test_an_already_duplicated_hook_heals(self, tmp_path):
+        """Repairing installs that the bug already wrote: the file carries
+        our section header, yet every line in it is still ours."""
+        h = tmp_path / "post-commit"
+        h.write_text(
+            self._V1
+            + "\n# --- X ---\n"
+            + cli._build_post_commit_script(Path("/old")).split("\n", 1)[1]
+        )
+        status = cli._install_hook_file(
+            h, cli._build_post_commit_script(Path("/v")), section_header="X"
+        )
+        assert status == "updated"
+        body = h.read_text()
+        assert "/gone/uv/tools" not in body
+        assert "/old" not in body
+        assert body.count("LOCK_FILE=") == 1
+
+    def test_a_foreign_hook_with_our_old_section_is_refreshed_in_place(self, tmp_path):
+        """The healing must not reach past our own section header: the
+        stranger's lines survive, our stale ones do not."""
+        h = tmp_path / "post-commit"
+        h.write_text(
+            "#!/bin/sh\nnpx husky run\n\n# --- X ---\n"
+            '"/gone/uv/tools/hybrid-search-mcp/bin/python" -m hybrid_search.cli reindex\n'
+        )
+        status = cli._install_hook_file(
+            h, cli._build_post_commit_script(Path("/v")), section_header="X"
+        )
+        assert status == "updated"
+        body = h.read_text()
+        assert "npx husky run" in body
+        assert "/gone/uv/tools" not in body
+        assert body.count("LOCK_FILE=") == 1
+
+    def test_a_foreign_hook_holding_the_current_section_is_left_alone(self, tmp_path):
+        """Version marker present and the head is not ours — nothing to do.
+        This is the cheap exit the duplicate check must not swallow."""
+        h = tmp_path / "post-commit"
+        h.write_text(
+            "#!/bin/sh\nnpx husky run\n\n# --- X ---\n"
+            + cli._build_post_commit_script(Path("/v")).split("\n", 1)[1]
+        )
+        status = cli._install_hook_file(
+            h, cli._build_post_commit_script(Path("/v")), section_header="X"
+        )
+        assert status == "already-installed"
+        assert "npx husky run" in h.read_text()
