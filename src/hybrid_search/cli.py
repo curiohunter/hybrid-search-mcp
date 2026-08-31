@@ -5340,25 +5340,44 @@ def _install_hook_file(
     status: str
     if hook_path.exists():
         existing = hook_path.read_text()
-        if _HOOK_VERSION_MARKER in existing:
+        section_marker = f"# --- {section_header} ---"
+        # Everything before our appended section. Judge ownership on this,
+        # not the whole file: once a pass has appended, the file carries
+        # our section header even when every line in it is ours.
+        head = existing.split(section_marker, 1)[0]
+        if head.lstrip().startswith("#!") and "\n" in head:
+            banner = head.split("\n", 1)[1].lstrip()
+            # Both generations of our banner. Matching only the version
+            # marker classified our own pre-v2 hook — which opens
+            # "# Hybrid Search — ..." — as a stranger's and kept it beside
+            # the new one. The two bodies then shared a lock file, so the
+            # dead one could take the lock and make the live one skip its
+            # reindex; it also still called a uv tool path since renamed.
+            head_is_ours = banner.startswith(
+                "# hybrid-search-mcp:"
+            ) or banner.startswith("# Hybrid Search")
+        else:
+            head_is_ours = False
+        # Our own body sitting in front of our own section: a duplicate the
+        # append path wrote. It carries the current version marker, so the
+        # cheap "already-installed" exit would leave it in place forever —
+        # the repair has to happen here or not at all.
+        duplicated = head_is_ours and section_marker in existing
+
+        if _HOOK_VERSION_MARKER in existing and not duplicated:
             status = "already-installed"
         elif _HOOK_IDENTITY_MARKER in existing:
-            # Ours, but from an older generation. Refresh it — otherwise a
-            # fix to the hook body only ever reaches fresh checkouts.
-            if existing.lstrip().startswith("#!"):
-                marker_line = existing.split("\n", 1)[1].lstrip()
-                purely_ours = marker_line.startswith("# hybrid-search-mcp:")
-            else:
-                purely_ours = False
-            if purely_ours:
+            # Ours, but from an older generation, or doubled. Refresh it —
+            # otherwise a fix to the hook body only ever reaches fresh
+            # checkouts.
+            if head_is_ours:
                 hook_path.write_text(hook_content)
             else:
                 # Someone else's hook with our section appended at the end;
                 # cut our section and re-append the current one.
-                head = existing.split(f"# --- {section_header} ---", 1)[0]
                 hook_path.write_text(
                     head.rstrip("\n")
-                    + f"\n\n# --- {section_header} ---\n"
+                    + f"\n\n{section_marker}\n"
                     + hook_content.split("\n", 1)[1]
                 )
             status = "updated"
