@@ -43,6 +43,16 @@ Rules:
 6. "Caveats" covers bug potential, edge cases, implicit dependencies
 7. Write in the same language as the existing wiki page (Korean if Korean, English if English)
 8. Use [[module-name]] wikilinks when referencing other modules
+9. NEVER RESTATE THE CODE. Do not describe what a function does line by
+   line, do not paraphrase signatures, do not summarize control flow the
+   reader can see by opening the file. Restated code competes with the
+   real chunks in the same embedding space and buries them (this index
+   was once 83% self-generated restatements — the search degraded until
+   the lane was rebuilt). Write ONLY what the code cannot say about
+   itself: why this design over the alternatives, invariants that must
+   hold, traps that cost someone a debugging session, tradeoffs and the
+   context that forced them. If a sentence would survive verbatim as a
+   code comment above the function, it is restatement — cut it.
 
 Output ONLY these sections (no title, no metadata):
 
