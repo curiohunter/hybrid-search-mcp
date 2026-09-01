@@ -1673,7 +1673,13 @@ class SearchOrchestrator:
                     ):
                         if _is_empty_turn(chunk.content):
                             continue
-                        if _is_meta_recall_text((chunk.content or "")[:300]):
+                        # Same envelope-stripping as _demote_meta_recall_conv:
+                        # the "[codex turn]" tag's tokens count as topical
+                        # anchors and would un-classify a pure recall turn.
+                        turn_text = _CONV_TURN_TAG_RE.sub(
+                            "", (chunk.content or "")[:300], count=1
+                        )
+                        if _is_meta_recall_text(turn_text):
                             continue
                         trust = (
                             f"[conversation - {source} - "
