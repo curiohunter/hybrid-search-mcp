@@ -194,6 +194,17 @@ def chunk_code_file(
     import_map = _extract_import_map(tree.root_node, language, source_bytes)
     raw_chunks = _extract_chunks(tree.root_node, node_types, source_bytes, rel_path, project_id, language, import_map)
 
+    # WS4a — module-level narrative. In this codebase the richest "why"
+    # lives in module docstrings and top-level comment blocks BETWEEN
+    # definitions; the node walk above never sees either (it only looks
+    # inside chunked nodes). Measured on the genesis slice: 3 of 5
+    # misses were module-level narratives.
+    module_rationale = _module_rationale_chunk(
+        tree.root_node, source_bytes, rel_path, project_id, language,
+    )
+    if module_rationale is not None:
+        raw_chunks.append(module_rationale)
+
     # Post-process: split large, merge small
     processed = _split_large_chunks(raw_chunks, source, rel_path, project_id, language)
     processed = _merge_small_chunks(processed, rel_path, project_id, language)
@@ -525,6 +536,14 @@ def _walk_node(
                 parent_name=parent_name,
                 calls=calls,
             ))
+            rationale_chunk = _maybe_rationale_chunk(
+                node, name=name, qualified_name=f"{rel_path}::{name}",
+                rel_path=rel_path, project_id=project_id, language=language,
+                docstring=docstring, source_bytes=source_bytes,
+                parent_name=parent_name, docstring_only=True,
+            )
+            if rationale_chunk is not None:
+                results.append(rationale_chunk)
             for child in node.children:
                 _walk_node(
                     child, node_types, source_bytes, rel_path,
@@ -565,6 +584,14 @@ def _walk_node(
             parent_name=parent_name,
             calls=calls,
         ))
+        rationale_chunk = _maybe_rationale_chunk(
+            node, name=name, qualified_name=qualified,
+            rel_path=rel_path, project_id=project_id, language=language,
+            docstring=docstring, source_bytes=source_bytes,
+            parent_name=parent_name,
+        )
+        if rationale_chunk is not None:
+            results.append(rationale_chunk)
         return
 
     # Not a matching node type — recurse into children
@@ -866,6 +893,227 @@ def _extract_rationale(node, source_bytes: bytes, language: str) -> str | None:
     return "\n".join(unique)
 
 
+# ── rationale chunks (WS4a) ───────────────────────────────────────────
+#
+# Long design narratives — docstrings that explain WHY, multi-line
+# comment blocks quoting the reason a change exists — were only ever
+# embedded INSIDE their code chunk, diluted by the code around them. A
+# why-question then matches the narrative but the chunk ranks on its
+# code (measured: the f32-pinning rationale lives in a docstring whose
+# chunk never reached top-50 for "왜 f32로 고정했어?"). Emit the
+# narrative as its OWN chunk so retrieval can rank the prose directly;
+# the code chunk keeps its copy (synthesis lives beside raw, never
+# replaces it — master plan 불변식 2).
+
+# Total narrative below this isn't worth a separate retrieval unit.
+_RATIONALE_CHUNK_MIN_CHARS = 200
+# A comment group must be at least this long to count as narrative —
+# one-liners mirror the code and add nothing (MTL: restatements are
+# negative transfer).
+_LONG_COMMENT_MIN_CHARS = 120
+# Short mechanical docstrings ("Return the tail of X.") are API
+# restatements, not rationale; only long docstrings join the narrative.
+_NARRATIVE_DOCSTRING_MIN_CHARS = 200
+
+
+def _clean_comment_line(line: str) -> str:
+    stripped = line.strip()
+    while stripped and stripped[0] in "/#*-! ":
+        stripped = stripped[1:].lstrip()
+    if stripped.endswith("*/"):
+        stripped = stripped[:-2].rstrip()
+    return stripped
+
+
+def _collect_long_comments(node, source_bytes: bytes) -> list[str]:
+    """Comment groups inside the node body long enough to be narrative.
+
+    Consecutive line comments (adjacent lines) merge into one group —
+    Korean/English design notes are typically written as a run of ``//``
+    or ``#`` lines, one thought across many nodes.
+    """
+    found: list[tuple[int, int, str]] = []  # (start_line, end_line, text)
+    stack = list(node.children)
+    while stack:
+        n = stack.pop()
+        if n.type in _COMMENT_NODE_TYPES:
+            cleaned = "\n".join(
+                c for c in (
+                    _clean_comment_line(line)
+                    for line in _node_text(source_bytes, n).splitlines()
+                ) if c
+            )
+            if cleaned:
+                found.append((n.start_point[0], n.end_point[0], cleaned))
+        else:
+            stack.extend(n.children)
+
+    found.sort()
+    groups: list[list[str]] = []
+    last_end = None
+    for start, end, text in found:
+        if last_end is not None and start <= last_end + 1 and groups:
+            groups.append([*groups.pop(), text])
+        else:
+            groups.append([text])
+        last_end = end
+    return [
+        joined for g in groups
+        if len(joined := "\n".join(g)) >= _LONG_COMMENT_MIN_CHARS
+    ]
+
+
+def _maybe_rationale_chunk(
+    node,
+    *,
+    name: str,
+    qualified_name: str,
+    rel_path: str,
+    project_id: str,
+    language: str,
+    docstring: str | None,
+    source_bytes: bytes,
+    parent_name: str | None,
+    docstring_only: bool = False,
+) -> "CodeChunk | None":
+    """A separate ``rationale`` chunk when the node carries real narrative.
+
+    ``docstring_only`` is set for class nodes: their body walk would
+    re-collect every method's comments, which the per-method chunks
+    already claim — the class contributes only its own docstring.
+    """
+    parts: list[str] = []
+    if docstring and len(docstring) >= _NARRATIVE_DOCSTRING_MIN_CHARS:
+        parts.append(docstring)
+    if not docstring_only:
+        parts.extend(_collect_long_comments(node, source_bytes))
+
+    seen: set[str] = set()
+    unique = [p for p in parts if not (p in seen or seen.add(p))]
+    narrative = "\n\n".join(unique)
+    if len(narrative) < _RATIONALE_CHUNK_MIN_CHARS:
+        return None
+
+    return CodeChunk(
+        id=_make_chunk_id(
+            project_id, f"{rel_path}::rationale", node.start_byte, node.end_byte
+        ),
+        project_id=project_id,
+        file_path=rel_path,
+        language=language,
+        node_type="rationale",
+        name=name,
+        qualified_name=f"{qualified_name}::rationale",
+        content=narrative,
+        embedding_input="",
+        docstring=None,
+        start_line=node.start_point[0] + 1,
+        end_line=node.end_point[0] + 1,
+        start_byte=node.start_byte,
+        end_byte=node.end_byte,
+        parent_name=parent_name,
+    )
+
+
+def _module_docstring(root_node, source_bytes: bytes, language: str) -> str | None:
+    """The file-level docstring (python) or leading block comment (TS/JS)."""
+    for child in root_node.children:
+        if language == "python":
+            if child.type == "comment":
+                continue
+            if child.type == "expression_statement" and child.children:
+                inner = child.children[0]
+                if inner.type == "string":
+                    text = _node_text(source_bytes, inner)
+                    return text.strip("\"'").strip()
+            return None
+        if child.type in _COMMENT_NODE_TYPES:
+            text = _node_text(source_bytes, child)
+            if text.startswith("/*"):
+                cleaned = "\n".join(
+                    c for c in (
+                        _clean_comment_line(line) for line in text.splitlines()
+                    ) if c
+                )
+                return cleaned or None
+            return None
+        return None
+    return None
+
+
+def _module_rationale_chunk(
+    root_node,
+    source_bytes: bytes,
+    rel_path: str,
+    project_id: str,
+    language: str,
+) -> "CodeChunk | None":
+    """One rationale chunk for the file's own narrative.
+
+    Sources: the module docstring, plus TOP-LEVEL long comment groups —
+    section commentary written between definitions, which belongs to no
+    chunked node and was previously unindexed prose.
+    """
+    parts: list[str] = []
+    doc = _module_docstring(root_node, source_bytes, language)
+    if doc and len(doc) >= _NARRATIVE_DOCSTRING_MIN_CHARS:
+        parts.append(doc)
+
+    # Top-level comments only — one level deep, so function bodies (whose
+    # comments the per-node chunks already claim) are not re-collected.
+    found: list[tuple[int, int, str]] = []
+    for child in root_node.children:
+        if child.type in _COMMENT_NODE_TYPES:
+            cleaned = "\n".join(
+                c for c in (
+                    _clean_comment_line(line)
+                    for line in _node_text(source_bytes, child).splitlines()
+                ) if c
+            )
+            if cleaned:
+                found.append((child.start_point[0], child.end_point[0], cleaned))
+    groups: list[list[str]] = []
+    last_end = None
+    for start, end, text in sorted(found):
+        if last_end is not None and start <= last_end + 1 and groups:
+            groups.append([*groups.pop(), text])
+        else:
+            groups.append([text])
+        last_end = end
+    parts.extend(
+        joined for g in groups
+        if len(joined := "\n".join(g)) >= _LONG_COMMENT_MIN_CHARS
+    )
+
+    seen: set[str] = set()
+    unique = [p for p in parts if not (p in seen or seen.add(p))]
+    narrative = "\n\n".join(unique)
+    if len(narrative) < _RATIONALE_CHUNK_MIN_CHARS:
+        return None
+
+    stem = rel_path.rsplit("/", 1)[-1]
+    return CodeChunk(
+        id=_make_chunk_id(
+            project_id, f"{rel_path}::module-rationale",
+            root_node.start_byte, root_node.end_byte,
+        ),
+        project_id=project_id,
+        file_path=rel_path,
+        language=language,
+        node_type="rationale",
+        name=f"{stem} (module)",
+        qualified_name=f"{rel_path}::module::rationale",
+        content=narrative,
+        embedding_input="",
+        docstring=None,
+        start_line=1,
+        end_line=root_node.end_point[0] + 1,
+        start_byte=root_node.start_byte,
+        end_byte=root_node.end_byte,
+        parent_name=None,
+    )
+
+
 def _clean_jsdoc(text: str) -> str:
     """Clean JSDoc comment to plain text."""
     lines = text.split("\n")
@@ -1107,6 +1355,14 @@ def _merge_small_chunks(
 
     for chunk in chunks:
         chunk_size = _non_ws_count(chunk.content)
+
+        # Rationale chunks are narrative units, not code fragments —
+        # merging one into a "merged" code chunk re-buries the prose this
+        # lane exists to surface, and mixes its byte range into an id it
+        # no longer describes.
+        if chunk.node_type == "rationale":
+            result.append(chunk)
+            continue
 
         if chunk_size >= SMALL_CHUNK_THRESHOLD:
             if buffer:

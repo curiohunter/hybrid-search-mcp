@@ -1,0 +1,78 @@
+{
+  "_comment": "WS4 genesis 슬라이스 (2026-09-01). why 질문 — 정답이 코드가 아니라 서술(docstring/주석/커밋)에 사는 유형. rationale 레인(WS4a)의 게이트. 실행: confidence_eval.py --cwd <이 레포> --gold benchmarks/genesis_gold.json",
+  "queries": [
+    {
+      "id": "G1",
+      "category": "genesis",
+      "query": "임베딩 벡터를 왜 f32로 고정하게 됐어?",
+      "expected_files": ["src/hybrid_search/search/vector.py"],
+      "primary_target": "src/hybrid_search/search/vector.py"
+    },
+    {
+      "id": "G2",
+      "category": "genesis",
+      "query": "인덱스 시점 supersession 매칭은 왜 쿼리 시점보다 엄격하게 만들었어?",
+      "expected_files": ["src/hybrid_search/memory/supersession.py"],
+      "primary_target": "src/hybrid_search/memory/supersession.py"
+    },
+    {
+      "id": "G3",
+      "category": "genesis",
+      "query": "메모리 훅은 왜 실패해도 조용히 넘어가게 되어 있어?",
+      "expected_files": ["src/hybrid_search/hooks.py"],
+      "primary_target": "src/hybrid_search/hooks.py"
+    },
+    {
+      "id": "G4",
+      "category": "genesis",
+      "query": "쿼리 임베딩이 실패했을 때 왜 검색 전체를 죽이지 않고 BM25만으로 계속하기로 했어?",
+      "expected_files": ["src/hybrid_search/search/orchestrator.py"],
+      "primary_target": "src/hybrid_search/search/orchestrator.py",
+      "accept_paths": [
+        "src/hybrid_search/search/orchestrator.py",
+        "commit:임베딩 공급자 장애"
+      ]
+    },
+    {
+      "id": "G5",
+      "category": "genesis",
+      "query": "정확한 심볼 검색에서는 authority 부스트를 왜 우회해?",
+      "expected_files": ["src/hybrid_search/search/orchestrator.py"],
+      "primary_target": "src/hybrid_search/search/orchestrator.py",
+      "accept_paths": [
+        "src/hybrid_search/search/orchestrator.py",
+        "commit:authority"
+      ]
+    },
+    {
+      "id": "G6",
+      "category": "genesis",
+      "query": "과거의 meta-recall 답변을 새 회상 질문에서 왜 강등시켜?",
+      "expected_files": ["src/hybrid_search/search/orchestrator.py"],
+      "primary_target": "src/hybrid_search/search/orchestrator.py"
+    },
+    {
+      "id": "G7",
+      "category": "genesis",
+      "query": "슬롯 배분을 왜 한 곳에서 결정하도록 바꿨어?",
+      "expected_files": ["src/hybrid_search/search/slot_planner.py"],
+      "primary_target": "src/hybrid_search/search/slot_planner.py",
+      "accept_paths": [
+        "src/hybrid_search/search/slot_planner.py",
+        "docs/handoff/2026-08-29-result-slot-allocation.md",
+        "commit:배분을 한 곳에서"
+      ]
+    },
+    {
+      "id": "G8",
+      "category": "genesis",
+      "query": "rationale 청크는 왜 따로 방출하게 됐어?",
+      "expected_files": ["src/hybrid_search/index/ast_chunker.py"],
+      "primary_target": "src/hybrid_search/index/ast_chunker.py",
+      "accept_paths": [
+        "src/hybrid_search/index/ast_chunker.py",
+        "docs/plans/2026-09-01-retrieval-master-plan.md"
+      ]
+    }
+  ]
+}
