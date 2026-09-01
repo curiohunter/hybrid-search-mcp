@@ -313,10 +313,20 @@ def prepare_context_file(ctx: ModuleContext, output_path: Path) -> Path:
 
 # -- Phase 2: Finalize --
 
+# Visible residue of a dead citation. Silent removal left the CLAIM in
+# place looking exactly like verified prose — "what is missing announces
+# itself, what is stale does not" (EA-Graph, WS4c). The marker keeps the
+# reader (and the next synthesis pass) aware the claim lost its anchor,
+# and grep-able so audits can count unverified claims per page.
+UNVERIFIED_MARK = "⟨unverified — source reference lost⟩"
+
+
 def verify_references(content: str, project_path: str) -> VerificationResult:
     """Verify that file:line references in synthesized content actually exist.
 
-    Failed references are removed inline (the surrounding text is preserved).
+    Failed references are replaced inline with ``UNVERIFIED_MARK`` (the
+    surrounding text is preserved) — a claim whose anchor died must not
+    silently pass as verified prose.
     """
     verified: list[str] = []
     failed: list[str] = []
@@ -343,12 +353,13 @@ def verify_references(content: str, project_path: str) -> VerificationResult:
             failed.append(ref_str)
             failed_spans.append((match.start(), match.end()))
 
-    # Remove only the failed reference spans (preserve surrounding text)
+    # Replace only the failed reference spans (preserve surrounding text)
     if failed_spans:
         parts: list[str] = []
         prev_end = 0
         for start, end in failed_spans:
             parts.append(content[prev_end:start])
+            parts.append(UNVERIFIED_MARK)
             prev_end = end
         parts.append(content[prev_end:])
         cleaned = "".join(parts)
