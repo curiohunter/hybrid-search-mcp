@@ -39,6 +39,7 @@ from hybrid_search.providers import (
 from hybrid_search.search.translation import QueryTranslator, is_korean_dominant
 from hybrid_search.search.modules_search import search_modules
 from hybrid_search.search.rerank import lexical_rerank
+from hybrid_search.search.slot_planner import cap_per_file, plan_slots
 from hybrid_search.search.snippet import make_snippet
 from hybrid_search.search.vector import VectorEngine
 from hybrid_search.storage.db import ModuleRecord, StoreDB
@@ -1397,7 +1398,42 @@ class SearchOrchestrator:
                 top_n=reranking_cfg.max_candidates,
                 weight=reranking_cfg.lexical_weight,
             )
-        if memory_results:
+        # WS1 — every lane's candidates are known here, and this is the
+        # single point where slot allocation is decided. The splice and
+        # layout stages below consume the plan's numbers; none of them
+        # budgets on its own (three in-stage capping attempts failed —
+        # 2026-08-29 handoff).
+        if memory_intent:
+            module_cards, module_members = [], []
+            requested_card_slots = 0
+        else:
+            module_cards, module_members = self._module_results_for_query(
+                qtype, query, project_infos, query_vector
+            )
+            requested_card_slots = _module_slots_for(qtype, query)
+        # Per-file diversity: past the second row, another chunk of the
+        # same file says nothing new and costs a slot a distinct document
+        # needed (valuein S1: one file held 4 of the top-10). Applied
+        # before planning so freed positions backfill with new files.
+        chunk_results = cap_per_file(chunk_results)
+        memory_candidates = (
+            [r for r in memory_results if r.node_type in _MEMORY_NODE_TYPES]
+            if memory_results
+            else []
+        )
+        plan = plan_slots(
+            limit,
+            memory_intent=memory_intent,
+            requested_card_slots=requested_card_slots,
+            n_chunks=sum(
+                1 for r in chunk_results if r.node_type not in _MEMORY_NODE_TYPES
+            ),
+            n_memory=len(memory_candidates),
+            n_cards=len(module_cards),
+            n_members=len(module_members),
+        )
+
+        if memory_results and plan.memory_slots > 0:
             if reranking_cfg.lexical:
                 memory_results = lexical_rerank(
                     query, memory_results,
@@ -1406,11 +1442,14 @@ class SearchOrchestrator:
                 )
             memory_results = _apply_memory_boost(memory_results, memory_intent)
             if memory_intent:
-                chunk_results = _merge_memory_results(chunk_results, memory_results, limit)
+                chunk_results = _merge_memory_results(
+                    chunk_results, memory_results, limit,
+                    head_limit=plan.memory_slots,
+                )
             else:
                 chunk_results = _merge_memory_results(
                     chunk_results, memory_results, limit,
-                    head_limit=1, insert_at=2,
+                    head_limit=plan.memory_slots, insert_at=2,
                 )
 
         # Conversation lane (A5). On recall-shaped queries, retrieve conv_turn
@@ -1466,22 +1505,13 @@ class SearchOrchestrator:
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
         # have to Read 5 files to piece together "how is X organized". Step K
-        # additionally surfaces ``module_member`` entries — sibling files under
-        # the same module that the query-aware rep pick didn't land on — so
-        # structure queries whose answer spans several files in one subsystem
-        # (F2's admissions module, S5's entrance-tests) get multiple recall
-        # hits from a single module retrieval.
-        if memory_intent:
-            module_cards, module_members = [], []
-            module_slots = 0
-        else:
-            module_cards, module_members = self._module_results_for_query(
-                qtype, query, project_infos, query_vector
-            )
-            module_slots = _module_slots_for(qtype, query)
+        # additionally surfaces ``module_member`` entries. Cards/members were
+        # retrieved above (before the memory merge) so the planner saw every
+        # pool; here they are only laid out with the plan's allocations.
         results = _interleave_modules(
-            chunk_results, module_cards, module_slots, limit,
+            chunk_results, module_cards, plan.card_slots, limit,
             members=module_members,
+            member_slots=plan.member_slots,
         )
 
         # Graph card: on "who calls / where used" questions, attach the call
@@ -2810,8 +2840,16 @@ def _interleave_modules(
     limit: int,
     *,
     members: list[HybridResult] | None = None,
+    member_slots: int = 0,
 ) -> list[HybridResult]:
-    """Interleave up to ``slots`` modules with chunks and module members.
+    """Lay out chunks, module cards, and members into ``limit`` slots.
+
+    Pure layout — **no budgeting happens here.** ``slots`` and
+    ``member_slots`` are final allocations decided by
+    ``slot_planner.plan_slots`` (WS1): three attempts to cap lanes inside
+    this pipeline failed because each stage budgeted independently and
+    nothing compared the sum. Callers other than the orchestrator must
+    obtain their numbers from the planner too.
 
     Placement: module at position 1, then chunk, module, chunk, module, then
     chunks fill the rest. This preserves the top-2 chunk slots at positions
@@ -2820,37 +2858,16 @@ def _interleave_modules(
     get a subsystem pointer at the very top.
 
     Step K — ``members`` is an optional list of ``module_member`` hits
-    sibling to the surfaced modules. They enter the chunk stream at the
-    head (before regular chunks), clustered by ``module_id`` so that
-    A.1/A.2 stay adjacent, and ordered by which card they belong to
-    (members of the top-ranked card first). Deduplication is by
-    ``file_path`` — if a member shares a path with a module card or a
-    chunk result, the earlier entry wins. This is how the admissions
-    module's SQL migration lands in top-10 for S5 without fighting the
-    ``tuition`` module's own rep path.
-
-    Two-tier cap (Phase 6 L5): effective slots are capped at ``limit // 2``
-    so a call with small ``limit`` still guarantees at least half the
-    results are chunks. At the default ``limit=10`` with ``slots=3`` this
-    is a no-op; at ``limit=5`` it drops to 2 modules, ensuring 3 chunk
-    slots survive. Members inherit the cap indirectly — members whose
-    parent card was dropped from ``head_modules`` are filtered out so
-    the chunk-majority floor is preserved even when member emission is
-    aggressive.
+    sibling to the surfaced modules. They take the tail positions,
+    ordered by which card they belong to (members of the top-ranked card
+    first). Deduplication is by ``file_path`` — if a member shares a path
+    with a module card or a chunk result, the earlier entry wins. This is
+    how the admissions module's SQL migration lands in top-10 for S5
+    without fighting the ``tuition`` module's own rep path.
     """
     if not modules or slots <= 0 or limit <= 0:
         return chunks[:limit]
 
-    # L5 two-tier: never let modules occupy more than half the result slots.
-    #
-    # The budget covers cards AND members together. They used to be capped
-    # independently — cards at limit//2, members at limit//3 — and nothing
-    # compared the two, so the invariant this comment states was never
-    # actually enforced: limit=5 yielded 2 cards + 1 member (3 of 5 rows,
-    # 60%) and limit=10 yielded 3 + 3 (6 of 10). A caller asking for 5
-    # results got 2 chunks.
-    module_budget = max(1, limit // 2)
-    slots = min(slots, module_budget)
     head_modules = modules[:slots]
     module_files = {m.file_path for m in head_modules}
 
@@ -2866,18 +2883,7 @@ def _interleave_modules(
         seen_paths.add(r.file_path)
         deduped_members.append(r)
 
-    # Member budget: cap at ``limit // 3`` so at the default
-    # ``limit=10`` up to 3 members surface. Each member slot trades
-    # a chunk slot — but with card-name-dedup reducing card clones,
-    # F3/F4 get more chunk slots to spare, and the S5 admissions SQL
-    # + F2 monthly-snapshot-cron both need a member slot to reach
-    # top-10.
-    # Cards are spent first: the ablation on this corpus showed cards
-    # carrying the retrieval win (F2 and F4 are found only when the module
-    # lane runs), while members mattered for one case. Members take what
-    # the budget has left.
-    members_budget = max(0, min(limit // 3, module_budget - len(head_modules)))
-    deduped_members = deduped_members[:members_budget]
+    deduped_members = deduped_members[:max(0, member_slots)]
 
     # Dedup chunks against cards + members.
     deduped_chunks = [c for c in chunks if c.file_path not in seen_paths]
