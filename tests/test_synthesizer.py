@@ -139,13 +139,25 @@ class TestVerifyReferences:
         result = verify_references(content, str(tmp_project))
         assert len(result.failed) == 1
 
-    def test_failed_ref_removed_inline(self, tmp_project: Path):
+    def test_failed_ref_replaced_with_unverified_mark(self, tmp_project: Path):
+        from hybrid_search.index.synthesizer import UNVERIFIED_MARK
+
         content = "Bad ref `src/missing.py:L1` here."
         result = verify_references(content, str(tmp_project))
-        # Line is preserved, only the reference span is removed
+        # Line is preserved; the dead reference becomes a VISIBLE marker.
+        # Silent removal left the claim reading as verified prose — "what
+        # is stale does not announce itself" (WS4c).
         assert "Bad ref" in result.cleaned_content
         assert "here." in result.cleaned_content
         assert "missing.py" not in result.cleaned_content
+        assert UNVERIFIED_MARK in result.cleaned_content
+
+    def test_valid_refs_gain_no_mark(self, tmp_project: Path):
+        from hybrid_search.index.synthesizer import UNVERIFIED_MARK
+
+        content = "Good ref `src/auth.py:L1` here."
+        result = verify_references(content, str(tmp_project))
+        assert UNVERIFIED_MARK not in result.cleaned_content
 
     def test_no_references(self, tmp_project: Path):
         content = "No references at all."
