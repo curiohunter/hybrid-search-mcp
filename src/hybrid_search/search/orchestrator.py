@@ -435,15 +435,37 @@ _META_RECALL_DEMOTE = 0.15
 _META_RECALL_MARK = "[meta-recall — derivative answer to a past recall question, demoted]"
 
 
+# A recall phrase riding on a TOPICAL question is not meta-recall. The
+# NOTE above already excluded bare "뭐였지" for exactly this; the guard
+# generalizes it: strip the recall phrase and count what remains. Probed
+# on the test battery (2026-09-01): true meta-recall questions leave ≤4
+# anchors ("방금 Claude랑 뭐 얘기했지? 한 줄로." → 4), subject-heavy
+# genesis questions keep ≥7 ("문제은행 시스템에서 학생 관리 페이지가 왜
+# 필요했는지 어떤 대화하고…" → 11). Without this, the recency fast path
+# led such questions with the 5 newest-but-unrelated turns
+# (2026-09-01 field check, valuein).
+_META_RECALL_MAX_TOPICAL_ANCHORS = 4
+
+# "[claude turn]" / "[codex turn]" envelope prefix on conv chunk content.
+_CONV_TURN_TAG_RE = re.compile(r"^\s*\[[^\]]{1,40}\]\s*")
+
+
 def _is_meta_recall_text(text: str | None) -> bool:
     """True when the text asks about the conversation ITSELF rather than
     any topic — the question class whose past answers must never feed a
     new recall."""
     if not text:
         return False
-    if any(tok in text for tok in _META_RECALL_KO):
-        return True
-    return bool(_META_RECALL_EN_RE.search(text))
+    matched = any(tok in text for tok in _META_RECALL_KO) or bool(
+        _META_RECALL_EN_RE.search(text)
+    )
+    if not matched:
+        return False
+    remainder = text
+    for tok in _META_RECALL_KO:
+        remainder = remainder.replace(tok, " ")
+    remainder = _META_RECALL_EN_RE.sub(" ", remainder)
+    return len(qa_topics.topic_tokens(remainder)) <= _META_RECALL_MAX_TOPICAL_ANCHORS
 
 
 def _memory_verification(result: HybridResult) -> str | None:
@@ -1030,7 +1052,12 @@ def _demote_meta_recall_conv(
     out: list[HybridResult] = []
     changed = False
     for r in conv_results:
-        if _is_meta_recall_text((r.content or "")[:300]):
+        # Conv turn content opens with a "[claude turn]"-style source tag;
+        # the topical-anchor guard would count those wrapper tokens as
+        # subject matter and un-demote a pure recall turn. Classify the
+        # utterance, not the envelope.
+        text = _CONV_TURN_TAG_RE.sub("", (r.content or "")[:300], count=1)
+        if _is_meta_recall_text(text):
             changed = True
             out.append(_dc_replace(
                 r,

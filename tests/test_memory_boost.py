@@ -486,6 +486,11 @@ class TestMetaRecallDemotion:
             # TOPICAL history questions — the recency head must not fire.
             "Claude와 Codex memory hook 차이가 뭐였지?",
             "이 프로젝트에서 hook 설치 검증 순서가 뭐였지?",
+            # 2026-09-01 valuein field check: a recall PHRASE riding on a
+            # subject-heavy genesis question. "어떤 대화" matched and the
+            # recency head led with 5 newest-but-unrelated turns.
+            "내가 우리 문제은행 시스템에서 학생 관리 페이지가 왜 필요해 했는지 어떤 대화하고 어떻게 개발했는지 알려줘",
+            "환불 정산 붙일 때 나눈 대화에서 원장님이 요구한 조건들 정리해줘",
         ]
         for q in positives:
             assert _is_meta_recall_text(q) is True, q
