@@ -155,21 +155,40 @@ def test_slots_pure_korean_unaffected_by_symbol_check():
     assert _module_slots_for(QueryType.KOREAN_NL, "수강료 시스템 구성") == 3
 
 
-# ---------- L5 two-tier cap ----------
+# ---------- Slot allocation (WS1: budgets live in the planner) ----------
+
+def _planned_interleave(chunks, modules, requested, limit, members=None):
+    """Mirror the orchestrator wiring: plan first, lay out second."""
+    from hybrid_search.search.slot_planner import plan_slots
+
+    plan = plan_slots(
+        limit,
+        memory_intent=False,
+        requested_card_slots=requested,
+        n_chunks=len(chunks),
+        n_memory=0,
+        n_cards=len(modules),
+        n_members=len(members or []),
+    )
+    return _interleave_modules(
+        chunks, modules, plan.card_slots, limit,
+        members=members, member_slots=plan.member_slots,
+    )
+
 
 def test_interleave_cap_at_limit_10():
     """Default benchmark limit — cap is a no-op."""
     chunks = [_mk_chunk(f"c{i}.ts") for i in range(10)]
     modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
-    out = _interleave_modules(chunks, modules, slots=3, limit=10)
+    out = _planned_interleave(chunks, modules, 3, 10)
     assert sum(1 for r in out if r.node_type == "module") == 3
 
 
 def test_interleave_cap_low_limit_preserves_chunks():
-    """limit=3 with slots=3: L5 caps to 1 module so chunks stay the majority."""
+    """limit=3 with slots=3: the planner grants 1 card so chunks stay the majority."""
     chunks = [_mk_chunk(f"c{i}.ts") for i in range(10)]
     modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
-    out = _interleave_modules(chunks, modules, slots=3, limit=3)
+    out = _planned_interleave(chunks, modules, 3, 3)
     assert len(out) == 3
     n_mod = sum(1 for r in out if r.node_type == "module")
     n_chunk = sum(1 for r in out if r.node_type == "function")
@@ -178,11 +197,11 @@ def test_interleave_cap_low_limit_preserves_chunks():
 
 
 def test_interleave_cap_limit_2_minimum_one_module():
-    """limit=2: cap floor is 1 (max(1, 2//2) = 1) — still get a module for
+    """limit=2: chunk floor is 1, aux budget is 1 — still get a module for
     structural queries, but chunk stays available."""
     chunks = [_mk_chunk(f"c{i}.ts") for i in range(5)]
     modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
-    out = _interleave_modules(chunks, modules, slots=3, limit=2)
+    out = _planned_interleave(chunks, modules, 3, 2)
     assert len(out) == 2
     assert sum(1 for r in out if r.node_type == "module") == 1
     assert sum(1 for r in out if r.node_type == "function") == 1
@@ -215,11 +234,10 @@ def test_interleave_places_module_at_top_then_alternates():
 def test_interleave_respects_limit():
     chunks = [_mk_chunk(f"c{i}.ts") for i in range(10)]
     modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
-    out = _interleave_modules(chunks, modules, slots=3, limit=5)
+    out = _planned_interleave(chunks, modules, 3, 5)
     assert len(out) == 5
-    # L5 two-tier cap: modules never exceed limit // 2. With limit=5 and
-    # slots=3, cap is 2 — two modules, three chunks. Keeps chunks in the
-    # majority for small result windows.
+    # Planner: chunk floor 3 of 5, aux budget 2 — two modules, three
+    # chunks. Keeps chunks in the majority for small result windows.
     assert sum(1 for r in out if r.node_type == "module") == 2
     assert sum(1 for r in out if r.node_type == "function") == 3
 
@@ -326,7 +344,7 @@ def test_members_placed_at_tail_positions():
         _mk_member("mem/a1.tsx", "nonA"),
         _mk_member("mem/a2.tsx", "nonA"),
     ]
-    out = _interleave_modules(chunks, modules, slots=3, limit=10, members=members)
+    out = _planned_interleave(chunks, modules, 3, 10, members=members)
     assert len(out) == 10
     types = [r.node_type for r in out]
     # Modules at 0, 2, 4
@@ -349,7 +367,7 @@ def test_members_respect_chunks_at_primary_positions():
     ]
     modules = [_mk_module("auth.md", "auth"), _mk_module("students.ts", "students")]
     members = [_mk_member("mem/x.tsx", "other")]
-    out = _interleave_modules(chunks, modules, slots=2, limit=10, members=members)
+    out = _planned_interleave(chunks, modules, 2, 10, members=members)
     # Rank 2 (position 1) should still be the top chunk.
     assert out[1].file_path == top_chunk
     assert out[1].node_type == "function"
@@ -363,7 +381,7 @@ def test_members_dedup_against_module_cards():
     chunks = [_mk_chunk(f"c{i}.ts") for i in range(5)]
     modules = [_mk_module(shared, "portal-v3")]
     members = [_mk_member(shared, "portal-v3-alt")]
-    out = _interleave_modules(chunks, modules, slots=1, limit=10, members=members)
+    out = _planned_interleave(chunks, modules, 1, 10, members=members)
     paths = [r.file_path for r in out]
     # Only one entry with the shared path (the module card).
     assert paths.count(shared) == 1
@@ -372,21 +390,21 @@ def test_members_dedup_against_module_cards():
 
 
 def test_members_share_one_budget_with_cards():
-    """Members and cards draw on a single module budget of ``limit // 2``.
+    """Members and cards draw on the planner's single aux budget.
 
     This test previously asserted 3 members alongside 3 cards while its
     own docstring claimed chunks stayed in the majority — 6 module rows
     of 10 leaves 4 chunks, so the assertion and the intent disagreed and
-    the assertion won. The budgets are now compared against each other.
+    the assertion won. The planner now compares every lane against the sum.
     """
     chunks = [_mk_chunk(f"c{i}.ts") for i in range(10)]
     modules = [_mk_module(f"m{i}.ts", f"M{i}") for i in range(3)]
     members = [_mk_member(f"mem/m{i}.tsx", f"non{i}") for i in range(8)]
-    out = _interleave_modules(chunks, modules, slots=3, limit=10, members=members)
+    out = _planned_interleave(chunks, modules, 3, 10, members=members)
     cards = sum(1 for r in out if r.node_type == "module")
     member_count = sum(1 for r in out if r.node_type == "module_member")
     assert cards == 3
-    assert member_count == 2  # limit//2 == 5 total, cards funded first
+    assert member_count == 2  # aux budget 5, cards funded first
     assert cards + member_count <= 10 // 2
 
 
@@ -396,7 +414,7 @@ def test_members_absorb_slack_when_chunks_short():
     chunks = [_mk_chunk("c0.ts"), _mk_chunk("c1.ts")]
     modules = [_mk_module("m0.ts", "M0")]
     members = [_mk_member(f"mem/m{i}.tsx", f"non{i}") for i in range(5)]
-    out = _interleave_modules(chunks, modules, slots=1, limit=10, members=members)
+    out = _planned_interleave(chunks, modules, 1, 10, members=members)
     # 1 card + 2 chunks + up to 3 members = 6; rest positions empty & dropped.
     chunk_count = sum(1 for r in out if r.node_type == "function")
     member_count = sum(1 for r in out if r.node_type == "module_member")
@@ -409,10 +427,8 @@ def test_members_none_preserves_old_behavior():
     callers that don't opt in see exactly the old layout."""
     chunks = [_mk_chunk(f"c{i}.ts") for i in range(5)]
     modules = [_mk_module("m0.ts", "M0"), _mk_module("m1.ts", "M1")]
-    out_no_members = _interleave_modules(chunks, modules, slots=2, limit=5)
-    out_empty_members = _interleave_modules(
-        chunks, modules, slots=2, limit=5, members=[],
-    )
+    out_no_members = _planned_interleave(chunks, modules, 2, 5)
+    out_empty_members = _planned_interleave(chunks, modules, 2, 5, members=[])
     assert [r.file_path for r in out_no_members] == [r.file_path for r in out_empty_members]
 
 
@@ -422,6 +438,6 @@ def test_members_slots_zero_returns_chunks_only():
     chunks = [_mk_chunk(f"c{i}.ts") for i in range(5)]
     modules = [_mk_module("m.ts", "M")]
     members = [_mk_member("mem.tsx", "non")]
-    out = _interleave_modules(chunks, modules, slots=0, limit=5, members=members)
+    out = _planned_interleave(chunks, modules, 0, 5, members=members)
     assert all(r.node_type == "function" for r in out)
     assert len(out) == 5
