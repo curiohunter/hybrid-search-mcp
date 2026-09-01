@@ -764,3 +764,52 @@ class TestAnswerExcerptCapturesConclusion:
         prompt, _, _, excerpt, _ = _find_last_turn(records)
         assert prompt == "다음 질문이야"
         assert excerpt == "다음 답"
+
+
+class TestReindexContentionGuard:
+    """Pre-fetch skips while a hook-triggered reindex holds the lock —
+    racing it risks the 10s hook timeout AND serves an index that lacks
+    the new commits (2026-09-01 post-merge field check)."""
+
+    def _event(self, root):
+        return {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(root),
+            "prompt": "이 시스템의 환불 흐름이 어떻게 구성되어 있는지 알려줘",
+        }
+
+    def test_live_lock_skips_prefetch(self, tmp_path, monkeypatch):
+        import os
+
+        from hybrid_search.hooks import _handle_user_prompt_submit
+
+        (tmp_path / ".hybrid-search").mkdir(parents=True)
+        (tmp_path / ".hybrid-search/.reindex.lock").write_text(str(os.getpid()))
+        assert _handle_user_prompt_submit(self._event(tmp_path)) is None
+
+    def test_stale_lock_does_not_block(self, tmp_path, monkeypatch):
+        import hybrid_search.hooks as hooks_mod
+
+        (tmp_path / ".hybrid-search").mkdir(parents=True)
+        (tmp_path / ".hybrid-search/.reindex.lock").write_text("999999999")
+        ran = []
+        monkeypatch.setattr(
+            hooks_mod, "_run_programmatic_search",
+            lambda prompt, cwd: ran.append(1) or None,
+        )
+        _handle_user_prompt_submit = hooks_mod._handle_user_prompt_submit
+        assert _handle_user_prompt_submit(self._event(tmp_path)) is None
+        assert ran, "stale lock must not suppress the pre-fetch"
+
+    def test_garbage_lock_does_not_block(self, tmp_path, monkeypatch):
+        import hybrid_search.hooks as hooks_mod
+
+        (tmp_path / ".hybrid-search").mkdir(parents=True)
+        (tmp_path / ".hybrid-search/.reindex.lock").write_text("not-a-pid")
+        ran = []
+        monkeypatch.setattr(
+            hooks_mod, "_run_programmatic_search",
+            lambda prompt, cwd: ran.append(1) or None,
+        )
+        assert hooks_mod._handle_user_prompt_submit(self._event(tmp_path)) is None
+        assert ran
