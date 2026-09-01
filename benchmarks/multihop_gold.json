@@ -1,0 +1,47 @@
+{
+  "_comment": "WS2 멀티홉 슬라이스 (2026-09-01). 질문의 심볼이 아니라 그것을 '호출/소비하는 쪽' 파일이 정답이다 — 정답 파일은 call_edges 실측으로 검증했다. 실행: confidence_eval.py --cwd <이 레포> --gold benchmarks/multihop_gold.json. A/B는 HYBRID_SEARCH_GRAPH_HOP=0/1.",
+  "queries": [
+    {
+      "id": "MH1",
+      "category": "multihop",
+      "query": "reciprocal_rank_fusion 결과를 소비하는 흐름이 어떻게 되나",
+      "expected_files": ["src/hybrid_search/search/orchestrator.py"],
+      "primary_target": "src/hybrid_search/search/orchestrator.py"
+    },
+    {
+      "id": "MH2",
+      "category": "multihop",
+      "query": "make_snippet은 실제 검색 응답 조립에서 어디에 쓰이나",
+      "expected_files": ["src/hybrid_search/search/orchestrator.py"],
+      "primary_target": "src/hybrid_search/search/orchestrator.py"
+    },
+    {
+      "id": "MH3",
+      "category": "multihop",
+      "query": "record_turn으로 qa 기록이 남는 트리거 경로를 보여줘",
+      "expected_files": ["src/hybrid_search/memory/hook_runtime.py", "src/hybrid_search/hooks.py"],
+      "primary_target": "src/hybrid_search/memory/hook_runtime.py"
+    },
+    {
+      "id": "MH4",
+      "category": "multihop",
+      "query": "classify_confidence 판정 결과는 어디서 소비되나",
+      "expected_files": ["src/hybrid_search/search/orchestrator.py"],
+      "primary_target": "src/hybrid_search/search/orchestrator.py"
+    },
+    {
+      "id": "MH5",
+      "category": "multihop",
+      "query": "install_memory_hook을 부르는 명령 흐름이 궁금해",
+      "expected_files": ["src/hybrid_search/cli.py"],
+      "primary_target": "src/hybrid_search/cli.py"
+    },
+    {
+      "id": "MH6",
+      "category": "multihop",
+      "query": "grep_qa 검색을 사용하는 훅 쪽 경로는?",
+      "expected_files": ["src/hybrid_search/hooks.py", "src/hybrid_search/cli.py"],
+      "primary_target": "src/hybrid_search/hooks.py"
+    }
+  ]
+}

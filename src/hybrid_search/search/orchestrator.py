@@ -6,6 +6,7 @@ Implements §11 query classification and cross-project search (§13).
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -38,6 +39,11 @@ from hybrid_search.providers import (
 )
 from hybrid_search.search.translation import QueryTranslator, is_korean_dominant
 from hybrid_search.search.modules_search import search_modules
+from hybrid_search.search.graph_hop import (
+    GRAPH_HOP_NOTE,
+    collect_neighbor_ids,
+    merge_by_score,
+)
 from hybrid_search.search.rerank import lexical_rerank
 from hybrid_search.search.slot_planner import cap_per_file, plan_slots
 from hybrid_search.search.snippet import make_snippet
@@ -1311,6 +1317,22 @@ class SearchOrchestrator:
                     limit=effective_limit,
                 )
 
+        # WS2 — graph-hop candidate expansion (LARGER pattern). Pull the
+        # 1-hop call-graph neighbors of the best code hits into the pool
+        # with a decayed score; fusion and the slot planner treat them as
+        # ordinary candidates. Single-project topical queries only: recall
+        # queries want history (not code neighbors) and explicit node_type
+        # filters mean the caller knows what rows they want.
+        if (
+            node_types is None
+            and not memory_intent
+            and len(project_infos) == 1
+            and os.environ.get("HYBRID_SEARCH_GRAPH_HOP") != "0"
+        ):
+            chunk_results = self._expand_graph_neighbors(
+                chunk_results, project_infos[0], query, limit,
+            )
+
         memory_results: list[HybridResult] = []
         cross_language_state: str | None = None
         if node_types is None:
@@ -2147,6 +2169,66 @@ class SearchOrchestrator:
             top_cosine=top_cosine,
             effective_gap=effective_gap,
         )
+
+    def _expand_graph_neighbors(
+        self,
+        chunk_results: list[HybridResult],
+        pinfo: "ProjectInfo",
+        query: str,
+        limit: int,
+    ) -> list[HybridResult]:
+        """WS2 — splice 1-hop call-graph neighbors of the top code hits.
+
+        Failures degrade to the unexpanded list: expansion is an
+        enhancement, never a precondition. Neighbor rows carry a
+        derived (decayed) score, a visible graph-hop note, and no lane
+        ranks — the slot planner's floor math already ignores rank-less
+        provenance, and downstream boosts treat them as normal rows.
+        """
+        if not chunk_results:
+            return chunk_results
+        project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
+        idx_paths = IndexPaths(project_dir)
+        if not idx_paths.store_db.exists():
+            return chunk_results
+        try:
+            db = StoreDB(idx_paths.store_db)
+        except Exception:
+            return chunk_results
+        try:
+            pairs = collect_neighbor_ids(
+                db, pinfo.id, chunk_results,
+                exclude_ids={r.chunk_id for r in chunk_results},
+                total_cap=limit,
+            )
+        finally:
+            try:
+                db.close()
+            except Exception:  # pragma: no cover
+                pass
+        if not pairs:
+            return chunk_results
+
+        neighbor_fused = [
+            FusedResult(chunk_id=cid, rrf_score=score, bm25_rank=None, vector_rank=None)
+            for cid, score in pairs
+        ]
+        try:
+            neighbor_rows = self._enrich_results(neighbor_fused, [pinfo], query)
+        except Exception:
+            return chunk_results
+        tagged: list[HybridResult] = []
+        for r in neighbor_rows:
+            note = (
+                f"{r.trust_meta[:-1]} - {GRAPH_HOP_NOTE}]"
+                if r.trust_meta and r.trust_meta.endswith("]")
+                else f"[{GRAPH_HOP_NOTE}]"
+            )
+            snippet = r.snippet
+            if snippet and r.trust_meta and snippet.startswith(r.trust_meta):
+                snippet = note + snippet[len(r.trust_meta):]
+            tagged.append(_dc_replace(r, trust_meta=note, snippet=snippet))
+        return merge_by_score(chunk_results, tagged)
 
     def _build_graph_card(
         self,
