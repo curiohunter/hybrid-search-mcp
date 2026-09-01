@@ -443,6 +443,32 @@ def _run_programmatic_search(prompt: str, cwd: str):
     return response
 
 
+def _reindex_in_progress(root: Path) -> bool:
+    """True while a hook-triggered reindex holds the project's reindex lock.
+
+    A merge/commit kicks off a background delta reindex that saturates
+    CPU and the embedding endpoint; a pre-fetch racing it both risks the
+    10s hook timeout (which discards the context wholesale) and searches
+    an index that doesn't have the new commits yet — misleading either
+    way (2026-09-01 field check: post-merge session's genesis question).
+    Skipping is the graceful degradation: one prompt goes unenriched.
+    Manual `index --force` holds a different lock (the index-dir writer
+    lock) and usually has an attending session — out of scope here.
+    """
+    lock = root / ".hybrid-search/.reindex.lock"
+    try:
+        pid = int(lock.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        import os
+
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
 def _handle_user_prompt_submit(event: dict) -> dict | None:
     """UserPromptSubmit entry — pre-fetch + inject on exploratory prompts.
 
@@ -456,6 +482,8 @@ def _handle_user_prompt_submit(event: dict) -> dict | None:
 
     root = _resolve_project_root(event)
     if root is None:
+        return None
+    if _reindex_in_progress(root):
         return None
 
     response = _run_programmatic_search(prompt, str(root))
