@@ -129,6 +129,33 @@ ls "$PROJECT_ROOT/.hybrid-search/wiki/_synthesis_output/"*.md 2>/dev/null
 
 병합된 wiki에서 잔존 bad refs를 한 번 더 제거.
 
+## Step 5.5: QA Reflection (통합 — 같은 prepare→agent→finalize 패턴)
+
+같은 주제의 qa 로그가 쌓이면 최신 답으로 통합한다. 원본은 보존되고,
+통합 노트가 그 주제의 최신 qa가 되어 다음 reindex에서 supersession이
+자동으로 걸린다.
+
+```bash
+"$VENV" -m hybrid_search.cli qa-reflect --cwd "$PROJECT_ROOT"
+```
+
+- `0 cluster(s)`면 건너뜀.
+- 클러스터가 있으면 `_reflection_input/<cluster>.md`를 각각 Read하고,
+  파일 안의 지시대로 통합 노트를 `_reflection_output/<cluster>.md`에
+  Write한다 (클러스터 3개 이상이면 Sonnet Agent 병렬 — synthesis와
+  같은 요령). **노트 판단 기준**: 멤버에 실제 답 내용이 없거나(착수
+  선언뿐), 최신 멤버가 이후 현실에 뒤집힌 게 확실하면 그 클러스터는
+  건너뛴다 — 낡은 통합 노트는 없느니만 못하다.
+- 완료 후:
+
+```bash
+"$VENV" -m hybrid_search.cli qa-reflect --finalize --cwd "$PROJECT_ROOT"
+```
+
+- finalize가 manifest 기준으로 provenance(sources)를 직접 기록하므로
+  노트에 출처 목록을 쓸 필요 없음. 이어지는 reindex(또는 다음 커밋)가
+  supersession 매핑을 갱신한다.
+
 ## Step 6: Wiki Gaps 채우기
 
 `.hybrid-search/wiki-gaps.txt`가 있으면:
@@ -184,6 +211,7 @@ Maintain 완료
 - Reindex: +N added, ~N changed, -N deleted
 - Synthesis: N개 모듈 LLM 갱신 (Sonnet 병렬)
 - Finalize: N개 병합, K bad refs 제거
+- QA reflection: N개 클러스터 통합 (건너뜀 M개 + 사유)
 - Wiki gaps: N개 생성
 - CLAUDE.md: OK
 ```
