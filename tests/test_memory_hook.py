@@ -735,7 +735,7 @@ class TestAnswerExcerptCapturesConclusion:
     def test_walk_survives_tool_results_and_keeps_conclusion(self) -> None:
         from hybrid_search.hooks import _find_last_turn
 
-        prompt, tools, chars, excerpt = _find_last_turn(self._records())
+        prompt, tools, chars, excerpt, _ = _find_last_turn(self._records())
         assert prompt == "payssam 정산 어디서 처리해?"
         assert "mcp__hybrid-search__hybrid_search" in tools
         assert "payssam-client.ts" in excerpt, "conclusion missing (F4′)"
@@ -747,7 +747,7 @@ class TestAnswerExcerptCapturesConclusion:
         import hybrid_search.hooks as hooks_mod
 
         monkeypatch.setattr(hooks_mod, "_ANSWER_EXCERPT_COLLECT_MAX_CHARS", 40)
-        _, _, _, excerpt = hooks_mod._find_last_turn(self._records())
+        _, _, _, excerpt, _ = hooks_mod._find_last_turn(self._records())
         # Budget too small for both → the conclusion wins, preamble drops.
         assert "payssam-client.ts" in excerpt or "처리됩니다" in excerpt
         assert "먼저 호출합니다" not in excerpt
@@ -761,6 +761,6 @@ class TestAnswerExcerptCapturesConclusion:
             {"type": "assistant",
              "message": {"content": [{"type": "text", "text": "다음 답"}]}},
         ]
-        prompt, _, _, excerpt = _find_last_turn(records)
+        prompt, _, _, excerpt, _ = _find_last_turn(records)
         assert prompt == "다음 질문이야"
         assert excerpt == "다음 답"
