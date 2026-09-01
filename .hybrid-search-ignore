@@ -1,0 +1,8 @@
+# hybrid-search 인덱싱 제외 (gitignore 문법)
+#
+# 2026-09-01: gold 질문 파일이 인덱스에 들어가면 벤치 질의가 자기
+# 자신과 매칭된다(non-leaky 원칙 위반 — genesis 슬라이스 첫 실행에서
+# gold 파일이 1위로 뜨는 것을 실측). 벤치 gold는 측정 도구지 코퍼스가
+# 아니다.
+benchmarks/*_gold.json
+benchmarks/*gold*.json

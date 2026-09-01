@@ -79,7 +79,23 @@ def main() -> None:
             limit=args.limit,
         )
         paths = [r.file_path for r in response.results]
-        target_found = _target_in_paths(item.get("primary_target", ""), paths)
+        # ``accept_paths`` (genesis slice): a why-answer counts wherever it
+        # actually lives — the source file's rationale, OR the commit that
+        # made the change. ``commit:<substring>`` entries match against
+        # commit-row subjects (all commit chunks share one file_path, so a
+        # bare path entry would credit ANY commit — too loose).
+        commit_names = [
+            (r.name or "") for r in response.results if r.node_type == "commit"
+        ]
+
+        def _accept_hit(entry: str) -> bool:
+            if entry.startswith("commit:"):
+                needle = entry[len("commit:"):].strip()
+                return bool(needle) and any(needle in n for n in commit_names)
+            return _target_in_paths(entry, paths)
+
+        accept = item.get("accept_paths") or [item.get("primary_target", "")]
+        target_found = any(_accept_hit(t) for t in accept)
         module_found = _module_match(item.get("acceptable_module_names", []), response.results)
         should_fall_back = not target_found and not module_found
         # A weak band means "fall back when the returned set lacks the known

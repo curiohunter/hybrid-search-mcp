@@ -276,7 +276,16 @@ _MEMORY_INTENT_BOOST = 1.00
 # match since we check with ``in`` rather than regex word boundary.
 _MEMORY_INTENT_KO = (
     "지난번", "이전에", "아까", "방금", "전에", "저번에", "그때",
-    "뭐였지", "했지", "결정했지", "정했지", "기억", "메모리",
+    "뭐였지", "했지", "결정했지", "정했지",
+    # Recall verbs only — the bare nouns "기억"/"메모리" used to be here
+    # and misclassified every question ABOUT the memory feature itself
+    # ("메모리 훅은 왜 실패해도 조용히 넘어가?") as a recall query. On a
+    # memory-layer codebase those are domain words. The docstring's old
+    # claim that false positives are survivable predates the slot plan
+    # and conv splice both keying off this flag: a false positive now
+    # zeroes module cards, uncaps the memory head, and leads the results
+    # with conversation turns (genesis-slice G3, 2026-09-01).
+    "기억나", "기억해", "기억했", "기억하고", "메모리에 있",
     # Superlative-recency phrasings. "가장 최근에 한 일이 뭐지" carried
     # zero of the tokens above, so the conv lane + in-flight overlay —
     # the exact machinery built for the cross-agent handoff loop —
