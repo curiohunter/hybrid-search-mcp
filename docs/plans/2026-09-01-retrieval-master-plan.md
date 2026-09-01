@@ -120,6 +120,14 @@ valuein 후기 v3, 슬롯 배분 진단)를 종합한 답이다.
   남는다(F5에서 mem 2칸). 시도 3의 함정(스트림 내 메모리 skip → 전멸)을
   피하기 위한 의도적 보수 — 총구성 캡은 벤치 누적 후 재평가.
 
+**후속 (같은 날): valuein 루트 `/archive/` 제외 + 재인덱싱 → gold
+18/25 (유효 17/19), F5 회복. WS1 완료 기준 달성.** archive 309파일
+제거가 랭크 공간을 풀자 F5 정답 문서가 top-10에 진입했다 — SlotPlanner
+(노출)와 오염 제거(랭킹)의 합작. 잔여 miss S1·S3은 문서 랭킹 문제로
+WS2·WS4에서 다룬다. valuein 쪽 변경은 그 레포의
+`.hybrid-search-ignore`에 있다(루트 앵커 `/archive/`,
+`docs/plans/_archive/`는 보존 — S3 정답과 genesis 문서가 산다).
+
 ---
 
 ## 3. WS2 — Graph-hop 후보 확장 (LARGER 패턴)
