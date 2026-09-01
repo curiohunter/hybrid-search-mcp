@@ -168,7 +168,19 @@ def build_session_context(
         indexes = list(reader.iter_qa_indexes(project_root))
     except Exception:
         return ""
-    return _format_session_start_context(indexes[:limit], client=client)[:_MAX_CONTEXT_CHARS]
+    ctx = _format_session_start_context(indexes[:limit], client=client)
+
+    # Surface the usage scorecard where the user already looks — no extra
+    # command to run. format_summary_line is '' when there is no data.
+    try:
+        from hybrid_search.memory import selfeval
+
+        scoreline = selfeval.format_summary_line(project_root)
+    except Exception:
+        scoreline = ""
+    if scoreline:
+        ctx = f"{ctx}\n{scoreline}" if ctx else scoreline
+    return ctx[:_MAX_CONTEXT_CHARS]
 
 
 def _router_enabled() -> bool:

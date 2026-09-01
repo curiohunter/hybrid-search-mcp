@@ -339,11 +339,15 @@ def _extract_assistant_summary(
     return seen_tools, text_chars, excerpt
 
 
-def _find_last_turn(records: list[dict]) -> tuple[str | None, list[str], int, str]:
-    """Return (last_user_prompt, tools_used, answer_chars, answer_excerpt).
+def _find_last_turn(
+    records: list[dict],
+) -> tuple[str | None, list[str], int, str, int]:
+    """Return (last_user_prompt, tools_used, answer_chars, answer_excerpt, idx).
 
     Walks the tail backwards to find the most recent genuine user prompt,
-    then collects the assistant activity that followed it.
+    then collects the assistant activity that followed it. ``idx`` is the
+    prompt record's position, so ``records[idx + 1:]`` is the turn slice —
+    selfeval scores search adoption on exactly that slice.
     """
     for idx in range(len(records) - 1, -1, -1):
         rec = records[idx]
@@ -353,8 +357,8 @@ def _find_last_turn(records: list[dict]) -> tuple[str | None, list[str], int, st
         if prompt is None:
             continue
         tools, chars, excerpt = _extract_assistant_summary(records, idx + 1)
-        return prompt, tools, chars, excerpt
-    return None, [], 0, ""
+        return prompt, tools, chars, excerpt, idx
+    return None, [], 0, "", -1
 
 
 # ── UserPromptSubmit hook — auto-MCP on exploratory prompts ───────────
@@ -500,7 +504,7 @@ def _handle_stop(event: dict) -> dict | None:
     if not records:
         return None
 
-    prompt, tools, answer_chars, answer_excerpt = _find_last_turn(records)
+    prompt, tools, answer_chars, answer_excerpt, turn_idx = _find_last_turn(records)
     if prompt is None:
         return None
 
@@ -520,6 +524,13 @@ def _handle_stop(event: dict) -> dict | None:
     except Exception:
         # Never let save failures bubble up — Stop hook must exit 0 cleanly.
         pass
+
+    # Ride the same parse pass: score how the turn's hybrid_search calls
+    # actually fared (adopted / betrayed) and harvest failures into the
+    # regression set. record_turn swallows its own errors.
+    from hybrid_search.memory import selfeval
+
+    selfeval.record_turn(root, records[turn_idx + 1 :])
 
     # Fire-and-forget: background-index this Claude session for cross-tool
     # recall. Detached + error-swallowed, so it never blocks the turn.
