@@ -3681,6 +3681,49 @@ def cmd_install_codex_hook(args: argparse.Namespace) -> None:
         print("  Start Codex in this trusted project and run status/smoke checks before relying on it.")
 
 
+def cmd_selfeval(args: argparse.Namespace) -> None:
+    """Usage-derived search scorecard + harvested regression items.
+
+    Read-only view over what the Stop hook records automatically — this
+    command exists for inspection, the loop itself needs no manual step.
+    """
+    import json as _json
+
+    from hybrid_search.memory import selfeval
+
+    root = _resolve_qa_root(args)
+    if root is None:
+        sys.exit(1)
+
+    stats = selfeval.summarize(root, days=args.days)
+    if stats is None:
+        print(f"no selfeval data in the last {args.days}d under {root}")
+        return
+
+    scored = stats["adopted"] + stats["mixed"]
+    print(f"selfeval — last {stats['days']}d, {stats['total']} scored searches")
+    print(f"  adopted:      {scored}  (rank hit; {stats['mixed']} also read outside)")
+    print(f"  betrayed:     {stats['betrayed']}  (fell back to Grep/other files)")
+    print(f"  no_followup:  {stats['no_followup']}")
+    print(f"  harvested:    {stats['harvested_total']} regression items (all time)")
+
+    harvested_path = root / ".hybrid-search/selfeval/harvested.jsonl"
+    if harvested_path.is_file():
+        lines = [ln for ln in harvested_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        show = lines[-args.limit :]
+        if show:
+            print(f"\nrecent harvested (showing {len(show)}):")
+        for ln in show:
+            try:
+                row = _json.loads(ln)
+            except ValueError:
+                continue
+            q = row.get("query", "")
+            q = q if len(q) <= 70 else q[:67] + "…"
+            print(f"  [{row.get('ts', '?')[:10]}] {q}")
+            print(f"    gold: {', '.join(row.get('gold_paths', [])[:3])}")
+
+
 def cmd_qa_stats(args: argparse.Namespace) -> None:
     """Summary stats over a project's qa logs.
 
@@ -5758,6 +5801,15 @@ def main() -> None:
     p_qa_stats.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
     p_qa_stats.add_argument("--project", help="Project name (overrides --cwd)")
 
+    p_selfeval = sub.add_parser(
+        "selfeval",
+        help="Usage-derived search scorecard (adopted/betrayed) + harvested regression items",
+    )
+    p_selfeval.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_selfeval.add_argument("--project", help="Project name (overrides --cwd)")
+    p_selfeval.add_argument("--days", type=int, default=7, help="Window for the scorecard (default 7)")
+    p_selfeval.add_argument("--limit", type=int, default=10, help="Harvested items to show (default 10)")
+
     p_qa_restore = sub.add_parser(
         "qa-restore",
         help="Restore an archived qa entry back into qa/",
@@ -6025,6 +6077,8 @@ def main() -> None:
         cmd_qa_grep(args)
     elif args.command == "qa-stats":
         cmd_qa_stats(args)
+    elif args.command == "selfeval":
+        cmd_selfeval(args)
     elif args.command == "qa-restore":
         cmd_qa_restore(args)
     elif args.command == "memory-card":
