@@ -3681,6 +3681,40 @@ def cmd_install_codex_hook(args: argparse.Namespace) -> None:
         print("  Start Codex in this trusted project and run status/smoke checks before relying on it.")
 
 
+def cmd_qa_reflect(args: argparse.Namespace) -> None:
+    """WS3 Reflector — prepare consolidation contexts / finalize agent output.
+
+    The LLM step happens between the two phases and is the coding agent
+    itself (synthesize-wiki pattern) — no API call, no new MCP tool.
+    """
+    from hybrid_search.memory import reflector
+
+    root = _resolve_qa_root(args)
+    if root is None:
+        sys.exit(1)
+
+    if args.finalize:
+        result = reflector.finalize(root)
+        if result.get("error"):
+            print(f"qa-reflect: {result['error']}")
+            sys.exit(1)
+        print(f"installed {result['installed']} consolidated note(s) → {result.get('dir', '')}")
+        for r in result["rejected"]:
+            print(f"  rejected: {r}")
+        if result["installed"]:
+            print("run `reindex` (or commit) so supersession maps sources → notes")
+        return
+
+    summary = reflector.prepare(root)
+    print(f"{summary['clusters']} cluster(s) ready for consolidation")
+    if summary["clusters"] == 0:
+        return
+    print(f"  inputs:  {summary['input_dir']}")
+    print(f"  outputs: {summary['output_dir']}")
+    print(f"  est. agent input: ~{summary['est_input_tokens']:,} tokens")
+    print("read each input file, write the note per its instructions, then run --finalize")
+
+
 def cmd_selfeval(args: argparse.Namespace) -> None:
     """Usage-derived search scorecard + harvested regression items.
 
@@ -5801,6 +5835,17 @@ def main() -> None:
     p_qa_stats.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
     p_qa_stats.add_argument("--project", help="Project name (overrides --cwd)")
 
+    p_qa_reflect = sub.add_parser(
+        "qa-reflect",
+        help="Consolidate same-topic qa logs (prepare contexts / finalize agent notes)",
+    )
+    p_qa_reflect.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_qa_reflect.add_argument("--project", help="Project name (overrides --cwd)")
+    p_qa_reflect.add_argument(
+        "--finalize", action="store_true",
+        help="Validate _reflection_output/ against the manifest and install notes",
+    )
+
     p_selfeval = sub.add_parser(
         "selfeval",
         help="Usage-derived search scorecard (adopted/betrayed) + harvested regression items",
@@ -6079,6 +6124,8 @@ def main() -> None:
         cmd_qa_stats(args)
     elif args.command == "selfeval":
         cmd_selfeval(args)
+    elif args.command == "qa-reflect":
+        cmd_qa_reflect(args)
     elif args.command == "qa-restore":
         cmd_qa_restore(args)
     elif args.command == "memory-card":

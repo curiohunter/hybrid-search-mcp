@@ -202,6 +202,26 @@ Reflector는 그 관계를 **읽기 시점 추론에서 쓰기 시점 기록으�
 memory 레인 노이즈율(무관 qa가 top-3에 드는 비율)을 selfeval 이벤트로
 전후 측정. 통합 노트의 provenance 누락 0건(테스트 강제).
 
+### 구현 결과 (2026-09-01)
+
+`memory/reflector.py` + `qa-reflect --prepare/--finalize` CLI.
+synthesize-wiki 패턴 그대로(LLM = 에이전트, API 0원). 설계 확정 사항:
+
+- **provenance는 위조 불가** — finalize가 manifest에서 sources를 직접
+  기록하고 에이전트 산출물의 출처 주장은 무시한다(구조적 보장, D14).
+- **새 DB 경로 없음** — 통합 노트는 대표 질문 + 최신 timestamp를 가진
+  qa 파일일 뿐이고, 기존 index-time `compute_supersession`이 다음
+  reindex에서 원본→노트 매핑을 만든다. 실측: 노트 8건이 원본 15건을
+  supersede (매핑 확인 완료).
+- **품질 게이트** — 실코퍼스 드라이런에서 meta-recall·답변無 클러스터가
+  걸려나옴(21→10개). F11의 화석을 통합으로 재생산하지 않도록
+  junk/meta-recall/answer<40자 멤버 제외.
+- **에이전트 판단 규칙** (maintain 스킬 Step 5.5): 멤버가 착수 선언뿐
+  이거나 최신 멤버가 이후 현실에 뒤집혔으면 클러스터를 건너뛴다 —
+  실전 첫 패스에서 10개 중 8개 통합, 2개 의도적 스킵(사유 기록).
+- D12 비용 실측: 전체 패스 에이전트 입력 ~18k 토큰, API 0원.
+- 노이즈율 전후 측정은 selfeval 이벤트 축적 후(가동 첫날이라 표본 없음).
+
 ---
 
 ## 5. WS4 — insight 위키 + 앵커 + rationale 레인
