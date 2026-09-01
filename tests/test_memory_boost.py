@@ -43,7 +43,6 @@ class TestMemoryIntent:
         "그때 보여준 homework analysis 경로",
         "Codex hook 저장 구조 어떻게 결정했지?",
         "Claude와 Codex memory hook 차이가 뭐였지?",
-        "메모리 레이어에서 qa_log와 memory card는 어떻게 달라?",
         # History-shaped feature-genesis questions (2026-07-10 gap A)
         "in-flight overlay 기능은 어떻게 만들었어",
         "confidence weak 판정 로직은 어떻게 바뀌었어",
@@ -99,6 +98,13 @@ class TestMemoryIntent:
         "최신 상태 관리 라이브러리 추천해줘",
         "what is the most recent Python release?",
         "did Python change recently?",
+        # Domain-word collisions (genesis-slice G3, 2026-09-01): on a
+        # memory-layer codebase, questions ABOUT the memory feature are
+        # topical. Bare "메모리"/"기억" used to flip these to recall,
+        # which now zeroes module cards and splices conv turns first.
+        "메모리 훅은 왜 실패해도 조용히 넘어가게 되어 있어?",
+        "메모리 레이어에서 qa_log와 memory card는 어떻게 달라?",
+        "기억 기능의 인덱싱 구조 설명해줘",
     ])
     def test_non_recall_queries_do_not_trigger(self, query: str) -> None:
         assert _has_memory_intent(query) is False
