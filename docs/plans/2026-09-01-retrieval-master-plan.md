@@ -154,6 +154,23 @@ LARGER(2605.16352)의 공식을 기존 자산으로 구현: **lexical/vector 상
 holdout에 멀티홉 슬라이스(§7) 신설 후 전후 비교. 멀티홉 정답률 상승 +
 비-멀티홉 gold 무회귀 + p50 latency 증가 ≤ 20%.
 
+### 구현 결과 (2026-09-01)
+
+`search/graph_hop.py` 신설 + `_expand_graph_neighbors` 배선. 신뢰도
+필터는 새 임계값 대신 **기존 엣지 confidence 등급(inferred+)을 재사용**
+(D1 준수). 이웃 점수는 출처 히트의 0.5배(RRF 스케일 유지), 안정 삽입
+병합으로 기존 순서 불교란. 킬스위치 `HYBRID_SEARCH_GRAPH_HOP=0`.
+선행 조건 D4 검증 완료: 델타 경로가 caller 기준 삭제+재삽입으로
+call_edges를 갱신하고, 파일 처리 시마다 resolve_call_edges가 돈다.
+
+- **멀티홉 슬라이스 신설**(benchmarks/multihop_gold.json, 6문항 —
+  정답 파일은 call_edges 실측으로 검증): A/B **4/6 → 5/6**
+  (MH4 classify_confidence 소비처 회복).
+- valuein gold **18/25 유지** (무회귀), latency 증가 없음 실측.
+- 미회복 MH3: 정답(hook_runtime.py)보다 테스트 파일 호출자들이 같은
+  엣지 confidence로 per-hit 캡 3을 선점. 프로덕션-우선 휴리스틱은
+  벤치 과적합 위험이 있어 보류 — harvested 케이스가 쌓이면 재평가.
+
 ---
 
 ## 4. WS3 — QA Reflector: 통합·supersede·모순 해소
