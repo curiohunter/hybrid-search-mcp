@@ -220,6 +220,29 @@ def build_session_context(
         scoreline = ""
     if scoreline:
         ctx = f"{ctx}\n{scoreline}" if ctx else scoreline
+    # Degraded-rate line: how often recent pre-fetches ran BM25-only.
+    # Availability was fixed (deadline → fail-open); THIS is the
+    # effectiveness number — a high rate means the semantic lane is
+    # silently absent and the contention source needs fixing, not the
+    # fallback. Silent when nothing degraded.
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        recent = [
+            i for i in indexes
+            if i.trigger == "user_prompt_submit"
+            and i.timestamp is not None and i.timestamp >= cutoff
+        ]
+        n_degraded = sum(1 for i in recent if i.degraded)
+        if n_degraded:
+            line = (
+                f"[prefetch 7d] {n_degraded}/{len(recent)} served BM25-only "
+                "(vector lane degraded — semantic matching was off for those turns)"
+            )
+            ctx = f"{ctx}\n{line}" if ctx else line
+    except Exception:
+        pass
     return ctx[:_MAX_CONTEXT_CHARS]
 
 

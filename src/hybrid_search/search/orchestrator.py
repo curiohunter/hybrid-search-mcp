@@ -210,6 +210,12 @@ class HybridSearchResponse:
     # Hangul-dominant query fell back to the single lane (translation
     # missing/failed/disabled), None when the lane was not applicable.
     cross_language_lane: str | None = None
+    # True when the vector lane was unavailable (provider unreachable,
+    # deadline expired, or stale vector space) and results are BM25-only.
+    # First-class so callers (qa_log degraded-rate accounting) don't have
+    # to sniff the hint text. Measured cost of a degraded response:
+    # valuein gold 18→15/25, genesis 7→5/8 (2026-09-04).
+    degraded: bool = False
 
 
 # Surfaced when the embedding provider could not be reached. Semantic
@@ -2196,6 +2202,7 @@ class SearchOrchestrator:
                 generated_ratio, query,
             )
         return HybridSearchResponse(
+            degraded=vector_lane_down,
             results=results,
             query_type=query_type,
             effective_bm25_weight=effective_bm25_weight,
