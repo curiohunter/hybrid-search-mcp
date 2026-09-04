@@ -385,6 +385,19 @@ def record(
         # Never persist secrets to disk. The search still runs and returns
         # normally to the caller; we just don't immortalize the query.
         return None
+    from hybrid_search.memory.quality import is_harness_noise, is_junk_query
+
+    # Harness debris is never a question, whichever path wrote it. Before
+    # this gate, a `<task-notification>` body arriving through the pre-fetch
+    # went into the corpus and came back as a quoted memory hit (2026-09-05).
+    if is_harness_noise(query):
+        return None
+    # The rest of the junk filter describes a *user prompt* — too short, a
+    # bare path, a divider. It applies to the pre-fetch, whose query is the
+    # prompt itself, but not to the MCP tool path, where a deliberate
+    # three-character search is a legitimate thing to remember.
+    if trigger == "user_prompt_submit" and is_junk_query(query):
+        return None
 
     try:
         root = _resolve_project_root(cwd, project_infos)
@@ -525,7 +538,7 @@ def _near_dup_qa_exists(
 def _recent_qa_hash_exists(
     project_root: Path,
     query_hash: str,
-    within_seconds: int = _DEDUP_WINDOW_SECONDS,
+    within_seconds: int | None = None,
     *,
     incoming_has_answer: bool = False,
 ) -> bool:
@@ -537,6 +550,10 @@ def _recent_qa_hash_exists(
     near-dup check: a question-only record inside the window must not
     suppress the answer-bearing record for the same turn.
     """
+    # Read the module constant at call time so it stays one knob — a default
+    # argument would bind at import and silently ignore any later change.
+    if within_seconds is None:
+        within_seconds = _DEDUP_WINDOW_SECONDS
     qa_root = project_root / ".hybrid-search" / "qa"
     if not qa_root.is_dir():
         return False

@@ -35,6 +35,7 @@ raises past the public functions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -51,6 +52,9 @@ _DEFAULT_SESSION = "default"
 _PENDING_MAX_AGE_HOURS = 24
 # Why a join failed — never silent, or scoring gaps become invisible.
 _MISSES_FILE = "misses.jsonl"
+# Pending rows already claimed by a turn, kept so the SAME turn can be
+# re-scored when the Stop hook re-delivers it (see _claim_pending).
+_CLAIMED_SUFFIX = ".claimed.jsonl"
 
 # Gold paths that resolve outside the project keep this prefix so the
 # regression set can exclude them explicitly instead of carrying a
@@ -395,21 +399,55 @@ def record_prefetch(
         return False
 
 
-def _pop_pending(
-    project_root: Path, session_key: str | None, prompt: str
-) -> dict | None:
-    """Claim the pending row belonging to this finished turn.
+def turn_key(session_key: str | None, prompt: str, turn_id: str | None = None) -> str:
+    """Stable id for one user turn — the idempotency key for scoring.
 
-    Match rule: **within one session file, the oldest unconsumed row whose
-    query equals the turn's prompt.** The session file removes cross-session
-    interference, and FIFO-within-exact-match makes a repeated question
-    deterministic — prompts and turns are appended in the same order, so the
-    oldest match is always the one this turn started from. A non-matching
-    turn (pre-fetch is skipped on non-exploratory prompts) claims nothing.
+    A Stop hook can be delivered more than once for the same turn: when a
+    session-scoped Stop hook (``/goal``) blocks stopping, the assistant
+    continues and Stop fires again with ``stop_hook_active``. Each delivery
+    sees the *same* prompt and *more* assistant activity, so re-scoring is
+    not a duplicate — it is a better measurement of the same turn. Rows
+    carry this key and readers keep the last one (see ``_dedup_rows``).
+
+    ``turn_id`` is the transcript record's ``promptId``/``uuid``: identical
+    across re-deliveries, different when the user asks the same question
+    twice. Hashing the prompt instead would merge those two turns, so the
+    id is used whenever the caller has it.
+    """
+    ident = (turn_id or "").strip() or (prompt or "").strip()
+    raw = f"{_session_slug(session_key)}\x00{ident}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _claimed_path(project_root: Path, session_key: str | None) -> Path:
+    base = project_root / _SELFEVAL_DIR / _PENDING_DIR
+    return base / f"{_session_slug(session_key)}{_CLAIMED_SUFFIX}"
+
+
+def _claim_pending(
+    project_root: Path, session_key: str | None, prompt: str, tkey: str
+) -> dict | None:
+    """Get the pre-fetch row for this turn, first claim or re-delivery.
+
+    Match rule for a *first* claim: within one session file, the oldest
+    unclaimed row whose query equals the turn's prompt. The session file
+    removes cross-session interference, and FIFO-within-exact-match makes a
+    repeated question deterministic — prompts and turns are appended in the
+    same order, so the oldest match is the one this turn started from.
+
+    A claimed row is moved to a per-session ``.claimed.jsonl`` stamped with
+    ``turn_key`` instead of being dropped, so a re-delivered Stop scores the
+    same pre-fetch against the now-longer turn rather than finding nothing.
     """
     target = (prompt or "").strip()
     if not target:
         return None
+
+    claimed_path = _claimed_path(project_root, session_key)
+    for row in _read_jsonl(claimed_path):
+        if row.get("turn_key") == tkey:
+            return row
+
     candidates = [_pending_path(project_root, session_key)]
     fallback = _pending_path(project_root, None)
     if fallback not in candidates:
@@ -419,9 +457,9 @@ def _pop_pending(
         rows = _read_jsonl(path)
         for i, row in enumerate(rows):
             if (row.get("query") or "").strip() == target:
-                remaining = rows[:i] + rows[i + 1:]
                 try:
-                    _write_jsonl(path, remaining)
+                    _write_jsonl(path, rows[:i] + rows[i + 1:])
+                    _append_jsonl(claimed_path, {**row, "turn_key": tkey})
                 except OSError:
                     return None
                 return row
@@ -437,6 +475,9 @@ def prune_pending(project_root: Path, *, max_age_hours: int = _PENDING_MAX_AGE_H
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
         dropped = 0
         for path in base.glob("*.jsonl"):
+            # Claimed rows were already scored; they age out silently, since
+            # an expired claim is bookkeeping, not a missed measurement.
+            is_claimed = path.name.endswith(_CLAIMED_SUFFIX)
             rows = _read_jsonl(path)
             keep: list[dict] = []
             for row in rows:
@@ -445,13 +486,14 @@ def prune_pending(project_root: Path, *, max_age_hours: int = _PENDING_MAX_AGE_H
                 except (ValueError, TypeError, KeyError):
                     continue  # unparseable row is itself stale
                 if ts < cutoff:
-                    dropped += 1
-                    record_miss(
-                        project_root,
-                        "pending_expired",
-                        query=(row.get("query") or "")[:200],
-                        qa_record_id=row.get("qa_record_id", ""),
-                    )
+                    if not is_claimed:
+                        dropped += 1
+                        record_miss(
+                            project_root,
+                            "pending_expired",
+                            query=(row.get("query") or "")[:200],
+                            qa_record_id=row.get("qa_record_id", ""),
+                        )
                 else:
                     keep.append(row)
             if len(keep) != len(rows):
@@ -503,7 +545,13 @@ def _append_jsonl(path: Path, row: dict) -> None:
 
 
 def _persist_event(
-    project_root: Path, event: dict, source: str, *, qa_record_id: str = ""
+    project_root: Path,
+    event: dict,
+    source: str,
+    *,
+    qa_record_id: str = "",
+    tkey: str = "",
+    seq: int = 0,
 ) -> dict:
     """Score one event, append it, and harvest a betrayal if there is one.
 
@@ -520,6 +568,9 @@ def _persist_event(
     }
     if qa_record_id:
         row["qa_record_id"] = qa_record_id
+    if tkey:
+        row["turn_key"] = tkey
+        row["turn_seq"] = seq
     _append_jsonl(base / _EVENTS_FILE, row)
     # A betrayal where we saw what the agent actually used is a ready-made
     # benchmark item: the query, and the files that turned out to matter.
@@ -534,6 +585,7 @@ def _persist_event(
                 "served_paths": row["top_paths"],
                 "verdict": row["verdict"],
                 "source": source,
+                **({"turn_key": tkey, "turn_seq": seq} if tkey else {}),
             },
         )
     return row
@@ -545,6 +597,7 @@ def record_turn(
     *,
     session_key: str | None = None,
     prompt: str | None = None,
+    turn_id: str | None = None,
 ) -> int:
     """Score one finished turn and persist rows. Returns rows written.
 
@@ -556,21 +609,23 @@ def record_turn(
     failure — a scoring bug must never break the user's session.
     """
     try:
+        tkey = turn_key(session_key, prompt, turn_id) if prompt else ""
         written = 0
-        for event in extract_turn_events(turn_records):
+        for seq, event in enumerate(extract_turn_events(turn_records)):
             if not event["query"]:
                 continue
-            _persist_event(project_root, event, "tool")
+            _persist_event(project_root, event, "tool", tkey=tkey, seq=seq)
             written += 1
 
         if prompt:
-            pending = _pop_pending(project_root, session_key, prompt)
+            pending = _claim_pending(project_root, session_key, prompt, tkey)
             if pending is not None:
                 event = extract_prefetch_event(turn_records, pending)
                 if event["query"] and event["paths"]:
                     _persist_event(
                         project_root, event, "prefetch",
                         qa_record_id=pending.get("qa_record_id", "") or "",
+                        tkey=tkey, seq=0,
                     )
                     written += 1
                 else:
@@ -591,8 +646,38 @@ _VERDICTS = ("adopted", "mixed", "betrayed", "no_followup")
 _LANES = ("tool", "prefetch")
 
 
+def _dedup_rows(rows: list[dict]) -> list[dict]:
+    """Collapse re-scored turns, keeping the last (most complete) scoring.
+
+    Writing stays append-only — cheap and crash-safe in hook context — so
+    the collapse happens here, at read time. A row is identified by
+    ``(turn_key, source, turn_seq)``; rows without a ``turn_key`` (pre-P0
+    history and retro-scored rows, which have their own ``qa_record_id``
+    key) are always kept.
+    """
+    latest: dict[tuple, int] = {}
+    keep: list[dict] = []
+    for row in rows:
+        tkey = row.get("turn_key")
+        if not tkey:
+            keep.append(row)
+            continue
+        ident = (tkey, row.get("source") or "tool", row.get("turn_seq", 0))
+        if ident in latest:
+            keep[latest[ident]] = row  # last scoring of this turn wins
+        else:
+            latest[ident] = len(keep)
+            keep.append(row)
+    return keep
+
+
 def _empty_counts() -> dict:
     return {v: 0 for v in _VERDICTS} | {"total": 0}
+
+
+def harvested(project_root: Path) -> list[dict]:
+    """Harvested regression items, with re-scored turns collapsed."""
+    return _dedup_rows(_read_jsonl(project_root / _SELFEVAL_DIR / _HARVESTED_FILE))
 
 
 def summarize(project_root: Path, *, days: int = 7) -> dict | None:
@@ -607,12 +692,19 @@ def summarize(project_root: Path, *, days: int = 7) -> dict | None:
         if not events_path.is_file():
             return None
         lines = events_path.read_text(encoding="utf-8").splitlines()
+        rows: list[dict] = []
+        for line in lines[-_SUMMARY_READ_LINES:]:
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except (ValueError, TypeError):
+                continue
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         counts = _empty_counts()
         lanes = {lane: _empty_counts() for lane in _LANES}
-        for line in lines[-_SUMMARY_READ_LINES:]:
+        for row in _dedup_rows(rows):
             try:
-                row = json.loads(line)
                 ts = datetime.fromisoformat(row["ts"])
             except (ValueError, TypeError, KeyError):
                 continue
@@ -629,7 +721,7 @@ def summarize(project_root: Path, *, days: int = 7) -> dict | None:
                 lanes[lane]["total"] += 1
         if counts["total"] == 0:
             return None
-        harvested_rows = _read_jsonl(project_root / _SELFEVAL_DIR / _HARVESTED_FILE)
+        harvested_rows = harvested(project_root)
         usable_gold = sum(
             1
             for r in harvested_rows

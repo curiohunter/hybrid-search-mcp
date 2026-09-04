@@ -267,8 +267,8 @@ class TestPrefetchLane:
         selfeval.record_prefetch(tmp_path, query="같은 질문", paths=["second.py"],
                                  qa_record_id="two", session_key="s1")
 
-        selfeval.record_turn(tmp_path, [], session_key="s1", prompt="같은 질문")
-        selfeval.record_turn(tmp_path, [], session_key="s1", prompt="같은 질문")
+        selfeval.record_turn(tmp_path, [], session_key="s1", prompt="같은 질문", turn_id="t1")
+        selfeval.record_turn(tmp_path, [], session_key="s1", prompt="같은 질문", turn_id="t2")
 
         ids = [r["qa_record_id"] for r in _read_events(tmp_path)]
         assert ids == ["one", "two"], "oldest match first, in turn order"
@@ -471,3 +471,90 @@ class TestFollowupEvidence:
         selfeval.record_turn(tmp_path, turn, session_key="s", prompt="q")
 
         assert _read_events(tmp_path)[-1]["verdict"] == "betrayed"
+
+
+class TestTurnIdempotency:
+    """A Stop hook re-delivered for the same turn re-scores, never duplicates."""
+
+    def test_rescoring_replaces_the_earlier_partial_scoring(self, tmp_path) -> None:
+        selfeval.record_prefetch(tmp_path, query="q", paths=["a.py"], session_key="s")
+        partial = [_tool_call("Bash", {"command": "npm run build"})]
+        complete = partial + [_tool_call("Read", {"file_path": "a.py"})]
+
+        selfeval.record_turn(tmp_path, partial, session_key="s", prompt="q", turn_id="t1")
+        selfeval.record_turn(tmp_path, complete, session_key="s", prompt="q", turn_id="t1")
+
+        stats = selfeval.summarize(tmp_path, days=7)
+        assert stats["total"] == 1, "one turn, scored twice, counted once"
+        assert stats["adopted"] == 1, "the later, more complete scoring wins"
+
+    def test_a_second_ask_of_the_same_question_is_its_own_turn(self, tmp_path) -> None:
+        for _ in range(2):
+            selfeval.record_prefetch(tmp_path, query="q", paths=["a.py"], session_key="s")
+
+        selfeval.record_turn(tmp_path, [], session_key="s", prompt="q", turn_id="t1")
+        selfeval.record_turn(tmp_path, [], session_key="s", prompt="q", turn_id="t2")
+
+        assert selfeval.summarize(tmp_path, days=7)["total"] == 2
+
+    def test_tool_lane_events_keep_their_order_identity(self, tmp_path) -> None:
+        """Two searches in one turn are two rows, not one collapsed row."""
+        turn = (
+            _search_call("u1", "첫 검색", ["a.py"])
+            + _search_call("u2", "둘째 검색", ["b.py"])
+        )
+
+        selfeval.record_turn(tmp_path, turn, session_key="s", prompt="p", turn_id="t1")
+        selfeval.record_turn(tmp_path, turn, session_key="s", prompt="p", turn_id="t1")
+
+        stats = selfeval.summarize(tmp_path, days=7)
+        assert stats["lanes"]["tool"]["total"] == 2
+
+    def test_prefetch_survives_re_delivery(self, tmp_path) -> None:
+        """The claimed row is kept so the second delivery can score it again."""
+        selfeval.record_prefetch(tmp_path, query="q", paths=["a.py"], session_key="s")
+
+        selfeval.record_turn(tmp_path, [], session_key="s", prompt="q", turn_id="t1")
+        selfeval.record_turn(
+            tmp_path, [_tool_call("Read", {"file_path": "a.py"})],
+            session_key="s", prompt="q", turn_id="t1",
+        )
+
+        stats = selfeval.summarize(tmp_path, days=7)
+        assert stats["lanes"]["prefetch"]["total"] == 1
+        assert stats["adopted"] == 1, "second delivery saw the Read"
+
+    def test_harvested_is_deduped_too(self, tmp_path) -> None:
+        selfeval.record_prefetch(tmp_path, query="q", paths=["a.py"], session_key="s")
+        turn = [_tool_call("Read", {"file_path": "elsewhere.py"})]
+
+        selfeval.record_turn(tmp_path, turn, session_key="s", prompt="q", turn_id="t1")
+        selfeval.record_turn(tmp_path, turn, session_key="s", prompt="q", turn_id="t1")
+
+        assert len(selfeval.harvested(tmp_path)) == 1
+
+
+class TestAttachmentBoilerplate:
+    """Screenshot banners must not become a topic of their own."""
+
+    def test_unrelated_screenshot_turns_share_no_tokens(self):
+        from hybrid_search.search import qa_topics
+
+        banner = ("[Image: original 1500x3033, displayed at 989x2000. "
+                  "Multiply coordinates by 1.52 to map to original image.]")
+        a = qa_topics.topic_tokens(f"{banner} 522번 색칠이 없어")
+        b = qa_topics.topic_tokens(f"{banner} 핸드오프 문서 어디있어")
+
+        assert not (set(a) & set(b)), "only the banner was shared — not a topic"
+        assert "색칠" in a and "문서" in b, "the real question survives"
+
+    def test_short_image_marker_is_stripped_too(self):
+        from hybrid_search.search import qa_topics
+
+        assert qa_topics.topic_tokens("[Image #2]") == {}
+
+    def test_plain_text_is_untouched(self):
+        from hybrid_search.search import qa_topics
+
+        assert qa_topics.topic_tokens("환불 흐름") == qa_topics.topic_tokens("환불 흐름")
+        assert qa_topics.topic_tokens("환불 흐름")
