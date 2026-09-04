@@ -1183,3 +1183,37 @@ class TestQaRecordJunkGate:
         )
 
         assert saved is not None and saved.is_file()
+
+
+class TestHarnessDebrisDetection:
+    """Debris already in the corpus is archived, not left to be served back."""
+
+    def _qa(self, root, stem, query):
+        d = root / ".hybrid-search" / "qa" / "2026" / "09"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{stem}.md").write_text(
+            f'---\nquery: "{query}"\ntrigger: user_prompt_submit\n---\n\n# Q: x\n',
+            encoding="utf-8",
+        )
+        return d / f"{stem}.md"
+
+    def test_finds_multiline_task_notifications(self, tmp_path):
+        from hybrid_search.memory import integrity
+
+        debris = self._qa(
+            tmp_path, "01-000001-aaaa",
+            "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>",
+        )
+        keep = self._qa(tmp_path, "01-000002-bbbb", "환불 흐름이 어떻게 되나")
+
+        found = integrity.detect_harness_debris(tmp_path)
+
+        assert found == [debris], "the query spans lines — a single-line scan misses it"
+        assert keep.is_file()
+
+    def test_a_question_mentioning_the_word_is_kept(self, tmp_path):
+        from hybrid_search.memory import integrity
+
+        self._qa(tmp_path, "01-000003-cccc", "task notification 처리 어떻게 하지")
+
+        assert integrity.detect_harness_debris(tmp_path) == []

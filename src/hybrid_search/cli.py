@@ -650,6 +650,8 @@ def _run_memory_integrity(
     parts = []
     if report.stale_archived:
         parts.append(f"{len(report.stale_archived)} stale qa archived")
+    if report.debris_archived:
+        parts.append(f"{len(report.debris_archived)} harness debris archived")
     if report.dedup_pairs:
         parts.append(f"{len(report.dedup_pairs)} dedup pair(s)")
     if report.archive_purged:
