@@ -268,6 +268,16 @@ def _format_user_prompt_context(response, prompt: str | None = None) -> str:
     return context[:_MAX_CONTEXT_CHARS]
 
 
+# Embed budget for the BLOCKING pre-fetch. The hook's external timeout
+# (10s) discards the WHOLE context on expiry, so the slowest dependency —
+# a query embed queued behind a bulk batch on the shared Ollama — must
+# be bounded well inside it. On expiry the embedder raises and the
+# orchestrator's fail-open serves BM25-only: degraded beats discarded.
+# Overridable; "0" disables the pre-fetch deadline entirely.
+_PREFETCH_EMBED_DEADLINE_ENV = "HYBRID_SEARCH_EMBED_DEADLINE"
+_PREFETCH_EMBED_DEADLINE_DEFAULT = "2.5"
+
+
 def _run_programmatic_search(prompt: str, cwd: str):
     try:
         from hybrid_search.config import load_config
@@ -277,6 +287,14 @@ def _run_programmatic_search(prompt: str, cwd: str):
     except Exception:
         return None
 
+    # Scoped to THIS search only (set/restore): a process-wide default
+    # would leak into the Stop hook's detached conversation indexing,
+    # whose bulk embeds legitimately take longer than any hook budget.
+    prev = os.environ.get(_PREFETCH_EMBED_DEADLINE_ENV)
+    if prev is None:
+        os.environ[_PREFETCH_EMBED_DEADLINE_ENV] = _PREFETCH_EMBED_DEADLINE_DEFAULT
+    elif prev == "0":
+        os.environ.pop(_PREFETCH_EMBED_DEADLINE_ENV, None)
     try:
         cfg = load_config()
         registry = ProjectRegistry(cfg.global_dir)
@@ -289,6 +307,11 @@ def _run_programmatic_search(prompt: str, cwd: str):
         )
     except Exception:
         return None
+    finally:
+        if prev is None:
+            os.environ.pop(_PREFETCH_EMBED_DEADLINE_ENV, None)
+        else:
+            os.environ[_PREFETCH_EMBED_DEADLINE_ENV] = prev
 
 
 def build_user_prompt_context(
