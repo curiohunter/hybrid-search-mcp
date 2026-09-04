@@ -54,6 +54,8 @@ class QAIndex:
     answer_chars: int | None = None
     answer_excerpt_chars: int | None = None
     client: str | None = None
+    # v5 — this exchange was served BM25-only (vector lane degraded).
+    degraded: bool = False
 
     @property
     def id(self) -> str:
@@ -217,6 +219,7 @@ def parse_qa_index(path: Path) -> QAIndex | None:
             _safe_int(answer_excerpt_chars_raw) if answer_excerpt_chars_raw else None
         ),
         client=fm.get("client") or None,
+        degraded=fm.get("degraded", "").strip() == "true",
     )
 
 
