@@ -59,7 +59,25 @@ def spawn_conversation_index(
 
 _MAX_CONTEXT_CHARS = 360
 _SESSION_TOPIC_LIMIT = 3
-_PREFETCH_RESULT_LIMIT = 3
+
+# The pre-fetch fires ONCE per user turn, not once per tool call, so it does
+# not share the PreToolUse budget (whose 360/800 caps exist because a chatty
+# session can fire Grep twenty times). Sizing the single best shot of the
+# memory layer like a per-Grep nudge is a category error, and the 2026-09-04
+# selfeval numbers show what it cost: of 156 scored pre-fetches, exactly ONE
+# was adopted. At 360 chars the injection could only ever be a route line, a
+# confidence line and three bare paths — no content, nothing to judge
+# relevance by, and a closing nudge to call the tool instead. An agent has no
+# reason to open a path it knows nothing about.
+_PREFETCH_MAX_CONTEXT_CHARS = 2400
+_PREFETCH_RESULT_LIMIT = 6
+
+# Memory chunk types have no file to open — the retrieved text IS the answer,
+# so it must be quoted here or the hit is worthless. Everything else is a
+# real file and gets a locator plus one line of what it contains.
+_VIRTUAL_NODE_TYPES = frozenset({"qa_log", "conv_turn", "memory_card", "commit"})
+_MEMORY_EXCERPT_CHARS = 320
+_CODE_SNIPPET_CHARS = 120
 _ROUTER_ENV = "HYBRID_SEARCH_ROUTER"
 
 _EXPLORATORY_TOKENS_KO = (
@@ -250,45 +268,132 @@ def _router_enabled() -> bool:
     return os.environ.get(_ROUTER_ENV) != "0"
 
 
+def _clip_one_line(text: str, limit: int) -> str:
+    """Collapse to a single line and clip — injected context must stay scannable."""
+    flat = " ".join((text or "").split())
+    if len(flat) <= limit:
+        return flat
+    return flat[:limit].rstrip() + "…"
+
+
+_FRONTMATTER_RE = __import__("re").compile(r"\A---\s*\n.*?\n---\s*\n", __import__("re").S)
+# Leading provenance tags the search layer prepends to snippets. Matched by
+# vocabulary rather than by shape: a bare `\A\[...\]` would also eat a code
+# snippet that happens to open with an index expression.
+_LEADING_TAG_RE = __import__("re").compile(
+    r"\A\s*\[(?:in-flight|conversation|qa|card|code|commit|memory)\b[^\]]{0,120}\]\s*",
+    __import__("re").IGNORECASE,
+)
+_META_BULLET_RE = __import__("re").compile(r"\A-\s+\*\*[^*]{1,40}\*\*:")
+
+
+def _clean_body(text: str, path: str = "") -> str:
+    """Strip what the reader already knows, so the excerpt is all signal.
+
+    Snippets arrive with the trust tag repeated at the front and, for qa
+    notes, a YAML frontmatter block. Both are pure overhead here: the tag is
+    already rendered on the heading line, and the frontmatter pushes the
+    note's actual body out of a bounded excerpt — which is how a memory hit
+    ends up quoting ``timestamp:`` and ``sources_hash:`` instead of the
+    answer it was retrieved for.
+    """
+    body = _LEADING_TAG_RE.sub("", text or "", count=1)
+    # In-flight snippets repeat the file path, which the heading already shows.
+    if path and body.lstrip().startswith(path):
+        body = body.lstrip()[len(path):]
+    body = _FRONTMATTER_RE.sub("", body, count=1)
+    # Drop the machine-written preamble every qa log carries: the "# Q: …"
+    # echo of the query we already matched on, the structural headings, and
+    # the metadata bullets (`- **bm25_weight**: 0.15`). None of it answers
+    # anything, and inside a bounded excerpt it crowds out what does.
+    kept: list[str] = []
+    seen_prose = False
+    for ln in body.splitlines():
+        s = ln.strip()
+        if not seen_prose:
+            if not s or s.startswith("# Q: ") or s.startswith("#") or _META_BULLET_RE.match(s):
+                continue
+            seen_prose = True
+        kept.append(ln)
+    return "\n".join(kept)
+
+
+def _memory_tag(r) -> str:
+    """Compact provenance label for a hit with no file to open."""
+    raw = (getattr(r, "trust_meta", "") or "").strip()
+    inner = raw[1:-1] if raw.startswith("[") and raw.endswith("]") else raw
+    parts = [seg.strip() for seg in inner.split(" - ") if seg.strip()]
+    if not parts:
+        return (getattr(r, "node_type", "") or "memory").strip()
+    return _clip_one_line(" · ".join(parts[:3]), 48)
+
+
+def _render_hit(index: int, r) -> str:
+    """One pre-fetch hit, rendered so the agent can act on it without a tool call.
+
+    Memory hits are quoted because there is nothing to open; file hits get a
+    ``path:line`` locator plus one line of content so the decision to Read is
+    an informed one rather than a coin flip.
+    """
+    node_type = (getattr(r, "node_type", "") or "").strip()
+    virtual = node_type in _VIRTUAL_NODE_TYPES
+    tag = _memory_tag(r) if virtual else ""
+    # Virtual hits prefer full content: their snippet is a window that often
+    # lands inside the note's frontmatter, so the excerpt would quote
+    # `timestamp:` and `sources_hash:` instead of the answer. File hits keep
+    # the snippet — it is already the matched region.
+    raw_body = (
+        (getattr(r, "content", "") or getattr(r, "snippet", "") or "")
+        if virtual
+        else (getattr(r, "snippet", "") or getattr(r, "content", "") or "")
+    )
+    body = _clip_one_line(
+        _clean_body(raw_body, "" if virtual else (getattr(r, "file_path", "") or "")),
+        _MEMORY_EXCERPT_CHARS if virtual else _CODE_SNIPPET_CHARS,
+    )
+    if virtual:
+        head = f"{index}. [{tag}] quoted — no file to open"
+    else:
+        fp = getattr(r, "file_path", "?") or "?"
+        start = getattr(r, "start_line", None)
+        name = getattr(r, "name", None)
+        label = f" ({node_type} {name})" if node_type and name else ""
+        head = f"{index}. `{fp}{f':{start}' if start else ''}`{label}"
+    return f"{head}\n   {body}" if body else head
+
+
 def _format_user_prompt_context(response, prompt: str | None = None) -> str:
     results = getattr(response, "results", []) or []
     if not results:
         return ""
     confidence = getattr(response, "confidence", "weak") or "weak"
     hint = getattr(response, "fallback_hint", None)
-    confidence_line = f"pre-fetch confidence: {confidence}"
+    header = f"[hybrid-search pre-fetch] {len(results)} hits · confidence {confidence}"
     if confidence == "weak" and hint:
-        confidence_line += f" · {hint}"
-    lines = []
+        header += f" · {hint}"
+
+    head = []
     if prompt is not None and _router_enabled():
         from hybrid_search.memory.router import classify_prompt
 
         decision = classify_prompt(prompt)
-        lines.append(f"[hybrid-search route] suggest {decision.tool} · {decision.reason}")
+        head.append(f"[hybrid-search route] suggest {decision.tool} · {decision.reason}")
+    head.append(header)
+    footer = (
+        "Quoted hits above are already the answer — do not Read those paths. "
+        "For file hits, Read the locator; call hybrid_search only if these miss."
+    )
 
-    lines.extend([
-        f"[hybrid-search pre-fetch] {len(results)} hits. Top paths:",
-        confidence_line,
-    ])
-    hit_lines = []
-    for i, r in enumerate(results[:_PREFETCH_RESULT_LIMIT], start=1):
-        fp = getattr(r, "file_path", "?") or "?"
-        start = getattr(r, "start_line", None)
-        loc = f":{start}" if start else ""
-        hit_lines.append(f"{i}. `{fp}{loc}`")
-    lines.extend(hit_lines)
-    lines.append("Call hybrid_search for details if needed.")
-    context = "\n".join(lines)
-    if len(context) <= _MAX_CONTEXT_CHARS:
-        return context
-
-    # The route hint has priority. If it pushes the payload over the hook
-    # budget, drop only the final hit row while preserving confidence and at
-    # least two concrete result locations.
-    if prompt is not None and _router_enabled() and len(hit_lines) > 2:
-        lines.pop(-2)
-        context = "\n".join(lines)
-    return context[:_MAX_CONTEXT_CHARS]
+    hits = [_render_hit(i, r) for i, r in enumerate(results[:_PREFETCH_RESULT_LIMIT], start=1)]
+    # Trim from the tail: the lowest-ranked hits are the cheapest to lose, and
+    # rebuilding each time keeps the closing instruction intact — a footer
+    # truncated mid-sentence would read as an instruction to Read everything.
+    while hits:
+        context = "\n".join(head + hits + [footer])
+        if len(context) <= _PREFETCH_MAX_CONTEXT_CHARS or len(hits) == 1:
+            return context[:_PREFETCH_MAX_CONTEXT_CHARS]
+        hits.pop()
+    return "\n".join(head + [footer])[:_PREFETCH_MAX_CONTEXT_CHARS]
 
 
 # Embed budget for the BLOCKING pre-fetch. The hook's external timeout
