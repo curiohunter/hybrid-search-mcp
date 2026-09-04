@@ -412,7 +412,19 @@ def _format_user_prompt_context(prompt: str, response) -> str:
     return hook_runtime._format_user_prompt_context(response, prompt)
 
 
-def _run_programmatic_search(prompt: str, cwd: str):
+def _served_paths(response) -> list[str]:
+    """Ordered file_paths the pre-fetch actually injected."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for r in getattr(response, "results", None) or []:
+        fp = (getattr(r, "file_path", "") or "").strip()
+        if fp and fp not in seen:
+            seen.add(fp)
+            paths.append(fp)
+    return paths
+
+
+def _run_programmatic_search(prompt: str, cwd: str, session_key: str | None = None):
     """Run hybrid_search in-process for pre-fetch. Returns Response or None.
 
     Failures here must be silent — a failed pre-fetch just means the user
@@ -430,12 +442,30 @@ def _run_programmatic_search(prompt: str, cwd: str):
     # before the Stop hook later tries to dedup.
     try:
         from hybrid_search.memory import qa_log  # noqa: F811
-        qa_log.record(
+        saved = qa_log.record(
             query=prompt,
             response=response,
             cwd=cwd,
             async_write=False,
             trigger="user_prompt_submit",
+        )
+    except Exception:
+        saved = None
+
+    # Queue this pre-fetch for the Stop hook to score (selfeval v1.1). The
+    # served paths can't be recovered from the transcript later — no tool
+    # call carries them — so they have to be handed over here. The qa log's
+    # filename stem is the record id, which makes the row traceable back to
+    # the saved exchange.
+    try:
+        from hybrid_search.memory import selfeval
+
+        selfeval.record_prefetch(
+            Path(cwd),
+            query=prompt,
+            paths=_served_paths(response),
+            qa_record_id=saved.stem if saved is not None else None,
+            session_key=session_key,
         )
     except Exception:
         pass
@@ -469,6 +499,26 @@ def _reindex_in_progress(root: Path) -> bool:
         return False
 
 
+def _session_key(event: dict) -> str | None:
+    """Stable per-session key for the selfeval pre-fetch queue.
+
+    ``session_id`` is what Claude Code sends; the transcript filename stem is
+    the same id and covers payloads that omit the field. Returning None lets
+    the queue fall back to its shared default file — still correct, because
+    a pending row is only claimed by an exact query match.
+    """
+    sid = event.get("session_id")
+    if isinstance(sid, str) and sid.strip():
+        return sid.strip()
+    raw = event.get("transcript_path")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return Path(raw).stem or None
+        except (OSError, ValueError):
+            return None
+    return None
+
+
 def _handle_user_prompt_submit(event: dict) -> dict | None:
     """UserPromptSubmit entry — pre-fetch + inject on exploratory prompts.
 
@@ -486,7 +536,7 @@ def _handle_user_prompt_submit(event: dict) -> dict | None:
     if _reindex_in_progress(root):
         return None
 
-    response = _run_programmatic_search(prompt, str(root))
+    response = _run_programmatic_search(prompt, str(root), _session_key(event))
     if response is None:
         return None
 
@@ -558,7 +608,12 @@ def _handle_stop(event: dict) -> dict | None:
     # regression set. record_turn swallows its own errors.
     from hybrid_search.memory import selfeval
 
-    selfeval.record_turn(root, records[turn_idx + 1 :])
+    selfeval.record_turn(
+        root,
+        records[turn_idx + 1 :],
+        session_key=_session_key(event),
+        prompt=prompt,
+    )
 
     # Fire-and-forget: background-index this Claude session for cross-tool
     # recall. Detached + error-swallowed, so it never blocks the turn.

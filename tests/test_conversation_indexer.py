@@ -259,3 +259,63 @@ def test_cli_index_conversations_command(tmp_path: Path, monkeypatch, capsys) ->
         assert vector.count == db.get_chunk_count(pid) == bm25.count
     finally:
         db.close()
+
+
+class TestBackfillGate:
+    """The pre-flight gate must decide before anything is written."""
+
+    def _gate(self, tmp_path, node_types, limit=0.40, planned=10):
+        import hybrid_search.cli as cli
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths
+
+        project_dir = tmp_path / "idx"
+        paths = IndexPaths(project_dir)
+        paths.ensure_dirs()
+        if node_types:
+            db = StoreDB(paths.store_db)
+            try:
+                conn = db._conn
+                conn.execute(
+                    "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+                    " VALUES ('f1', 'p', 'a.py', 'python', 'h')"
+                )
+                for i, nt in enumerate(node_types):
+                    conn.execute(
+                        "INSERT INTO chunks (id, file_id, project_id, node_type, name,"
+                        " qualified_name, content, start_line, end_line)"
+                        f" VALUES ('c{i}', 'f1', 'p', ?, 'n', 'q', 'x', 1, 2)",
+                        (nt,),
+                    )
+                conn.commit()
+            finally:
+                db.close()
+
+        import hybrid_search.index.transcript_source as ts
+        original = ts.collect_project_chunks
+        ts.collect_project_chunks = lambda *a, **k: [object()] * planned
+        try:
+            return cli._conv_backfill_gate(tmp_path, project_dir, limit)
+        finally:
+            ts.collect_project_chunks = original
+
+    def test_passes_when_memory_stays_under_the_limit(self, tmp_path):
+        gate = self._gate(tmp_path, ["function"] * 90 + ["qa_log"] * 10, planned=10)
+
+        assert gate["ok"] and "PASS" in gate["line"]
+
+    def test_blocks_when_backfill_would_cross_the_limit(self, tmp_path):
+        gate = self._gate(tmp_path, ["function"] * 10 + ["qa_log"] * 5, planned=20)
+
+        assert not gate["ok"] and "FAIL" in gate["line"]
+
+    def test_empty_index_is_not_blocked(self, tmp_path):
+        """A fresh project reads as 100% memory — it has nothing to dilute."""
+        gate = self._gate(tmp_path, [], planned=5)
+
+        assert gate["ok"] and "SKIP" in gate["line"]
+
+    def test_already_indexed_conv_chunks_are_not_double_counted(self, tmp_path):
+        gate = self._gate(tmp_path, ["function"] * 90 + ["conv_turn"] * 10, planned=10)
+
+        assert gate["added"] == 0, "10 planned, 10 already present"
