@@ -2238,7 +2238,12 @@ class SearchOrchestrator:
             return chunk_results
         project_dir = get_project_dir(self._config.projects_dir, pinfo.id)
         idx_paths = IndexPaths(project_dir)
-        if not idx_paths.store_db.exists():
+        # isinstance guard, not just .exists(): tests drive this method
+        # through MagicMock configs whose every attribute is truthy —
+        # sqlite then happily creates a 200KB db named after the mock's
+        # repr in the CWD (77 junk files before this line existed).
+        store_db = idx_paths.store_db
+        if not isinstance(store_db, Path) or not store_db.is_file():
             return chunk_results
         try:
             db = StoreDB(idx_paths.store_db)
