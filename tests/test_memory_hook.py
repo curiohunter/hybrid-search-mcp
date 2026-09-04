@@ -100,6 +100,39 @@ class TestResolveProjectRoot:
 
         assert hook_runtime.resolve_project_root({"cwd": str(nested)}) is None
 
+    def _make_worktree(self, tmp_path: Path, gitdir_line: str) -> tuple[Path, Path]:
+        main = tmp_path / "valuein"
+        (main / ".git" / "worktrees" / "wt-fix").mkdir(parents=True)
+        wt = tmp_path / "worktrees" / "wt-fix"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text(gitdir_line)
+        return main, wt
+
+    def test_linked_worktree_resolves_to_main_checkout(self, tmp_path: Path) -> None:
+        # A session run inside a worktree must land its memory on the MAIN
+        # checkout — worktree-rooted qa dies with the worktree and conv
+        # indexing no-ops on the unregistered path (2026-09-04 field check).
+        main, wt = self._make_worktree(
+            tmp_path, f"gitdir: {tmp_path}/valuein/.git/worktrees/wt-fix\n"
+        )
+        got = hook_runtime.resolve_project_root({"cwd": str(wt / "src")})
+        assert got == main
+
+    def test_worktree_with_relative_gitdir_resolves(self, tmp_path: Path) -> None:
+        main, wt = self._make_worktree(
+            tmp_path, "gitdir: ../../valuein/.git/worktrees/wt-fix\n"
+        )
+        got = hook_runtime.resolve_project_root({"cwd": str(wt)})
+        assert got == main
+
+    def test_broken_worktree_marker_falls_back_to_worktree_root(self, tmp_path: Path) -> None:
+        # Main checkout gone (or marker garbage): better a worktree-local
+        # root than none — degrades to the pre-fix behavior.
+        wt = tmp_path / "wt-orphan"
+        wt.mkdir()
+        (wt / ".git").write_text("gitdir: /nonexistent/.git/worktrees/x\n")
+        assert hook_runtime.resolve_project_root({"cwd": str(wt)}) == wt
+
 
 class TestLooksLikeNoise:
     @pytest.mark.parametrize("term", ["", "  ", "*", ".", "=", "ab", "foo", "test"])
