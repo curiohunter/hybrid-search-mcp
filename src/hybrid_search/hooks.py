@@ -543,7 +543,9 @@ def _handle_user_prompt_submit(event: dict) -> dict | None:
     ctx = _format_user_prompt_context(prompt, response)
     if not ctx:
         return None
-    ctx = ctx[:_MAX_CONTEXT_CHARS]
+    # NOT _MAX_CONTEXT_CHARS: that budget is sized for PreToolUse, which can
+    # fire twenty times in one turn. The pre-fetch fires once and is the
+    # memory layer's only unprompted shot at the turn — hook_runtime sizes it.
     return {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
@@ -558,11 +560,20 @@ def _handle_stop(event: dict) -> dict | None:
     Returns None on purpose: Stop hook output is terminal (can't inject
     context into a subsequent turn), so we never emit additionalContext.
     A successful save is a pure side effect.
+
+    **Continuations are recorded, not skipped.** ``stop_hook_active`` means a
+    session-scoped Stop hook (``/goal`` and friends) blocked stopping and the
+    assistant kept working, so Stop fires again for the same turn. This
+    handler used to bail on that flag, which meant the memory layer went
+    blind for the entire duration of a goal loop — precisely the stretch
+    where the most work happens (2026-09-04: 09:24 was the last stop_hook qa
+    log of a session that then ran for hours under a goal). The flag exists
+    to stop *feedback loops*, and this handler emits nothing, so it cannot
+    extend one. Re-delivery is made safe by idempotency instead: qa_log
+    dedups on the query hash, and selfeval keys rows by ``turn_key`` so a
+    re-scored turn replaces its earlier, less complete scoring.
     """
-    # Avoid infinite continuation loops — Claude Code sets this flag when
-    # it's already in a stop-hook-triggered continuation.
-    if event.get("stop_hook_active"):
-        return None
+    continuation = bool(event.get("stop_hook_active"))
 
     root = _resolve_project_root(event)
     if root is None:
@@ -608,18 +619,24 @@ def _handle_stop(event: dict) -> dict | None:
     # regression set. record_turn swallows its own errors.
     from hybrid_search.memory import selfeval
 
+    turn_rec = records[turn_idx] if 0 <= turn_idx < len(records) else {}
     selfeval.record_turn(
         root,
         records[turn_idx + 1 :],
         session_key=_session_key(event),
         prompt=prompt,
+        turn_id=turn_rec.get("promptId") or turn_rec.get("uuid"),
     )
 
     # Fire-and-forget: background-index this Claude session for cross-tool
     # recall. Detached + error-swallowed, so it never blocks the turn.
-    from hybrid_search.memory import hook_runtime
+    # Skipped on continuations: the first delivery already queued this
+    # session, and the indexer is delta-based, so re-spawning would only
+    # add processes. Recording above is not skipped — that is the point.
+    if not continuation:
+        from hybrid_search.memory import hook_runtime
 
-    hook_runtime.spawn_conversation_index(transcript_path, root, "claude")
+        hook_runtime.spawn_conversation_index(transcript_path, root, "claude")
     return None
 
 
