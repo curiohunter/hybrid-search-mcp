@@ -319,3 +319,158 @@ class TestBackfillGate:
         gate = self._gate(tmp_path, ["function"] * 90 + ["conv_turn"] * 10, planned=10)
 
         assert gate["added"] == 0, "10 planned, 10 already present"
+
+
+class TestMemorableTurnGate:
+    """The conversation lane applies the same debris filter as the qa lane."""
+
+    def test_keeps_a_turn_with_a_real_exchange(self):
+        from hybrid_search.index.transcript_source import is_memorable_turn
+
+        assert is_memorable_turn(
+            "환불 흐름이 어떻게 되나",
+            "정산 확정 시점에 결제선생 청구서를 파기합니다.",
+        )
+
+    def test_drops_turns_the_qa_lane_already_calls_debris(self):
+        from hybrid_search.index.transcript_source import is_memorable_turn
+
+        assert not is_memorable_turn("[Request interrupted by user]", "네 알겠습니다.")
+        assert not is_memorable_turn("src/foo/bar.py", "확인했습니다.")
+        assert not is_memorable_turn("---------------", "확인했습니다.")
+
+    def test_drops_a_turn_where_nothing_was_said(self):
+        """Assistant side is all code fence / log lines — no answer in it."""
+        from hybrid_search.index.transcript_source import is_memorable_turn
+
+        assert not is_memorable_turn("3011 떠 있나", "```\n3011 PID 91838\n```")
+        assert not is_memorable_turn("빌드 돌려줘", "")
+
+    def test_a_fenced_answer_with_prose_survives(self):
+        from hybrid_search.index.transcript_source import is_memorable_turn
+
+        assert is_memorable_turn(
+            "왜 실패했지",
+            "포트가 이미 점유돼 있었습니다.\n```\nEADDRINUSE\n```",
+        )
+
+    def test_filtered_turns_do_not_renumber_the_rest(self, tmp_path):
+        """turn_index is a position in the conversation, not a running count."""
+        import json as _json
+        from hybrid_search.index.transcript_source import parse_claude_transcript
+
+        def user(text):
+            return _json.dumps({"type": "user", "message": {"role": "user", "content": text}})
+
+        def assistant(text):
+            return _json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": text}]},
+            })
+
+        path = tmp_path / "s.jsonl"
+        path.write_text("\n".join([
+            user("첫 질문은 무엇이었나"), assistant("첫 답변입니다."),
+            user("3011 떠 있나"), assistant("```\n3011 PID 91838\n```"),
+            user("셋째 질문은 무엇이었나"), assistant("셋째 답변입니다."),
+        ]) + "\n", encoding="utf-8")
+
+        chunks = parse_claude_transcript(path)
+
+        assert [c.turn_index for c in chunks] == [0, 2]
+
+
+class TestReflectionBacklogMarker:
+    """A stalled Reflector must announce itself, like STALE.md does for wiki."""
+
+    def _run(self, tmp_path, n_clusters):
+        import hybrid_search.cli as cli
+        from hybrid_search.memory import reflector
+
+        class _C:
+            def __init__(self, q):
+                self.representative_query = q
+
+        original = reflector.collect_clusters
+        reflector.collect_clusters = lambda root: [_C(f"질문 {i}") for i in range(n_clusters)]
+        try:
+            cli._report_pending_reflection(tmp_path)
+        finally:
+            reflector.collect_clusters = original
+        return tmp_path / ".hybrid-search" / cli.REFLECT_MARKER_NAME
+
+    def test_writes_a_marker_when_the_backlog_is_real(self, tmp_path, capsys):
+        marker = self._run(tmp_path, 5)
+
+        assert marker.is_file()
+        assert "5 cluster(s)" in marker.read_text()
+        assert "Reflection backlog: 5" in capsys.readouterr().out
+
+    def test_stays_quiet_on_ordinary_churn(self, tmp_path, capsys):
+        marker = self._run(tmp_path, 2)
+
+        assert not marker.exists()
+        assert "Reflection backlog" not in capsys.readouterr().out
+
+    def test_clears_a_stale_marker(self, tmp_path):
+        import hybrid_search.cli as cli
+
+        marker = tmp_path / ".hybrid-search" / cli.REFLECT_MARKER_NAME
+        marker.parent.mkdir(parents=True)
+        marker.write_text("old backlog")
+
+        assert not self._run(tmp_path, 0).exists()
+
+
+class TestMemoryShareReport:
+    """The corpus's memory share must be visible, not discovered at a gate."""
+
+    def _seed(self, tmp_path, node_types):
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths
+
+        project_dir = tmp_path / "idx"
+        paths = IndexPaths(project_dir)
+        paths.ensure_dirs()
+        db = StoreDB(paths.store_db)
+        try:
+            conn = db._conn
+            conn.execute(
+                "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+                " VALUES ('f1', 'p', 'a.py', 'python', 'h')"
+            )
+            for i, nt in enumerate(node_types):
+                conn.execute(
+                    "INSERT INTO chunks (id, file_id, project_id, node_type, name,"
+                    " qualified_name, content, start_line, end_line)"
+                    f" VALUES ('c{i}', 'f1', 'p', ?, 'n', 'q', 'x', 1, 2)",
+                    (nt,),
+                )
+            conn.commit()
+        finally:
+            db.close()
+        return project_dir
+
+    def test_reports_the_share(self, tmp_path, capsys):
+        import hybrid_search.cli as cli
+
+        cli._report_memory_share(self._seed(tmp_path, ["function"] * 8 + ["qa_log"] * 2))
+
+        assert "Memory share: 2/10 chunks (20.0%)" in capsys.readouterr().out
+
+    def test_warns_when_the_next_backfill_would_be_blocked(self, tmp_path, capsys):
+        import hybrid_search.cli as cli
+
+        cli._report_memory_share(
+            self._seed(tmp_path, ["function"] * 5 + ["conv_turn"] * 5)
+        )
+
+        out = capsys.readouterr().out
+        assert "50.0%" in out and "backfill gate" in out
+
+    def test_silent_on_an_empty_index(self, tmp_path, capsys):
+        import hybrid_search.cli as cli
+
+        cli._report_memory_share(self._seed(tmp_path, []))
+
+        assert capsys.readouterr().out == ""

@@ -523,6 +523,12 @@ def _reindex_locked(
     # HEAD gets flagged needs_revalidation.
     _run_qa_revalidation(config, registry, project_name, Path(project_path))
 
+    # The Reflector is the one memory pass with no automatic trigger. Say so
+    # here rather than letting a backlog accumulate in silence.
+    _report_pending_reflection(Path(project_path))
+
+    _report_memory_share_for(config, registry, project_name)
+
     if result.errors:
         print(f"Errors: {len(result.errors)}")
         for err in result.errors[:5]:
@@ -686,6 +692,52 @@ def _run_qa_supersession(
             print(f"QA supersession: {len(mapping)} stale entr(ies) mapped.")
     except Exception as exc:  # never block reindex on the mapping pass
         logger.debug("qa supersession pass skipped: %s", exc)
+
+
+# Surfacing threshold for pending consolidation. One or two clusters is
+# normal churn; a backlog means the Reflector has stopped running, which is
+# invisible otherwise — it is the only memory pass with no automatic
+# trigger, and it sat idle from 2026-09-01 to 09-04 without a single signal.
+_REFLECT_NUDGE_MIN_CLUSTERS = 3
+REFLECT_MARKER_NAME = "REFLECT.md"
+
+
+def _report_pending_reflection(project_root: Path) -> None:
+    """Write/clear the reflection backlog marker after a reindex.
+
+    Mirrors the wiki's STALE.md contract: a file whose existence a PreToolUse
+    hook can cheaply test, so the backlog announces itself instead of waiting
+    to be asked about.
+    """
+    marker = project_root / ".hybrid-search" / REFLECT_MARKER_NAME
+    try:
+        from hybrid_search.memory import reflector
+
+        clusters = reflector.collect_clusters(project_root)
+    except Exception as exc:
+        logger.debug("reflection backlog check skipped: %s", exc)
+        return
+    if len(clusters) < _REFLECT_NUDGE_MIN_CLUSTERS:
+        marker.unlink(missing_ok=True)
+        return
+    print(
+        f"Reflection backlog: {len(clusters)} cluster(s) ready to consolidate "
+        "→ run /maintain (qa-reflect)."
+    )
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        preview = "\n".join(
+            f"- {c.representative_query[:100]}" for c in clusters[:10]
+        )
+        marker.write_text(
+            f"# Reflection backlog — {len(clusters)} cluster(s)\n\n"
+            "The Reflector has consolidation work waiting. Run `/maintain`\n"
+            "(or `hybrid-search-mcp qa-reflect`) to turn these into notes.\n\n"
+            f"{preview}\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def _run_qa_revalidation(
@@ -3774,17 +3826,12 @@ def cmd_selfeval(args: argparse.Namespace) -> None:
                 f"no_followup {c['no_followup']})"
             )
 
-    harvested_path = root / ".hybrid-search/selfeval/harvested.jsonl"
-    if harvested_path.is_file():
-        lines = [ln for ln in harvested_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        show = lines[-args.limit :]
+    rows = selfeval.harvested(root)
+    if rows:
+        show = rows[-args.limit :]
         if show:
             print(f"\nrecent harvested (showing {len(show)}):")
-        for ln in show:
-            try:
-                row = _json.loads(ln)
-            except ValueError:
-                continue
+        for row in show:
             q = row.get("query", "")
             q = q if len(q) <= 70 else q[:67] + "…"
             print(f"  [{row.get('ts', '?')[:10]}] {q}")
@@ -4625,6 +4672,76 @@ def _acquire_conv_lock(lock_path: Path) -> bool:
         return False
 
 
+# Chunk types that are the memory layer talking to itself. One definition,
+# used by the pre-flight backfill gate and by the standing report below —
+# a gate and a dashboard that disagree about what they measure are worse
+# than neither.
+_MEMORY_NODE_TYPES = ("qa_log", "conv_turn", "memory_card")
+# Above this share the corpus is more memory than material. It is the same
+# number the backfill gate refuses at, so the report warns exactly when the
+# next backfill would be blocked — no surprise at the gate.
+MEMORY_SHARE_WARN = 0.40
+
+
+def _memory_share(project_dir: Path) -> tuple[int, int, int]:
+    """(total chunks, memory chunks, existing conv chunks) for a project."""
+    from hybrid_search.storage.db import StoreDB
+    from hybrid_search.storage.indexes import IndexPaths
+
+    store = IndexPaths(project_dir).store_db
+    if not store.is_file():
+        return (0, 0, 0)
+    db = StoreDB(store)
+    try:
+        conn = db._conn
+        total = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        placeholders = ",".join("?" * len(_MEMORY_NODE_TYPES))
+        memory = conn.execute(
+            f"SELECT count(*) FROM chunks WHERE node_type IN ({placeholders})",
+            _MEMORY_NODE_TYPES,
+        ).fetchone()[0]
+        conv = conn.execute(
+            "SELECT count(*) FROM chunks WHERE node_type = 'conv_turn'"
+        ).fetchone()[0]
+    finally:
+        db.close()
+    return (total, memory, conv)
+
+
+def _report_memory_share_for(
+    config: Config, registry: ProjectRegistry, project_name: str
+) -> None:
+    """Resolve the project's index dir, then report. Never blocks a reindex."""
+    try:
+        from hybrid_search.storage.indexes import get_project_dir
+
+        pinfo = registry.get_by_name(project_name)
+        if pinfo is None:
+            return
+        _report_memory_share(get_project_dir(config.projects_dir, pinfo.id))
+    except Exception as exc:
+        logger.debug("memory share report skipped: %s", exc)
+
+
+def _report_memory_share(project_dir: Path) -> None:
+    """Print the standing memory share after a reindex.
+
+    The share only ever moves during a reindex or a backfill, and it moves
+    silently — the 2026-09-04 conversation backfill took valuein from 14.3%
+    to 34.7% and nothing said so until a calibration run started warning
+    about self-generated results. Printing it every time makes the drift a
+    number the user watches instead of a surprise at the next gate.
+    """
+    total, memory, _ = _memory_share(project_dir)
+    if not total:
+        return
+    share = memory / total
+    line = f"Memory share: {memory}/{total} chunks ({share:.1%})"
+    if share >= MEMORY_SHARE_WARN:
+        line += f" — at or above the {MEMORY_SHARE_WARN:.0%} backfill gate"
+    print(line)
+
+
 def _conv_backfill_gate(project_path: Path, project_dir: Path, limit: float) -> dict:
     """Decide, *before writing anything*, whether a full backfill is safe.
 
@@ -4635,27 +4752,8 @@ def _conv_backfill_gate(project_path: Path, project_dir: Path, limit: float) -> 
     ratio is known while aborting is still possible.
     """
     from hybrid_search.index.transcript_source import collect_project_chunks
-    from hybrid_search.storage.db import StoreDB
-    from hybrid_search.storage.indexes import IndexPaths
 
-    memory_types = ("qa_log", "conv_turn", "memory_card")
-    total = memory = existing_conv = 0
-    store = IndexPaths(project_dir).store_db
-    if store.is_file():
-        db = StoreDB(store)
-        try:
-            conn = db._conn
-            total = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
-            placeholders = ",".join("?" * len(memory_types))
-            memory = conn.execute(
-                f"SELECT count(*) FROM chunks WHERE node_type IN ({placeholders})",
-                memory_types,
-            ).fetchone()[0]
-            existing_conv = conn.execute(
-                "SELECT count(*) FROM chunks WHERE node_type = 'conv_turn'"
-            ).fetchone()[0]
-        finally:
-            db.close()
+    total, memory, existing_conv = _memory_share(project_dir)
 
     planned = len(collect_project_chunks(project_path))
     added = max(0, planned - existing_conv)
