@@ -3729,6 +3729,27 @@ def cmd_selfeval(args: argparse.Namespace) -> None:
     if root is None:
         sys.exit(1)
 
+    # One-shot migrations. Both are idempotent, both print a fixed contract
+    # so the plan's completion check reads off stdout rather than guessing.
+    if getattr(args, "migrate_gold", False):
+        m = selfeval.migrate_harvested(root)
+        print(
+            f"migrate-gold: rows={m['rows']} rewritten={m['rewritten']} "
+            f"usable_rows={m['usable_rows']} dropped_paths={m['dropped_paths']}"
+        )
+    if getattr(args, "retro", False):
+        if getattr(args, "retro_reset", False):
+            print(f"retro-reset: dropped={selfeval.reset_retro(root)} rows")
+        r = selfeval.retro_scan(root)
+        print(
+            f"retro: parsed_md={r['parsed_md']} matched_turns={r['matched_turns']} "
+            f"scored={r['scored']} skipped_existing={r['skipped_existing']}"
+        )
+        print(
+            f"retro: adopted={r['adopted']} mixed={r['mixed']} "
+            f"betrayed={r['betrayed']} no_followup={r['no_followup']}"
+        )
+
     stats = selfeval.summarize(root, days=args.days)
     if stats is None:
         print(f"no selfeval data in the last {args.days}d under {root}")
@@ -3739,7 +3760,19 @@ def cmd_selfeval(args: argparse.Namespace) -> None:
     print(f"  adopted:      {scored}  (rank hit; {stats['mixed']} also read outside)")
     print(f"  betrayed:     {stats['betrayed']}  (fell back to Grep/other files)")
     print(f"  no_followup:  {stats['no_followup']}")
-    print(f"  harvested:    {stats['harvested_total']} regression items (all time)")
+    print(
+        f"  harvested:    {stats['harvested_total']} regression items (all time), "
+        f"{stats.get('harvested_usable', 0)} with usable gold paths"
+    )
+    lanes = stats.get("lanes") or {}
+    for lane in ("tool", "prefetch"):
+        c = lanes.get(lane) or {}
+        if c.get("total"):
+            print(
+                f"  lane {lane:<9}{c['total']} scored  "
+                f"(adopted {c['adopted'] + c['mixed']} · betrayed {c['betrayed']} · "
+                f"no_followup {c['no_followup']})"
+            )
 
     harvested_path = root / ".hybrid-search/selfeval/harvested.jsonl"
     if harvested_path.is_file():
@@ -4592,6 +4625,62 @@ def _acquire_conv_lock(lock_path: Path) -> bool:
         return False
 
 
+def _conv_backfill_gate(project_path: Path, project_dir: Path, limit: float) -> dict:
+    """Decide, *before writing anything*, whether a full backfill is safe.
+
+    A full conversation backfill can add tens of percent to a project's
+    corpus. Checking the resulting memory share afterwards is useless — the
+    corpus is already grown by then. This runs the same discovery the
+    indexer would (``collect_project_chunks`` touches no database), so the
+    ratio is known while aborting is still possible.
+    """
+    from hybrid_search.index.transcript_source import collect_project_chunks
+    from hybrid_search.storage.db import StoreDB
+    from hybrid_search.storage.indexes import IndexPaths
+
+    memory_types = ("qa_log", "conv_turn", "memory_card")
+    total = memory = existing_conv = 0
+    store = IndexPaths(project_dir).store_db
+    if store.is_file():
+        db = StoreDB(store)
+        try:
+            conn = db._conn
+            total = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+            placeholders = ",".join("?" * len(memory_types))
+            memory = conn.execute(
+                f"SELECT count(*) FROM chunks WHERE node_type IN ({placeholders})",
+                memory_types,
+            ).fetchone()[0]
+            existing_conv = conn.execute(
+                "SELECT count(*) FROM chunks WHERE node_type = 'conv_turn'"
+            ).fetchone()[0]
+        finally:
+            db.close()
+
+    planned = len(collect_project_chunks(project_path))
+    added = max(0, planned - existing_conv)
+    after_total = total + added
+    after_memory = memory + added
+    ratio = (after_memory / after_total) if after_total else 0.0
+
+    # The gate protects an existing corpus from dilution. With nothing
+    # indexed yet there is nothing to dilute — a fresh project would
+    # otherwise read as 100% memory and block its own first import.
+    if total == 0:
+        return {
+            "ok": True, "ratio": ratio, "planned": planned, "added": added,
+            "line": f"backfill gate: no code index yet (+{added} chunks) · SKIP",
+        }
+
+    ok = ratio <= limit
+    line = (
+        f"backfill gate: chunks {total} → {after_total} (+{added}) · "
+        f"memory {memory} → {after_memory} ({ratio:.1%}, limit {limit:.0%}) · "
+        f"{'PASS' if ok else 'FAIL'}"
+    )
+    return {"ok": ok, "ratio": ratio, "planned": planned, "added": added, "line": line}
+
+
 def cmd_index_conversations(args: argparse.Namespace) -> None:
     """Index Claude Code + Codex transcripts for the project at cwd.
 
@@ -4630,6 +4719,13 @@ def cmd_index_conversations(args: argparse.Namespace) -> None:
         if transcript:
             result = indexer.index_transcript(transcript, project_path, source=source)
         else:
+            gate = _conv_backfill_gate(
+                Path(project_path), project_dir, getattr(args, "max_memory_ratio", 0.40)
+            )
+            print(gate["line"])
+            if not gate["ok"]:
+                print("Aborted: run with --max-memory-ratio to override deliberately.")
+                return
             result = indexer.index_conversations(project_path, project_name=project_name)
     finally:
         try:
@@ -5594,6 +5690,12 @@ def main() -> None:
         help="Index a single transcript file (per-session, used by Stop hooks)",
     )
     p_conv.add_argument(
+        "--max-memory-ratio",
+        type=float,
+        default=0.40,
+        help="Abort a full backfill if memory chunks would exceed this share (default 0.40)",
+    )
+    p_conv.add_argument(
         "--source",
         choices=["claude", "codex", "auto"],
         default="auto",
@@ -5854,6 +5956,21 @@ def main() -> None:
     p_selfeval.add_argument("--project", help="Project name (overrides --cwd)")
     p_selfeval.add_argument("--days", type=int, default=7, help="Window for the scorecard (default 7)")
     p_selfeval.add_argument("--limit", type=int, default=10, help="Harvested items to show (default 10)")
+    p_selfeval.add_argument(
+        "--retro",
+        action="store_true",
+        help="Score pre-fetch turns that predate the sidecar, from qa logs (idempotent)",
+    )
+    p_selfeval.add_argument(
+        "--retro-reset",
+        action="store_true",
+        help="With --retro: re-derive previously retro-scored rows (use after a scorer change)",
+    )
+    p_selfeval.add_argument(
+        "--migrate-gold",
+        action="store_true",
+        help="Re-fold harvested gold paths to project-relative; tag unusable ones",
+    )
 
     p_qa_restore = sub.add_parser(
         "qa-restore",

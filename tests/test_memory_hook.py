@@ -449,7 +449,7 @@ class TestUserPromptSubmitHook:
             confidence = "weak"
             fallback_hint = "weak match -> wiki `ledger`"
 
-        def fake_search(prompt, cwd):
+        def fake_search(prompt, cwd, session_key=None):
             return _FakeResp()
 
         monkeypatch.setattr(hooks, "_run_programmatic_search", fake_search)
@@ -489,7 +489,9 @@ class TestUserPromptSubmitHook:
             fallback_hint = None
 
         monkeypatch.setenv("HYBRID_SEARCH_ROUTER", "0")
-        monkeypatch.setattr(hooks, "_run_programmatic_search", lambda p, c: _FakeResp())
+        monkeypatch.setattr(
+            hooks, "_run_programmatic_search", lambda p, c, s=None: _FakeResp()
+        )
 
         payload = json.dumps({
             "hook_event_name": "UserPromptSubmit",
@@ -541,7 +543,7 @@ class TestUserPromptSubmitHook:
     def test_silent_on_non_exploratory(self, project_root: Path, monkeypatch) -> None:
         called = {"n": 0}
 
-        def fake_search(prompt, cwd):
+        def fake_search(prompt, cwd, session_key=None):
             called["n"] += 1
             return None
 
@@ -559,7 +561,7 @@ class TestUserPromptSubmitHook:
         assert called["n"] == 0, "classifier should short-circuit before search"
 
     def test_silent_on_search_failure(self, project_root: Path, monkeypatch) -> None:
-        def boom(prompt, cwd):
+        def boom(prompt, cwd, session_key=None):
             return None
 
         monkeypatch.setattr(hooks, "_run_programmatic_search", boom)
@@ -579,7 +581,9 @@ class TestUserPromptSubmitHook:
         class _Empty:
             results = []
 
-        monkeypatch.setattr(hooks, "_run_programmatic_search", lambda p, c: _Empty())
+        monkeypatch.setattr(
+            hooks, "_run_programmatic_search", lambda p, c, s=None: _Empty()
+        )
         payload = json.dumps({
             "hook_event_name": "UserPromptSubmit",
             "prompt": "어떻게 구성 되어 있나",
@@ -828,7 +832,7 @@ class TestReindexContentionGuard:
         ran = []
         monkeypatch.setattr(
             hooks_mod, "_run_programmatic_search",
-            lambda prompt, cwd: ran.append(1) or None,
+            lambda prompt, cwd, session_key=None: ran.append(1) or None,
         )
         _handle_user_prompt_submit = hooks_mod._handle_user_prompt_submit
         assert _handle_user_prompt_submit(self._event(tmp_path)) is None
@@ -842,7 +846,7 @@ class TestReindexContentionGuard:
         ran = []
         monkeypatch.setattr(
             hooks_mod, "_run_programmatic_search",
-            lambda prompt, cwd: ran.append(1) or None,
+            lambda prompt, cwd, session_key=None: ran.append(1) or None,
         )
         assert hooks_mod._handle_user_prompt_submit(self._event(tmp_path)) is None
         assert ran
