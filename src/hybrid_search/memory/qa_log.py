@@ -98,6 +98,13 @@ class QARecord:
     # v3 (P1-1) — typed memory schema; see memory/memory_types.py.
     memory_type: str | None = None          # observation|decision|hypothesis|task_state|procedure|review_finding
     verification: str | None = None         # verified|accepted|inferred|needs_revalidation|superseded
+    # v5 (2026-09-04) — availability accounting: True when this exchange
+    # was served BM25-only (vector lane down / embed deadline expired).
+    # Lets the SessionStart scoreline report the degraded RATE, which is
+    # the number that decides whether "graceful degradation" is a rare
+    # safety net or the system half-dead (measured cost of one degraded
+    # answer: valuein gold 18→15/25).
+    degraded: bool = False
     # v4 (P1-2) — what the qa was actually grounded in:
     # {"hashes": {path: indexed_file_hash}} taken from the SEARCH RESULTS
     # (the index's content fingerprint at retrieval time — not the
@@ -244,6 +251,8 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"answer_excerpt_chars: {len(record.answer_excerpt)}")
     if record.client:
         lines.append(f"client: {record.client}")
+    if record.degraded:
+        lines.append("degraded: true")
     if record.memory_type:
         lines.append(f"memory_type: {record.memory_type}")
     if record.verification:
@@ -445,6 +454,7 @@ def record(
             memory_type=mtype,
             verification=verification,
             anchor_evidence=evidence,
+            degraded=bool(getattr(response, "degraded", False)),
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("qa_log prepare failed: %s", exc)
