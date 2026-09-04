@@ -83,12 +83,46 @@ _EXPLORATORY_MIN_CHARS = 12
 _SKIP_PREFIXES = ("/", "!", "#")
 
 
+_GITDIR_RE = __import__("re").compile(r"^gitdir:\s*(.+)\s*$")
+
+
+def _linked_worktree_main_root(git_marker: Path, worktree_root: Path) -> Path | None:
+    """Main-checkout root when ``.git`` is a linked-worktree marker file.
+
+    The marker reads ``gitdir: <main>/.git/worktrees/<name>``. Memory must
+    land on the MAIN checkout — the same rule ecae799 gave the git hooks:
+    a worktree-rooted project means qa logs written into an ephemeral tree
+    (deleted with the worktree) and conversation indexing that no-ops on
+    an unregistered path. A session run inside a worktree used to leave
+    no memory at all (2026-09-04 field check).
+    """
+    try:
+        text = git_marker.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = _GITDIR_RE.match(text.strip())
+    if not m:
+        return None
+    gitdir = Path(m.group(1))
+    if not gitdir.is_absolute():
+        gitdir = (worktree_root / gitdir).resolve()
+    # <main>/.git/worktrees/<name> → strip three components for <main>.
+    parts = gitdir.parts
+    if len(parts) >= 3 and parts[-2] == "worktrees" and parts[-3] == ".git":
+        main_root = Path(*parts[:-3])
+        if (main_root / ".git").is_dir():
+            return main_root
+    return None
+
+
 def resolve_project_root(event: dict) -> Path | None:
     """Pick the project root from a hook payload's ``cwd``.
 
     Hooks often run with ``cwd`` set to the file/task subdirectory. Resolve to
     the enclosing git root first so memory is written once per project, not
-    into arbitrary nested content folders.
+    into arbitrary nested content folders. A linked worktree resolves to its
+    MAIN checkout so worktree sessions share the project's memory instead of
+    writing into a tree that disappears with the worktree.
     """
     cwd = event.get("cwd")
     if not cwd:
@@ -98,8 +132,14 @@ def resolve_project_root(event: dict) -> Path | None:
     except (OSError, ValueError):
         return None
     for path in (cwd_path, *cwd_path.parents):
-        if (path / ".git").exists():
-            return path
+        marker = path / ".git"
+        if not marker.exists():
+            continue
+        if marker.is_file():
+            main_root = _linked_worktree_main_root(marker, path)
+            if main_root is not None:
+                return main_root
+        return path
     for path in (cwd_path, *cwd_path.parents):
         if (path / ".hybrid-search").exists():
             return path
