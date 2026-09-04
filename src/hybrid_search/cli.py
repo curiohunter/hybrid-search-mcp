@@ -523,6 +523,18 @@ def _reindex_locked(
     # HEAD gets flagged needs_revalidation.
     _run_qa_revalidation(config, registry, project_name, Path(project_path))
 
+    # An atomic rebuild reconstructs the index from disk, so conversation
+    # chunks — a synthetic namespace with no on-disk file — do not survive it.
+    # Commits are re-derived just above; conversations need the same owner or
+    # a single consistency drift silently deletes the whole conversation
+    # memory (2026-09-05: 3,029 chunks).
+    if getattr(result, "conversations_dropped", 0):
+        print(
+            f"Rebuild dropped {result.conversations_dropped} conversation "
+            "session(s) — re-deriving from transcripts."
+        )
+        _reindex_conversations_after_rebuild(config, registry, project_name, project_path)
+
     # The Reflector is the one memory pass with no automatic trigger. Say so
     # here rather than letting a backlog accumulate in silence.
     _report_pending_reflection(Path(project_path))
@@ -4708,6 +4720,28 @@ def _memory_share(project_dir: Path) -> tuple[int, int, int]:
     finally:
         db.close()
     return (total, memory, conv)
+
+
+def _reindex_conversations_after_rebuild(
+    config: Config, registry: ProjectRegistry, project_name: str, project_path: str
+) -> None:
+    """Re-derive the conversation namespace a rebuild could not carry over.
+
+    Uses the ordinary indexer, which is delta-based: against an index that
+    just lost them it does a full pass, and against one that kept them it is
+    a no-op. Never raises — losing conversations is bad, failing the whole
+    reindex on top of it is worse.
+    """
+    try:
+        embedder = Embedder(config.embedding, config.models_dir)
+        indexer = ConversationIndexer(config, registry, embedder)
+        res = indexer.index_conversations(project_path, project_name=project_name)
+        print(
+            f"Conversations restored: {res.sessions_indexed} session(s), "
+            f"{res.chunks_total} chunks."
+        )
+    except Exception as exc:
+        logger.warning("conversation re-derive after rebuild failed: %s", exc)
 
 
 def _report_memory_share_for(
