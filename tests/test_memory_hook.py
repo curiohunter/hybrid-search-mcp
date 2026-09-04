@@ -846,3 +846,56 @@ class TestReindexContentionGuard:
         )
         assert hooks_mod._handle_user_prompt_submit(self._event(tmp_path)) is None
         assert ran
+
+
+class TestPrefetchEmbedDeadline:
+    """The blocking pre-fetch bounds its embed call; expiry degrades to
+    BM25-only via the existing fail-open instead of eating the 10s hook
+    timeout and losing the whole context (2026-09-04 Mac-mini incident:
+    22s embeds behind a bulk batch)."""
+
+    def test_expired_deadline_raises_connection_error_fast(self, monkeypatch, tmp_path):
+        import time
+
+        from hybrid_search.config import EmbeddingConfig
+        from hybrid_search.index.embedder import Embedder
+
+        monkeypatch.setenv("HYBRID_SEARCH_EMBED_DEADLINE", "0.01")
+        emb = Embedder(EmbeddingConfig(), tmp_path)
+        emb._api_key = "test-key"  # skip key lookup — deadline fires first
+        time.sleep(0.02)
+        t0 = time.monotonic()
+        with pytest.raises(ConnectionError, match="deadline"):
+            emb._openai_embed_single_batch(["질의"], "m", "test-key")
+        assert time.monotonic() - t0 < 1.0  # no network attempt survives
+
+    def test_prefetch_scopes_and_restores_env(self, monkeypatch):
+        import os
+
+        seen = {}
+
+        def fake_load_config():
+            seen["deadline"] = os.environ.get("HYBRID_SEARCH_EMBED_DEADLINE")
+            raise RuntimeError("stop here")
+
+        monkeypatch.setattr("hybrid_search.config.load_config", fake_load_config)
+        monkeypatch.delenv("HYBRID_SEARCH_EMBED_DEADLINE", raising=False)
+        assert hook_runtime._run_programmatic_search("질문", "/tmp") is None
+        assert seen["deadline"] == hook_runtime._PREFETCH_EMBED_DEADLINE_DEFAULT
+        # Restored: bulk paths (conversation indexing) must not inherit it.
+        assert os.environ.get("HYBRID_SEARCH_EMBED_DEADLINE") is None
+
+    def test_zero_disables_the_deadline(self, monkeypatch):
+        import os
+
+        seen = {}
+
+        def fake_load_config():
+            seen["deadline"] = os.environ.get("HYBRID_SEARCH_EMBED_DEADLINE")
+            raise RuntimeError("stop here")
+
+        monkeypatch.setattr("hybrid_search.config.load_config", fake_load_config)
+        monkeypatch.setenv("HYBRID_SEARCH_EMBED_DEADLINE", "0")
+        assert hook_runtime._run_programmatic_search("질문", "/tmp") is None
+        assert seen["deadline"] is None
+        assert os.environ.get("HYBRID_SEARCH_EMBED_DEADLINE") == "0"
