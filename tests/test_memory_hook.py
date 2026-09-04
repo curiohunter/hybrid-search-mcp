@@ -899,3 +899,53 @@ class TestPrefetchEmbedDeadline:
         assert hook_runtime._run_programmatic_search("질문", "/tmp") is None
         assert seen["deadline"] is None
         assert os.environ.get("HYBRID_SEARCH_EMBED_DEADLINE") == "0"
+
+
+class TestDegradedRateAccounting:
+    """Availability was fixed by the deadline; effectiveness needs the
+    RATE — how often pre-fetches actually ran BM25-only."""
+
+    def _record(self, root, *, degraded, query="환불 흐름 어디서 처리돼?",
+                trigger="user_prompt_submit"):
+        resp = SimpleNamespace(
+            results=[], query_type="KOREAN_NL", effective_bm25_weight=0.15,
+            query_time_ms=5.0, total_chunks_searched=10, degraded=degraded,
+        )
+        prev = os.environ.get(qa_log.ENV_TOGGLE)
+        os.environ[qa_log.ENV_TOGGLE] = "1"
+        try:
+            return qa_log.record(
+                query=query, response=resp, cwd=str(root),
+                async_write=False, trigger=trigger,
+            )
+        finally:
+            if prev is None:
+                os.environ.pop(qa_log.ENV_TOGGLE, None)
+            else:
+                os.environ[qa_log.ENV_TOGGLE] = prev
+
+    def test_degraded_flag_round_trips_through_frontmatter(self, project_root):
+        path = self._record(project_root, degraded=True)
+        assert path is not None
+        assert "degraded: true" in path.read_text()
+        from hybrid_search.memory import reader
+
+        idx = reader.parse_qa_index(path)
+        assert idx is not None and idx.degraded is True
+
+    def test_healthy_record_has_no_degraded_line(self, project_root):
+        path = self._record(project_root, degraded=False)
+        assert "degraded:" not in path.read_text()
+
+    def test_session_context_reports_degraded_rate(self, project_root):
+        self._record(project_root, degraded=True,
+                     query="환불 정산 처리 위치가 어디야?")
+        self._record(project_root, degraded=False,
+                     query="출결 위젯 상태 갱신 흐름 알려줘")
+        ctx = hook_runtime.build_session_context(project_root)
+        assert "[prefetch 7d] 1/2 served BM25-only" in ctx
+
+    def test_session_context_silent_when_nothing_degraded(self, project_root):
+        self._record(project_root, degraded=False)
+        ctx = hook_runtime.build_session_context(project_root)
+        assert "BM25-only" not in ctx
