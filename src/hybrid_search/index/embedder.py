@@ -131,8 +131,30 @@ class Embedder:
             body["dimensions"] = self._embedding_dim
         payload = json.dumps(body).encode("utf-8")
 
+        # Optional wall-clock deadline (seconds) for this embed call.
+        # Set by the BLOCKING pre-fetch hook only: a batch job saturating
+        # the shared Ollama makes query embeds queue for tens of seconds,
+        # the hook times out, and the whole injected context is discarded
+        # (2026-09-04 Mac-mini field check: 22s embeds, 10s hook budget).
+        # Expiring raises ConnectionError so the existing fail-open serves
+        # BM25-only — a degraded context beats a discarded one. Unset
+        # (indexing, MCP server) keeps the generous 120s per attempt.
+        import time as _t
+
+        deadline_env = os.environ.get("HYBRID_SEARCH_EMBED_DEADLINE")
+        deadline = _t.monotonic() + float(deadline_env) if deadline_env else None
+
         max_retries = 12
         for attempt in range(max_retries):
+            attempt_timeout = 120.0
+            if deadline is not None:
+                remaining = deadline - _t.monotonic()
+                if remaining <= 0.05:
+                    raise ConnectionError(
+                        f"{self._spec.name} embeddings: deadline exceeded "
+                        f"({deadline_env}s) — degrading to BM25-only"
+                    )
+                attempt_timeout = min(attempt_timeout, remaining)
             req = urllib.request.Request(
                 self._embed_url,
                 data=payload,
@@ -142,7 +164,7 @@ class Embedder:
                 },
             )
             try:
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=attempt_timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                 # Accounting, not content: how much was sent, never what.
                 usage.record(
@@ -166,6 +188,11 @@ class Embedder:
                         wait = float(m.group(1)) + 0.5
                     elif ms:
                         wait = float(ms.group(1)) / 1000.0 + 0.5
+                    if deadline is not None and _t.monotonic() + wait >= deadline:
+                        raise ConnectionError(
+                            f"{self._spec.name} embeddings: rate-limited past "
+                            "the deadline — degrading to BM25-only"
+                        ) from e
                     logger.info("Rate limited, waiting %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries)
                     _time.sleep(wait)
                     continue
