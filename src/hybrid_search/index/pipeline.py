@@ -25,6 +25,7 @@ from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.module_synth import synthesize_modules
 from hybrid_search.index.modules import discover_modules
 from hybrid_search.index.scanner import (
+    CONVERSATION_PATH_PREFIX,
     compute_file_hash,
     detect_language,
     scan_project,
@@ -59,6 +60,14 @@ class IndexingResult:
     files_deleted: int = 0
     chunks_total: int = 0
     elapsed_seconds: float = 0.0
+    # Conversation sessions the atomic rebuild could not carry over. A
+    # rebuild reconstructs the index from disk, and conversation chunks live
+    # in a synthetic namespace with no on-disk file — so they are silently
+    # lost unless the caller re-derives them. Commits survive because the
+    # reindex tail re-runs the commit indexer unconditionally; conversations
+    # had no such owner, so a single drift wiped 3,029 chunks of them
+    # (2026-09-05).
+    conversations_dropped: int = 0
     errors: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -468,6 +477,8 @@ class IndexingPipeline:
                 reuse_from=project_dir,
             )
             gc.collect()
+            # Read before the swap: after it, the old index is gone.
+            result.conversations_dropped = self._count_conversation_files(project_dir)
             self._swap_project_dirs(project_dir, rebuilding_dir, backup_dir)
             file_count = self._read_project_file_count(project_dir, project_id)
             self._registry.update_stats(project_id, file_count, result.chunks_total)
@@ -543,6 +554,26 @@ class IndexingPipeline:
 
         if backup_dir.exists():
             shutil.rmtree(backup_dir, ignore_errors=True)
+
+    def _count_conversation_files(self, project_dir: Path) -> int:
+        """Conversation sessions in an index dir. 0 when it has none or is gone."""
+        idx_paths = IndexPaths(project_dir)
+        if not idx_paths.store_db.is_file():
+            return 0
+        try:
+            db = StoreDB(idx_paths.store_db)
+        except Exception:
+            return 0
+        try:
+            row = db._conn.execute(
+                "SELECT count(*) FROM files WHERE relative_path LIKE ?",
+                (f"{CONVERSATION_PATH_PREFIX}%",),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except Exception:
+            return 0
+        finally:
+            db.close()
 
     def _read_project_file_count(self, project_dir: Path, project_id: str) -> int:
         idx_paths = IndexPaths(project_dir)

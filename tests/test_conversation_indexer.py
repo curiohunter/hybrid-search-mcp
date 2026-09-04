@@ -474,3 +474,58 @@ class TestMemoryShareReport:
         cli._report_memory_share(self._seed(tmp_path, []))
 
         assert capsys.readouterr().out == ""
+
+
+class TestRebuildPreservesConversations:
+    """A rebuild reconstructs from disk; conversations have no file on disk."""
+
+    def _index_with_conv(self, tmp_path, n_sessions=2):
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths
+
+        project_dir = tmp_path / "idx"
+        IndexPaths(project_dir).ensure_dirs()
+        db = StoreDB(IndexPaths(project_dir).store_db)
+        try:
+            conn = db._conn
+            conn.execute(
+                "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+                " VALUES ('src', 'p', 'a.py', 'python', 'h')"
+            )
+            for i in range(n_sessions):
+                conn.execute(
+                    "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+                    f" VALUES ('c{i}', 'p', '.conversations/claude/s{i}.jsonl', 'jsonl', 'h')"
+                )
+            conn.commit()
+        finally:
+            db.close()
+        return project_dir
+
+    def test_counts_what_a_rebuild_would_lose(self, tmp_path):
+        from hybrid_search.index.pipeline import IndexingPipeline
+
+        project_dir = self._index_with_conv(tmp_path, n_sessions=3)
+        counter = IndexingPipeline.__dict__["_count_conversation_files"]
+
+        assert counter(None, project_dir) == 3, "on-disk source files are not counted"
+
+    def test_zero_for_an_index_without_conversations(self, tmp_path):
+        from hybrid_search.index.pipeline import IndexingPipeline
+
+        project_dir = self._index_with_conv(tmp_path, n_sessions=0)
+        counter = IndexingPipeline.__dict__["_count_conversation_files"]
+
+        assert counter(None, project_dir) == 0
+
+    def test_zero_for_a_missing_index(self, tmp_path):
+        from hybrid_search.index.pipeline import IndexingPipeline
+
+        counter = IndexingPipeline.__dict__["_count_conversation_files"]
+
+        assert counter(None, tmp_path / "nope") == 0
+
+    def test_result_carries_the_count_for_the_caller(self):
+        from hybrid_search.index.pipeline import IndexingResult
+
+        assert IndexingResult(project_id="p", project_name="n").conversations_dropped == 0
