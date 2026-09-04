@@ -1,0 +1,775 @@
+# 메모리 축적 복구 — Reflector · conv 백필 · selfeval v1.1
+
+**작성** 2026-09-04 · **개정** 4판 (라운드1·2 심사 반영 + 실행 기록) ·
+**상태** **실행 완료** (§8 실행 기록) · **선행** 9/1 "며칠 기다리면 재료가
+익는다" 약속의 4일차 실측
+
+---
+
+## 0. 출발점과, 조사로 뒤집힌 것
+
+9/1에 "selfeval이 매 턴 harvested를 쌓고 Reflector가 maintain마다 노트를
+쌓으니, 다음에 돌아오면 재료가 준비돼 있을 것"이라고 했다. 9/4 실측 결과
+**네 축 중 한 축(QA 로그)만 익었다.** 그 진단으로 복구안 3건을 세웠는데,
+착수 전 검증에서 **3건 중 2건의 전제가 틀렸다.** 정정을 먼저 적는다 —
+틀린 전제 위에 계획을 세우면 안 되기 때문이다.
+
+| # | 최초 진단 | 검증 결과 | 판정 |
+|---|---|---|---|
+| 1 | Reflector가 9/1 이후 0회 | 사실 | **유지** |
+| 2 | conv 백필에 임베딩 요금이 붙음 | **틀림 — 0원** | **정정 A** |
+| 3 | selfeval 계측률 4%, 버그 | **틀림 — 85%, 설계상 미구현 범위** | **정정 B** |
+
+### 정정 A — conv 백필은 유료가 아니다
+
+`~/.hybrid-search/config.toml`이 2026-08-27부터 `backend = "ollama"`,
+`base_url = "http://macmini:11434/v1"`. 설정 주석: "맥미니(Tailscale)의
+로컬 Ollama로 전환. 요금 0원."
+
+실측 (맥미니 도달 확인, `qwen3-embedding:0.6b`, dim=1024):
+
+| 구간 | 실측 |
+|---|---|
+| 입력 스캔 `collect_project_chunks(valuein)` — Claude 69파일(1.9GB) + Codex 세션 10,782개 cwd 필터 | **24.0초 → 4,867 청크** |
+| 임베딩 처리량 | **57.9 chunks/s** (100건 1.73초) |
+| 백필 총량 valuein 4,867 + 본 레포 140 ≈ **5,007 청크** | 임베딩 ≈ **1.4분** |
+
+**합계 추정 2분 미만, 0원.** 단 이는 두 실측치의 합성이며 DB 쓰기·커밋은
+빠져 있다 — **end-to-end 벽시계는 P2-1에서 `time`으로 직접 측정해 이 표를
+교체한다**(§3 P2-1).
+
+메모리 `feedback_batch_reindex_cost`의 "금액 먼저"는 Gemini/OpenAI 백엔드
+시절 규칙이라 이 건에는 적용되지 않는다. 해당 메모리에 단서를 달아 뒀다.
+Codex 10,782 세션 스캔이 병목일 것이라 예상했으나 24초로 측정됐다 —
+**날짜 상한 최적화는 불필요**(초판 항목 철회).
+
+### 정정 B — selfeval은 고장난 게 아니라 절반만 구현된 것이다
+
+`src/hybrid_search/memory/selfeval.py` 모듈 독스트링이 범위를 명시한다:
+
+> **Scope (v1): only explicit `hybrid_search` tool calls are scored.** The
+> UserPromptSubmit pre-fetch injects results without a tool call… scoring it
+> needs a join against the qa_log saved at prompt time (v1.1).
+
+valuein 9월 QA 로그의 trigger 분포로 분모를 다시 잡으면:
+
+| trigger | 건수 | selfeval 채점 대상 |
+|---|---|---|
+| `mcp_tool` (명시적 도구 호출) | 13 | **예** — v1 범위 |
+| `user_prompt_submit` (선주입) | 64 | 아니오 — v1.1 미구현 |
+| `stop_hook` (검색 없는 턴) | 160 | 해당 없음 |
+
+events 11 / 대상 13 = **약 85%.** selfeval은 설계대로 돌고 있다. 진짜 갭은
+**선주입 레인 미채점**이고, 이건 버그 수정이 아니라 **예고된 v1.1 구현**이다.
+
+### 정정 C — 워크트리는 백필 대상이 아니다
+
+커밋 43b44b4(2026-09-04 11:19)가 이미 고쳤다.
+`hook_runtime._linked_worktree_main_root()`가 링크된 워크트리를 본체
+체크아웃으로 해석해 메모리를 본체에 쓴다. 증거: ws-order/ws-perf/
+ws-pagination/ws-hook 4개 프로젝트 모두 **qa_log 청크 0**.
+남은 잔재는 `valuein_homepage-ws-perf/.hybrid-search/` 하나 — 청소 대상(P2-6).
+
+---
+
+## 1. 확정된 사실 (9/1 → 9/4, 4일)
+
+**쌓인 것**: QA 턴 로그 **270건** (valuein 228 + 본 레포 42).
+누적 valuein 2,031 · 본 레포 228. 일별 — valuein `17/59/88/64`,
+본 레포 `31/0/0/11`.
+
+**안 쌓인 것**:
+
+| 축 | 상태 | 원인 |
+|---|---|---|
+| Reflector 노트 | 9/1의 8건에서 정지 | `qa-reflect`는 `/maintain` 안에서만 돎 — **수동 트리거라 기다려서는 안 익는다** |
+| conv_turn | 전 프로젝트 105청크 / 3세션 | Stop 훅의 per-turn 경로(`index_transcript`)만 돌아 라이브 세션만 들어감. 전량 스캔(`index_conversations`)은 실행된 적 없음 |
+| selfeval 선주입 채점 | 0건 | v1.1 미구현(정정 B) |
+
+**결론: "대화 기록이 쌓이면"의 그 대화 기록은 쌓이지 않았다.** 세 축 모두
+"기다림"이 아니라 "실행"이 필요하다 — 이것이 이 계획의 본질이다.
+
+---
+
+## 2. 실행 순서와 측정 설계
+
+```
+P0  Reflector 1회        (즉시, 코드 변경 0)
+P1  selfeval v1.1        (계측기 + 골드셋 공급)
+P2  conv 백필 + 재캘리브레이션  (사전 게이트 → 리플레이 → 백필 → 리플레이 → recalibrate)
+```
+
+**왜 백필이 마지막인가.** 백필은 valuein 코퍼스를 +32.5% 늘린다(§3 P2-2).
+P1을 먼저 넣으면 선주입 레인이 채점되기 시작하고, **P1이 정규화한 harvested가
+P2 리플레이셋과 recalibrate 골드셋의 보강분**이 된다. 2분짜리 작업을 먼저
+하고 싶은 유혹이 있지만, 측정 없는 코퍼스 확대는 자기오염 감사(2026-07-09)에서
+이미 한 번 대가를 치른 실수다.
+
+**측정은 시간창 A/B가 아니라 고정 리플레이셋.** 라이브 트래픽의 전후 기간
+비교는 질문 자체가 달라져 교란된다. 동일 쿼리 집합을 백필 **직전·직후**에
+리플레이해 결정론적으로 비교한다.
+
+- 리플레이셋: `benchmarks/valuein_gold.json` (**25문항**, v1 스키마,
+  `project_path` 기준 상대경로 gold) + P1이 정규화한 harvested 유효분
+- 러너: **기존 도구를 쓴다** — `benchmarks/run_valuein_bench.py`
+- 지표: 러너가 이미 출력하는 **`recall@10`** 을 주지표로,
+  `primary_top5` · `memory@3` · grep 베이스라인을 보조로 본다.
+  "gold 중 **하나 이상**이 top-10에 들면 성공"이 recall 정의다.
+- 백필된 과거 대화를 사후 채점하지는 **않는다** — 그건 다른 자다.
+
+---
+
+## 3. 작업 명세
+
+### P0 — Reflector 1회 실행
+
+**입력이 이미 대기 중이다.** `_reflection_input/`에 파일 2개(전부 9/1
+12:38), `_reflection_output/`는 빈 디렉토리. 이후 270 QA 턴이 새 클러스터
+재료로 쌓였다.
+
+**중요 — `--finalize`는 reindex를 하지 않는다.** 코드가 finalize 후
+`"run reindex (or commit) so supersession maps sources → notes"`를 출력한다
+(`cli.py:3705`). 즉 reindex는 **별도 명령**이며, 이것이 빠지면 통합 노트가
+원본 QA를 강등하지 못해 P0가 완료되지 않는다.
+
+**P0-a. 본 레포**
+
+```bash
+VENV=.venv/bin/python
+R=/Users/ian/project/claude_project/hybrid-search-mcp
+
+# 판정 기준선 먼저 기록 (qa_supersession에 타임스탬프 컬럼이 없다 — 증분으로만 판정 가능)
+sqlite3 ~/.hybrid-search/projects/05de0b7a9b5b3039/store.db \
+  "select count(*) from qa_supersession"        # 현재 30
+
+$VENV -m hybrid_search.cli qa-reflect --cwd "$R"          # → _reflection_input/*.md
+#   각 입력 파일을 Read하고 파일 안 지시대로 _reflection_output/<cluster>.md 작성
+$VENV -m hybrid_search.cli qa-reflect --finalize --cwd "$R"
+$VENV -m hybrid_search.cli reindex --cwd "$R"             # ← 필수, 별도 명령
+```
+
+**P0-b. valuein** — 같은 4단계를 `R=/Users/ian/project/claude_project/valuein_homepage`,
+store.db는 `~/.hybrid-search/projects/7c7631a246a2bbc0/store.db`로 반복.
+**읽기와 자체 `.hybrid-search/` 도구 실행만. 커밋/푸시 금지**
+(메모리 `feedback_no_cross_project_writes`).
+
+**클러스터 수 상한 규칙.** `_reflection_input/*.md`가 **10개를 넘으면**
+전부 처리하지 말고, 원본 QA 건수가 많은 상위 10개만 이번 라운드에서 처리하고
+나머지는 다음 회차로 넘긴다(입력 파일은 남겨 둔다). 한 세션에서 무한정
+노트를 쓰다 품질이 떨어지는 것을 막기 위한 규칙이다.
+
+**완료 판정 (기계 검증).** "노트 파일이 생겼다"는 판정이 못 된다.
+
+1. 클러스터 수와 클러스터별 원본 QA 건수를 출력해 기록
+2. 각 통합 노트의 본문 길이 > 0, 프론트매터에 `source_ids` 존재
+3. reindex 후 `select count(*) from qa_supersession`이 **기준선보다 증가**
+   (증가 0이면 통합이 형식만 된 것 — 실패로 본다)
+
+**후속 결정거리(범위 밖).** Reflector가 수동인 한 같은 정지가 반복된다.
+post-commit 훅 편입 또는 임계값 트리거 승격은 P0 결과를 보고 별건 판단.
+
+---
+
+### P1 — selfeval v1.1: 선주입 레인 채점
+
+**목표.** `trigger: user_prompt_submit`으로 주입된 결과의 채택 여부를
+채점해 채점 대상을 넓힌다.
+
+#### P1-1. 기존 채점기 재사용 가능성 — 코드로 확인 완료
+
+심사 지적: "`score_event()`는 도구 호출 트랜스크립트를 전제하므로 선주입에
+그대로 못 쓴다."
+
+**확인 결과 재사용 가능하다.** `score_event(event: dict)`의 입력 계약은
+평범한 딕셔너리 `{"query", "paths", "reads", "greps"}`이며
+(`selfeval.py:154-180`), `tool_use` / `tool_result` 블록에 대한 의존은
+**전적으로 `extract_turn_events()` 쪽에만** 있다(l.124-137). 채점 로직
+자체(순위 매칭 → adopted/mixed/betrayed/no_followup)는 증거의 출처를
+가리지 않는다.
+
+따라서 필요한 것은 **추출기 하나**지 새 채점 모듈이 아니다:
+
+```python
+def extract_prefetch_event(turn_records: list[dict], pending: dict) -> dict:
+    """선주입 1건 = 턴 전체의 Read/Grep을 증거로 삼는다.
+
+    도구 호출 레인은 '검색 호출 이후 ~ 다음 검색 전'으로 followup을 귀속하지만,
+    선주입은 턴 시작 시점에 1회뿐이므로 턴 전체가 귀속 구간이다.
+    """
+    return {"query": pending["query"], "paths": pending["top_paths"],
+            "reads": <턴 전체 Read file_path>, "greps": <턴 전체 Grep pattern>}
+```
+
+#### P1-2. pending 사이드카 — 결정론적 키와 세션 격리
+
+심사 지적(타당): 프롬프트 문자열을 소비 키로 쓰면 같은 질문 반복·동시 세션에서
+비결정적이고, 매칭 실패가 24h 뒤 조용히 사라진다.
+
+- **저장 위치**: 단일 파일이 아니라 **세션별**
+  `.hybrid-search/selfeval/pending/<session_id>.jsonl` — 동시 세션 경합 제거
+- **레코드**: `{qa_record_id, session_id, ts, query, top_paths[:10], source:"prefetch"}`
+  — 소비 키는 **`qa_record_id`**, 프롬프트 문자열이 아니다
+- **`qa_record_id`는 새로 만들 필요가 없다 (확인 완료)**:
+  `qa_log.record()`의 시그니처가 `-> Path | None`이고, `async_write=False`일 때
+  **기록한 파일 경로를 반환**한다(`qa_log.py:361-378`). 선주입 훅은 이미
+  `async_write=False`로 호출하므로(`hooks.py:433`, "Sync write — hook lifecycle
+  is already synchronous") 반환 경로를 그 자리에서 받는다.
+  **`qa_record_id` = 그 Path의 stem** (`01-074413-662a5e0c` 꼴;
+  뒤 8자리는 `sha256(query)[:8]`, l.143). 파일명이 곧 결정론적 식별자다.
+- **쓰기**: `hooks.py:433`의 `qa_log.record()` 반환값을 받아 즉시 append
+  (현재는 반환값을 버리고 있다 — 이 한 줄이 P1의 최소 변경점이다)
+- **소비**: `hooks.py:559` Stop 훅에서 자기 `session_id` 파일만 열어 해당
+  턴의 `qa_record_id`를 소비 후 삭제. 다른 세션 파일은 건드리지 않는다
+- **누락 가시화**: 소비 실패·고아 pending은 조용히 넘기지 말고
+  `.hybrid-search/selfeval/misses.jsonl`에 사유와 함께 기록. 24h 초과분 정리
+- 훅 컨텍스트 규약대로 전 구간 예외 무해화(세션을 절대 깨지 않는다)
+
+> **사이드카를 남기는 이유.** 일회성 마이그레이션 파서는 깨져도 재실행하면
+> 되지만, 훅 핫패스가 md 포맷에 결합되면 포맷을 바꿀 때마다 조용히 채점이
+> 멈춘다. 이중 쓰기는 **임시 구조**임을 명시한다 — `qa_log.record()`가
+> 구조화 레코드를 단일 소스로 내보내고 md가 그 파생물이 되도록 통합하는 것이
+> 다음 정본화 과제다(별건, §5).
+
+#### P1-3. 과거분 소급 채점 — 실측으로 규모 확인 완료
+
+사이드카만 도입하면 과거 선주입 턴은 영원히 미채점으로 남는다. 일회성
+역파싱 스크립트로 소급한다.
+
+**실측(9/4, 전 이력 기준):**
+
+| | 건수 |
+|---|---|
+| 선주입 qa 로그 총계 (valuein + 본 레포) | **301** |
+| `### N. \`path\`` 패턴으로 결과경로 역파싱 성공 | **294 (98%)** |
+
+목표 30건 대비 **약 10배 여유**가 있다. 9월분(64건)에 한정할 필요 없이
+전 이력을 소급 대상으로 삼는다.
+
+**스크립트 표준출력 계약** (판정이 임의가 되지 않도록 고정):
+
+```
+parsed_md=<파싱한 qa md 수>  matched_turns=<트랜스크립트 턴 매칭 수>
+scored=<채점 완료 이벤트 수>  adopted=<n> mixed=<n> betrayed=<n> no_followup=<n>
+```
+
+`scored`가 목표(30) 미만이면 **중단하고 사유를 출력**한다.
+
+#### P1-4. gold path 정규화 + 유효성 검증
+
+harvested 5건의 gold_paths가 현재 `~/.claude/projects/…` 절대경로와
+`valuein_homepage-ws-kcplan/` 워크트리 경로다. `_relativize()`가 프로젝트
+루트 밖 경로를 절대경로로 흘린다. 워크트리 경로는 트리가 사라지면 죽고,
+`~/.claude/…`는 기계마다 다르다.
+
+- 링크된 워크트리 경로는 본체 기준 상대경로로 접기
+  (`hook_runtime._linked_worktree_main_root()` 재사용 — 이미 있는 정본)
+- 레포 밖 경로는 `external:` 접두로 태깅
+- 기존 harvested 5건 소급 정규화
+- **검증**: 정규화 후 실존하지 않는 파일은 골드셋에서 제외하고
+  `총 N / 유효 M`을 표준출력에 강제 기록
+
+> **판정을 "절대경로 0건"으로 두지 않는 이유**(심사 지적 수용): `external:`
+> 태깅만으로 어휘적으로는 0건이 되어, 유효 골드가 0개여도 통과해 버린다.
+> 실질 기준(유효 ≥3)으로 바꾼다. 유효분이 3 미만이면 P1-3 소급 채점이 새로
+> 수확한 harvested로 보강한다 — 294건 모집단이 있으므로 보강은 가능하다.
+
+#### P1-5. 테스트
+
+`tests/test_selfeval.py`에 추가: 선주입 이벤트 채점 · pending 소비/만료/
+세션 격리 · 소비 실패의 misses 기록 · 워크트리 경로 접기 · 레인별 집계 ·
+역파싱 마이그레이션.
+
+#### P1 완료 판정 (트래픽 비의존)
+
+- prefetch 레인에서 **채점 완료된 이벤트 수(adopted+mixed+betrayed+no_followup) ≥ 30**
+  — `summarize()`가 레인별로 이 값을 출력할 것. 소급분으로 즉시 판정 가능
+- 정규화 후 **유효 골드 경로 ≥ 3**, `총 N / 유효 M` 로그 존재
+- 신규 테스트 통과
+
+---
+
+### P2 — conv 백필 + 재캘리브레이션
+
+절차는 **사전 게이트 → 리플레이(전) → 백필 → 리플레이(후) → recalibrate**
+순서로 고정한다.
+
+#### P2-1. end-to-end 실측 (본 레포 선행)
+
+작은 쪽(본 레포 140청크)을 먼저 걸어 실제 벽시계를 재고 §0 정정 A의 합성
+추정치를 교체한다.
+
+```bash
+time .venv/bin/python -m hybrid_search.cli index-conversations \
+  --cwd /Users/ian/project/claude_project/hybrid-search-mcp
+```
+
+#### P2-2. 사전 오염 게이트 — **쓰기 전에** 판정한다
+
+심사 지적(타당): "40% 초과 시 중단"을 백필 **후**에 세면 이미 코퍼스가
+확대된 뒤라 중단이 성립하지 않는다.
+
+**해결: 게이트를 사전 계산으로 옮긴다.** `collect_project_chunks()`는
+DB에 아무것도 쓰지 않고 24초 만에 청크 수를 반환한다(§0 A 실측). 따라서
+백필 예상 증분을 **쓰기 전에** 알 수 있다.
+
+```python
+# 게이트 (쓰기 없음)
+planned = len(collect_project_chunks(project_path))
+cur_total  = SELECT count(*) FROM chunks
+cur_memory = SELECT count(*) FROM chunks WHERE node_type IN ('qa_log','conv_turn','memory_card')
+after_ratio = (cur_memory + planned - already_indexed_conv) / (cur_total + planned - already_indexed_conv)
+assert after_ratio <= 0.40      # 초과 시 실행하지 않는다
+```
+
+| | 현재 | 백필 후(추정) |
+|---|---|---|
+| valuein 총 청크 | 14,838 | ≈19,664 (**+32.5%**) |
+| 메모리 계열(qa+conv+card) | 2,091 (14.1%) | ≈6,917 (**35.2%**) |
+
+35.2% < 40% → 통과 예정. (초판 31%는 Codex 청크를 빠뜨린 값이라 정정.)
+
+**자기오염과의 관계 — 7/9와 같은 실패 모드가 아님을 코드로 확인.**
+`transcript_source.py`의 파서는 어시스턴트 콘텐츠 중 **`type == "text"`만**
+취한다(l.278, l.296). `thinking`은 버려지고, `tool_result`(파일 내용·명령
+출력)도 버려지며, `tool_use`는 원문이 아니라 `ToolEvent(도구명, 대상)`로
+축약된다. 청크 = **사용자 질문 + 어시스턴트 산문(1,800자 상한) + 도구 이름**.
+표본 53청크 중 코드펜스 포함 10건(19%)이며 설명 중 인용이지 인덱싱된 소스가
+아니다. 7/9 사고는 scanner 버그로 **생성된 wiki가 코드 레인에 소스 파일로**
+들어가 인덱스 83%를 차지한 사건으로, conv_turn은 별도 `node_type`·별도 슬롯
+레인의 **의도된 메모리**다. 성질이 다르다 — 그럼에도 비율 게이트는 싸므로 넣는다.
+
+표시 단은 이미 방어돼 있다: `slot_planner.PER_FILE_CAP = 2`,
+`orchestrator._MEMORY_HEAD_CAP = 2`. 게이트는 회수 단(BM25/벡터 후보 풀)
+희석을 보는 것이다.
+
+#### P2-3. 리플레이 (전) → 백필 → 리플레이 (후)
+
+```bash
+# 전
+python benchmarks/run_valuein_bench.py --gold benchmarks/valuein_gold.json \
+  --out benchmarks/replay_pre_2026-09-04.json --limit 10
+
+# 백필 — 멱등하다(아래), 실패 시 그대로 재실행
+.venv/bin/python -m hybrid_search.cli index-conversations \
+  --cwd /Users/ian/project/claude_project/valuein_homepage
+.venv/bin/python -m hybrid_search.cli index-conversations \
+  --cwd /Users/ian/project/claude_project/hybrid-search-mcp
+
+# 후
+python benchmarks/run_valuein_bench.py --gold benchmarks/valuein_gold.json \
+  --out benchmarks/replay_post_2026-09-04.json --limit 10
+```
+
+**멱등성 확인 완료.** `ConversationIndexer._index_session()`은 세션 해시가
+같으면 `return None`으로 건너뛰고(l.220-222), 다르면 청크 id 기준
+`to_add`/`to_delete` 델타만 적용한다(l.224-228). 크래시 시 `file_hash=""`가
+남아 다음 실행에서 재인덱싱된다(l.235-236). **중복 누적은 발생하지 않으며
+재실행 방지 가드가 필요 없다.**
+
+#### P2-4. 롤백 경로
+
+conv 세션은 `.conversations/<source>/<session_id>.jsonl`이라는 가상 경로의
+file 행으로 저장된다(`conversation_indexer.py:65-75`,
+`_conv_rel_path` / `conv_file_id`). 따라서 백필 되돌리기는 **해당 file 행과
+그 청크를 지우는 것**으로 국한된다:
+
+```sql
+-- 대상 확인 (삭제 전 반드시 건수 기록)
+SELECT count(*) FROM files WHERE project_id=? AND relative_path LIKE '.conversations/%';
+```
+
+- 백필 **직전** `chunks` 총수·메모리 계열 수·`files` 중 `.conversations/%`
+  건수를 파일로 기록해 복원 기준선으로 삼는다
+- `recalibrate` 실행 전 `~/.hybrid-search/config.toml`을
+  `config.toml.bak-preconv`로 복사한다(같은 디렉토리의 기존
+  `.bak-openai`/`.bak-gemini` 관례를 따른다). 라우터 임계값 4개가
+  덮어써지기 때문이다
+- 최후 수단은 전체 재구축이며, 로컬 임베딩이라 요금은 0원이다
+
+#### P2-5. 재캘리브레이션 (필수)
+
+현재 `router.confidence`
+
+```toml
+strong_score = 0.018475   strong_gap = 0.002102
+weak_score  = 0.016826    cosine_anchor = 0.542933
+```
+
+는 지금 코퍼스의 점수 분포에서 뽑은 백분위다. 코퍼스가 32.5% 늘면 RRF 분포가
+이동해 임계값이 어긋난다 — weak/strong 판정이 조용히 틀어지는, 눈에 안 띄는
+형태의 회귀다.
+
+```bash
+.venv/bin/python -m hybrid_search.cli recalibrate \
+  --gold benchmarks/router_calibration/valuein_gold.json \
+  --cwd /Users/ian/project/claude_project/valuein_homepage
+```
+
+골드셋은 25문항 + P1-4가 정규화·검증한 harvested 유효분으로 보강한다
+(최소 20문항 요건 충족).
+
+#### P2-6. 정리
+
+`valuein_homepage-ws-perf/.hybrid-search/` 삭제 (43b44b4 이전 세션의 잔재).
+워크트리 디렉토리 자체는 건드리지 않는다.
+
+---
+
+## 4. 완료 판정
+
+| P | 판정 조건 |
+|---|---|
+| **P0** | 클러스터 수·클러스터별 원본 QA 건수 출력 · 통합 노트 본문 길이>0 및 `source_ids` 존재 · **reindex 후 `qa_supersession` 행 수가 기준선(본 레포 30)보다 증가** |
+| **P1** | prefetch 레인 **채점 완료 이벤트 ≥30** (레인별 스코어카드 출력) · 정규화 후 **유효 골드 경로 ≥3** 및 `총 N / 유효 M` 로그 · 소급 스크립트 표준출력 계약 준수 · 신규 테스트 통과 |
+| **P2** | 사전 게이트 통과(메모리 계열 비율 ≤40%) · `node_type='conv_turn'` 청크가 **105 → 5,000±** (같은 단위) · 리플레이 전/후 `recall@10` 보고 · `recalibrate` 완료 및 config 백업 존재 |
+
+단위 주의: "105"와 "5,000"은 모두 **`node_type='conv_turn'`인 청크 수**다
+(세션 수·턴 수와 혼동 금지). 판정은 총량이 아니라 **실행 직전 대비 증분**으로
+확인한다.
+
+---
+
+## 5. 이번 라운드에서 하지 않는 것
+
+- **Reflector 자동화 승격** — P0 결과를 보고 별건 판단
+- **Codex 스캔 날짜 상한 최적화** — 24초로 측정돼 불필요(초판 항목 철회)
+- **qa_log/selfeval 로그 소스 정본 통합** — P1은 임시 이중 쓰기임을 명시만
+  하고, 통합은 별건
+- **백필된 과거 대화의 사후 채점** — P1의 라이브 채점과 다른 자다
+- **valuein 레포에 대한 쓰기/커밋/푸시** — 읽기와 자체 `.hybrid-search/`
+  도구 실행만
+- **WS6 공유 메모리** — `2026-09-01-ws6-shared-memory-supabase.md` 소관
+
+---
+
+## 6. 라운드1 외부 심사 반영 (DeepSeek, 2026-09-04)
+
+| 지적 | 심각도 | 판정 | 조치 |
+|---|---|---|---|
+| "1.1분"은 임베딩만, 전체 wall-clock 미측정 | 높음 | **수용** | 스캔 24.0초 실측 추가, end-to-end는 P2-1에서 직접 측정하도록 절차화 |
+| 백필 전후 adopted 비교는 정의상 불가능 | 높음 | **부분 반박 + 대체** | 라이브 레인 전후 비교는 성립하나 시간창 A/B는 교란된다는 점이 맞다 → **고정 리플레이셋**으로 대체(§2) |
+| 자기오염 재발 방어가 0 | 높음 | **부분 반박 + 게이트 수용** | 파서가 `text` 블록만 취함을 코드로 확인(§3 P2-2). 그럼에도 40% 게이트 도입, 추정 31%→35.2% 정정 |
+| P0·P1 완료 판정이 판정 불가 | 중간 | **수용** | P0 기계 검증 3항, P1은 "하루 경과"→"이벤트 ≥30건" |
+| 사이드카가 md 파서 구현을 영구 회피, 과거분 미채점 | 중간 | **부분 수용** | 과거분 일회성 역파싱 추가(P1-3), 핫패스 사이드카는 근거 명시 후 유지 |
+| harvested 마이그레이션 유효성 검증 부재 | 낮음 | **수용** | 실존 검사 + `총 N / 유효 M` 강제 로그 |
+
+## 7. 라운드2 외부 심사 반영 (DeepSeek, 2026-09-04) — 실행 가능성
+
+라운드2는 "이 문서를 받아든 사람이 바로 실행할 수 있는가"를 심사했다.
+11건 중 **8건 수용, 3건은 코드 확인으로 해소**.
+
+| 지적 | 심각도 | 판정 | 조치 |
+|---|---|---|---|
+| P0의 "reindex"가 어느 명령인지 미정의 | 높음 | **수용** | `--finalize`는 reindex를 하지 않음을 코드로 확인(`cli.py:3705`). `reindex --cwd`를 별도 단계로 명시(P0-a/b) |
+| 40% 게이트가 사후 판정이라 중단 불가 | 높음 | **수용** | `collect_project_chunks`가 쓰기 없이 24초에 청크 수를 주므로 **게이트를 사전 계산으로 이동**(P2-2). 배치 체크포인트보다 단순하고 확실 |
+| 리플레이 도구·골드 파일·지표 정의 부재 | 높음 | **수용** | 기존 `benchmarks/run_valuein_bench.py` + `valuein_gold.json`(25문항) 지정, 지표를 `recall@10`으로 고정, 전/후/recalibrate 순서 명문화(§2, P2-3) |
+| `score_event`에 prefetch를 "그대로 투입"은 성립 안 할 것 | 높음 | **반박(코드 확인)** | `score_event`의 입력은 평범한 dict `{query,paths,reads,greps}`이고 `tool_use` 의존은 `extract_turn_events`에만 있음(l.124-180). 필요한 것은 추출기 하나 — `extract_prefetch_event` 명세 추가(P1-1) |
+| pending 소비 키가 프롬프트 문자열이라 비결정적 | 높음 | **수용** | 소비 키를 `qa_record_id`로, 저장을 세션별 파일로, 누락은 `misses.jsonl`로(P1-2) |
+| 소급 30건 달성 근거 없음 | 중간 | **수용(실측으로 해소)** | 전 이력 선주입 qa **301건 중 294건(98%) 역파싱 가능** 실측. 목표 대비 10배 여유. 표준출력 계약 명시(P1-3) |
+| 멱등성·롤백 미정의 | 중간 | **수용(코드로 해소)** | 세션 해시 + 청크 id 델타로 **멱등 확인**(l.220-228). 롤백 키는 `.conversations/%` file 행, config 백업 절차 추가(P2-3, P2-4) |
+| 단위 혼재 (105 vs 5,000 vs 4,826) | 중간 | **수용** | 전부 `node_type='conv_turn'` 청크 수로 통일, 판정은 증분 기준(§4 주석) |
+| "절대경로 0건"은 external 태깅으로 통과 가능 | 중간 | **수용** | 실질 기준 "유효 골드 ≥3" + 미달 시 소급 harvested로 보강(P1-4) |
+| 리플레이셋 최소 크기 부재 | 중간 | **수용(해소)** | `valuein_gold.json` 25문항으로 최소 20 요건 충족, 경로 명시 |
+| P0가 실행자 의존적, `$PROJECT_ROOT` 미정의 | 중간 | **수용** | P0-a(본 레포)/P0-b(valuein)로 분리, 경로·store.db 명시, 클러스터 10개 초과 시 상위 10개 규칙 |
+
+---
+
+## 8. 실행 기록 (2026-09-04)
+
+계획대로 P0 → P1 → P2 순으로 실행했다. **계획과 달라진 점, 실행이 드러낸
+사실, 하지 않기로 바꾼 것**을 그대로 적는다.
+
+### P0 — Reflector ✅
+
+| | 클러스터 | 통합 노트 | `qa_supersession` |
+|---|---|---|---|
+| 본 레포 | 9 (전부 처리) | 9 | 30 → **42** |
+| valuein | 390 (상위 10 처리) | 10 | 627 → **646** |
+
+노트 본문 1,347~3,007 bytes, 전부 `source_ids` 보유. 판정 3항 모두 충족.
+
+**계획 규칙이 실제로 발동했다.** valuein은 390 클러스터(~771k 토큰)라 상한
+규칙(10개)을 적용했고, 잔여 380개는 입력 파일로 남겨 다음 회차로 넘겼다.
+
+**새 발견 — 클러스터링이 이미지 보일러플레이트를 토픽으로 잡는다.**
+멤버 수 상위 클러스터 10개 중 4개의 대표 질의가
+`[Image: original 1500x3033, displayed at ...]`였다. 스크린샷 붙여넣기의
+정형 문구가 유사도를 지배해 서로 무관한 턴이 한 클러스터로 묶인다. 이번엔
+해당 클러스터를 건너뛰고 실질 상위 10개를 골랐다. **클러스터링 입력에서
+이미지 보일러플레이트를 제거하는 것이 다음 회차 선결 과제**다.
+
+### P1 — selfeval v1.1 ✅
+
+구현: `selfeval.record_prefetch()` / `_pop_pending()` / `extract_prefetch_event()` /
+`reset_retro()` / `retro_scan()` / `migrate_harvested()`, 훅 배선
+(`hooks._session_key`, `_served_paths`), CLI `selfeval --retro --retro-reset
+--migrate-gold`. 테스트 15건 추가, 전체 **1,632 통과**.
+
+| 판정 조건 | 목표 | 실측 |
+|---|---|---|
+| prefetch 레인 채점 완료 이벤트 | ≥30 | **167** (valuein 156 + 본 레포 11) |
+| 유효 골드 경로 | ≥3 | **29** (valuein) |
+| 표준출력 계약 | 준수 | `parsed_md=248 matched_turns=156 scored=156` |
+| 신규 테스트 | 통과 | 15건 |
+
+**계획에 없던 수정 — 채점기가 이 코드베이스의 지배적 도구를 못 보고 있었다.**
+1차 소급 결과가 `adopted=0 / betrayed=17 / no_followup=139`로 나왔다. 원인을
+파고드니 계측 결함이었다: `score_event`의 증거는 **Read와 Grep뿐**인데,
+valuein의 실제 도구 분포는 `Bash 1972 · Edit 579 · Read 260 · Grep 0`이다.
+
+- 선주입이 준 파일을 **Edit**하면 채택인데 `no_followup`으로 찍혔다.
+- `rg`/`grep`을 **Bash로** 치면 배신인데 역시 `no_followup`으로 찍혔다.
+  (Grep 도구는 이 프로젝트에서 2,906턴 중 **0회** 쓰인다.)
+
+그래서 증거를 넓혔다 — 채택은 `Read/Edit/Write/NotebookEdit`, 배신은
+`Grep` + `rg|grep|ag|ack|find|fd`로 시작하는 Bash(`&&`/`;` 각 세그먼트 검사,
+파이프 뒤 grep은 출력 필터링이므로 제외). 재채점 결과:
+
+| | 1차 (Read/Grep만) | 재채점 (증거 확장) |
+|---|---|---|
+| betrayed | 17 | **55** |
+| no_followup | 139 | **100** |
+| harvested | 22 | **45** (유효 골드 29) |
+
+`--retro-reset`은 이 재채점을 위해 추가했다. 소급 행은 qa 로그+트랜스크립트에서
+언제든 재도출되는 파생 데이터이므로, 채점기가 바뀌면 두 세대를 한 파일에
+섞어 두는 대신 다시 만든다.
+
+**P1이 드러낸 실측 — 선주입은 거의 채택되지 않는다.** 156건 중
+adopted 1 · betrayed 55 · no_followup 100. 서빙된 상위 경로 754개의 구성은
+실제 파일 48% · qa 로그 44% · 대화 청크 6%로, **가상 경로(열 수 없는 것)가
+절반**이라는 점이 일부를 설명한다. 그러나 나머지 절반이 실제 파일인데도
+채택이 1건이라는 사실은 설명되지 않는다. 이것은 이번 계획의 수정 대상이
+아니라 **계측기가 처음으로 보여준 숫자**이며, 다음 라운드의 입력이다
+(참고: 리트리벌 병목은 랭킹이 아니라 노출이라는 기존 조사와 방향이 같다).
+
+### P2 — conv 백필 + 재캘리브레이션
+
+**P2-1 end-to-end 실측 — 계획의 추정이 틀렸다.** §0 정정 A는 "스캔 24초 +
+임베딩 1.4분 = 2분 미만"이라고 합성 추정했다. 본 레포 실측은
+**308 청크에 2분 57초**다. 라운드1 심사가 "합성 합계는 end-to-end가 아니다"라고
+지적한 것이 맞았다 — DB 쓰기·BM25 커밋·벡터 저장·Codex 스캔이 지배적이고,
+임베딩은 원격 호출이라 CPU가 아니라 대기가 시간을 먹는다. 요금은 여전히 0원.
+
+또한 본 레포 백필이 **19 세션 / 308 청크**로 나왔다 — 계획의 "3 세션 / 140
+청크" 추정은 Claude 트랜스크립트만 센 값이고, 실제로는 cwd가 일치하는
+**Codex 세션**이 함께 들어온다.
+
+**P2-2 사전 게이트 — 명령 자체에 넣었다.** 일회성 스크립트 대신
+`index-conversations`에 `--max-memory-ratio`(기본 0.40)를 붙였다.
+`collect_project_chunks()`가 DB에 아무것도 쓰지 않으므로 **쓰기 전에** 비율을
+계산하고, 초과하면 실행하지 않는다. 본 레포 실측:
+`chunks 3842 → 4150 (+308) · memory 256 → 564 (13.6%, limit 40%) · PASS`.
+
+게이트 구현 중 결함 하나를 잡았다: 인덱스가 비어 있는 프로젝트는 어떤 conv
+청크든 100%가 되어 **자기 첫 임포트를 스스로 막는다**. 희석할 코퍼스가 없을
+때는 게이트를 건너뛰도록 고치고 테스트로 고정했다(`total == 0` → SKIP).
+
+**P2-3 리플레이(전) 기준선** — `run_valuein_bench.py`, gold 25문항:
+
+```
+primary-top5  hybrid 0.92  grep 0.12
+recall@10     hybrid 0.77  grep 0.10
+read_count    hybrid 2.68  grep 9.76
+memory@3      hybrid 0.16  grep 0.00
+```
+
+**P2-5 recalibrate 골드셋** — 기본 25문항에 P1이 정규화·검증한 harvested
+실사용 프롬프트 29건을 더해 **54문항**으로 보강했다
+(`benchmarks/router_calibration/valuein_gold_augmented.json`). 이 골드셋은
+분포 기반이라 정답 라벨이 필요 없고, 실사용 프롬프트일수록 대표성이 높다.
+
+**P2-6 정리 — 실행하지 않기로 바꿨다.** 계획은
+`valuein_homepage-ws-perf/.hybrid-search/`를 "43b44b4 이전 세션의 잔재"로 보고
+삭제 대상에 넣었다. **삭제 전에 열어 보니 전제가 틀렸다**: 내용은 qa 로그도
+메모리 카드도 없는 **생성 wiki 25개 + coverage/gaps**이고, 일부는 당일
+14시자다. ws-perf는 살아 있는 워크트리이고 그 세션이 쓰는 산출물이다.
+메모리 수정(43b44b4)이 막으려던 것은 **기억이 임시 트리에 갇히는 것**인데
+그 문제는 이미 없다(qa_log 청크 0). 남은 것은 정상적인 워크트리 코드 인덱스의
+부산물이므로 **건드리지 않는다.**
+
+#### P2 결과 ✅
+
+**백필** — valuein `178 sessions indexed, 2 unchanged, 4649 chunks`,
+벽시계 **45분 06초**(CPU 2% — 전 구간이 원격 임베딩 대기), 요금 0원.
+
+| | 백필 전 | 백필 후 |
+|---|---|---|
+| 총 청크 | 14,874 | **19,523** (+31.3%) |
+| 메모리 계열 | 2,127 (14.3%) | **6,776 (34.7%)** |
+| `conv_turn` | 60 | **4,709** |
+| `.conversations/%` file 행 | 3 | 180 |
+
+**사전 게이트는 정확했다.** 쓰기 전 예측 `19,522 / 34.7%`, 실제
+`19,523 / 34.7%` — 1청크 오차. 게이트를 사후가 아니라 사전으로 옮긴 판단이
+숫자로 확인됐다.
+
+**리플레이 전/후 — 지표가 움직이지 않았다.**
+
+| 지표 | 전 | 후 |
+|---|---|---|
+| primary-top5 | 0.92 | 0.92 |
+| **recall@10** | **0.77** | **0.77** |
+| read_count | 2.68 | 2.68 |
+| memory@3 | 0.16 | 0.16 |
+| context_pack | 11.8KB | 11.7KB |
+
+정직하게 읽으면 두 가지다. ① **코퍼스를 31% 늘렸는데 회귀가 없다** —
+희석 우려에 대한 답이고, 게이트를 통과시킨 근거가 사후에도 성립했다.
+② **이 골드셋으로는 백필의 이득이 보이지 않는다.** 25문항이 코드·흐름·스키마
+질문이라 답이 코드에 있고, 대화 청크는 도움도 방해도 되지 않는다.
+백필의 이득은 다른 축에서 나타난다(아래).
+
+**이득은 대화형 질문에서 확인된다.** 백필 후 직접 조회:
+
+```
+"지난번에 워크트리 지웠던 얘기 뭐였지"
+  1~3위가 전부 conv_turn (.conversations/claude/*.jsonl)
+"출제 데스크 작업하면서 무슨 결정을 했었지"
+  2위 .hybrid-search/qa/consolidated/2026-09-04-aa0b76e9.md  ← P0 산출물
+```
+
+백필 전 valuein의 conv 인덱스는 9/4자 2세션 60청크가 전부였으므로 이런 질문에
+답할 재료 자체가 없었다. **다음 라운드의 벤치는 이 축을 재는 문항을 포함해야
+한다** — 현재 골드셋은 백필의 가치를 측정할 수 없다.
+
+**재캘리브레이션 — 조용한 드리프트가 실재했다.** 골드셋은 기본 25문항 +
+harvested 실사용 프롬프트 29건 = **54문항**.
+
+| | 전 | 후 |
+|---|---|---|
+| strong_score | 0.018475 | 0.019255 |
+| strong_gap | 0.002102 | **0.000889** |
+| weak_score | 0.016826 | 0.016534 |
+| **cosine_anchor** | **0.542933** | **0.807102** |
+
+`cosine_anchor`가 0.54 → 0.81로 크게 이동했다. 대화 청크가 한국어 자연어
+질의와 코사인 상 훨씬 가깝기 때문이다. 재캘리브레이션을 건너뛰었다면
+weak/strong 판정이 **눈에 띄지 않게** 어긋난 채로 남았을 것이다 — 계획이
+이 단계를 필수로 둔 이유가 숫자로 확인됐다. 이전 설정은
+`~/.hybrid-search/config.toml.bak-preconv`에 백업했다.
+
+**부수 관찰**: 캘리브레이션 중 `generated_ratio=0.50~0.60` 경고가 3건 떴다
+(자기생성 콘텐츠가 결과를 지배). 메모리 비중이 14% → 34.7%가 됐으니 예상된
+방향이지만, 이 신호가 임계에 가까워졌다는 뜻이므로 **다음 백필 전에는
+40% 게이트를 다시 검토**해야 한다.
+
+### 최종 판정
+
+| P | 조건 | 결과 |
+|---|---|---|
+| P0 | supersession 증가 | ✅ 본 레포 30→42 · valuein 627→646 |
+| P1 | prefetch 이벤트 ≥30 · 유효 골드 ≥3 · 테스트 | ✅ 167 · 29 · 1,632 통과 |
+| P2 | 게이트 ≤40% · conv_turn 증분 · 리플레이 전후 · recalibrate | ✅ 34.7% · 60→4,709 · 무회귀 · 완료 |
+
+### 이 라운드가 남긴 다음 과제
+
+1. **선주입이 왜 안 쓰이는가** — 실제 파일을 준 절반에서도 채택이 1/156.
+   랭킹이 아니라 노출 문제라는 기존 조사와 방향이 같다. **최우선.**
+2. **벤치가 대화 축을 못 잰다** — 백필 이득이 골드셋에 안 보인다. 대화형
+   문항을 포함한 골드셋이 필요하다.
+3. **클러스터링이 이미지 보일러플레이트에 끌린다** — valuein 상위 10 중 4개가
+   가짜 클러스터. Reflector 입력 정제가 선결.
+4. **Reflector 자동화** — 수동인 한 같은 정지가 반복된다.
+5. **valuein 잔여 380 클러스터** — 다음 회차.
+6. **generated_ratio 상승** — 34.7%에서 경고 3건. 다음 백필 전 게이트 재검토.
+
+---
+
+## 9. 완성된 것 / 완성되지 않은 것
+
+### ✅ 완성 — 판정 조건을 충족하고 검증까지 끝난 것
+
+| 항목 | 산출물 | 검증 |
+|---|---|---|
+| P0 Reflector 실행 | 통합 노트 19건 (본 레포 9 · valuein 10) | `qa_supersession` 30→42 / 627→646 |
+| P1 pending 사이드카 | `record_prefetch` · `_pop_pending` · 세션별 큐 · `misses.jsonl` | 단위 테스트 8건 |
+| P1 선주입 추출기 | `extract_prefetch_event` (턴 전체가 귀속 구간) | 단위 테스트 3건 |
+| P1 레인 분리 집계 | `summarize(lanes=…)` · CLI 스코어카드 · 레거시 행은 tool로 | 단위 테스트 2건 |
+| P1 골드 경로 정규화 | `_fold_path`(존재 검증 기반) · `external:` 태깅 · `migrate_harvested` | 단위 테스트 4건 · 실행 결과 유효 골드 29 |
+| P1 소급 채점 | `retro_scan` · `reset_retro` · CLI `--retro/--retro-reset` | 실행 167건 · 재실행 시 0(멱등) |
+| **P1 증거 확장(계획 외)** | 채택=Read/Edit/Write/NotebookEdit · 배신=Grep+shell search | 단위 테스트 6건 · 재채점 betrayed 17→55 |
+| P2 사전 게이트 | `index-conversations --max-memory-ratio` | 테스트 4건 · 예측 오차 1청크 |
+| P2 백필 | conv_turn 60→4,709 (valuein) · 0→308 (본 레포) | 게이트 34.7% PASS |
+| P2 리플레이 전/후 | `benchmarks/replay_{pre,post}_2026-09-04.json` | 무회귀 (recall@10 0.77 유지) |
+| P2 재캘리브레이션 | 54문항 골드셋 · config 백업 | `cosine_anchor` 0.543→0.807 갱신 |
+| 전체 회귀 | — | **1,632 통과** |
+
+### ⚠️ 완성되지 않은 것
+
+**1. 라이브 선주입 레인이 아직 한 번도 채점되지 않았다 — 원인 규명 완료.**
+
+소급 167건은 채점됐지만 **라이브 이벤트는 0건**이다. 훅의 쓰기 쪽은 정상이다
+(`pending/<session>.jsonl`에 행이 쌓이는 것을 확인). 소비가 안 된 원인은 P1
+코드가 아니라 그 상류에 있다:
+
+> `_handle_stop()` 첫 줄의 `if event.get("stop_hook_active"): return None`
+
+세션 범위 Stop 훅(`/goal` 등)이 걸려 있는 동안 Claude Code는 이어지는 Stop
+이벤트에 `stop_hook_active`를 세우고, 그러면 우리 핸들러가 **아무것도 하지
+않고 빠져나간다.** 그 결과 goal 루프가 도는 내내 **stop_hook qa 저장과
+selfeval 채점이 통째로 사라진다.**
+
+증거 (본 레포, 2026-09-04 UTC):
+
+```
+09:24  stop_hook qa 로그      ← /goal 이 걸린 그 턴
+10:52  user_prompt_submit 로그  (stop 로그 없음)
+11:47  user_prompt_submit 로그  (stop 로그 없음)
+       pending 큐에 2행이 소비되지 않은 채 대기
+```
+
+즉 이 갭은 P1이 만든 것이 아니라 **P1이 처음으로 드러낸 기존 결함**이다.
+9/1~9/4 "기억이 안 쌓인다"의 일부도 여기서 설명될 수 있다.
+
+**아직 고치지 않은 이유**: `_handle_stop`은 어차피 항상 `None`을 반환하므로
+(출력이 없어 연속 루프를 유발할 수 없다) 가드를 단순히 제거하는 것이
+직관적이지만, `stop_hook_active` 상태에서 같은 턴이 여러 번 전달되면
+**중복 채점·중복 qa 행**이 생긴다. `qa_log.record_turn`에는 `dedup=True`가
+있지만 selfeval에는 없다. 멱등 키를 정한 뒤 고쳐야 하는 별건이며,
+**다음 라운드의 P0**다.
+
+**2. valuein 잔여 380 클러스터** — 계획의 상한 규칙(10개)에 따라 의도적으로
+남겼다. 입력 파일은 `_reflection_input/`에 그대로 있다.
+
+**3. 백필의 가치를 재는 벤치가 없다** — 리플레이 지표가 전후 동일했다.
+현재 골드셋 25문항이 전부 코드·흐름·스키마 질문이라 대화 축을 못 잰다.
+가치 자체는 직접 조회로 확인했지만(§8), **측정 체계로는 미완성**이다.
+
+### 🚫 하지 않기로 결정한 것 (완결)
+
+| 항목 | 사유 |
+|---|---|
+| P2-6 `ws-perf/.hybrid-search/` 삭제 | 열어 보니 qa·메모리 0, 생성 wiki 25개뿐이고 당일자 파일 포함. 살아 있는 워크트리의 정상 산출물 — 전제가 틀렸다 |
+| Codex 스캔 날짜 상한 | 24초로 측정돼 불필요 |
+| 백필 대화의 사후 채점 | 라이브 채점과 다른 자다 |
+| Reflector 자동화 승격 | 범위 밖 — 아래 다음 과제로 |
+
+---
+
+## 10. 다음 라운드 — 우선순위
+
+**P0. Stop 훅이 goal 루프에서 기억을 버리는 것 (§9-1).**
+가장 상류의 결함이고, 고치기 전까지 selfeval 라이브 레인·qa 턴 기록이 모두
+반쪽이다. selfeval에 멱등 키(예: `session_id + turn 프롬프트 해시`)를 넣고
+`stop_hook_active` 가드를 기록 경로에서 분리한다. 회귀 테스트 필수.
+
+**P1. 선주입은 왜 채택되지 않는가.**
+156건 중 adopted 1. 서빙 경로의 48%가 실제 파일인데도 그렇다. 랭킹이 아니라
+노출·형식 문제일 가능성이 높다(주입 텍스트가 경로 목록뿐이라 열어볼 동기를
+못 준다는 가설). §8의 숫자가 기준선이다.
+
+**P2. 대화 축을 재는 골드셋.**
+백필의 가치가 현재 벤치에 안 보인다. "지난번에 …" "왜 그렇게 했지" 류
+문항으로 conv/qa 레인을 재는 골드셋을 만들고, 이번 백필을 소급 평가한다.
+
+**P3. Reflector 입력 정제 + 자동화.**
+① 이미지 붙여넣기 보일러플레이트가 클러스터를 오염시킨다(valuein 상위 10 중
+4개). 클러스터링 입력에서 제거. ② 수동 트리거인 한 같은 정지가 반복되므로
+post-commit 훅 편입 또는 임계값 트리거를 검토.
+
+**P4. valuein 잔여 380 클러스터 소화** — P3-① 이후에 하는 것이 낫다.
+
+**P5. generated_ratio 감시.**
+메모리 비중 34.7%에서 캘리브레이션 중 `generated_ratio 0.5~0.6` 경고 3건.
+다음 백필 전에 40% 게이트 임계를 재검토한다.
