@@ -38,6 +38,14 @@ class _BatchTooLargeError(Exception):
     pass
 
 
+# Hard ceiling for one embed request outside the pre-fetch hook. Generous
+# enough for a large batch on a loaded local endpoint, finite enough that a
+# wedged provider ends the run with an error instead of a silent stall that
+# gets killed by hand — and killing a bulk index is what corrupts it.
+# Override with HYBRID_SEARCH_EMBED_DEADLINE; "0" disables the ceiling.
+_BULK_EMBED_DEADLINE = 300.0
+
+
 class Embedder:
     """Generates embeddings via OpenAI API. Zero local resource usage."""
 
@@ -131,18 +139,26 @@ class Embedder:
             body["dimensions"] = self._embedding_dim
         payload = json.dumps(body).encode("utf-8")
 
-        # Optional wall-clock deadline (seconds) for this embed call.
-        # Set by the BLOCKING pre-fetch hook only: a batch job saturating
-        # the shared Ollama makes query embeds queue for tens of seconds,
-        # the hook times out, and the whole injected context is discarded
+        # Wall-clock deadline (seconds) for this embed call.
+        # The pre-fetch hook sets a tight one: a batch job saturating the
+        # shared Ollama makes query embeds queue for tens of seconds, the
+        # hook times out, and the whole injected context is discarded
         # (2026-09-04 Mac-mini field check: 22s embeds, 10s hook budget).
         # Expiring raises ConnectionError so the existing fail-open serves
-        # BM25-only — a degraded context beats a discarded one. Unset
-        # (indexing, MCP server) keeps the generous 120s per attempt.
+        # BM25-only — a degraded context beats a discarded one.
+        #
+        # Everything else gets `_BULK_EMBED_DEADLINE`. It used to get no
+        # deadline at all, on the reasoning that a 120s socket timeout was
+        # bound enough — but that timeout is per socket *operation*, not per
+        # request, so a half-alive endpoint can hold a batch open far longer.
+        # On 2026-09-05 a wedged Ollama held one for twenty minutes; killing
+        # the indexer is what corrupted the index. A bulk job may be slow,
+        # but it must not be unbounded: exceeding this fails loudly.
         import time as _t
 
         deadline_env = os.environ.get("HYBRID_SEARCH_EMBED_DEADLINE")
-        deadline = _t.monotonic() + float(deadline_env) if deadline_env else None
+        budget = float(deadline_env) if deadline_env else _BULK_EMBED_DEADLINE
+        deadline = _t.monotonic() + budget if budget > 0 else None
 
         max_retries = 12
         for attempt in range(max_retries):
@@ -152,7 +168,8 @@ class Embedder:
                 if remaining <= 0.05:
                     raise ConnectionError(
                         f"{self._spec.name} embeddings: deadline exceeded "
-                        f"({deadline_env}s) — degrading to BM25-only"
+                        f"({budget:g}s) — the endpoint accepted the request "
+                        "but did not finish it"
                     )
                 attempt_timeout = min(attempt_timeout, remaining)
             req = urllib.request.Request(
@@ -202,6 +219,15 @@ class Embedder:
             except urllib.error.URLError as e:
                 raise ConnectionError(
                     f"{self._spec.name} embeddings not reachable: {e}"
+                ) from e
+            except TimeoutError as e:
+                # A socket timeout is not a URLError, so without this it left
+                # the call as a bare "TimeoutError: timed out" from deep in
+                # http.client — unattributable to the embedder in a log.
+                raise ConnectionError(
+                    f"{self._spec.name} embeddings timed out after "
+                    f"{attempt_timeout:g}s — endpoint reachable but not "
+                    "responding (a wedged model, or another bulk job)"
                 ) from e
         raise ConnectionError(
             f"{self._spec.name} embeddings: max retries exhausted"
