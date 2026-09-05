@@ -419,7 +419,16 @@ class IndexingPipeline:
             chunk_count = db.get_chunk_count(project_id)
             vector_count = vector_engine.count
             bm25_count = bm25_engine.count
-            if chunk_count != vector_count or chunk_count != bm25_count:
+            # Chunks under an unfinished file (empty hash) are in SQLite and
+            # deliberately not in the engines yet — a crashed write, which the
+            # owning indexer repairs on its next run. Counting them here would
+            # read a recoverable state as damage and answer with a full
+            # rebuild, and a rebuild reconstructs from disk only: on
+            # 2026-09-05 that turned a 1,424-chunk gap into the deletion of
+            # the entire conversation namespace.
+            unfinished = db.count_unfinished_chunks(project_id)
+            settled = chunk_count - unfinished
+            if settled != vector_count or settled != bm25_count:
                 raise _ConsistencyMismatchError(
                     sqlite_count=chunk_count,
                     bm25_count=bm25_count,

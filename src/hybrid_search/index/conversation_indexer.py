@@ -107,6 +107,28 @@ def _detect_source(transcript_path: Path) -> str:
     return "claude"
 
 
+@dataclass
+class _SessionWrite:
+    """A session whose chunks are in SQLite but not yet durable in search.
+
+    Held until a checkpoint commits BM25 and saves the vector index; only
+    then is the file hash stamped. See ``_checkpoint``.
+    """
+
+    file_id: str
+    rel_path: str
+    file_hash: str
+    chunk_count: int
+    added: int
+
+
+# How much work a crash may cost. Every checkpoint commits BM25 and rewrites
+# the vector index, so this trades rework against I/O; at ~57 chunks/s a
+# 500-chunk window is under ten seconds of re-embedding.
+_CHECKPOINT_CHUNKS = 500
+_CHECKPOINT_SESSIONS = 25
+
+
 class ConversationIndexer:
     """Indexes Claude Code + Codex transcripts for a project."""
 
@@ -171,19 +193,28 @@ class ConversationIndexer:
             for chunk in chunks:
                 sessions[(chunk.source, chunk.session_id)].append(chunk)
 
+            pending: list[_SessionWrite] = []
+            pending_chunks = 0
             for (source, session_id), session_chunks in sessions.items():
                 session_chunks.sort(key=lambda c: c.turn_index)
-                added = self._index_session(
+                write = self._index_session(
                     db, bm25, vector, pid, source, session_id, session_chunks
                 )
-                if added is None:
+                if write is None:
                     result.sessions_skipped += 1
-                else:
-                    result.sessions_indexed += 1
-                    result.chunks_total += added
+                    continue
+                result.sessions_indexed += 1
+                result.chunks_total += write.added
+                pending.append(write)
+                pending_chunks += write.added
+                if (
+                    pending_chunks >= _CHECKPOINT_CHUNKS
+                    or len(pending) >= _CHECKPOINT_SESSIONS
+                ):
+                    self._checkpoint(db, bm25, vector, pid, pending)
+                    pending, pending_chunks = [], 0
 
-            bm25.commit()
-            vector.save()
+            self._checkpoint(db, bm25, vector, pid, pending)
         finally:
             db.close()
 
@@ -192,6 +223,34 @@ class ConversationIndexer:
             name, result.sessions_indexed, result.sessions_skipped, result.chunks_total,
         )
         return result
+
+    def _checkpoint(
+        self,
+        db: StoreDB,
+        bm25: BM25Engine,
+        vector: VectorEngine,
+        project_id: str,
+        pending: list[_SessionWrite],
+    ) -> None:
+        """Make the search engines durable, then mark the sessions done.
+
+        The order is the whole point. Stamping first would let a crash in
+        between leave SQLite claiming sessions the search index never got —
+        and since the next run trusts that claim and skips them, the gap
+        never heals. Committing first costs a re-run of at most one
+        checkpoint's work; stamping first costs the data.
+        """
+        bm25.commit()
+        vector.save()
+        if not pending:
+            return
+        with db.transaction() as conn:
+            for w in pending:
+                db.upsert_file(conn, FileRecord(
+                    id=w.file_id, project_id=project_id, relative_path=w.rel_path,
+                    file_hash=w.file_hash, language="conversation",
+                    chunk_count=w.chunk_count,
+                ))
 
     def _index_session(
         self,
@@ -202,13 +261,14 @@ class ConversationIndexer:
         source: str,
         session_id: str,
         chunks: list[ConvChunk],
-    ) -> int | None:
-        """Incrementally store one session.
+    ) -> _SessionWrite | None:
+        """Incrementally store one session, leaving it unstamped.
 
-        Returns None if skipped (unchanged), else the number of newly embedded
-        turns. Only turns whose chunk id (turn + content hash) is new get
-        embedded; unchanged turns keep their existing chunks/vectors, so a Stop
-        hook firing every turn re-embeds just the latest turn, not the session.
+        Returns None if skipped (unchanged), else a ``_SessionWrite`` the
+        caller must stamp after a checkpoint. Only turns whose chunk id
+        (turn + content hash) is new get embedded; unchanged turns keep their
+        existing chunks/vectors, so a Stop hook firing every turn re-embeds
+        just the latest turn, not the session.
         """
         if not chunks:
             return None
@@ -224,8 +284,18 @@ class ConversationIndexer:
         existing_ids = set(db.get_chunk_ids_by_file(file_id))
         desired = [(_chunk_id(source, session_id, c), c) for c in chunks]
         desired_ids = {cid for cid, _ in desired}
-        to_add = [(cid, c) for cid, c in desired if cid not in existing_ids]
-        to_delete = [cid for cid in existing_ids if cid not in desired_ids]
+
+        # An empty hash marks a session whose chunks reached SQLite but never
+        # reached BM25/USearch — the process died before the checkpoint that
+        # would have stamped it. Its rows exist, so an id-based delta would
+        # find nothing to add and leave the search engines permanently short.
+        # Rebuild it whole instead; both delete paths ignore unknown ids.
+        if existing is not None and not existing.file_hash:
+            to_add = desired
+            to_delete = list(existing_ids)
+        else:
+            to_add = [(cid, c) for cid, c in desired if cid not in existing_ids]
+            to_delete = [cid for cid in existing_ids if cid not in desired_ids]
 
         embeddings = (
             self._embedder.embed_texts([c.text for _, c in to_add]) if to_add else None
@@ -264,11 +334,6 @@ class ConversationIndexer:
                     )
                     for cid, c in to_add
                 ])
-            db.upsert_file(conn, FileRecord(
-                id=file_id, project_id=project_id, relative_path=rel_path,
-                file_hash=new_hash, language="conversation", chunk_count=len(chunks),
-            ))
-
         if to_delete:
             bm25.delete_batch(to_delete)
             vector.remove_batch(to_delete)
@@ -280,4 +345,15 @@ class ConversationIndexer:
                     content=c.text, docstring=None,
                 )
             vector.add_batch([cid for cid, _ in to_add], embeddings)
-        return len(to_add)
+
+        # The hash is NOT written here. "This session is done" may only be
+        # recorded once the chunks are durable in the search engines, which
+        # happens at the next checkpoint — otherwise a crash leaves SQLite
+        # asserting a session the search index does not have, the next run
+        # skips it on that assertion, and the drift is permanent (it was:
+        # 1,424 chunks on 2026-09-05, which then triggered a rebuild that
+        # deleted the whole conversation namespace).
+        return _SessionWrite(
+            file_id=file_id, rel_path=rel_path, file_hash=new_hash,
+            chunk_count=len(chunks), added=len(to_add),
+        )
