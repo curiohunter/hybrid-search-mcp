@@ -529,3 +529,142 @@ class TestRebuildPreservesConversations:
         from hybrid_search.index.pipeline import IndexingResult
 
         assert IndexingResult(project_id="p", project_name="n").conversations_dropped == 0
+
+
+class TestCrashDurability:
+    """A crash must never leave SQLite asserting what search does not have."""
+
+    def _indexer(self, tmp_path):
+        """Real DB/BM25/vector, stub embedder — the durability path is the point."""
+        from hybrid_search.config import Config
+        from hybrid_search.index.conversation_indexer import ConversationIndexer
+        from hybrid_search.project import ProjectRegistry
+
+        class _Embedder:
+            embedding_dim = 8
+
+            def embed_texts(self, texts):
+                import numpy as np
+                return [np.ones(8, dtype="float32") for _ in texts]
+
+        config = Config(data_dir=tmp_path / "data")
+        config.global_dir.mkdir(parents=True, exist_ok=True)
+        registry = ProjectRegistry(config.global_dir)
+        return ConversationIndexer(config, registry, _Embedder())
+
+    def _transcript(self, root, session, n_turns):
+        import json as _json
+
+        d = root / ".claude" / "projects" / "p"
+        d.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for i in range(n_turns):
+            lines.append(_json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": f"{session} 질문 {i} 무엇인가요"},
+            }))
+            lines.append(_json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": f"답변 {i} 입니다."}]},
+            }))
+        path = d / f"{session}.jsonl"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_unstamped_session_is_rebuilt_not_skipped(self, tmp_path):
+        """The exact 2026-09-05 drift: rows in SQLite, nothing in the engines."""
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths, get_project_dir
+        from hybrid_search.project import project_hash
+
+        project = tmp_path / "proj"
+        (project / ".git").mkdir(parents=True)
+        transcript = self._transcript(tmp_path, "s1", 3)
+
+        indexer = self._indexer(tmp_path)
+        indexer.index_transcript(transcript, str(project), source="claude")
+
+        pid = project_hash(str(project.resolve()))
+        store = IndexPaths(
+            get_project_dir(indexer._config.projects_dir, pid)
+        ).store_db
+        db = StoreDB(store)
+        try:
+            rel = ".conversations/claude/s1.jsonl"
+            rec = db.get_file_by_path(pid, rel)
+            assert rec is not None and rec.file_hash, "a clean run stamps the session"
+            chunk_ids = db.get_chunk_ids_by_file(rec.id)
+            assert chunk_ids
+            # Simulate the crash: chunks stayed, the stamp never happened.
+            with db.transaction() as conn:
+                from hybrid_search.storage.db import FileRecord
+
+                db.upsert_file(conn, FileRecord(
+                    id=rec.id, project_id=pid, relative_path=rel,
+                    file_hash="", language="conversation", chunk_count=0,
+                ))
+        finally:
+            db.close()
+
+        result = indexer.index_transcript(transcript, str(project), source="claude")
+
+        assert result.sessions_skipped == 0, "an unstamped session must not be skipped"
+        assert result.chunks_total == len(chunk_ids), "every turn is re-embedded"
+
+    def test_a_clean_rerun_is_a_no_op(self, tmp_path):
+        project = tmp_path / "proj"
+        (project / ".git").mkdir(parents=True)
+        transcript = self._transcript(tmp_path, "s2", 2)
+
+        indexer = self._indexer(tmp_path)
+        indexer.index_transcript(transcript, str(project), source="claude")
+        again = indexer.index_transcript(transcript, str(project), source="claude")
+
+        assert again.sessions_indexed == 0 and again.sessions_skipped == 1
+
+
+class TestDriftToleratesRecoverableWrites:
+    """A crashed write is repaired by its own indexer, not by a rebuild."""
+
+    def _db(self, tmp_path, finished: int, unfinished: int):
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths
+
+        IndexPaths(tmp_path).ensure_dirs()
+        db = StoreDB(IndexPaths(tmp_path).store_db)
+        conn = db._conn
+        conn.execute(
+            "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+            " VALUES ('done', 'p', 'a.py', 'python', 'h1')"
+        )
+        conn.execute(
+            "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+            " VALUES ('wip', 'p', '.conversations/claude/s.jsonl', 'conversation', '')"
+        )
+        for i in range(finished):
+            conn.execute(
+                "INSERT INTO chunks (id, file_id, project_id, node_type)"
+                f" VALUES ('f{i}', 'done', 'p', 'function')"
+            )
+        for i in range(unfinished):
+            conn.execute(
+                "INSERT INTO chunks (id, file_id, project_id, node_type)"
+                f" VALUES ('u{i}', 'wip', 'p', 'conv_turn')"
+            )
+        conn.commit()
+        return db
+
+    def test_unfinished_chunks_are_excluded_from_the_count(self, tmp_path):
+        db = self._db(tmp_path, finished=10, unfinished=4)
+        try:
+            assert db.get_chunk_count("p") == 14
+            assert db.count_unfinished_chunks("p") == 4
+        finally:
+            db.close()
+
+    def test_a_settled_index_reports_no_unfinished_work(self, tmp_path):
+        db = self._db(tmp_path, finished=10, unfinished=0)
+        try:
+            assert db.count_unfinished_chunks("p") == 0
+        finally:
+            db.close()
