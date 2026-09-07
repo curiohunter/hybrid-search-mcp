@@ -352,18 +352,22 @@ def parse_claude_transcript(path: Path) -> list[ConvChunk]:
                     texts.append(txt)
                 tools.extend(evs)
             j += 1
-        chunks.append(
-            _build_chunk(
-                source="claude",
-                project_path=project_path,
-                session_id=session_id,
-                turn=turn,
-                timestamp=timestamp,
-                prompt=prompt,
-                assistant_text="\n".join(texts),
-                tools=tools,
+        assistant_text = "\n".join(texts)
+        # ``turn`` advances either way: the index is the turn's position in the
+        # conversation, so a filtered turn must not renumber the ones after it.
+        if is_memorable_turn(prompt, assistant_text):
+            chunks.append(
+                _build_chunk(
+                    source="claude",
+                    project_path=project_path,
+                    session_id=session_id,
+                    turn=turn,
+                    timestamp=timestamp,
+                    prompt=prompt,
+                    assistant_text=assistant_text,
+                    tools=tools,
+                )
             )
-        )
         turn += 1
         idx = j
     return chunks
@@ -446,24 +450,70 @@ def parse_codex_session(path: Path) -> list[ConvChunk]:
             elif ekind == "tool" and isinstance(evalue, ToolEvent):
                 tools.append(evalue)
             k += 1
-        chunks.append(
-            _build_chunk(
-                source="codex",
-                project_path=project_path,
-                session_id=session_id,
-                turn=turn,
-                timestamp=ts,
-                prompt=prompt,
-                assistant_text="\n".join(texts),
-                tools=tools,
+        assistant_text = "\n".join(texts)
+        # ``turn`` advances either way: the index is the turn's position in the
+        # conversation, so a filtered turn must not renumber the ones after it.
+        if is_memorable_turn(prompt, assistant_text):
+            chunks.append(
+                _build_chunk(
+                    source="codex",
+                    project_path=project_path,
+                    session_id=session_id,
+                    turn=turn,
+                    timestamp=ts,
+                    prompt=prompt,
+                    assistant_text=assistant_text,
+                    tools=tools,
+                )
             )
-        )
         turn += 1
         i = k
     return chunks
 
 
 # ── Chunk assembly ────────────────────────────────────────────────────
+
+
+_FENCE_RE = re.compile(r"```.*?```", re.S)
+# A line that is mostly punctuation/paths carries no prose — command echoes,
+# ASCII tables, log dumps. Same 0.3 alnum ratio the qa junk filter uses.
+_PROSE_MIN_ALNUM_RATIO = 0.3
+
+
+def _assistant_prose(text: str) -> str:
+    """What the assistant actually *said*, minus code blocks and log lines."""
+    stripped = _FENCE_RE.sub(" ", text or "")
+    kept = [
+        ln for ln in stripped.splitlines()
+        if ln.strip()
+        and sum(c.isalnum() for c in ln) / max(len(ln), 1) > _PROSE_MIN_ALNUM_RATIO
+    ]
+    return " ".join(" ".join(kept).split())
+
+
+def is_memorable_turn(user_prompt: str, assistant_text: str) -> bool:
+    """False when a turn is operational debris rather than memory.
+
+    Two gates, both already the project's own definitions of noise:
+
+    - ``quality.is_junk_query`` — the exact filter the qa lane has applied
+      since it was written. The conversation lane never applied it, so 25.6%
+      of valuein's indexed turns are things the project had already decided
+      were debris (``[Request interrupted by user]``, harness markers, bare
+      paths, divider lines).
+    - **Nothing was said.** A turn whose assistant side is empty once code
+      fences and log lines are removed has no answer in it — 14.9% more.
+
+    Together that is 39.2% of the corpus, and it is not harmless filler: the
+    2026-09-05 conversational benchmark scored *better* with the whole conv
+    lane removed (top-3 0.47 → 0.87), because chatter like a dev-server port
+    check outranked the consolidated notes that held the answer.
+    """
+    from hybrid_search.memory import quality
+
+    if quality.is_junk_query(user_prompt):
+        return False
+    return bool(_assistant_prose(assistant_text))
 
 
 def _build_chunk(

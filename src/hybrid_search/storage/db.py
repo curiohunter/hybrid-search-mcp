@@ -837,6 +837,23 @@ class StoreDB:
         )
         return cur.fetchone()["cnt"]
 
+    def count_unfinished_chunks(self, project_id: str) -> int:
+        """Chunks belonging to files whose write never completed.
+
+        An empty ``file_hash`` is the placeholder an indexer writes before it
+        knows the chunks are durable in BM25/USearch. Chunks under such a file
+        are, by construction, in SQLite and *not* in the search engines — a
+        self-healing state (the next run re-adds them), not corruption. The
+        consistency check has to exclude them or it reads a recoverable crash
+        as index damage and answers with a full rebuild.
+        """
+        cur = self._conn.execute(
+            "SELECT COUNT(*) as cnt FROM chunks c JOIN files f ON c.file_id = f.id"
+            " WHERE c.project_id = ? AND f.file_hash = ''",
+            (project_id,),
+        )
+        return cur.fetchone()["cnt"]
+
     def get_file_count(self, project_id: str) -> int:
         cur = self._conn.execute(
             "SELECT COUNT(*) as cnt FROM files WHERE project_id = ?", (project_id,)

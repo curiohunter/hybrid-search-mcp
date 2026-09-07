@@ -34,9 +34,15 @@ scripts/.poc_cache/
 .hybrid-search/qa/
 .hybrid-search/qa-archive/
 
-# Benchmark result artifacts quote the corpus they measured — file paths that
-# name real schools, classes and internal document trees. Runners and gold
-# sets that carry no such quotation stay; outputs do not.
+# Benchmark gold sets and results quote the corpus they measured — paths that
+# name real institutions and classes, internal document trees, verbatim user
+# prompts. The runners are shared; what they measure stays with the project
+# being measured. See CLAUDE.md, "공개물에 코퍼스를 인용하지 말 것".
+benchmarks/conv_gold.json
+benchmarks/conv_results_*.json
+benchmarks/replay_pre_*.json
+benchmarks/replay_post_*.json
+benchmarks/router_calibration/*_augmented.json
 benchmarks/**/valuein_*.json
 benchmarks/**/raw_*.json
 benchmarks/**/compounding_*.json
