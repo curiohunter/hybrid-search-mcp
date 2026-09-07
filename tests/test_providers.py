@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hybrid_search import providers
 from hybrid_search.config import EmbeddingConfig
 from hybrid_search.index.embedder import Embedder
@@ -234,3 +236,66 @@ class TestOnlyFullRebuildsClaimTheVectorSpace:
         pipe = self._pipeline(fingerprint=MagicMock())
         pipe._record_vector_space(db, full_rebuild=True, project_id="p")
         db.set_meta.assert_not_called()
+
+
+class TestEmbedDeadline:
+    """Every embed request has a finite ceiling — a stall must end, loudly."""
+
+    def _embedder(self, monkeypatch):
+        from hybrid_search.config import EmbeddingConfig
+        from hybrid_search.index.embedder import Embedder
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.delenv("HYBRID_SEARCH_EMBED_DEADLINE", raising=False)
+        return Embedder(EmbeddingConfig(backend="openai"))
+
+    def test_socket_timeout_is_attributed_to_the_embedder(self, monkeypatch):
+        """Bare `TimeoutError: timed out` from http.client names nothing."""
+        import hybrid_search.index.embedder as mod
+
+        emb = self._embedder(monkeypatch)
+
+        def _timeout(*a, **k):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", _timeout)
+
+        with pytest.raises(ConnectionError, match="timed out after"):
+            emb.embed_texts(["안녕"])
+
+    def test_bulk_calls_get_a_deadline_without_asking(self, monkeypatch):
+        """Indexing used to run with no overall ceiling at all."""
+        import time
+
+        import hybrid_search.index.embedder as mod
+
+        emb = self._embedder(monkeypatch)
+        monkeypatch.setattr(mod, "_BULK_EMBED_DEADLINE", 0.05)
+
+        def _slow(*a, **k):
+            time.sleep(0.08)
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", _slow)
+
+        with pytest.raises(ConnectionError):
+            emb.embed_texts(["안녕"])
+
+    def test_the_ceiling_can_be_disabled_explicitly(self, monkeypatch):
+        import hybrid_search.index.embedder as mod
+
+        monkeypatch.setenv("HYBRID_SEARCH_EMBED_DEADLINE", "0")
+        emb = self._embedder(monkeypatch)
+        monkeypatch.setenv("HYBRID_SEARCH_EMBED_DEADLINE", "0")
+
+        calls = {"n": 0}
+
+        def _timeout(*a, **k):
+            calls["n"] += 1
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", _timeout)
+
+        with pytest.raises(ConnectionError, match="timed out after"):
+            emb.embed_texts(["안녕"])
+        assert calls["n"] == 1, "no deadline still fails on the socket timeout"

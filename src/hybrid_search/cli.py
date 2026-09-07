@@ -523,6 +523,24 @@ def _reindex_locked(
     # HEAD gets flagged needs_revalidation.
     _run_qa_revalidation(config, registry, project_name, Path(project_path))
 
+    # An atomic rebuild reconstructs the index from disk, so conversation
+    # chunks — a synthetic namespace with no on-disk file — do not survive it.
+    # Commits are re-derived just above; conversations need the same owner or
+    # a single consistency drift silently deletes the whole conversation
+    # memory (2026-09-05: 3,029 chunks).
+    if getattr(result, "conversations_dropped", 0):
+        print(
+            f"Rebuild dropped {result.conversations_dropped} conversation "
+            "session(s) — re-deriving from transcripts."
+        )
+        _reindex_conversations_after_rebuild(config, registry, project_name, project_path)
+
+    # The Reflector is the one memory pass with no automatic trigger. Say so
+    # here rather than letting a backlog accumulate in silence.
+    _report_pending_reflection(Path(project_path))
+
+    _report_memory_share_for(config, registry, project_name)
+
     if result.errors:
         print(f"Errors: {len(result.errors)}")
         for err in result.errors[:5]:
@@ -644,6 +662,8 @@ def _run_memory_integrity(
     parts = []
     if report.stale_archived:
         parts.append(f"{len(report.stale_archived)} stale qa archived")
+    if report.debris_archived:
+        parts.append(f"{len(report.debris_archived)} harness debris archived")
     if report.dedup_pairs:
         parts.append(f"{len(report.dedup_pairs)} dedup pair(s)")
     if report.archive_purged:
@@ -686,6 +706,52 @@ def _run_qa_supersession(
             print(f"QA supersession: {len(mapping)} stale entr(ies) mapped.")
     except Exception as exc:  # never block reindex on the mapping pass
         logger.debug("qa supersession pass skipped: %s", exc)
+
+
+# Surfacing threshold for pending consolidation. One or two clusters is
+# normal churn; a backlog means the Reflector has stopped running, which is
+# invisible otherwise — it is the only memory pass with no automatic
+# trigger, and it sat idle from 2026-09-01 to 09-04 without a single signal.
+_REFLECT_NUDGE_MIN_CLUSTERS = 3
+REFLECT_MARKER_NAME = "REFLECT.md"
+
+
+def _report_pending_reflection(project_root: Path) -> None:
+    """Write/clear the reflection backlog marker after a reindex.
+
+    Mirrors the wiki's STALE.md contract: a file whose existence a PreToolUse
+    hook can cheaply test, so the backlog announces itself instead of waiting
+    to be asked about.
+    """
+    marker = project_root / ".hybrid-search" / REFLECT_MARKER_NAME
+    try:
+        from hybrid_search.memory import reflector
+
+        clusters = reflector.collect_clusters(project_root)
+    except Exception as exc:
+        logger.debug("reflection backlog check skipped: %s", exc)
+        return
+    if len(clusters) < _REFLECT_NUDGE_MIN_CLUSTERS:
+        marker.unlink(missing_ok=True)
+        return
+    print(
+        f"Reflection backlog: {len(clusters)} cluster(s) ready to consolidate "
+        "→ run /maintain (qa-reflect)."
+    )
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        preview = "\n".join(
+            f"- {c.representative_query[:100]}" for c in clusters[:10]
+        )
+        marker.write_text(
+            f"# Reflection backlog — {len(clusters)} cluster(s)\n\n"
+            "The Reflector has consolidation work waiting. Run `/maintain`\n"
+            "(or `hybrid-search-mcp qa-reflect`) to turn these into notes.\n\n"
+            f"{preview}\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def _run_qa_revalidation(
@@ -3729,6 +3795,27 @@ def cmd_selfeval(args: argparse.Namespace) -> None:
     if root is None:
         sys.exit(1)
 
+    # One-shot migrations. Both are idempotent, both print a fixed contract
+    # so the plan's completion check reads off stdout rather than guessing.
+    if getattr(args, "migrate_gold", False):
+        m = selfeval.migrate_harvested(root)
+        print(
+            f"migrate-gold: rows={m['rows']} rewritten={m['rewritten']} "
+            f"usable_rows={m['usable_rows']} dropped_paths={m['dropped_paths']}"
+        )
+    if getattr(args, "retro", False):
+        if getattr(args, "retro_reset", False):
+            print(f"retro-reset: dropped={selfeval.reset_retro(root)} rows")
+        r = selfeval.retro_scan(root)
+        print(
+            f"retro: parsed_md={r['parsed_md']} matched_turns={r['matched_turns']} "
+            f"scored={r['scored']} skipped_existing={r['skipped_existing']}"
+        )
+        print(
+            f"retro: adopted={r['adopted']} mixed={r['mixed']} "
+            f"betrayed={r['betrayed']} no_followup={r['no_followup']}"
+        )
+
     stats = selfeval.summarize(root, days=args.days)
     if stats is None:
         print(f"no selfeval data in the last {args.days}d under {root}")
@@ -3739,19 +3826,26 @@ def cmd_selfeval(args: argparse.Namespace) -> None:
     print(f"  adopted:      {scored}  (rank hit; {stats['mixed']} also read outside)")
     print(f"  betrayed:     {stats['betrayed']}  (fell back to Grep/other files)")
     print(f"  no_followup:  {stats['no_followup']}")
-    print(f"  harvested:    {stats['harvested_total']} regression items (all time)")
+    print(
+        f"  harvested:    {stats['harvested_total']} regression items (all time), "
+        f"{stats.get('harvested_usable', 0)} with usable gold paths"
+    )
+    lanes = stats.get("lanes") or {}
+    for lane in ("tool", "prefetch"):
+        c = lanes.get(lane) or {}
+        if c.get("total"):
+            print(
+                f"  lane {lane:<9}{c['total']} scored  "
+                f"(adopted {c['adopted'] + c['mixed']} · betrayed {c['betrayed']} · "
+                f"no_followup {c['no_followup']})"
+            )
 
-    harvested_path = root / ".hybrid-search/selfeval/harvested.jsonl"
-    if harvested_path.is_file():
-        lines = [ln for ln in harvested_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        show = lines[-args.limit :]
+    rows = selfeval.harvested(root)
+    if rows:
+        show = rows[-args.limit :]
         if show:
             print(f"\nrecent harvested (showing {len(show)}):")
-        for ln in show:
-            try:
-                row = _json.loads(ln)
-            except ValueError:
-                continue
+        for row in show:
             q = row.get("query", "")
             q = q if len(q) <= 70 else q[:67] + "…"
             print(f"  [{row.get('ts', '?')[:10]}] {q}")
@@ -4592,6 +4686,135 @@ def _acquire_conv_lock(lock_path: Path) -> bool:
         return False
 
 
+# Chunk types that are the memory layer talking to itself. One definition,
+# used by the pre-flight backfill gate and by the standing report below —
+# a gate and a dashboard that disagree about what they measure are worse
+# than neither.
+_MEMORY_NODE_TYPES = ("qa_log", "conv_turn", "memory_card")
+# Above this share the corpus is more memory than material. It is the same
+# number the backfill gate refuses at, so the report warns exactly when the
+# next backfill would be blocked — no surprise at the gate.
+MEMORY_SHARE_WARN = 0.40
+
+
+def _memory_share(project_dir: Path) -> tuple[int, int, int]:
+    """(total chunks, memory chunks, existing conv chunks) for a project."""
+    from hybrid_search.storage.db import StoreDB
+    from hybrid_search.storage.indexes import IndexPaths
+
+    store = IndexPaths(project_dir).store_db
+    if not store.is_file():
+        return (0, 0, 0)
+    db = StoreDB(store)
+    try:
+        conn = db._conn
+        total = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        placeholders = ",".join("?" * len(_MEMORY_NODE_TYPES))
+        memory = conn.execute(
+            f"SELECT count(*) FROM chunks WHERE node_type IN ({placeholders})",
+            _MEMORY_NODE_TYPES,
+        ).fetchone()[0]
+        conv = conn.execute(
+            "SELECT count(*) FROM chunks WHERE node_type = 'conv_turn'"
+        ).fetchone()[0]
+    finally:
+        db.close()
+    return (total, memory, conv)
+
+
+def _reindex_conversations_after_rebuild(
+    config: Config, registry: ProjectRegistry, project_name: str, project_path: str
+) -> None:
+    """Re-derive the conversation namespace a rebuild could not carry over.
+
+    Uses the ordinary indexer, which is delta-based: against an index that
+    just lost them it does a full pass, and against one that kept them it is
+    a no-op. Never raises — losing conversations is bad, failing the whole
+    reindex on top of it is worse.
+    """
+    try:
+        embedder = Embedder(config.embedding, config.models_dir)
+        indexer = ConversationIndexer(config, registry, embedder)
+        res = indexer.index_conversations(project_path, project_name=project_name)
+        print(
+            f"Conversations restored: {res.sessions_indexed} session(s), "
+            f"{res.chunks_total} chunks."
+        )
+    except Exception as exc:
+        logger.warning("conversation re-derive after rebuild failed: %s", exc)
+
+
+def _report_memory_share_for(
+    config: Config, registry: ProjectRegistry, project_name: str
+) -> None:
+    """Resolve the project's index dir, then report. Never blocks a reindex."""
+    try:
+        from hybrid_search.storage.indexes import get_project_dir
+
+        pinfo = registry.get_by_name(project_name)
+        if pinfo is None:
+            return
+        _report_memory_share(get_project_dir(config.projects_dir, pinfo.id))
+    except Exception as exc:
+        logger.debug("memory share report skipped: %s", exc)
+
+
+def _report_memory_share(project_dir: Path) -> None:
+    """Print the standing memory share after a reindex.
+
+    The share only ever moves during a reindex or a backfill, and it moves
+    silently — the 2026-09-04 conversation backfill took valuein from 14.3%
+    to 34.7% and nothing said so until a calibration run started warning
+    about self-generated results. Printing it every time makes the drift a
+    number the user watches instead of a surprise at the next gate.
+    """
+    total, memory, _ = _memory_share(project_dir)
+    if not total:
+        return
+    share = memory / total
+    line = f"Memory share: {memory}/{total} chunks ({share:.1%})"
+    if share >= MEMORY_SHARE_WARN:
+        line += f" — at or above the {MEMORY_SHARE_WARN:.0%} backfill gate"
+    print(line)
+
+
+def _conv_backfill_gate(project_path: Path, project_dir: Path, limit: float) -> dict:
+    """Decide, *before writing anything*, whether a full backfill is safe.
+
+    A full conversation backfill can add tens of percent to a project's
+    corpus. Checking the resulting memory share afterwards is useless — the
+    corpus is already grown by then. This runs the same discovery the
+    indexer would (``collect_project_chunks`` touches no database), so the
+    ratio is known while aborting is still possible.
+    """
+    from hybrid_search.index.transcript_source import collect_project_chunks
+
+    total, memory, existing_conv = _memory_share(project_dir)
+
+    planned = len(collect_project_chunks(project_path))
+    added = max(0, planned - existing_conv)
+    after_total = total + added
+    after_memory = memory + added
+    ratio = (after_memory / after_total) if after_total else 0.0
+
+    # The gate protects an existing corpus from dilution. With nothing
+    # indexed yet there is nothing to dilute — a fresh project would
+    # otherwise read as 100% memory and block its own first import.
+    if total == 0:
+        return {
+            "ok": True, "ratio": ratio, "planned": planned, "added": added,
+            "line": f"backfill gate: no code index yet (+{added} chunks) · SKIP",
+        }
+
+    ok = ratio <= limit
+    line = (
+        f"backfill gate: chunks {total} → {after_total} (+{added}) · "
+        f"memory {memory} → {after_memory} ({ratio:.1%}, limit {limit:.0%}) · "
+        f"{'PASS' if ok else 'FAIL'}"
+    )
+    return {"ok": ok, "ratio": ratio, "planned": planned, "added": added, "line": line}
+
+
 def cmd_index_conversations(args: argparse.Namespace) -> None:
     """Index Claude Code + Codex transcripts for the project at cwd.
 
@@ -4630,6 +4853,13 @@ def cmd_index_conversations(args: argparse.Namespace) -> None:
         if transcript:
             result = indexer.index_transcript(transcript, project_path, source=source)
         else:
+            gate = _conv_backfill_gate(
+                Path(project_path), project_dir, getattr(args, "max_memory_ratio", 0.40)
+            )
+            print(gate["line"])
+            if not gate["ok"]:
+                print("Aborted: run with --max-memory-ratio to override deliberately.")
+                return
             result = indexer.index_conversations(project_path, project_name=project_name)
     finally:
         try:
@@ -5594,6 +5824,12 @@ def main() -> None:
         help="Index a single transcript file (per-session, used by Stop hooks)",
     )
     p_conv.add_argument(
+        "--max-memory-ratio",
+        type=float,
+        default=0.40,
+        help="Abort a full backfill if memory chunks would exceed this share (default 0.40)",
+    )
+    p_conv.add_argument(
         "--source",
         choices=["claude", "codex", "auto"],
         default="auto",
@@ -5854,6 +6090,21 @@ def main() -> None:
     p_selfeval.add_argument("--project", help="Project name (overrides --cwd)")
     p_selfeval.add_argument("--days", type=int, default=7, help="Window for the scorecard (default 7)")
     p_selfeval.add_argument("--limit", type=int, default=10, help="Harvested items to show (default 10)")
+    p_selfeval.add_argument(
+        "--retro",
+        action="store_true",
+        help="Score pre-fetch turns that predate the sidecar, from qa logs (idempotent)",
+    )
+    p_selfeval.add_argument(
+        "--retro-reset",
+        action="store_true",
+        help="With --retro: re-derive previously retro-scored rows (use after a scorer change)",
+    )
+    p_selfeval.add_argument(
+        "--migrate-gold",
+        action="store_true",
+        help="Re-fold harvested gold paths to project-relative; tag unusable ones",
+    )
 
     p_qa_restore = sub.add_parser(
         "qa-restore",

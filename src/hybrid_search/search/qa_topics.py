@@ -150,6 +150,23 @@ def _english_weight(stemmed: str) -> float:
     return _W_GENERIC if stemmed in _en_generic_stems() else _W_NORMAL
 
 
+# Harness-inserted attachment banners. Every pasted screenshot carries the
+# same sentence, so its tokens ("image", "displayed", "multiply", "coordinates")
+# are shared by every screenshot turn in the corpus and nothing else. Left in,
+# they dominate topic overlap: the 2026-09-04 Reflector run put four of
+# valuein's ten largest clusters together on this boilerplate alone, grouping
+# unrelated turns whose only common ground was that a picture was attached.
+_ATTACHMENT_BOILERPLATE_RE = re.compile(
+    r"\[Image(?:\s*#\d+)?(?::[^\]]{0,200})?\]|\[Pasted text[^\]]{0,120}\]",
+    re.IGNORECASE,
+)
+
+
+def strip_attachment_boilerplate(text: str) -> str:
+    """Remove attachment banners so topic overlap reflects what was asked."""
+    return _ATTACHMENT_BOILERPLATE_RE.sub(" ", text or "")
+
+
 def topic_tokens(text: str | None) -> dict[str, float]:
     """Normalized token → weight map for topic comparison.
 
@@ -160,6 +177,9 @@ def topic_tokens(text: str | None) -> dict[str, float]:
     and line numbers must never count as topical overlap).
     """
     if not text:
+        return {}
+    text = strip_attachment_boilerplate(text)
+    if not text.strip():
         return {}
     stem = _en_stemmer()
     out: dict[str, float] = {}

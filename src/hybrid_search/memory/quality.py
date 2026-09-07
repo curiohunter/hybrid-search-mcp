@@ -22,6 +22,9 @@ _HARNESS_MARKERS = (
     "<local-command-stdout>",
     "[SYSTEM NOTIFICATION",
     "Another Claude session sent",
+    # Emitted by the harness when the user interrupts; it is the absence of a
+    # prompt, not a prompt. Found in 2026-09-05 conv-lane sampling.
+    "[Request interrupted by user",
 )
 
 # A query starting with one of these is a fragment of rendered model output
@@ -31,6 +34,18 @@ _JUNK_LEADING_CHARS = '─━═•·|>#*`~╭╰│"'
 _TOKEN_RE = re.compile(r"[\w가-힣]+")
 
 
+def is_harness_noise(query: str | None) -> bool:
+    """True when ``query`` is something the harness emitted, not a question.
+
+    The narrow half of :func:`is_junk_query`. A task notification or system
+    reminder is never a question anyone asked, in any lane — whereas the
+    other junk rules (too short, path-only) describe a *user prompt* and
+    would wrongly reject a deliberate three-character tool search.
+    """
+    q = (query or "").strip()
+    return any(marker in q for marker in _HARNESS_MARKERS)
+
+
 def is_junk_query(query: str | None) -> bool:
     """True when ``query`` is output debris rather than a user question."""
     q = (query or "").strip()
@@ -38,7 +53,7 @@ def is_junk_query(query: str | None) -> bool:
         return True
     if q[0] in _JUNK_LEADING_CHARS:
         return True
-    if any(marker in q for marker in _HARNESS_MARKERS):
+    if is_harness_noise(q):
         return True
     # Path-only fragments ("src/foo/bar.py") carry no question.
     if len(q.split()) == 1 and "/" in q:

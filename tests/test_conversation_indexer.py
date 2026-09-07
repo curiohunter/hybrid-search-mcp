@@ -259,3 +259,412 @@ def test_cli_index_conversations_command(tmp_path: Path, monkeypatch, capsys) ->
         assert vector.count == db.get_chunk_count(pid) == bm25.count
     finally:
         db.close()
+
+
+class TestBackfillGate:
+    """The pre-flight gate must decide before anything is written."""
+
+    def _gate(self, tmp_path, node_types, limit=0.40, planned=10):
+        import hybrid_search.cli as cli
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths
+
+        project_dir = tmp_path / "idx"
+        paths = IndexPaths(project_dir)
+        paths.ensure_dirs()
+        if node_types:
+            db = StoreDB(paths.store_db)
+            try:
+                conn = db._conn
+                conn.execute(
+                    "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+                    " VALUES ('f1', 'p', 'a.py', 'python', 'h')"
+                )
+                for i, nt in enumerate(node_types):
+                    conn.execute(
+                        "INSERT INTO chunks (id, file_id, project_id, node_type, name,"
+                        " qualified_name, content, start_line, end_line)"
+                        f" VALUES ('c{i}', 'f1', 'p', ?, 'n', 'q', 'x', 1, 2)",
+                        (nt,),
+                    )
+                conn.commit()
+            finally:
+                db.close()
+
+        import hybrid_search.index.transcript_source as ts
+        original = ts.collect_project_chunks
+        ts.collect_project_chunks = lambda *a, **k: [object()] * planned
+        try:
+            return cli._conv_backfill_gate(tmp_path, project_dir, limit)
+        finally:
+            ts.collect_project_chunks = original
+
+    def test_passes_when_memory_stays_under_the_limit(self, tmp_path):
+        gate = self._gate(tmp_path, ["function"] * 90 + ["qa_log"] * 10, planned=10)
+
+        assert gate["ok"] and "PASS" in gate["line"]
+
+    def test_blocks_when_backfill_would_cross_the_limit(self, tmp_path):
+        gate = self._gate(tmp_path, ["function"] * 10 + ["qa_log"] * 5, planned=20)
+
+        assert not gate["ok"] and "FAIL" in gate["line"]
+
+    def test_empty_index_is_not_blocked(self, tmp_path):
+        """A fresh project reads as 100% memory — it has nothing to dilute."""
+        gate = self._gate(tmp_path, [], planned=5)
+
+        assert gate["ok"] and "SKIP" in gate["line"]
+
+    def test_already_indexed_conv_chunks_are_not_double_counted(self, tmp_path):
+        gate = self._gate(tmp_path, ["function"] * 90 + ["conv_turn"] * 10, planned=10)
+
+        assert gate["added"] == 0, "10 planned, 10 already present"
+
+
+class TestMemorableTurnGate:
+    """The conversation lane applies the same debris filter as the qa lane."""
+
+    def test_keeps_a_turn_with_a_real_exchange(self):
+        from hybrid_search.index.transcript_source import is_memorable_turn
+
+        assert is_memorable_turn(
+            "환불 흐름이 어떻게 되나",
+            "정산이 확정되면 기존 청구서를 파기합니다.",
+        )
+
+    def test_drops_turns_the_qa_lane_already_calls_debris(self):
+        from hybrid_search.index.transcript_source import is_memorable_turn
+
+        assert not is_memorable_turn("[Request interrupted by user]", "네 알겠습니다.")
+        assert not is_memorable_turn("src/foo/bar.py", "확인했습니다.")
+        assert not is_memorable_turn("---------------", "확인했습니다.")
+
+    def test_drops_a_turn_where_nothing_was_said(self):
+        """Assistant side is all code fence / log lines — no answer in it."""
+        from hybrid_search.index.transcript_source import is_memorable_turn
+
+        assert not is_memorable_turn("3011 떠 있나", "```\n3011 PID 91838\n```")
+        assert not is_memorable_turn("빌드 돌려줘", "")
+
+    def test_a_fenced_answer_with_prose_survives(self):
+        from hybrid_search.index.transcript_source import is_memorable_turn
+
+        assert is_memorable_turn(
+            "왜 실패했지",
+            "포트가 이미 점유돼 있었습니다.\n```\nEADDRINUSE\n```",
+        )
+
+    def test_filtered_turns_do_not_renumber_the_rest(self, tmp_path):
+        """turn_index is a position in the conversation, not a running count."""
+        import json as _json
+        from hybrid_search.index.transcript_source import parse_claude_transcript
+
+        def user(text):
+            return _json.dumps({"type": "user", "message": {"role": "user", "content": text}})
+
+        def assistant(text):
+            return _json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": text}]},
+            })
+
+        path = tmp_path / "s.jsonl"
+        path.write_text("\n".join([
+            user("첫 질문은 무엇이었나"), assistant("첫 답변입니다."),
+            user("3011 떠 있나"), assistant("```\n3011 PID 91838\n```"),
+            user("셋째 질문은 무엇이었나"), assistant("셋째 답변입니다."),
+        ]) + "\n", encoding="utf-8")
+
+        chunks = parse_claude_transcript(path)
+
+        assert [c.turn_index for c in chunks] == [0, 2]
+
+
+class TestReflectionBacklogMarker:
+    """A stalled Reflector must announce itself, like STALE.md does for wiki."""
+
+    def _run(self, tmp_path, n_clusters):
+        import hybrid_search.cli as cli
+        from hybrid_search.memory import reflector
+
+        class _C:
+            def __init__(self, q):
+                self.representative_query = q
+
+        original = reflector.collect_clusters
+        reflector.collect_clusters = lambda root: [_C(f"질문 {i}") for i in range(n_clusters)]
+        try:
+            cli._report_pending_reflection(tmp_path)
+        finally:
+            reflector.collect_clusters = original
+        return tmp_path / ".hybrid-search" / cli.REFLECT_MARKER_NAME
+
+    def test_writes_a_marker_when_the_backlog_is_real(self, tmp_path, capsys):
+        marker = self._run(tmp_path, 5)
+
+        assert marker.is_file()
+        assert "5 cluster(s)" in marker.read_text()
+        assert "Reflection backlog: 5" in capsys.readouterr().out
+
+    def test_stays_quiet_on_ordinary_churn(self, tmp_path, capsys):
+        marker = self._run(tmp_path, 2)
+
+        assert not marker.exists()
+        assert "Reflection backlog" not in capsys.readouterr().out
+
+    def test_clears_a_stale_marker(self, tmp_path):
+        import hybrid_search.cli as cli
+
+        marker = tmp_path / ".hybrid-search" / cli.REFLECT_MARKER_NAME
+        marker.parent.mkdir(parents=True)
+        marker.write_text("old backlog")
+
+        assert not self._run(tmp_path, 0).exists()
+
+
+class TestMemoryShareReport:
+    """The corpus's memory share must be visible, not discovered at a gate."""
+
+    def _seed(self, tmp_path, node_types):
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths
+
+        project_dir = tmp_path / "idx"
+        paths = IndexPaths(project_dir)
+        paths.ensure_dirs()
+        db = StoreDB(paths.store_db)
+        try:
+            conn = db._conn
+            conn.execute(
+                "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+                " VALUES ('f1', 'p', 'a.py', 'python', 'h')"
+            )
+            for i, nt in enumerate(node_types):
+                conn.execute(
+                    "INSERT INTO chunks (id, file_id, project_id, node_type, name,"
+                    " qualified_name, content, start_line, end_line)"
+                    f" VALUES ('c{i}', 'f1', 'p', ?, 'n', 'q', 'x', 1, 2)",
+                    (nt,),
+                )
+            conn.commit()
+        finally:
+            db.close()
+        return project_dir
+
+    def test_reports_the_share(self, tmp_path, capsys):
+        import hybrid_search.cli as cli
+
+        cli._report_memory_share(self._seed(tmp_path, ["function"] * 8 + ["qa_log"] * 2))
+
+        assert "Memory share: 2/10 chunks (20.0%)" in capsys.readouterr().out
+
+    def test_warns_when_the_next_backfill_would_be_blocked(self, tmp_path, capsys):
+        import hybrid_search.cli as cli
+
+        cli._report_memory_share(
+            self._seed(tmp_path, ["function"] * 5 + ["conv_turn"] * 5)
+        )
+
+        out = capsys.readouterr().out
+        assert "50.0%" in out and "backfill gate" in out
+
+    def test_silent_on_an_empty_index(self, tmp_path, capsys):
+        import hybrid_search.cli as cli
+
+        cli._report_memory_share(self._seed(tmp_path, []))
+
+        assert capsys.readouterr().out == ""
+
+
+class TestRebuildPreservesConversations:
+    """A rebuild reconstructs from disk; conversations have no file on disk."""
+
+    def _index_with_conv(self, tmp_path, n_sessions=2):
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths
+
+        project_dir = tmp_path / "idx"
+        IndexPaths(project_dir).ensure_dirs()
+        db = StoreDB(IndexPaths(project_dir).store_db)
+        try:
+            conn = db._conn
+            conn.execute(
+                "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+                " VALUES ('src', 'p', 'a.py', 'python', 'h')"
+            )
+            for i in range(n_sessions):
+                conn.execute(
+                    "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+                    f" VALUES ('c{i}', 'p', '.conversations/claude/s{i}.jsonl', 'jsonl', 'h')"
+                )
+            conn.commit()
+        finally:
+            db.close()
+        return project_dir
+
+    def test_counts_what_a_rebuild_would_lose(self, tmp_path):
+        from hybrid_search.index.pipeline import IndexingPipeline
+
+        project_dir = self._index_with_conv(tmp_path, n_sessions=3)
+        counter = IndexingPipeline.__dict__["_count_conversation_files"]
+
+        assert counter(None, project_dir) == 3, "on-disk source files are not counted"
+
+    def test_zero_for_an_index_without_conversations(self, tmp_path):
+        from hybrid_search.index.pipeline import IndexingPipeline
+
+        project_dir = self._index_with_conv(tmp_path, n_sessions=0)
+        counter = IndexingPipeline.__dict__["_count_conversation_files"]
+
+        assert counter(None, project_dir) == 0
+
+    def test_zero_for_a_missing_index(self, tmp_path):
+        from hybrid_search.index.pipeline import IndexingPipeline
+
+        counter = IndexingPipeline.__dict__["_count_conversation_files"]
+
+        assert counter(None, tmp_path / "nope") == 0
+
+    def test_result_carries_the_count_for_the_caller(self):
+        from hybrid_search.index.pipeline import IndexingResult
+
+        assert IndexingResult(project_id="p", project_name="n").conversations_dropped == 0
+
+
+class TestCrashDurability:
+    """A crash must never leave SQLite asserting what search does not have."""
+
+    def _indexer(self, tmp_path):
+        """Real DB/BM25/vector, stub embedder — the durability path is the point."""
+        from hybrid_search.config import Config
+        from hybrid_search.index.conversation_indexer import ConversationIndexer
+        from hybrid_search.project import ProjectRegistry
+
+        class _Embedder:
+            embedding_dim = 8
+
+            def embed_texts(self, texts):
+                import numpy as np
+                return [np.ones(8, dtype="float32") for _ in texts]
+
+        config = Config(data_dir=tmp_path / "data")
+        config.global_dir.mkdir(parents=True, exist_ok=True)
+        registry = ProjectRegistry(config.global_dir)
+        return ConversationIndexer(config, registry, _Embedder())
+
+    def _transcript(self, root, session, n_turns):
+        import json as _json
+
+        d = root / ".claude" / "projects" / "p"
+        d.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for i in range(n_turns):
+            lines.append(_json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": f"{session} 질문 {i} 무엇인가요"},
+            }))
+            lines.append(_json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": f"답변 {i} 입니다."}]},
+            }))
+        path = d / f"{session}.jsonl"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_unstamped_session_is_rebuilt_not_skipped(self, tmp_path):
+        """The exact 2026-09-05 drift: rows in SQLite, nothing in the engines."""
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths, get_project_dir
+        from hybrid_search.project import project_hash
+
+        project = tmp_path / "proj"
+        (project / ".git").mkdir(parents=True)
+        transcript = self._transcript(tmp_path, "s1", 3)
+
+        indexer = self._indexer(tmp_path)
+        indexer.index_transcript(transcript, str(project), source="claude")
+
+        pid = project_hash(str(project.resolve()))
+        store = IndexPaths(
+            get_project_dir(indexer._config.projects_dir, pid)
+        ).store_db
+        db = StoreDB(store)
+        try:
+            rel = ".conversations/claude/s1.jsonl"
+            rec = db.get_file_by_path(pid, rel)
+            assert rec is not None and rec.file_hash, "a clean run stamps the session"
+            chunk_ids = db.get_chunk_ids_by_file(rec.id)
+            assert chunk_ids
+            # Simulate the crash: chunks stayed, the stamp never happened.
+            with db.transaction() as conn:
+                from hybrid_search.storage.db import FileRecord
+
+                db.upsert_file(conn, FileRecord(
+                    id=rec.id, project_id=pid, relative_path=rel,
+                    file_hash="", language="conversation", chunk_count=0,
+                ))
+        finally:
+            db.close()
+
+        result = indexer.index_transcript(transcript, str(project), source="claude")
+
+        assert result.sessions_skipped == 0, "an unstamped session must not be skipped"
+        assert result.chunks_total == len(chunk_ids), "every turn is re-embedded"
+
+    def test_a_clean_rerun_is_a_no_op(self, tmp_path):
+        project = tmp_path / "proj"
+        (project / ".git").mkdir(parents=True)
+        transcript = self._transcript(tmp_path, "s2", 2)
+
+        indexer = self._indexer(tmp_path)
+        indexer.index_transcript(transcript, str(project), source="claude")
+        again = indexer.index_transcript(transcript, str(project), source="claude")
+
+        assert again.sessions_indexed == 0 and again.sessions_skipped == 1
+
+
+class TestDriftToleratesRecoverableWrites:
+    """A crashed write is repaired by its own indexer, not by a rebuild."""
+
+    def _db(self, tmp_path, finished: int, unfinished: int):
+        from hybrid_search.storage.db import StoreDB
+        from hybrid_search.storage.indexes import IndexPaths
+
+        IndexPaths(tmp_path).ensure_dirs()
+        db = StoreDB(IndexPaths(tmp_path).store_db)
+        conn = db._conn
+        conn.execute(
+            "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+            " VALUES ('done', 'p', 'a.py', 'python', 'h1')"
+        )
+        conn.execute(
+            "INSERT INTO files (id, project_id, relative_path, language, file_hash)"
+            " VALUES ('wip', 'p', '.conversations/claude/s.jsonl', 'conversation', '')"
+        )
+        for i in range(finished):
+            conn.execute(
+                "INSERT INTO chunks (id, file_id, project_id, node_type)"
+                f" VALUES ('f{i}', 'done', 'p', 'function')"
+            )
+        for i in range(unfinished):
+            conn.execute(
+                "INSERT INTO chunks (id, file_id, project_id, node_type)"
+                f" VALUES ('u{i}', 'wip', 'p', 'conv_turn')"
+            )
+        conn.commit()
+        return db
+
+    def test_unfinished_chunks_are_excluded_from_the_count(self, tmp_path):
+        db = self._db(tmp_path, finished=10, unfinished=4)
+        try:
+            assert db.get_chunk_count("p") == 14
+            assert db.count_unfinished_chunks("p") == 4
+        finally:
+            db.close()
+
+    def test_a_settled_index_reports_no_unfinished_work(self, tmp_path):
+        db = self._db(tmp_path, finished=10, unfinished=0)
+        try:
+            assert db.count_unfinished_chunks("p") == 0
+        finally:
+            db.close()
