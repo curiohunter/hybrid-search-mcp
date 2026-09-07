@@ -449,7 +449,7 @@ class TestUserPromptSubmitHook:
             confidence = "weak"
             fallback_hint = "weak match -> wiki `ledger`"
 
-        def fake_search(prompt, cwd):
+        def fake_search(prompt, cwd, session_key=None):
             return _FakeResp()
 
         monkeypatch.setattr(hooks, "_run_programmatic_search", fake_search)
@@ -472,9 +472,9 @@ class TestUserPromptSubmitHook:
         )
         assert "docs/features/ledger.md" in ctx
         assert "services/ledger/write.ts" in ctx
-        assert "pre-fetch confidence: weak" in ctx
-        assert "Call hybrid_search for details" in ctx
-        assert len(ctx) <= 360
+        assert "confidence weak" in ctx
+        assert "do not Read those paths" in ctx
+        assert len(ctx) <= hook_runtime._PREFETCH_MAX_CONTEXT_CHARS
 
     def test_router_off_omits_route_line(
         self, project_root: Path, monkeypatch
@@ -489,7 +489,9 @@ class TestUserPromptSubmitHook:
             fallback_hint = None
 
         monkeypatch.setenv("HYBRID_SEARCH_ROUTER", "0")
-        monkeypatch.setattr(hooks, "_run_programmatic_search", lambda p, c: _FakeResp())
+        monkeypatch.setattr(
+            hooks, "_run_programmatic_search", lambda p, c, s=None: _FakeResp()
+        )
 
         payload = json.dumps({
             "hook_event_name": "UserPromptSubmit",
@@ -506,42 +508,118 @@ class TestUserPromptSubmitHook:
         assert "[hybrid-search route]" not in ctx
         assert ctx.startswith("[hybrid-search pre-fetch]")
 
-    def test_route_line_drops_last_hit_near_cap(self, monkeypatch) -> None:
+    def test_drops_lowest_ranked_hits_at_the_cap(self, monkeypatch) -> None:
+        """Trim from the tail, and never truncate the closing instruction."""
         class _FakeHit:
+            """Memory hits carry the longest bodies — the only way to hit the cap."""
+
             def __init__(self, path: str, start: int):
                 self.file_path = path
                 self.start_line = start
+                self.node_type = "qa_log"
+                self.name = "note"
+                self.trust_meta = "[qa - stop_hook - hypothesis - 1d ago]"
+                self.snippet = "가" * 400
 
-        long_a = "src/features/" + ("a" * 58) + ".ts"
-        long_b = "src/features/" + ("b" * 58) + ".ts"
-        long_c = "src/features/" + ("c" * 58) + ".ts"
+        hits = [_FakeHit(f"src/features/{c * 58}.ts", i * 10)
+                for i, c in enumerate("abcdefgh", start=1)]
 
         class _FakeResp:
-            results = [
-                _FakeHit(long_a, 10),
-                _FakeHit(long_b, 20),
-                _FakeHit(long_c, 30),
-            ]
+            results = hits
             confidence = "mixed"
             fallback_hint = None
 
         monkeypatch.delenv("HYBRID_SEARCH_ROUTER", raising=False)
 
         ctx = hook_runtime._format_user_prompt_context(
-            _FakeResp(),
-            "billing flow 어떻게 구성돼 있나",
+            _FakeResp(), "billing flow 어떻게 구성돼 있나"
         )
 
-        assert len(ctx) <= 360
+        assert len(ctx) <= hook_runtime._PREFETCH_MAX_CONTEXT_CHARS
         assert "[hybrid-search route]" in ctx
-        assert f"1. `{long_a}:10`" in ctx
-        assert f"2. `{long_b}:20`" in ctx
-        assert f"3. `{long_c}:30`" not in ctx
+        assert ctx.splitlines()[2].startswith("1. "), "top hit survives"
+        assert ctx.endswith("call hybrid_search only if these miss.")
+        assert "\n6. " not in ctx, "tail trimmed at the cap"
+
+    def test_memory_hits_are_quoted_not_linked(self, monkeypatch) -> None:
+        """A qa/conv hit has no file to open — its text must be the answer."""
+        class _MemoryHit:
+            file_path = ".hybrid-search/qa/2026/09/01-074413-662a5e0c.md"
+            start_line = 1
+            node_type = "qa_log"
+            name = "01-074413"
+            trust_meta = "[qa - stop_hook - hypothesis - 3d ago]"
+            snippet = "선주입 레인은 v1.1에서 채점되기 시작했다"
+
+        class _FakeResp:
+            results = [_MemoryHit()]
+            confidence = "strong"
+            fallback_hint = None
+
+        monkeypatch.setenv("HYBRID_SEARCH_ROUTER", "0")
+
+        ctx = hook_runtime._format_user_prompt_context(_FakeResp(), "지난번에 뭐 했지")
+
+        assert "선주입 레인은 v1.1에서" in ctx, "content inlined"
+        assert "quoted — no file to open" in ctx
+        assert "`.hybrid-search/qa" not in ctx, "no locator that invites a Read"
+
+    def test_memory_excerpt_skips_frontmatter_and_metadata(self, monkeypatch) -> None:
+        """A quoted hit must show the answer, not the note's bookkeeping."""
+        class _Hit:
+            file_path = ".hybrid-search/qa/2026/09/04-094933-aa0b76e9.md"
+            start_line = 1
+            node_type = "qa_log"
+            name = "note"
+            trust_meta = "[qa - reflector - consolidated]"
+            snippet = "[qa - reflector - consolidated] --- query: \"x\" timestamp: 2026"
+            content = (
+                "[qa - reflector - consolidated]\n"
+                "---\nquery: \"워크트리 얘기\"\ntimestamp: 2026-09-04T09:49:33+00:00\n---\n"
+                "# Q: 워크트리 얘기\n\n"
+                "- **query_type**: KOREAN_NL\n- **bm25_weight**: 0.15\n\n"
+                "## Answer excerpt\n\n"
+                "충돌의 원인은 공용 체크아웃이다.\n"
+            )
+
+        class _Resp:
+            results = [_Hit()]
+            confidence = "strong"
+            fallback_hint = None
+
+        monkeypatch.setenv("HYBRID_SEARCH_ROUTER", "0")
+
+        ctx = hook_runtime._format_user_prompt_context(_Resp(), "지난번 얘기")
+
+        assert "충돌의 원인은 공용 체크아웃이다." in ctx
+        for noise in ("timestamp:", "# Q:", "bm25_weight", "Answer excerpt", "---"):
+            assert noise not in ctx, f"{noise} is bookkeeping, not an answer"
+
+    def test_file_hit_keeps_a_readable_locator(self, monkeypatch) -> None:
+        class _Hit:
+            file_path = "src/hybrid_search/memory/selfeval.py"
+            start_line = 154
+            node_type = "function"
+            name = "score_event"
+            snippet = "Turn one extracted event into a scored, storable row."
+            content = None
+
+        class _Resp:
+            results = [_Hit()]
+            confidence = "strong"
+            fallback_hint = None
+
+        monkeypatch.setenv("HYBRID_SEARCH_ROUTER", "0")
+
+        ctx = hook_runtime._format_user_prompt_context(_Resp(), "채점 어디서 하지")
+
+        assert "`src/hybrid_search/memory/selfeval.py:154` (function score_event)" in ctx
+        assert "Turn one extracted event" in ctx, "one line of what it contains"
 
     def test_silent_on_non_exploratory(self, project_root: Path, monkeypatch) -> None:
         called = {"n": 0}
 
-        def fake_search(prompt, cwd):
+        def fake_search(prompt, cwd, session_key=None):
             called["n"] += 1
             return None
 
@@ -559,7 +637,7 @@ class TestUserPromptSubmitHook:
         assert called["n"] == 0, "classifier should short-circuit before search"
 
     def test_silent_on_search_failure(self, project_root: Path, monkeypatch) -> None:
-        def boom(prompt, cwd):
+        def boom(prompt, cwd, session_key=None):
             return None
 
         monkeypatch.setattr(hooks, "_run_programmatic_search", boom)
@@ -579,7 +657,9 @@ class TestUserPromptSubmitHook:
         class _Empty:
             results = []
 
-        monkeypatch.setattr(hooks, "_run_programmatic_search", lambda p, c: _Empty())
+        monkeypatch.setattr(
+            hooks, "_run_programmatic_search", lambda p, c, s=None: _Empty()
+        )
         payload = json.dumps({
             "hook_event_name": "UserPromptSubmit",
             "prompt": "어떻게 구성 되어 있나",
@@ -644,13 +724,21 @@ class TestStopHook:
         assert "## Answer excerpt" in body
         assert "9 places under services/..." in body
 
-    def test_respects_stop_hook_active(self, project_root: Path, tmp_path: Path) -> None:
-        """Guard against infinite continuation loops — exit silently when flag set."""
+    def test_records_during_a_stop_hook_continuation(
+        self, project_root: Path, tmp_path: Path
+    ) -> None:
+        """A goal loop must not blind the memory layer.
+
+        ``stop_hook_active`` means a session-scoped Stop hook blocked stopping
+        and the assistant kept working. Bailing on that flag lost every turn
+        for the whole loop; this handler emits nothing, so recording cannot
+        extend the loop.
+        """
         transcript = tmp_path / "session.jsonl"
         transcript.write_text(
             json.dumps({
                 "type": "user",
-                "message": {"role": "user", "content": "test prompt"},
+                "message": {"role": "user", "content": "환불 흐름이 어떻게 되나"},
             }) + "\n",
             encoding="utf-8",
         )
@@ -660,9 +748,42 @@ class TestStopHook:
             "transcript_path": str(transcript),
             "cwd": str(project_root),
         }
-        hooks.run_hook(json.dumps(event))
+
+        out = hooks.run_hook(json.dumps(event))
+
+        assert out == 0, "still silent — the flag only gates the loop, not the record"
         written = list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
-        assert not written
+        assert written, "the turn must be saved even under a continuation"
+
+    def test_continuation_does_not_respawn_conversation_indexing(
+        self, project_root: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Recording repeats; the background indexer should not."""
+        from hybrid_search.memory import hook_runtime
+
+        spawns = []
+        monkeypatch.setattr(
+            hook_runtime, "spawn_conversation_index",
+            lambda *a, **k: spawns.append(1),
+        )
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "환불 흐름이 어떻게 되나"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        base = {
+            "hook_event_name": "Stop",
+            "transcript_path": str(transcript),
+            "cwd": str(project_root),
+        }
+
+        hooks.run_hook(json.dumps(base))
+        hooks.run_hook(json.dumps({**base, "stop_hook_active": True}))
+
+        assert spawns == [1], "first delivery spawns, the continuation does not"
 
     def test_skips_local_command_stdout(self, project_root: Path, tmp_path: Path) -> None:
         """User messages that are local-command echoes aren't real prompts."""
@@ -704,8 +825,19 @@ class TestStopHook:
         assert rc == 0
         assert buf.getvalue() == ""
 
-    def test_dedups_against_recent_mcp_save(self, project_root: Path, tmp_path: Path) -> None:
-        """When MCP tool already saved this query < 5s ago, Stop skips."""
+    def test_dedups_against_recent_mcp_save(
+        self, project_root: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        """When the MCP tool already saved this query, Stop skips.
+
+        The window is widened for the test: the production value is 5s, and
+        the first hook call in a full-suite run can spend longer than that on
+        cold imports alone — which made this assert the wall clock rather
+        than the dedup logic it is here to pin.
+        """
+        from hybrid_search.memory import qa_log as qa_log_mod
+
+        monkeypatch.setattr(qa_log_mod, "_DEDUP_WINDOW_SECONDS", 3600)
         # Simulate the MCP tool having already written a qa file for this query.
         _write_log(project_root, "tuition ledger architecture")
 
@@ -828,7 +960,7 @@ class TestReindexContentionGuard:
         ran = []
         monkeypatch.setattr(
             hooks_mod, "_run_programmatic_search",
-            lambda prompt, cwd: ran.append(1) or None,
+            lambda prompt, cwd, session_key=None: ran.append(1) or None,
         )
         _handle_user_prompt_submit = hooks_mod._handle_user_prompt_submit
         assert _handle_user_prompt_submit(self._event(tmp_path)) is None
@@ -842,7 +974,7 @@ class TestReindexContentionGuard:
         ran = []
         monkeypatch.setattr(
             hooks_mod, "_run_programmatic_search",
-            lambda prompt, cwd: ran.append(1) or None,
+            lambda prompt, cwd, session_key=None: ran.append(1) or None,
         )
         assert hooks_mod._handle_user_prompt_submit(self._event(tmp_path)) is None
         assert ran
@@ -949,3 +1081,139 @@ class TestDegradedRateAccounting:
         self._record(project_root, degraded=False)
         ctx = hook_runtime.build_session_context(project_root)
         assert "BM25-only" not in ctx
+
+
+class TestHitBodyCleaning:
+    """The excerpt must not re-print what the heading already says."""
+
+    def test_file_hit_body_drops_the_repeated_tag_and_path(self, monkeypatch):
+        class _Hit:
+            file_path = "src/hybrid_search/cli.py"
+            start_line = 1
+            node_type = "in_flight_file"
+            name = "cli.py"
+            snippet = '[in-flight] src/hybrid_search/cli.py """CLI entrypoint."""'
+            content = None
+
+        class _Resp:
+            results = [_Hit()]
+            confidence = "weak"
+            fallback_hint = None
+
+        monkeypatch.setenv("HYBRID_SEARCH_ROUTER", "0")
+
+        ctx = hook_runtime._format_user_prompt_context(_Resp(), "cli 어디")
+
+        body = ctx.splitlines()[2]
+        assert body.strip().startswith('"""CLI entrypoint')
+        assert "[in-flight]" not in body
+
+    def test_code_snippet_opening_with_a_bracket_is_untouched(self, monkeypatch):
+        """`_LEADING_TAG_RE` matches a vocabulary, not any bracket."""
+        class _Hit:
+            file_path = "a.py"
+            start_line = 3
+            node_type = "function"
+            name = "f"
+            snippet = "[idx] = compute(x)"
+            content = None
+
+        class _Resp:
+            results = [_Hit()]
+            confidence = "strong"
+            fallback_hint = None
+
+        monkeypatch.setenv("HYBRID_SEARCH_ROUTER", "0")
+
+        ctx = hook_runtime._format_user_prompt_context(_Resp(), "compute 어디")
+
+        assert "[idx] = compute(x)" in ctx
+
+
+class TestQaRecordJunkGate:
+    """Every write path into the qa corpus applies the same debris filter."""
+
+    def test_prefetch_path_drops_harness_debris(self, project_root, monkeypatch):
+        from hybrid_search.memory import qa_log
+
+        class _Resp:
+            results = []
+            confidence = "weak"
+
+        saved = qa_log.record(
+            query="<task-notification>\n<task-id>abc</task-id>",
+            response=_Resp(),
+            cwd=str(project_root),
+            async_write=False,
+            trigger="user_prompt_submit",
+        )
+
+        assert saved is None
+        assert not list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
+
+    def test_a_real_question_still_records(self, project_root):
+        from hybrid_search.memory import qa_log
+
+        class _Hit:
+            file_path = "a.py"
+            start_line = 1
+            end_line = 2
+            name = "f"
+            qualified_name = "f"
+            node_type = "function"
+            snippet = "x"
+            content = "x"
+            rrf_score = 0.1
+            project = "p"
+
+        class _Resp:
+            results = [_Hit()]
+            confidence = "strong"
+            query_type = "KOREAN_NL"
+            effective_bm25_weight = 0.15
+            query_time_ms = 1.0
+            total_chunks_searched = 10
+
+        saved = qa_log.record(
+            query="환불 흐름이 어떻게 되나",
+            response=_Resp(),
+            cwd=str(project_root),
+            async_write=False,
+            trigger="user_prompt_submit",
+        )
+
+        assert saved is not None and saved.is_file()
+
+
+class TestHarnessDebrisDetection:
+    """Debris already in the corpus is archived, not left to be served back."""
+
+    def _qa(self, root, stem, query):
+        d = root / ".hybrid-search" / "qa" / "2026" / "09"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{stem}.md").write_text(
+            f'---\nquery: "{query}"\ntrigger: user_prompt_submit\n---\n\n# Q: x\n',
+            encoding="utf-8",
+        )
+        return d / f"{stem}.md"
+
+    def test_finds_multiline_task_notifications(self, tmp_path):
+        from hybrid_search.memory import integrity
+
+        debris = self._qa(
+            tmp_path, "01-000001-aaaa",
+            "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>",
+        )
+        keep = self._qa(tmp_path, "01-000002-bbbb", "환불 흐름이 어떻게 되나")
+
+        found = integrity.detect_harness_debris(tmp_path)
+
+        assert found == [debris], "the query spans lines — a single-line scan misses it"
+        assert keep.is_file()
+
+    def test_a_question_mentioning_the_word_is_kept(self, tmp_path):
+        from hybrid_search.memory import integrity
+
+        self._qa(tmp_path, "01-000003-cccc", "task notification 처리 어떻게 하지")
+
+        assert integrity.detect_harness_debris(tmp_path) == []
