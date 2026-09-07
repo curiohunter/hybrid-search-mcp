@@ -329,7 +329,7 @@ class TestMemorableTurnGate:
 
         assert is_memorable_turn(
             "환불 흐름이 어떻게 되나",
-            "정산 확정 시점에 결제선생 청구서를 파기합니다.",
+            "정산이 확정되면 기존 청구서를 파기합니다.",
         )
 
     def test_drops_turns_the_qa_lane_already_calls_debris(self):
