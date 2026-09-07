@@ -59,13 +59,16 @@ class DuplicatePair:
 @dataclass
 class IntegrityReport:
     stale_archived: list[Path] = field(default_factory=list)
+    debris_archived: list[Path] = field(default_factory=list)
     dedup_pairs: list[DuplicatePair] = field(default_factory=list)
     archive_purged: list[Path] = field(default_factory=list)
     errors: list[tuple[Path, str]] = field(default_factory=list)
 
     @property
     def total_archived(self) -> int:
-        return len(self.stale_archived) + len(self.dedup_pairs)
+        return (
+            len(self.stale_archived) + len(self.dedup_pairs) + len(self.debris_archived)
+        )
 
 
 # ── archive tier ──────────────────────────────────────────────────────
@@ -339,6 +342,29 @@ class IntegrityConfig:
     archive_ttl_days: int = DEFAULT_ARCHIVE_TTL_DAYS
 
 
+def detect_harness_debris(project_root: Path) -> list[Path]:
+    """qa files whose query is harness output rather than a question.
+
+    Reads only the frontmatter query, which may span lines — a task
+    notification is pasted verbatim — so the whole header block up to the
+    closing delimiter is scanned rather than a single ``query:`` line.
+    """
+    from hybrid_search.memory import reader
+    from hybrid_search.memory.quality import is_harness_noise
+
+    found: list[Path] = []
+    for path in reader.iter_qa_files(project_root):
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:4000]
+        except OSError:
+            continue
+        _, _, rest = head.partition("query:")
+        header = rest.split("\n---", 1)[0]
+        if is_harness_noise(header):
+            found.append(path)
+    return found
+
+
 def run_integrity_pass(
     project_root: Path,
     *,
@@ -368,6 +394,18 @@ def run_integrity_pass(
                 report.stale_archived.append(archived)
             else:
                 report.errors.append((stale, "archive_move_failed"))
+
+    # M0 debris — qa written before the write paths all applied the junk
+    # gate. `qa_log.record` (the pre-fetch/MCP path) checked only for
+    # secrets, so harness output — task notifications, system reminders —
+    # entered the corpus and was later served back as a quoted memory.
+    # The gate stops new ones; this clears what is already there.
+    for debris in detect_harness_debris(project_root):
+        archived = archive_file(debris, project_root)
+        if archived is not None:
+            report.debris_archived.append(archived)
+        else:
+            report.errors.append((debris, "archive_move_failed"))
 
     # M2 dedup — skipped when we have fewer than 2 qa_log chunks.
     if qa_log_chunks is not None and get_vector is not None:
