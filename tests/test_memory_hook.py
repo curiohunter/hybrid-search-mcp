@@ -85,8 +85,8 @@ class TestExtractTerm:
 
 class TestResolveProjectRoot:
     def test_nested_cwd_resolves_to_git_root(self, tmp_path: Path) -> None:
-        root = tmp_path / "valuein"
-        nested = root / "docs" / "content_docs" / "학습" / "E중"
+        root = tmp_path / "proj"
+        nested = root / "docs" / "content_docs" / "학습" / "중등"
         (root / ".git").mkdir(parents=True)
         nested.mkdir(parents=True)
 
@@ -95,13 +95,13 @@ class TestResolveProjectRoot:
         assert got == root.resolve()
 
     def test_unmarked_nested_cwd_returns_none(self, tmp_path: Path) -> None:
-        nested = tmp_path / "docs" / "학습" / "E중"
+        nested = tmp_path / "docs" / "학습" / "중등"
         nested.mkdir(parents=True)
 
         assert hook_runtime.resolve_project_root({"cwd": str(nested)}) is None
 
     def _make_worktree(self, tmp_path: Path, gitdir_line: str) -> tuple[Path, Path]:
-        main = tmp_path / "valuein"
+        main = tmp_path / "proj"
         (main / ".git" / "worktrees" / "wt-fix").mkdir(parents=True)
         wt = tmp_path / "worktrees" / "wt-fix"
         wt.mkdir(parents=True)
@@ -113,14 +113,14 @@ class TestResolveProjectRoot:
         # checkout — worktree-rooted qa dies with the worktree and conv
         # indexing no-ops on the unregistered path (2026-09-04 field check).
         main, wt = self._make_worktree(
-            tmp_path, f"gitdir: {tmp_path}/valuein/.git/worktrees/wt-fix\n"
+            tmp_path, f"gitdir: {tmp_path}/proj/.git/worktrees/wt-fix\n"
         )
         got = hook_runtime.resolve_project_root({"cwd": str(wt / "src")})
         assert got == main
 
     def test_worktree_with_relative_gitdir_resolves(self, tmp_path: Path) -> None:
         main, wt = self._make_worktree(
-            tmp_path, "gitdir: ../../valuein/.git/worktrees/wt-fix\n"
+            tmp_path, "gitdir: ../../proj/.git/worktrees/wt-fix\n"
         )
         got = hook_runtime.resolve_project_root({"cwd": str(wt)})
         assert got == main
