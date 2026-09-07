@@ -62,6 +62,15 @@ packages = ["src/hybrid_search"]
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "hybrid_search/_skills"
 
+# The sdist otherwise ships the whole working tree. `benchmarks/` is dev
+# tooling whose *outputs* quote the corpus they measured — file paths naming
+# real schools, classes and internal document trees. Those quotations reached
+# PyPI in 0.6.0-0.8.0 (18 such files in the 0.8.0 sdist) before anyone looked.
+# Runners live in the repository for whoever clones it; measurements of
+# someone's private corpus are not part of a distribution.
+[tool.hatch.build.targets.sdist]
+exclude = ["benchmarks", "docs/plans", "docs/handoff", ".hybrid-search"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
