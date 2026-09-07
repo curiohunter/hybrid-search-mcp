@@ -33,3 +33,12 @@ scripts/.poc_cache/
 .hybrid-search/needs_synthesis
 .hybrid-search/qa/
 .hybrid-search/qa-archive/
+
+# Benchmark result artifacts quote the corpus they measured — file paths that
+# name real schools, classes and internal document trees. Runners and gold
+# sets that carry no such quotation stay; outputs do not.
+benchmarks/**/valuein_*.json
+benchmarks/**/raw_*.json
+benchmarks/**/compounding_*.json
+benchmarks/**/results_v2.json
+benchmarks/memory_bench_v2_valuein_*.json
