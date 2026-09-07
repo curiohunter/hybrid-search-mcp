@@ -37,7 +37,7 @@ class TestIsJunkQuery:
         assert is_junk_query(query) is True
 
     @pytest.mark.parametrize("query", [
-        "밸류인 프로젝트에서 confidence가 왜 weak으로 나와?",
+        "우리 프로젝트에서 confidence가 왜 weak으로 나와?",
         "how does the conversation indexer work",
         "벤브 아냐 ?",
         "wiki 생성 인덱스 구조 설명해줘",
