@@ -33,3 +33,12 @@ scripts/.poc_cache/
 .hybrid-search/needs_synthesis
 .hybrid-search/qa/
 .hybrid-search/qa-archive/
+
+# Benchmark gold sets and results quote a project's own corpus — class names,
+# vendors, verbatim user prompts. The runners are shared; what they measure
+# stays with the project being measured.
+benchmarks/conv_gold.json
+benchmarks/conv_results_*.json
+benchmarks/replay_pre_*.json
+benchmarks/replay_post_*.json
+benchmarks/router_calibration/*_augmented.json
