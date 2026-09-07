@@ -11,8 +11,17 @@ This runner scores CONTENT instead: for each question, search top-K and ask
 whether the retrieved text actually carries the fact. That is the only claim
 the memory layer makes, so it is the only claim worth measuring.
 
-    python benchmarks/run_conv_bench.py                    # full index
-    python benchmarks/run_conv_bench.py --without conv_turn  # ablation
+    python benchmarks/run_conv_bench.py --gold <your gold set>
+    python benchmarks/run_conv_bench.py --gold <...> --without conv_turn  # ablation
+
+The gold set is **not committed**. Its questions and the phrases that answer
+them are quotations from one project's own history — real class names, real
+vendors, things people typed while frustrated — so publishing it would
+publish the corpus it measures. Write your own: a list of
+``{id, topic, query, any_of}`` where ``any_of`` holds phrases you have
+verified exist somewhere in that project's index, and keep it beside the
+project rather than in this repository. Results are excluded for the same
+reason: they quote what was retrieved.
 
 The ablation exists to answer a specific question: the 2026-09-04 conversation
 backfill moved valuein from 60 conv chunks to 4,709, and the path-based bench
