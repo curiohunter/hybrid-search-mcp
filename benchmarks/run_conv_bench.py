@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -136,6 +137,10 @@ def main() -> None:
     gold = json.loads(Path(args.gold).read_text(encoding="utf-8"))
     dropped = frozenset(args.without)
 
+    # Measure the index, not the machine. The in-flight overlays read the
+    # working tree and the running session's transcript, so leaving them on
+    # makes a run depend on whatever another session happens to be doing.
+    os.environ.setdefault("HYBRID_SEARCH_IN_FLIGHT", "0")
     config = load_config(Path(args.config) if args.config else None)
     registry = ProjectRegistry(config.global_dir)
     embedder = Embedder(config.embedding, config.models_dir)

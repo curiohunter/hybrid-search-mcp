@@ -56,15 +56,26 @@ class TestPastRecallEnding:
     def test_trailing_punctuation_is_stripped(self, q):
         assert _has_past_recall_ending(q)
 
-    def test_na_is_not_a_recall_ending(self):
-        """"-나" asks about state, not about a past decision.
+    def test_plain_past_plus_na_is_a_state_question(self):
+        """"-나" after a single past marker asks whether something happened.
 
-        Including it moved a rationale question ("왜 세워졌나") onto the
-        memory lanes, which handed six of ten slots to records about other
-        subjects and pushed the answering document from rank 1 to 7.
+        Treating it as recall moved a rationale question onto the memory
+        lanes, which handed six of ten slots to records about other subjects
+        and pushed the answering document from rank 1 to 7.
         """
         assert not _has_past_recall_ending("entrance test 관리 플랜은 왜 세워졌나")
-        assert not _has_past_recall_ending("그림 후보 자동 선택 결과를 그대로 썼었나")
+        assert not _has_past_recall_ending("빌드가 깨졌나")
+        assert not _has_past_recall_ending("그 조회용 스킬이 DB를 고치기도 하나")
+
+    def test_doubled_past_plus_na_is_recall(self):
+        """Korean's discontinued past (-었었-) marks something cut off from now.
+
+        That is what a recall question is about, and it is the signal that
+        separates "썼었나" from "세워졌나" — one ending could not.
+        """
+        assert _has_past_recall_ending("그림 후보 자동 선택 결과를 그대로 썼었나")
+        assert _has_past_recall_ending("그때 이미 했었나")
+        assert _has_memory_intent("그거 예전에 갔었나")
 
     def test_literal_list_still_works(self):
         # The new rule is additive — nothing the old list caught may drop.

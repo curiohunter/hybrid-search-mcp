@@ -132,3 +132,26 @@ def card_has_no_answer(content: str | None) -> bool:
     if sum(1 for m in _CARD_TELEMETRY_MARKERS if m in text) < 2:
         return False
     return all(f in text for f in _CARD_EMPTY_FIELDS)
+
+
+# ``- **key**: value`` — the machine-written metadata bullet that qa logs and
+# search records carry (query_type, bm25_weight, elapsed ms, chunks_searched).
+# It is provenance, never an answer. Defined here because two places need the
+# same judgement and they disagreed for months: the pre-fetch renderer learned
+# to skip these on 2026-09-05, while the memory-card generator kept picking
+# them up as a card's summary — which is how every card in one project ended
+# up summarising the search that made it instead of what was found.
+_METADATA_BULLET_RE = re.compile(r"\A-\s+\*\*[^*]{1,40}\*\*:")
+
+
+def is_metadata_bullet(line: str | None) -> bool:
+    """True for a ``- **key**: value`` provenance bullet."""
+    return bool(_METADATA_BULLET_RE.match((line or "").strip()))
+
+
+def is_metadata_block(text: str | None) -> bool:
+    """True when every non-empty line of ``text`` is metadata or a heading."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    return all(ln.startswith("#") or is_metadata_bullet(ln) for ln in lines)

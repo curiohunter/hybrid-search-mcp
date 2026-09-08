@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from hybrid_search.memory import quality
 from hybrid_search.memory import reader as qa_reader
 
 CARD_DIRNAME = ".hybrid-search/memory/cards"
@@ -106,8 +107,19 @@ def _extract_section(body: str, heading: str) -> str:
 
 
 def _summary_from_body(query: str, body: str) -> str:
+    """First paragraph of the answer that is actually an answer.
+
+    A qa log written by the MCP tool path opens with the search's own metrics
+    (``- **query_type**: … - **bm25_weight**: …``). Taking "the first
+    paragraph" therefore summarised the search rather than the finding, and a
+    card whose summary is a metrics block has nothing to say while still
+    outranking qa logs in the memory head — every card in one project was in
+    that state on 2026-09-08. Skip provenance, keep looking for prose.
+    """
     excerpt = _extract_section(body, "Answer excerpt") or body
     for para in re.split(r"\n\s*\n", excerpt):
+        if quality.is_metadata_block(para):
+            continue
         clean = " ".join(para.split())
         if clean and not clean.startswith("#"):
             return clean[:500].rstrip()
