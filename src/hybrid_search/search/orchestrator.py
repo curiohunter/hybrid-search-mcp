@@ -387,20 +387,46 @@ _NOT_PAST_SSANG = frozenset({"있", "없", "겠"})
 _HANGUL_SSANG_SIOT_JONG = 20
 
 
+# "나" is a recall ending only after a DOUBLE past marker. Plain past + 나 is
+# a question about state — "세워졌나" asks whether a thing got set up, and
+# treating it as recall moved a rationale question onto the memory lanes and
+# pushed the document that answers it from rank 1 to 7. The doubled form
+# (썼-었-나, 했-었-나) is Korean's discontinued past: it marks something
+# finished and cut off from now, which is exactly what a recall question is
+# about. One ending could not tell those apart; the grammar can.
+_STATE_QUESTION_ENDERS = ("나",)
+
+
+def _is_ssang_final(ch: str) -> bool:
+    """True for a Hangul syllable whose final consonant is ㅆ."""
+    return "가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28 == _HANGUL_SSANG_SIOT_JONG
+
+
 def _has_past_recall_ending(query: str) -> bool:
     """True when the question closes on a Korean past-tense recall ending."""
     q = (query or "").rstrip(" \t\n?？!.…~")
-    for ender in _PAST_RECALL_ENDERS:
+    for ender in (*_PAST_RECALL_ENDERS, *_STATE_QUESTION_ENDERS):
         if not q.endswith(ender) or len(q) <= len(ender):
             continue
         stem = q[-len(ender) - 1]
-        if not ("가" <= stem <= "힣"):
+        if stem in _NOT_PAST_SSANG or not _is_ssang_final(stem):
             continue
-        if stem in _NOT_PAST_SSANG:
-            continue
-        if (ord(stem) - 0xAC00) % 28 == _HANGUL_SSANG_SIOT_JONG:
-            return True
+        if ender in _STATE_QUESTION_ENDERS:
+            # Needs the doubled past: the syllable before the marker must
+            # itself carry ㅆ ("썼었나" yes, "세워졌나" no).
+            if len(q) <= len(ender) + 1 or not _is_ssang_final(q[-len(ender) - 2]):
+                continue
+        return True
     return False
+
+
+def _in_flight_enabled() -> bool:
+    """Whether the query-time overlays may read live state.
+
+    Off with ``HYBRID_SEARCH_IN_FLIGHT=0``. See the call site for why a
+    measurement run needs to be able to say "index only".
+    """
+    return os.environ.get("HYBRID_SEARCH_IN_FLIGHT", "").strip() != "0"
 
 
 def _has_memory_intent(query: str) -> bool:
@@ -1418,9 +1444,19 @@ class SearchOrchestrator:
 
         # Phase 5: query-time overlay for tracked dirty files. This only runs
         # for a cwd-scoped single project and never touches persistent indexes.
+        #
+        # ``HYBRID_SEARCH_IN_FLIGHT=0`` turns both overlays (dirty files and
+        # live conversation turns) off. They read the working tree and the
+        # running session's transcript rather than the index, so a result
+        # served from them is not reproducible from the index alone: a
+        # benchmark against a frozen snapshot still sees whatever another
+        # session is typing right now, and on 2026-09-08 two such turns took
+        # the lead slots of a measurement run. The switch exists so "measure
+        # the index" and "answer the user" can be the same code path.
         cwd_scoped_project = (
             cwd
             and len(project_infos) == 1
+            and _in_flight_enabled()
             and self._detect_primary_project(cwd, project_infos) == project_infos[0].id
         )
         if cwd_scoped_project:
@@ -1584,6 +1620,17 @@ class SearchOrchestrator:
                 k=self._config.search.rrf_k,
                 bm25_weight=effective_weight,
             )
+            # The 50-row pool is a consensus cut, and it has the same blind
+            # spot as the head: a turn one retriever ranks 7th and the other
+            # does not return at all fuses below rows both merely tolerate.
+            # Three rules were tried against that on 2026-09-08 — a conv-lane
+            # BM25 weight sweep, a reserved head seat for the most one-sided
+            # candidate, and admitting single-lane leaders past this cut — and
+            # none moved the guard set off 0.30. The evidence says why: the
+            # turns still missing are ranked mid-pack by BOTH retrievers
+            # (17th and 17th), because the asked-about fact is one sentence in
+            # a 1,500-character episode. That is granularity, not consensus,
+            # and it needs an indexing change rather than another rule here.
             conv_results = self._enrich_results(
                 conv_fused[:max(50, limit)], project_infos, query
             )
