@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 
 from hybrid_search.config import Config
 from hybrid_search.index.embedder import Embedder
+from hybrid_search.memory import quality
 from hybrid_search.memory.router import (
     classify_confidence,
     fallback_hint,
@@ -358,6 +359,50 @@ def _has_graph_intent(query: str) -> bool:
     return bool(_GRAPH_INTENT_EN_RE.search(q))
 
 
+# Korean past-recall endings, matched at the END of the question only.
+# ``_MEMORY_INTENT_KO`` lists literal forms, and Korean inflection defeats
+# that: it carries "했지" but not "했었지", "뭐였지" but not "뭐였더라",
+# and nothing at all for "나눴지" / "골라냈지" / "썼었나". On the 2026-09-08
+# gold sets that misclassified 9 of 15 and 7 of 10 plainly recall-shaped
+# questions as topical, and a topical classification does not merely rank
+# worse — the conv lane never runs at all, so the turns that hold the answer
+# are not even retrieved.
+#
+# The rule instead: a final verb ending in ㅆ (the past marker — 았/었/였 and
+# every contraction of them, 했/됐/봤/뒀/냈/눴/…) followed by one of these
+# sentence enders. Anchored at the end and after stripping punctuation, so
+# "했지만" (a clause, not a question) cannot trigger it.
+# "나" is deliberately absent. It is not a recall ending — it forms a plain
+# yes/no question about state ("되나", "하나"), so a past stem plus 나 reads as
+# "was X done?" rather than "what did we decide?". Including it moved the
+# rationale question "entrance test 관리 플랜은 왜 세워졌나" onto the memory
+# lanes, which handed six of ten slots to records about other subjects and
+# pushed the plan document that answers it from rank 1 to 7 (code-axis
+# primary-top5 0.92 → 0.88). Dropping it cost nothing on either conv set.
+_PAST_RECALL_ENDERS = ("더라", "던가", "지")
+# ㅆ-final syllables that are not past markers: existence, negation, and the
+# volitive/future 겠. "있지" is "there is, right?"; "있었지" still matches
+# because the syllable before 지 is then 었.
+_NOT_PAST_SSANG = frozenset({"있", "없", "겠"})
+_HANGUL_SSANG_SIOT_JONG = 20
+
+
+def _has_past_recall_ending(query: str) -> bool:
+    """True when the question closes on a Korean past-tense recall ending."""
+    q = (query or "").rstrip(" \t\n?？!.…~")
+    for ender in _PAST_RECALL_ENDERS:
+        if not q.endswith(ender) or len(q) <= len(ender):
+            continue
+        stem = q[-len(ender) - 1]
+        if not ("가" <= stem <= "힣"):
+            continue
+        if stem in _NOT_PAST_SSANG:
+            continue
+        if (ord(stem) - 0xAC00) % 28 == _HANGUL_SSANG_SIOT_JONG:
+            return True
+    return False
+
+
 def _has_memory_intent(query: str) -> bool:
     """True when the query asks for a past exchange.
 
@@ -370,6 +415,8 @@ def _has_memory_intent(query: str) -> bool:
     if not q:
         return False
     if any(tok in q for tok in _MEMORY_INTENT_KO):
+        return True
+    if _has_past_recall_ending(q):
         return True
     return bool(_MEMORY_INTENT_EN_RE.search(q))
 
@@ -776,6 +823,19 @@ def _merge_memory_results(
     if not memory_results:
         return chunk_results
     memory_head = [r for r in memory_results if r.node_type in _MEMORY_NODE_TYPES]
+    # A card whose body is the search telemetry of the query that made it has
+    # no answer in it (quality.card_has_no_answer). Cards outrank qa logs in
+    # the priority below, so leaving them in means the highest-priority answer
+    # unit is a metrics block: on 2026-09-08 three of them took ranks 1-3 of
+    # "왜 세워졌나" and pushed the plan document that answers it to 7. They stay
+    # in the ordinary chunk stream — a file list is worth something — but they
+    # do not get a guaranteed slot. Filtered only when something else survives.
+    substantive = [
+        r for r in memory_head
+        if not (r.node_type == "memory_card" and quality.card_has_no_answer(r.content))
+    ]
+    if substantive:
+        memory_head = substantive
     if not memory_head:
         return chunk_results
 
@@ -1295,7 +1355,10 @@ class SearchOrchestrator:
             project_infos
         )
         vector_lane_down = vector_lane_down or stale_vectors
-        retrieval_depth = limit * 3
+        # Depth is a floor, not a multiple of the display size. See
+        # SearchConfig.retrieval_depth_floor: tying it to ``limit`` alone made
+        # "what can be found" a function of "how many rows are printed".
+        retrieval_depth = max(limit * 3, self._config.search.retrieval_depth_floor)
 
         memory_intent = _has_memory_intent(query)
         # A meta-recall question IS a memory question by definition —
@@ -1526,6 +1589,17 @@ class SearchOrchestrator:
             )
             conv_results = _filter_conv_noise(conv_results)
             conv_results = _demote_meta_recall_conv(conv_results)
+            # No second-stage lexical rerank here, deliberately. The other
+            # two lanes get one, and the conv lane looks like it should need
+            # it most — a turn chunk is a whole episode, so its single vector
+            # is dominated by the episode's subject while the asked-about
+            # fact is one sentence inside it, and on the raw-only guard set
+            # the answering turn ranked 1st in BM25 and ~200th in vectors.
+            # It was tried on 2026-09-08 (whole pool, not just the head) and
+            # measured as nothing: Set A identical, Set B MRR 0.037 → 0.033.
+            # Widening the window also drops the guard that keeps a deep
+            # low-signal chunk from riding coverage alone into the head. A
+            # change that buys nothing does not get to cost that.
             # Phase 5 (conv): collect live-session turns the async per-turn
             # indexer hasn't caught yet. The Stop hook indexes detached, so the
             # freshest turns of an ongoing session — and the turn in progress —
