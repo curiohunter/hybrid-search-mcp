@@ -82,6 +82,23 @@ def score_query(query: dict, results: list) -> dict:
     }
 
 
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson interval for a proportion.
+
+    Printed next to every rate because the sets are small: at n=10 a single
+    question moved a rate by 0.10, and rounds 3-6 reported deltas of that size
+    as if they meant something. Run-to-run spread (``--repeat``) measures
+    determinism; this measures how much of the number is the sample.
+    """
+    if n <= 0:
+        return (0.0, 0.0)
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
 def aggregate(rows: list[dict]) -> dict:
     n = len(rows) or 1
     answered = [r for r in rows if r["answered"]]
@@ -96,6 +113,9 @@ def aggregate(rows: list[dict]) -> dict:
         "mrr": sum(1.0 / r for r in ranks) / n,
         "mean_memory_hits": sum(r["memory_hits"] for r in rows) / n,
         "mean_conv_hits": sum(r["conv_hits"] for r in rows) / n,
+        "ci_answer_found": wilson(len(answered), n),
+        "ci_answer_in_top3": wilson(top3, n),
+        "n": len(rows),
     }
 
 
@@ -193,14 +213,16 @@ def main() -> None:
         json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )
 
-    print(f"\n=== {label} · {len(runs)} run(s) ===")
+    print(f"\n=== {label} · n={len(runs[0])} · {len(runs)} run(s) ===")
     for key, fmt in (("answer_found", "5.2f"), ("answer_in_top3", "5.2f"),
                      ("mrr", "5.3f"), ("mean_memory_hits", "5.1f"),
                      ("mean_conv_hits", "5.1f")):
         vals = [s_[key] for s_ in summaries]
         mean = sum(vals) / len(vals)
         spread = "" if len(vals) == 1 else f"  [{min(vals):{fmt}} … {max(vals):{fmt}}]"
-        print(f"{key:17s}{mean:{fmt}}{spread}")
+        ci = summaries[-1].get("ci_" + key)
+        ci_s = f"   95% CI [{ci[0]:.2f}, {ci[1]:.2f}]" if ci else ""
+        print(f"{key:17s}{mean:{fmt}}{spread}{ci_s}")
     if len(summaries) > 1:
         # The instrument's own noise floor, printed next to the numbers so a
         # reader never has to guess whether a delta cleared it.
