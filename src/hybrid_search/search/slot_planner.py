@@ -23,10 +23,8 @@ on their own. Contracts (from the handoff, upgraded to code):
   own head downstream, so on every recall query it took three of ten slots
   the plan had already handed to chunks, and ``chunk_floor`` recorded a
   number the response never honoured. Its size is unchanged by being
-  planned — this made the plan true, not different. Resizing it needs a
-  conv-axis measurement that works, and as of 2026-09-08 the guard set
-  (raw-only facts) scores zero either way, so there is nothing to size
-  against yet.
+  planned — this made the plan true, not different. The size was then
+  measured (2026-09-08 sweep, see ``_CONV_INTENT_HEAD``): 3 is a cliff.
 - Auxiliary priority: cards → memory → members (ablation: cards carried
   retrieval wins, members were the top pollution source with one
   contribution).
@@ -39,15 +37,21 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-# Memory head size for explicit recall queries. Carried over unchanged
-# from the pre-planner `_merge_memory_results` default: exempt from the
-# under-half cap, but not "fill every slot" — the answer excerpt lives in
-# one or two records, the rest of the list stays available for evidence.
+# Memory head size for explicit recall queries. Carried over from the
+# pre-planner `_merge_memory_results` default and, since 2026-09-08, measured:
+# a 3x3 sweep of (memory, conv) head sizes against the displacement set, the
+# raw-only guard set and the code-axis gold found 3 to be a floor rather than
+# a habit. Dropping it to 2 costs answer_in_top3 on the displacement set
+# (0.67 -> 0.60); raising it to 4 buys +0.005 MRR there and costs the guard
+# set (MRR 0.053 -> 0.045). The code axis does not move at any setting.
 _MEMORY_INTENT_HEAD = 3
 
-# Conversation head size for explicit recall queries. Carried over unchanged
-# from the value ``_merge_conv_results`` used to pick for itself, so bringing
-# the lane under the planner changes bookkeeping and not results.
+# Conversation head size for explicit recall queries. Also measured in the
+# 2026-09-08 sweep: 3 is a cliff, not a carryover. At 2 the raw-only guard set
+# collapses (answer_found 0.30 -> 0.10) because the turns that hold a fact no
+# note restates sit at conv ranks 2-3; at 4 nothing improves. Round 3 planned
+# this lane without resizing it "because there is nothing to size against yet"
+# — there is now.
 _CONV_INTENT_HEAD = 3
 
 # Anti-flood cap for module members, carried over from the pre-planner
