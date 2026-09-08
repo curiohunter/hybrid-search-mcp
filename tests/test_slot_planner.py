@@ -188,3 +188,35 @@ class TestConvLane:
                               n_memory=10, n_conv=n_conv)
                     assert p.aux_total + p.chunk_floor <= limit
                     assert p.chunk_floor >= 0
+
+
+class TestRetrievalDepthFloor:
+    """Depth is a floor, not a multiple of the display size (2026-09-08).
+
+    ``retrieval_depth = limit * 3`` made the answerable set a function of how
+    many rows the caller wanted printed: a consolidated note was absent from
+    the top-10 at limit=10 and ranked first at limit=30, because only the
+    deeper pool reached it. The floor lives in SearchConfig so it is one
+    number, tunable, and visible.
+    """
+
+    def test_default_floor_is_independent_of_limit(self):
+        from hybrid_search.config import SearchConfig
+        cfg = SearchConfig()
+        for limit in (1, 5, 10, 20, 33):
+            assert max(limit * 3, cfg.retrieval_depth_floor) == cfg.retrieval_depth_floor
+
+    def test_a_large_limit_still_wins(self):
+        from hybrid_search.config import SearchConfig
+        cfg = SearchConfig()
+        assert max(100 * 3, cfg.retrieval_depth_floor) == 300
+
+    def test_floor_is_configurable(self, tmp_path):
+        from hybrid_search.config import load_config
+        cfg_file = tmp_path / "config.toml"
+        cfg_file.write_text(
+            '[general]\ndata_dir = "%s"\n\n[search]\nretrieval_depth_floor = 7\n'
+            % tmp_path,
+            encoding="utf-8",
+        )
+        assert load_config(cfg_file).search.retrieval_depth_floor == 7
