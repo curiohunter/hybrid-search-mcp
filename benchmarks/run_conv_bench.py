@@ -104,6 +104,28 @@ def main() -> None:
     ap.add_argument("--out", default=str(Path(__file__).parent / "conv_results.json"))
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument(
+        "--config",
+        default=None,
+        help="Path to a hybrid-search config.toml. Point this at a copy whose "
+             "general.data_dir is a FROZEN snapshot of the index when "
+             "comparing two versions of the code: a live index moves while "
+             "you measure (2026-09-08: valuein gained 80 chunks in twenty "
+             "minutes because another session was working), and a before/"
+             "after taken an hour apart is then comparing two corpora, not "
+             "two rankings.",
+    )
+    ap.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Run the whole set N times and report mean/min/max per metric. "
+             "The embedding backend is not bit-stable (2026-09-08: cosine "
+             "0.99998 between two calls on the same string), which is enough "
+             "to flip near-ties and move a rank by one. answer_in_top3 is a "
+             "threshold on rank, so one flip moves it by 1/N_queries. Any "
+             "claimed delta smaller than the spread reported here is noise.",
+    )
+    ap.add_argument(
         "--without",
         action="append",
         default=[],
@@ -114,53 +136,72 @@ def main() -> None:
     gold = json.loads(Path(args.gold).read_text(encoding="utf-8"))
     dropped = frozenset(args.without)
 
-    config = load_config()
+    config = load_config(Path(args.config) if args.config else None)
     registry = ProjectRegistry(config.global_dir)
     embedder = Embedder(config.embedding, config.models_dir)
     orch = SearchOrchestrator(config=config, registry=registry, embedder=embedder)
 
-    rows = []
-    for q in gold["queries"]:
-        resp = orch.hybrid_search(
-            query=q["query"],
-            cwd=gold["project_path"],
-            # Ask for extra when ablating so the ablated run still gets to
-            # fill K slots — otherwise the drop would be measuring a shorter
-            # result list rather than a weaker one. The cost is that the
-            # ablated arm searches at a different limit, and limit feeds both
-            # retrieval depth and slot planning: a question can be answered
-            # there purely because the deeper search reached a chunk the
-            # normal one never pooled (2026-09-08: two of fifteen). So read
-            # the ablation as indicative, not as a strict ceiling, and compare
-            # ranking changes on the un-ablated arm, where both runs are the
-            # same search.
-            limit=args.limit * (3 if dropped else 1),
-        )
-        results = [
-            r for r in resp.results
-            if (getattr(r, "node_type", "") or "") not in dropped
-        ][: args.limit]
-        row = score_query(q, results)
-        row["confidence"] = getattr(resp, "confidence", "")
-        rows.append(row)
-        mark = "✓" if row["answered"] else "✗"
-        rank = row["first_hit_rank"] or "-"
-        print(f"{mark} [{q['id']} {row['topic']}] rank={rank} conv={row['conv_hits']} "
-              f"{q['query'][:44]}", flush=True)
+    runs: list[list[dict]] = []
+    for attempt in range(max(1, args.repeat)):
+        if args.repeat > 1:
+            print(f"\n--- run {attempt + 1}/{args.repeat} ---", flush=True)
+        rows = []
+        for q in gold["queries"]:
+            resp = orch.hybrid_search(
+                query=q["query"],
+                cwd=gold["project_path"],
+                # Ask for extra when ablating so the ablated run still gets
+                # to fill K slots — otherwise the drop would be measuring a
+                # shorter result list rather than a weaker one. The cost is
+                # that the ablated arm searches at a different limit, and
+                # limit feeds retrieval depth: a question can be answered
+                # there purely because the deeper search reached a chunk the
+                # normal one never pooled. So read the ablation as
+                # indicative, not as a strict ceiling, and compare ranking
+                # changes on the un-ablated arm, where both runs are the
+                # same search.
+                limit=args.limit * (3 if dropped else 1),
+            )
+            results = [
+                r for r in resp.results
+                if (getattr(r, "node_type", "") or "") not in dropped
+            ][: args.limit]
+            row = score_query(q, results)
+            row["confidence"] = getattr(resp, "confidence", "")
+            rows.append(row)
+            mark = "✓" if row["answered"] else "✗"
+            rank = row["first_hit_rank"] or "-"
+            print(f"{mark} [{q['id']} {row['topic']}] rank={rank} "
+                  f"conv={row['conv_hits']} {q['query'][:44]}", flush=True)
+        runs.append(rows)
 
-    summary = aggregate(rows)
+    summaries = [aggregate(r) for r in runs]
     label = f"without {'+'.join(sorted(dropped))}" if dropped else "full index"
-    report = {"label": label, "summary": summary, "rows": rows}
+    report = {
+        "label": label,
+        "repeat": len(runs),
+        "summary": summaries[-1],
+        "summaries": summaries,
+        "rows": runs[-1],
+    }
     Path(args.out).write_text(
         json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )
 
-    print(f"\n=== {label} ===")
-    print(f"answer_found     {summary['answer_found']:.2f}")
-    print(f"answer_in_top3   {summary['answer_in_top3']:.2f}")
-    print(f"MRR              {summary['mrr']:.3f}")
-    print(f"mean memory hits {summary['mean_memory_hits']:.1f} / {args.limit}")
-    print(f"mean conv hits   {summary['mean_conv_hits']:.1f} / {args.limit}")
+    print(f"\n=== {label} · {len(runs)} run(s) ===")
+    for key, fmt in (("answer_found", "5.2f"), ("answer_in_top3", "5.2f"),
+                     ("mrr", "5.3f"), ("mean_memory_hits", "5.1f"),
+                     ("mean_conv_hits", "5.1f")):
+        vals = [s_[key] for s_ in summaries]
+        mean = sum(vals) / len(vals)
+        spread = "" if len(vals) == 1 else f"  [{min(vals):{fmt}} … {max(vals):{fmt}}]"
+        print(f"{key:17s}{mean:{fmt}}{spread}")
+    if len(summaries) > 1:
+        # The instrument's own noise floor, printed next to the numbers so a
+        # reader never has to guess whether a delta cleared it.
+        top3 = [s_["answer_in_top3"] for s_ in summaries]
+        print(f"\nnoise floor (answer_in_top3 spread over {len(summaries)} runs): "
+              f"{max(top3) - min(top3):.2f}")
     print(f"\nReport written to {args.out}")
 
 

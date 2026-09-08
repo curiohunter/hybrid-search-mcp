@@ -18,6 +18,7 @@ from hybrid_search.search.orchestrator import SearchOrchestrator
 def _make_orchestrator(*, embed_fails: bool) -> SearchOrchestrator:
     config = MagicMock()
     config.search.rrf_k = 60
+    config.search.retrieval_depth_floor = 100
     config.search.reranking.enabled = False
     config.search.reranking.max_candidates = 20
     config.search.reranking.lexical = False
