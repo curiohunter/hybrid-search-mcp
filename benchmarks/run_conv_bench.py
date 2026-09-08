@@ -126,7 +126,14 @@ def main() -> None:
             cwd=gold["project_path"],
             # Ask for extra when ablating so the ablated run still gets to
             # fill K slots — otherwise the drop would be measuring a shorter
-            # result list rather than a weaker one.
+            # result list rather than a weaker one. The cost is that the
+            # ablated arm searches at a different limit, and limit feeds both
+            # retrieval depth and slot planning: a question can be answered
+            # there purely because the deeper search reached a chunk the
+            # normal one never pooled (2026-09-08: two of fifteen). So read
+            # the ablation as indicative, not as a strict ceiling, and compare
+            # ranking changes on the un-ablated arm, where both runs are the
+            # same search.
             limit=args.limit * (3 if dropped else 1),
         )
         results = [
