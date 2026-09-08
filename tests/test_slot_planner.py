@@ -10,7 +10,7 @@ from hybrid_search.search.slot_planner import cap_per_file, plan_slots
 
 
 def _plan(limit=10, *, memory_intent=False, requested=3,
-          n_chunks=40, n_memory=0, n_cards=6, n_members=6):
+          n_chunks=40, n_memory=0, n_cards=6, n_members=6, n_conv=0):
     return plan_slots(
         limit,
         memory_intent=memory_intent,
@@ -19,6 +19,7 @@ def _plan(limit=10, *, memory_intent=False, requested=3,
         n_memory=n_memory,
         n_cards=n_cards,
         n_members=n_members,
+        n_conv=n_conv,
     )
 
 
@@ -142,3 +143,48 @@ class TestPerFileCap:
     def test_rows_without_path_pass_through(self):
         rows = [self._row(None), self._row(None), self._row(None)]
         assert cap_per_file(rows) == rows
+
+
+class TestConvLane:
+    """The lane WS1 missed (2026-09-08).
+
+    ``_merge_conv_results`` sized its own head, so on every recall query the
+    conversation lane took three of ten slots the plan had already promised
+    to chunks — and ``chunk_floor`` reported a number the response never
+    honoured. Planning it here changed the bookkeeping, not the size.
+    """
+
+    def test_conv_gets_its_head_on_recall(self):
+        p = _plan(10, memory_intent=True, n_memory=10, n_conv=20)
+        assert p.conv_slots == 3
+
+    def test_chunk_floor_now_accounts_for_conv(self):
+        p = _plan(10, memory_intent=True, n_memory=10, n_conv=20)
+        assert p.chunk_floor == 10 - p.memory_slots - p.conv_slots
+        assert p.aux_total + p.chunk_floor == 10
+
+    def test_no_conv_candidates_no_slots(self):
+        p = _plan(10, memory_intent=True, n_memory=10, n_conv=0)
+        assert p.conv_slots == 0
+        assert p.chunk_floor == 10 - p.memory_slots
+
+    def test_conv_yields_before_the_distilled_head(self):
+        # Tight budget: the note states the fact, the turn only contains it.
+        p = _plan(4, memory_intent=True, n_memory=10, n_conv=10, n_chunks=5)
+        assert p.memory_slots == 3
+        assert p.conv_slots == 0
+        assert p.chunk_floor >= 1
+
+    def test_conv_is_off_for_topical_queries(self):
+        # The lane is not even retrieved without memory intent.
+        p = _plan(10, n_memory=5, n_conv=20)
+        assert p.conv_slots == 0
+
+    def test_sum_never_exceeds_limit_with_conv(self):
+        for limit in (1, 2, 3, 4, 5, 7, 10, 20, 40):
+            for n_chunks in (0, 1, 5, 40):
+                for n_conv in (0, 1, 3, 50):
+                    p = _plan(limit, memory_intent=True, n_chunks=n_chunks,
+                              n_memory=10, n_conv=n_conv)
+                    assert p.aux_total + p.chunk_floor <= limit
+                    assert p.chunk_floor >= 0

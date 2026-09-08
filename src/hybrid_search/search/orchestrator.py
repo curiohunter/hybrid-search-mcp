@@ -1087,14 +1087,32 @@ def _merge_conv_results(
     limit: int,
     *,
     in_flight_head: list[HybridResult] = (),
+    after_distilled: int = 0,
+    head_limit: int | None = None,
 ) -> list[HybridResult]:
-    """Splice a small conversation head ahead of the code stream.
+    """Splice a small conversation head into the stream below the notes.
 
     Mirrors ``_merge_memory_results``: conv turns are a distinct answer unit
-    for recall-shaped queries, so a rank-bounded head is prepended rather than
+    for recall-shaped queries, so a rank-bounded head is spliced rather than
     merged by score (conv cosine vs code RRF are not comparable).
 
-    ``in_flight_head`` are live, not-yet-indexed turns. Their local token score
+    ``after_distilled`` is how many distilled memory rows already lead the
+    stream — the head ``_merge_memory_results`` just placed. The conv head
+    goes *below* them. Ordering inside the memory answer is decided by
+    distillation, not by which splice ran last: at equal relevance a note that
+    consolidated many turns outranks one raw turn, because the note states the
+    fact and the turn merely contains it. Before this, the conv splice ran
+    second at position 0 and therefore took the whole top-3 whenever the lane
+    had any candidate at all — on the 2026-09-08 displacement set that cost
+    0.33 of answer_in_top3, and pushed two answering notes out of the top-10
+    entirely. Note that the rule is positional, not a score weight: the two
+    lanes' scores are not comparable, so "equal relevance" cannot be tested
+    numerically, and inventing a cross-lane weight to express it would be a
+    guess wearing a number.
+
+    ``in_flight_head`` are live, not-yet-indexed turns. They keep the lead:
+    nothing has had a chance to distill the turn that is happening right now,
+    so the rule above has nothing to say about them. Their local token score
     is not comparable to indexed RRF either, so they lead the conv head by
     recency rather than competing by score — but they cede at least one slot to
     indexed conv when both exist, so older relevant turns still show.
@@ -1103,23 +1121,30 @@ def _merge_conv_results(
     if not conv_head and not in_flight_head:
         return chunk_results
     conv_head.sort(key=lambda r: -r.rrf_score)
-    head_limit = min(3, max(1, limit))
+    # ``head_limit`` comes from the SlotPlan. The fallback is the value this
+    # function used to choose for itself, kept so direct callers (tests, the
+    # in-flight path) behave as before.
+    if head_limit is None:
+        head_limit = min(3, max(1, limit))
+    if head_limit <= 0:
+        return chunk_results
     lead = list(in_flight_head)
     if lead and conv_head:
         lead = lead[:max(1, head_limit - 1)]
-    merged: list[HybridResult] = []
+    lead_ids = {r.chunk_id for r in lead}
+    live: list[HybridResult] = []
+    indexed: list[HybridResult] = []
     seen: set[str] = set()
     for r in (*lead, *conv_head):
-        if len(merged) >= head_limit:
+        if len(live) + len(indexed) >= head_limit:
             break
-        if r.chunk_id not in seen:
-            merged.append(r)
-            seen.add(r.chunk_id)
-    for r in chunk_results:
-        if r.chunk_id not in seen:
-            merged.append(r)
-            seen.add(r.chunk_id)
-    return merged
+        if r.chunk_id in seen:
+            continue
+        seen.add(r.chunk_id)
+        (live if r.chunk_id in lead_ids else indexed).append(r)
+    body = [r for r in chunk_results if r.chunk_id not in seen]
+    cut = max(0, min(after_distilled, len(body)))
+    return [*live, *body[:cut], *indexed, *body[cut:]]
 
 
 def _effective_gap_and_coherence(
@@ -1462,6 +1487,54 @@ class SearchOrchestrator:
                 top_n=reranking_cfg.max_candidates,
                 weight=reranking_cfg.lexical_weight,
             )
+        # Conversation lane (A5). On recall-shaped queries, retrieve conv_turn
+        # chunks separately and splice a small head into the stream. Kept a
+        # distinct lane (not fused by raw score) because conv cosine and code
+        # RRF live on different scales — splicing a rank-bounded head is the
+        # typed late fusion the 2026-04-16 design called for, minus the
+        # incomparable-score merge the retrieval eval warned against.
+        #
+        # Retrieval happens HERE, above the planner, so the plan can see this
+        # lane's pool like every other. It used to run after planning and size
+        # its own head — the one lane WS1 never learned about, quietly taking
+        # three of ten slots that the plan had already promised elsewhere. The
+        # splice itself still runs after the memory splice, further down.
+        conv_results: list[HybridResult] = []
+        in_flight_conv: list[HybridResult] = []
+        if memory_intent and node_types is None:
+            conv_depth = max(retrieval_depth, 50)
+            conv_node_types = [_CONV_NODE_TYPE]
+            if len(project_infos) == 1:
+                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_single(
+                    project_infos[0], query, query_vector, conv_depth,
+                    file_pattern, conv_node_types, exclude_pattern,
+                )
+            else:
+                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_cross_project(
+                    project_infos, query, query_vector, conv_depth,
+                    file_pattern, conv_node_types,
+                    primary_project_id=primary_project_id,
+                    exclude_pattern=exclude_pattern,
+                )
+            conv_fused = reciprocal_rank_fusion(
+                conv_bm25_ids, conv_vector_ids,
+                k=self._config.search.rrf_k,
+                bm25_weight=effective_weight,
+            )
+            conv_results = self._enrich_results(
+                conv_fused[:max(50, limit)], project_infos, query
+            )
+            conv_results = _filter_conv_noise(conv_results)
+            conv_results = _demote_meta_recall_conv(conv_results)
+            # Phase 5 (conv): collect live-session turns the async per-turn
+            # indexer hasn't caught yet. The Stop hook indexes detached, so the
+            # freshest turns of an ongoing session — and the turn in progress —
+            # lag the store; they lead the conv head so recall sees them now.
+            if cwd_scoped_project:
+                in_flight_conv = self._collect_conv_in_flight_results(
+                    project_infos[0], query, limit
+                )
+
         # WS1 — every lane's candidates are known here, and this is the
         # single point where slot allocation is decided. The splice and
         # layout stages below consume the plan's numbers; none of them
@@ -1495,6 +1568,7 @@ class SearchOrchestrator:
             n_memory=len(memory_candidates),
             n_cards=len(module_cards),
             n_members=len(module_members),
+            n_conv=len(conv_results) + len(in_flight_conv),
         )
 
         if memory_results and plan.memory_slots > 0:
@@ -1516,51 +1590,24 @@ class SearchOrchestrator:
                     head_limit=plan.memory_slots, insert_at=2,
                 )
 
-        # Conversation lane (A5). On recall-shaped queries, retrieve conv_turn
-        # chunks separately and splice a small head ahead of code. Kept a
-        # distinct lane (not fused by raw score) because conv cosine and code
-        # RRF live on different scales — splicing a rank-bounded head is the
-        # typed late fusion the 2026-04-16 design called for, minus the
-        # incomparable-score merge the retrieval eval warned against.
-        if memory_intent and node_types is None:
-            conv_depth = max(retrieval_depth, 50)
-            conv_node_types = [_CONV_NODE_TYPE]
-            if len(project_infos) == 1:
-                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_single(
-                    project_infos[0], query, query_vector, conv_depth,
-                    file_pattern, conv_node_types, exclude_pattern,
-                )
-            else:
-                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_cross_project(
-                    project_infos, query, query_vector, conv_depth,
-                    file_pattern, conv_node_types,
-                    primary_project_id=primary_project_id,
-                    exclude_pattern=exclude_pattern,
-                )
-            conv_fused = reciprocal_rank_fusion(
-                conv_bm25_ids, conv_vector_ids,
-                k=self._config.search.rrf_k,
-                bm25_weight=effective_weight,
+        if conv_results or in_flight_conv:
+            # How many distilled rows the memory splice just put in front.
+            # Counted from the stream rather than assumed from the plan: the
+            # splice dedupes against chunk ids, so it can place fewer rows
+            # than it was allotted, and the conv head must land right under
+            # what is actually there. Bounded by the plan so a memory-heavy
+            # chunk stream cannot push conv out of reach.
+            leading_distilled = 0
+            for r in chunk_results[: plan.memory_slots]:
+                if r.node_type not in _MEMORY_NODE_TYPES:
+                    break
+                leading_distilled += 1
+            chunk_results = _merge_conv_results(
+                chunk_results, conv_results, limit,
+                in_flight_head=in_flight_conv,
+                after_distilled=leading_distilled,
+                head_limit=plan.conv_slots,
             )
-            conv_results = self._enrich_results(
-                conv_fused[:max(50, limit)], project_infos, query
-            )
-            conv_results = _filter_conv_noise(conv_results)
-            conv_results = _demote_meta_recall_conv(conv_results)
-            # Phase 5 (conv): collect live-session turns the async per-turn
-            # indexer hasn't caught yet. The Stop hook indexes detached, so the
-            # freshest turns of an ongoing session — and the turn in progress —
-            # lag the store; they lead the conv head so recall sees them now.
-            in_flight_conv: list[HybridResult] = []
-            if cwd_scoped_project:
-                in_flight_conv = self._collect_conv_in_flight_results(
-                    project_infos[0], query, limit
-                )
-            if conv_results or in_flight_conv:
-                chunk_results = _merge_conv_results(
-                    chunk_results, conv_results, limit,
-                    in_flight_head=in_flight_conv,
-                )
 
         # Stale-fact guard: whatever lane a qa arrived from, among the qa
         # slots of the final list the newest answer shows first.
