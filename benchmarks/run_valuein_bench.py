@@ -339,6 +339,10 @@ def main():
     default_project_root = Path(gold["project_path"])
     default_project_name = gold["project"]
 
+    # Measure the index, not the machine. The in-flight overlays read the
+    # working tree and the running session's transcript, so leaving them on
+    # makes a run depend on whatever another session happens to be doing.
+    os.environ.setdefault("HYBRID_SEARCH_IN_FLIGHT", "0")
     config = load_config(Path(args.config) if args.config else None)
     registry = ProjectRegistry(config.global_dir)
     embedder = Embedder(config.embedding, config.models_dir)

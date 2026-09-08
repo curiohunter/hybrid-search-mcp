@@ -284,7 +284,8 @@ _LEADING_TAG_RE = __import__("re").compile(
     r"\A\s*\[(?:in-flight|conversation|qa|card|code|commit|memory)\b[^\]]{0,120}\]\s*",
     __import__("re").IGNORECASE,
 )
-_META_BULLET_RE = __import__("re").compile(r"\A-\s+\*\*[^*]{1,40}\*\*:")
+# One definition, in quality: the card generator needs the same judgement.
+from hybrid_search.memory.quality import is_metadata_bullet as _is_meta_bullet
 
 
 def _clean_body(text: str, path: str = "") -> str:
@@ -311,7 +312,7 @@ def _clean_body(text: str, path: str = "") -> str:
     for ln in body.splitlines():
         s = ln.strip()
         if not seen_prose:
-            if not s or s.startswith("# Q: ") or s.startswith("#") or _META_BULLET_RE.match(s):
+            if not s or s.startswith("# Q: ") or s.startswith("#") or _is_meta_bullet(s):
                 continue
             seen_prose = True
         kept.append(ln)
