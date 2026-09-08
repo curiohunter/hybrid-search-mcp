@@ -109,3 +109,26 @@ def jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
+
+# A memory card whose "summary" is the search telemetry of the query that
+# produced it: query_type, bm25_weight, elapsed ms, chunks_searched. The card
+# generator wrote the metrics block where the answer belongs, so the whole
+# body is provenance — a file list and a "when to use" line — with nothing
+# anyone asked about. On 2026-09-08 every one of valuein's 13 cards and 9 of
+# this repo's 16 were this shape, and ``memory_card`` outranks ``qa_log`` in
+# the memory head: the top-priority answer unit held no answers. A card in
+# this shape that also recorded no decisions and no follow-ups has nothing to
+# say, so it must not take a slot from a record that does.
+_CARD_TELEMETRY_MARKERS = ("**query_type**", "**bm25_weight**", "**chunks_searched**")
+_CARD_EMPTY_FIELDS = ("decisions: []", "followups: []")
+
+
+def card_has_no_answer(content: str | None) -> bool:
+    """True when a memory_card's body is search telemetry, not an answer."""
+    text = content or ""
+    if not text:
+        return False
+    if sum(1 for m in _CARD_TELEMETRY_MARKERS if m in text) < 2:
+        return False
+    return all(f in text for f in _CARD_EMPTY_FIELDS)
