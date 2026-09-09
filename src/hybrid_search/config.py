@@ -109,6 +109,15 @@ class SearchConfig:
     # self-contained projects; α=0.5 is stronger on external-weighted
     # workloads (+0.094 vs +0.065 NDCG). Override per-project via config.
     authority_alpha: float = 0.3
+    # How deep the retrievers go before fusion, independent of how many rows
+    # the caller asked to see. Depth used to be ``limit * 3`` alone, which made
+    # the answerable set a function of the display size: on 2026-09-08 a
+    # consolidated note was absent from the top-10 at ``limit=10`` and ranked
+    # first at ``limit=30``, because only the deeper pool reached it. What can
+    # be found must not depend on how many rows are printed, so depth is a
+    # floor; ``limit * 3`` only takes over once a caller asks for more rows
+    # than the floor can serve.
+    retrieval_depth_floor: int = 100
     reranking: RerankingConfig = field(default_factory=RerankingConfig)
 
 
@@ -283,6 +292,7 @@ def load_config(config_path: Path | None = None) -> Config:
         query_classifier=search_raw.get("query_classifier", True),
         default_bm25_weight=search_raw.get("default_bm25_weight", 0.5),
         authority_alpha=float(search_raw.get("authority_alpha", 0.3)),
+        retrieval_depth_floor=int(search_raw.get("retrieval_depth_floor", 100)),
         reranking=reranking,
     )
 
