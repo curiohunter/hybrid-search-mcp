@@ -1526,6 +1526,29 @@ class SearchOrchestrator:
                     primary_project_id=primary_project_id,
                     exclude_pattern=exclude_pattern,
                 )
+            # No span lane here, and the reason is the third instance of one
+            # pattern. A sentence-span index was built, measured, and removed
+            # on 2026-09-09: ranking memory PARENTS by their best sentence beat
+            # chunk-level BM25 by a wide margin in isolation (Set A top3
+            # 0.10 -> 0.40) and then changed nothing end-to-end — replacing the
+            # chunk list cost MRR 0.531 -> 0.488, and unioning with it bought
+            # one question of top3 while losing MRR on both sets.
+            #
+            # Two mechanisms, both worth knowing before trying again:
+            #
+            # * Folding compresses rank information. A parent's folded score is
+            #   its BEST span, and most parents own one decent span, so the
+            #   folded ordering is flatter than the chunk ordering and
+            #   contributes less to RRF.
+            # * The memory head is not chosen by relevance. Below,
+            #   ``_merge_memory_results`` orders candidates by node-type
+            #   priority, then groups qa by topic and represents each group by
+            #   its NEWEST member. A better retrieval ranking is read through
+            #   those two filters and mostly disappears.
+            #
+            # So the blocker is head selection, not retrieval granularity, and
+            # a retrieval-side change cannot reach it. Same lesson as the conv
+            # lexical rerank and the six ranking rules before it.
             mem_fused = reciprocal_rank_fusion(
                 mem_bm25_ids, mem_vector_ids,
                 k=self._config.search.rrf_k,
