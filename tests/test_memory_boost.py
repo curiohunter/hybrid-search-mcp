@@ -399,9 +399,28 @@ class TestMergeMemoryPlacement:
         out = _merge_memory_results([], [exact_old, adjacent_new], limit=10, head_limit=1, insert_at=0)
         assert [r.chunk_id for r in out] == ["exact"]
 
-    def test_ambient_head_same_topic_group_represented_by_newest(self) -> None:
-        # Same topic: the group's relevance is its best score (old, 0.9) but
-        # the NEWEST member represents it — supersession at selection time.
+    def test_ambient_head_same_topic_group_represented_by_best_match(self) -> None:
+        """Selection picks the record that answers; staleness is a later stage.
+
+        This test used to assert the newest member represents its group, and
+        that contract was replaced on 2026-09-09. Two reasons, in order:
+
+        * The grouping is not trustworthy enough to carry a supersession
+          decision. The same matcher put two unrelated Reflector notes into a
+          supersession pair, and inside a wrong group "newest" evicts the
+          member that actually matched the query — measured on the distilled
+          gold set as top3 0.65 -> 0.70 and MRR 0.581 -> 0.624 once the best
+          match represented instead.
+        * The staleness guarantee did not live here alone. `qa_supersession`
+          records old -> new at INDEX time, from evidence rather than from a
+          timestamp comparison made during one query, and
+          `_splice_superseding` acts on it after classification (see the
+          companion test below). `_order_qa_by_recency` covers the rest
+          whenever two members of a group share the final list.
+
+        So the newer fact still wins — it wins from the stage that has the
+        evidence, not from the stage that was guessing.
+        """
         old = _qa(
             "old", "학생 숙제 제출 파일은 어디 저장되나",
             "숙제 제출 파일은 Supabase Storage homework 버킷, 최대 파일 크기 10MB입니다.",
@@ -421,8 +440,29 @@ class TestMergeMemoryPlacement:
         )
         unrelated = unrelated.__class__(**{**unrelated.__dict__, "rrf_score": 0.7})
         out = _merge_memory_results([], [old, new, unrelated], limit=10, head_limit=1, insert_at=0)
-        # Group(old,new) relevance 0.9 beats unrelated 0.7; newest represents.
+        # Group(old,new) relevance 0.9 beats unrelated 0.7; the best match
+        # represents it, and supersession corrects it if the index recorded
+        # that pair.
+        assert [r.chunk_id for r in out] == ["old"]
+
+    def test_supersession_is_where_the_stale_answer_gets_corrected(self) -> None:
+        """The guarantee the test above used to carry, at its proper stage."""
+        from hybrid_search.search.orchestrator import _splice_superseding
+
+        old = _qa(
+            "old", "학생 숙제 제출 파일은 어디 저장되나",
+            "숙제 제출 파일은 최대 10MB입니다.",
+            "2026-04-01T00:00:00+00:00",
+        )
+        new = _qa(
+            "new", "숙제 파일 크기 제한 상향",
+            "숙제 파일 최대 크기를 100MB로 올렸습니다.",
+            "2026-07-09T00:00:00+00:00",
+        )
+        out = _splice_superseding([old], {"old": "new"}, lambda *_: new, limit=1)
+
         assert [r.chunk_id for r in out] == ["new"]
+
 
     def test_head_cards_stay_score_ordered_over_qa_recency(self) -> None:
         card = _mk("card", "memory_card", rrf=0.4, mtime="2026-01-01T00:00:00+00:00")
@@ -540,3 +580,52 @@ class TestMetaRecallDemotion:
         out = _demote_meta_recall_conv([meta, content])
         assert out[0].chunk_id == "conv:c"
         assert "meta-recall" in (out[1].trust_meta or "")
+
+
+class TestTopicGroupRepresentative:
+    """A topic group is represented by the record that answers, not the newest.
+
+    Selection and ordering are different jobs. `_order_qa_by_recency` re-sorts
+    the qa slots of the final list within each topic group, so the newer fact
+    still shows first — choosing the newest HERE did both jobs at once and
+    paid for it whenever the grouping was wrong. The matcher over-groups (the
+    same one put two unrelated Reflector notes in a supersession pair), and
+    then the newest member of a bad group evicts the member that matched.
+    """
+
+    def _qa(self, chunk_id: str, rrf: float, days_ago: int, body: str) -> HybridResult:
+        when = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        return _mk(
+            chunk_id, "qa_log", rrf=rrf, mtime=when.isoformat(),
+            content=f'---\nquery: "{body}"\n---\n\n## Answer excerpt\n\n{body}\n',
+        )
+
+    def test_the_best_matching_member_represents_its_group(self) -> None:
+        topic = "워크트리 포트 충돌 해결"
+        best = self._qa("best", rrf=1.5, days_ago=30, body=topic)
+        newer = self._qa("newer", rrf=0.2, days_ago=1, body=topic)
+
+        out = _merge_memory_results([_mk("code", "function", rrf=1.0)],
+                                    [newer, best], limit=10)
+
+        assert out[0].chunk_id == "best"
+
+    def test_a_separate_topic_still_gets_its_own_slot(self) -> None:
+        a = self._qa("a", rrf=1.5, days_ago=30, body="워크트리 포트 충돌 해결")
+        b = self._qa("b", rrf=1.4, days_ago=1, body="결제 취소 환불 정산 규칙")
+
+        out = _merge_memory_results([_mk("code", "function", rrf=1.0)],
+                                    [a, b], limit=10, head_limit=2)
+
+        assert {r.chunk_id for r in out[:2]} == {"a", "b"}
+
+    def test_group_position_still_comes_from_the_groups_best_score(self) -> None:
+        # Across groups relevance decides; a fresh adjacent topic must not
+        # outrank an older exact-topic answer.
+        strong = self._qa("strong", rrf=2.0, days_ago=90, body="워크트리 포트 충돌")
+        weak = self._qa("weak", rrf=0.3, days_ago=0, body="결제 취소 환불 정산")
+
+        out = _merge_memory_results([_mk("code", "function", rrf=1.0)],
+                                    [weak, strong], limit=10, head_limit=2)
+
+        assert out[0].chunk_id == "strong"

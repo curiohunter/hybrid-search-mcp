@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from hybrid_search.memory.supersession import compute_supersession
+from hybrid_search.search.orchestrator import HybridResult, _splice_superseding
 from hybrid_search.search.orchestrator import (
     HybridResult,
     _SUPERSEDED_MARK,
@@ -379,3 +380,51 @@ class TestR1EndToEnd:
             assert "qa-new" in ids_full and "qa-old" not in ids_full
         finally:
             db.close()
+
+
+class TestConsolidationIsNotReplaced:
+    """Indexes written before 2026-09-09 can still map one note onto another.
+
+    The builder no longer records such a pair, but a stored one must not be
+    acted on either — otherwise the repair needs a reindex to take effect,
+    and until then the splice keeps deleting Reflector notes from results.
+    """
+
+    def _note(self, chunk_id: str, path: str) -> HybridResult:
+        return HybridResult(
+            chunk_id=chunk_id, rrf_score=1.0, bm25_rank=1, vector_rank=1,
+            file_path=path, project="p", name=chunk_id, qualified_name=None,
+            node_type="qa_log", start_line=None, end_line=None,
+            content="---\nmemory_type: consolidated\n---\n\n본문",
+            snippet="",
+        )
+
+    def test_a_consolidated_hit_is_left_alone(self):
+        stale = self._note("older", ".hybrid-search/qa/consolidated/a.md")
+        called: list[str] = []
+
+        def fetch(newer_id, hit):
+            called.append(newer_id)
+            return None
+
+        out = _splice_superseding([stale], {"older": "newer"}, fetch, limit=1)
+        assert out == [stale]
+        assert called == []  # never even materialised
+
+    def test_detection_falls_back_to_frontmatter_when_the_path_is_odd(self):
+        stale = self._note("older", "somewhere/else.md")
+        out = _splice_superseding([stale], {"older": "newer"},
+                                  lambda *_: None, limit=1)
+        assert out == [stale]
+
+    def test_a_turn_log_is_still_replaced_at_full_capacity(self):
+        stale = HybridResult(
+            chunk_id="log", rrf_score=1.0, bm25_rank=1, vector_rank=1,
+            file_path=".hybrid-search/qa/2026/09/01-x.md", project="p",
+            name="log", qualified_name=None, node_type="qa_log",
+            start_line=None, end_line=None, content="본문", snippet="",
+        )
+        newer = self._note("note", ".hybrid-search/qa/consolidated/b.md")
+        out = _splice_superseding([stale], {"log": "note"},
+                                  lambda *_: newer, limit=1)
+        assert [r.chunk_id for r in out] == ["note"]
