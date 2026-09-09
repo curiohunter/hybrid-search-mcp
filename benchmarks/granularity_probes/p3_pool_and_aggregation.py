@@ -25,9 +25,10 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from hybrid_search.config import load_config  # noqa: E402
-from hybrid_search.index.claim_split import body_for_claims, split_claims  # noqa: E402
+from claim_split import body_for_claims, split_claims  # noqa: E402
 from hybrid_search.project import ProjectRegistry  # noqa: E402
 from hybrid_search.search.bm25 import BM25Engine  # noqa: E402
 

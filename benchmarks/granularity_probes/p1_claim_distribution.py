@@ -19,9 +19,10 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from hybrid_search.config import load_config  # noqa: E402
-from hybrid_search.index.claim_split import body_for_claims, split_claims  # noqa: E402
+from claim_split import body_for_claims, split_claims  # noqa: E402
 from hybrid_search.memory import quality  # noqa: E402
 from hybrid_search.project import ProjectRegistry  # noqa: E402
 

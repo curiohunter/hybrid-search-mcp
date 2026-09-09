@@ -15,6 +15,12 @@ gold sets are not committed — they quote a private corpus; see the docstring o
 | `c_return_window.py` | Does returning neighbouring turns help? | **no** — 0 change on one set, +1 query at 4x context on the other |
 | `d_sentence_lexical_max.py` | Can sentence-level *rescoring* of the existing pool substitute? | **no** — reranking cannot beat the pool |
 
+`claim_split.py` and its tests live here rather than in `src/` for the same
+reason: the structure-aware splitter lost to plain sentence splitting under
+identical conditions (`p6a`), so nothing in the search path uses it and
+shipping it in the wheel would hand users dead weight. It stays so the
+comparison remains reproducible.
+
 Read them in that order. `a` bounds what reranking can ever do, `b` is the only
 intervention that moved the number, and `c`/`d` are the cheap alternatives that
 were tried first and did not work.
