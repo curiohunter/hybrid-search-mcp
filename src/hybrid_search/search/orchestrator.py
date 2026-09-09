@@ -874,21 +874,40 @@ def _merge_memory_results(
     others = [r for r in memory_head if r.node_type != "qa_log"]
 
     def _prio(r: HybridResult) -> int:
+        """Curated memory outranks recorded turns, before score is consulted.
+
+        This looks like an unmeasured habit and was one until 2026-09-09,
+        when ordering the head by score alone was tried: the code axis
+        collapsed (primary-top5 0.92 -> 0.72, recall@10 0.77 -> 0.57,
+        memory@3 0.16 -> 0.00). The single ambient memory slot on topical
+        queries is the reason — a curated card earns it, a high-scoring turn
+        log does not, and letting score decide loses both the card and the
+        code hits around it.
+        """
         return {"domain_term": 0, "memory_card": 1, "episodic_example": 2, "qa_log": 3}.get(
             r.node_type or "", 9
         )
-
-    def _age(r: HybridResult) -> tuple[bool, float]:
-        days = _parse_mtime_days_ago(r.file_mtime)
-        return (days is None, days if days is not None else 0.0)
 
     candidates: list[tuple[int, float, int, HybridResult]] = [
         (_prio(r), -r.rrf_score, seq, r) for seq, r in enumerate(others)
     ]
     for seq, group in enumerate(_qa_topic_groups(qa_candidates)):
-        representative = min(group, key=_age)  # newest of the topic
+        # The group is represented by the record that best answers, not by
+        # the newest one. Recency is not lost by this: `_order_qa_by_recency`
+        # re-sorts the qa slots of the FINAL list within each topic group, so
+        # the newer fact still shows first. Two jobs, two stages — selection
+        # asks "which record answers", ordering asks "which is current".
+        #
+        # Choosing the newest here did both jobs at once, and paid for it
+        # whenever the grouping was wrong: the matcher over-groups (the same
+        # matcher put two unrelated Reflector notes in one supersession pair
+        # on 2026-09-09), and then the newest member of a bad group evicts
+        # the member that actually matched. Measured on the distilled set:
+        # top3 0.65 -> 0.70, MRR 0.581 -> 0.624.
+        representative = max(group, key=lambda r: r.rrf_score)
         group_relevance = max(r.rrf_score for r in group)
-        candidates.append((3, -group_relevance, len(others) + seq, representative))
+        candidates.append((_prio(representative), -group_relevance,
+                           len(others) + seq, representative))
     candidates.sort()
     memory_head = [r for _, _, _, r in candidates]
     head_limit = min(head_limit, max(1, limit))
