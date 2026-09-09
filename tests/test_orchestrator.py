@@ -19,6 +19,7 @@ def _make_orchestrator(
 ) -> SearchOrchestrator:
     config = MagicMock()
     config.search.rrf_k = 60
+    config.search.retrieval_depth_floor = 100
     config.search.reranking.enabled = False
     config.search.reranking.max_candidates = 20
     config.search.reranking.lexical = False
@@ -508,3 +509,29 @@ class TestBuildFilterExcludePattern:
 
         db = MagicMock()
         assert _build_filter(db, "p1", None, None, None) is None
+
+
+class TestInFlightSwitch:
+    """``HYBRID_SEARCH_IN_FLIGHT=0`` makes a search reproducible from the index.
+
+    Both overlays read live state — the working tree, and the running
+    session's transcript. A benchmark against a frozen snapshot still saw
+    whatever another session was typing, and on 2026-09-08 two such turns took
+    the lead slots of a measurement run.
+    """
+
+    def test_default_is_on(self, monkeypatch):
+        from hybrid_search.search.orchestrator import _in_flight_enabled
+        monkeypatch.delenv("HYBRID_SEARCH_IN_FLIGHT", raising=False)
+        assert _in_flight_enabled()
+
+    def test_zero_turns_it_off(self, monkeypatch):
+        from hybrid_search.search.orchestrator import _in_flight_enabled
+        monkeypatch.setenv("HYBRID_SEARCH_IN_FLIGHT", "0")
+        assert not _in_flight_enabled()
+
+    def test_other_values_leave_it_on(self, monkeypatch):
+        from hybrid_search.search.orchestrator import _in_flight_enabled
+        for value in ("1", "", "yes"):
+            monkeypatch.setenv("HYBRID_SEARCH_IN_FLIGHT", value)
+            assert _in_flight_enabled()
