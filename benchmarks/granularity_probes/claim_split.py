@@ -1,4 +1,15 @@
-"""Structure-aware claim splitting for the memory lanes.
+"""Structure-aware claim splitting — a probe, not part of the search path.
+
+This lives beside the probes rather than in ``src/`` because it lost the
+measurement it was written for. On 2026-09-09 it was compared against plain
+sentence splitting under identical conditions and scored no better on the
+distilled gold set and WORSE on the raw one (found 0.37 vs 0.51), because its
+rules drop sentences that carry answers. It buys a 3.6x smaller unit count and
+nothing else. Kept so the comparison stays reproducible; shipping it in the
+wheel would hand users dead weight.
+
+Original rationale follows.
+
 
 The code lane never had the retrieval problem the memory lanes have, and the
 reason is boundaries: tree-sitter tells the indexer where a function ends, and
