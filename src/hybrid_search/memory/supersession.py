@@ -132,6 +132,11 @@ def _strict_group_indices(
     return groups
 
 
+def _is_consolidation(content: str) -> bool:
+    """True for a Reflector note — a synthesis of many records."""
+    return (_frontmatter_value(content, "memory_type") or "") == "consolidated"
+
+
 def compute_supersession(
     entries: list[tuple[str, str]],
 ) -> dict[str, str]:
@@ -178,7 +183,21 @@ def compute_supersession(
         if not with_ts:
             continue  # no trustworthy "newest" — refuse to guess
         newest = max(with_ts, key=lambda m: (m[2], m[0]))
-        for chunk_id, _, _ in members:
-            if chunk_id != newest[0]:
-                mapping[chunk_id] = newest[0]
+        for chunk_id, content, _ in members:
+            if chunk_id == newest[0]:
+                continue
+            if _is_consolidation(content):
+                # A consolidation is not an older version of anything. It
+                # synthesises its own cluster of records, so two notes on
+                # adjacent topics are two answers, not an answer and its
+                # update — and the topic matcher pairs them readily because
+                # a Reflector run writes many notes on one day about one
+                # area. Superseding one by the other is destructive: at full
+                # capacity the splice REPLACES the stale hit, so the note
+                # that actually answered the question leaves the results
+                # (2026-09-09: the top-ranked note of a gold question
+                # vanished exactly this way). Notes still supersede the raw
+                # logs they were built from — that direction is the design.
+                continue
+            mapping[chunk_id] = newest[0]
     return mapping
