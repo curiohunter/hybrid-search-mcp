@@ -997,6 +997,13 @@ _SUPERSEDED_MARK = "[superseded — newer answer on this topic ranks above]"
 _SUPERSEDING_NOTE = "supersedes a stale answer below"
 
 
+def _is_consolidation_result(r: HybridResult) -> bool:
+    """True when a hit is a Reflector note rather than a recorded turn."""
+    if "/consolidated/" in (r.file_path or ""):
+        return True
+    return (_frontmatter_value(r.content, "memory_type") or "") == "consolidated"
+
+
 def _splice_superseding(
     results: list[HybridResult],
     superseding: dict[str, str],
@@ -1028,6 +1035,14 @@ def _splice_superseding(
     inserted = 0
     for i, r in enumerate(results):
         newer_id = superseding.get(r.chunk_id)
+        if newer_id and _is_consolidation_result(r):
+            # Indexes written before 2026-09-09 can still map one Reflector
+            # note onto another. Honouring that here deletes the note that
+            # answered the question, so the guard lives on both sides: the
+            # builder no longer records it, and this refuses to act on rows
+            # already recorded. Without the search-side half the repair
+            # would need a reindex to take effect.
+            newer_id = None
         if r.node_type == "qa_log" and newer_id:
             if newer_id not in position and spliced < cap:
                 newer = fetch(newer_id, r)
