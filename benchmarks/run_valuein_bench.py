@@ -324,13 +324,26 @@ def main():
     ap.add_argument("--gold", default=str(Path(__file__).parent / "valuein_gold.json"))
     ap.add_argument("--out", default=str(Path(__file__).parent / "valuein_results.json"))
     ap.add_argument("--limit", type=int, default=10)
+    ap.add_argument(
+        "--config",
+        default=None,
+        help="Path to a hybrid-search config.toml. Point this at a copy whose "
+             "general.data_dir is a FROZEN snapshot of the index when "
+             "comparing two versions of the code — a live index moves while "
+             "you measure, and a before/after taken an hour apart then "
+             "compares two corpora rather than two rankings.",
+    )
     args = ap.parse_args()
 
     gold = load_gold(Path(args.gold))
     default_project_root = Path(gold["project_path"])
     default_project_name = gold["project"]
 
-    config = load_config()
+    # Measure the index, not the machine. The in-flight overlays read the
+    # working tree and the running session's transcript, so leaving them on
+    # makes a run depend on whatever another session happens to be doing.
+    os.environ.setdefault("HYBRID_SEARCH_IN_FLIGHT", "0")
+    config = load_config(Path(args.config) if args.config else None)
     registry = ProjectRegistry(config.global_dir)
     embedder = Embedder(config.embedding, config.models_dir)
     orch = SearchOrchestrator(config=config, registry=registry, embedder=embedder)

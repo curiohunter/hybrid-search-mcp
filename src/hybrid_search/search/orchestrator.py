@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 
 from hybrid_search.config import Config
 from hybrid_search.index.embedder import Embedder
+from hybrid_search.memory import quality
 from hybrid_search.memory.router import (
     classify_confidence,
     fallback_hint,
@@ -358,6 +359,76 @@ def _has_graph_intent(query: str) -> bool:
     return bool(_GRAPH_INTENT_EN_RE.search(q))
 
 
+# Korean past-recall endings, matched at the END of the question only.
+# ``_MEMORY_INTENT_KO`` lists literal forms, and Korean inflection defeats
+# that: it carries "했지" but not "했었지", "뭐였지" but not "뭐였더라",
+# and nothing at all for "나눴지" / "골라냈지" / "썼었나". On the 2026-09-08
+# gold sets that misclassified 9 of 15 and 7 of 10 plainly recall-shaped
+# questions as topical, and a topical classification does not merely rank
+# worse — the conv lane never runs at all, so the turns that hold the answer
+# are not even retrieved.
+#
+# The rule instead: a final verb ending in ㅆ (the past marker — 았/었/였 and
+# every contraction of them, 했/됐/봤/뒀/냈/눴/…) followed by one of these
+# sentence enders. Anchored at the end and after stripping punctuation, so
+# "했지만" (a clause, not a question) cannot trigger it.
+# "나" is deliberately absent. It is not a recall ending — it forms a plain
+# yes/no question about state ("되나", "하나"), so a past stem plus 나 reads as
+# "was X done?" rather than "what did we decide?". Including it moved the
+# rationale question "entrance test 관리 플랜은 왜 세워졌나" onto the memory
+# lanes, which handed six of ten slots to records about other subjects and
+# pushed the plan document that answers it from rank 1 to 7 (code-axis
+# primary-top5 0.92 → 0.88). Dropping it cost nothing on either conv set.
+_PAST_RECALL_ENDERS = ("더라", "던가", "지")
+# ㅆ-final syllables that are not past markers: existence, negation, and the
+# volitive/future 겠. "있지" is "there is, right?"; "있었지" still matches
+# because the syllable before 지 is then 었.
+_NOT_PAST_SSANG = frozenset({"있", "없", "겠"})
+_HANGUL_SSANG_SIOT_JONG = 20
+
+
+# "나" is a recall ending only after a DOUBLE past marker. Plain past + 나 is
+# a question about state — "세워졌나" asks whether a thing got set up, and
+# treating it as recall moved a rationale question onto the memory lanes and
+# pushed the document that answers it from rank 1 to 7. The doubled form
+# (썼-었-나, 했-었-나) is Korean's discontinued past: it marks something
+# finished and cut off from now, which is exactly what a recall question is
+# about. One ending could not tell those apart; the grammar can.
+_STATE_QUESTION_ENDERS = ("나",)
+
+
+def _is_ssang_final(ch: str) -> bool:
+    """True for a Hangul syllable whose final consonant is ㅆ."""
+    return "가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28 == _HANGUL_SSANG_SIOT_JONG
+
+
+def _has_past_recall_ending(query: str) -> bool:
+    """True when the question closes on a Korean past-tense recall ending."""
+    q = (query or "").rstrip(" \t\n?？!.…~")
+    for ender in (*_PAST_RECALL_ENDERS, *_STATE_QUESTION_ENDERS):
+        if not q.endswith(ender) or len(q) <= len(ender):
+            continue
+        stem = q[-len(ender) - 1]
+        if stem in _NOT_PAST_SSANG or not _is_ssang_final(stem):
+            continue
+        if ender in _STATE_QUESTION_ENDERS:
+            # Needs the doubled past: the syllable before the marker must
+            # itself carry ㅆ ("썼었나" yes, "세워졌나" no).
+            if len(q) <= len(ender) + 1 or not _is_ssang_final(q[-len(ender) - 2]):
+                continue
+        return True
+    return False
+
+
+def _in_flight_enabled() -> bool:
+    """Whether the query-time overlays may read live state.
+
+    Off with ``HYBRID_SEARCH_IN_FLIGHT=0``. See the call site for why a
+    measurement run needs to be able to say "index only".
+    """
+    return os.environ.get("HYBRID_SEARCH_IN_FLIGHT", "").strip() != "0"
+
+
 def _has_memory_intent(query: str) -> bool:
     """True when the query asks for a past exchange.
 
@@ -370,6 +441,8 @@ def _has_memory_intent(query: str) -> bool:
     if not q:
         return False
     if any(tok in q for tok in _MEMORY_INTENT_KO):
+        return True
+    if _has_past_recall_ending(q):
         return True
     return bool(_MEMORY_INTENT_EN_RE.search(q))
 
@@ -776,6 +849,19 @@ def _merge_memory_results(
     if not memory_results:
         return chunk_results
     memory_head = [r for r in memory_results if r.node_type in _MEMORY_NODE_TYPES]
+    # A card whose body is the search telemetry of the query that made it has
+    # no answer in it (quality.card_has_no_answer). Cards outrank qa logs in
+    # the priority below, so leaving them in means the highest-priority answer
+    # unit is a metrics block: on 2026-09-08 three of them took ranks 1-3 of
+    # "왜 세워졌나" and pushed the plan document that answers it to 7. They stay
+    # in the ordinary chunk stream — a file list is worth something — but they
+    # do not get a guaranteed slot. Filtered only when something else survives.
+    substantive = [
+        r for r in memory_head
+        if not (r.node_type == "memory_card" and quality.card_has_no_answer(r.content))
+    ]
+    if substantive:
+        memory_head = substantive
     if not memory_head:
         return chunk_results
 
@@ -788,21 +874,40 @@ def _merge_memory_results(
     others = [r for r in memory_head if r.node_type != "qa_log"]
 
     def _prio(r: HybridResult) -> int:
+        """Curated memory outranks recorded turns, before score is consulted.
+
+        This looks like an unmeasured habit and was one until 2026-09-09,
+        when ordering the head by score alone was tried: the code axis
+        collapsed (primary-top5 0.92 -> 0.72, recall@10 0.77 -> 0.57,
+        memory@3 0.16 -> 0.00). The single ambient memory slot on topical
+        queries is the reason — a curated card earns it, a high-scoring turn
+        log does not, and letting score decide loses both the card and the
+        code hits around it.
+        """
         return {"domain_term": 0, "memory_card": 1, "episodic_example": 2, "qa_log": 3}.get(
             r.node_type or "", 9
         )
-
-    def _age(r: HybridResult) -> tuple[bool, float]:
-        days = _parse_mtime_days_ago(r.file_mtime)
-        return (days is None, days if days is not None else 0.0)
 
     candidates: list[tuple[int, float, int, HybridResult]] = [
         (_prio(r), -r.rrf_score, seq, r) for seq, r in enumerate(others)
     ]
     for seq, group in enumerate(_qa_topic_groups(qa_candidates)):
-        representative = min(group, key=_age)  # newest of the topic
+        # The group is represented by the record that best answers, not by
+        # the newest one. Recency is not lost by this: `_order_qa_by_recency`
+        # re-sorts the qa slots of the FINAL list within each topic group, so
+        # the newer fact still shows first. Two jobs, two stages — selection
+        # asks "which record answers", ordering asks "which is current".
+        #
+        # Choosing the newest here did both jobs at once, and paid for it
+        # whenever the grouping was wrong: the matcher over-groups (the same
+        # matcher put two unrelated Reflector notes in one supersession pair
+        # on 2026-09-09), and then the newest member of a bad group evicts
+        # the member that actually matched. Measured on the distilled set:
+        # top3 0.65 -> 0.70, MRR 0.581 -> 0.624.
+        representative = max(group, key=lambda r: r.rrf_score)
         group_relevance = max(r.rrf_score for r in group)
-        candidates.append((3, -group_relevance, len(others) + seq, representative))
+        candidates.append((_prio(representative), -group_relevance,
+                           len(others) + seq, representative))
     candidates.sort()
     memory_head = [r for _, _, _, r in candidates]
     head_limit = min(head_limit, max(1, limit))
@@ -911,6 +1016,13 @@ _SUPERSEDED_MARK = "[superseded — newer answer on this topic ranks above]"
 _SUPERSEDING_NOTE = "supersedes a stale answer below"
 
 
+def _is_consolidation_result(r: HybridResult) -> bool:
+    """True when a hit is a Reflector note rather than a recorded turn."""
+    if "/consolidated/" in (r.file_path or ""):
+        return True
+    return (_frontmatter_value(r.content, "memory_type") or "") == "consolidated"
+
+
 def _splice_superseding(
     results: list[HybridResult],
     superseding: dict[str, str],
@@ -942,6 +1054,14 @@ def _splice_superseding(
     inserted = 0
     for i, r in enumerate(results):
         newer_id = superseding.get(r.chunk_id)
+        if newer_id and _is_consolidation_result(r):
+            # Indexes written before 2026-09-09 can still map one Reflector
+            # note onto another. Honouring that here deletes the note that
+            # answered the question, so the guard lives on both sides: the
+            # builder no longer records it, and this refuses to act on rows
+            # already recorded. Without the search-side half the repair
+            # would need a reindex to take effect.
+            newer_id = None
         if r.node_type == "qa_log" and newer_id:
             if newer_id not in position and spliced < cap:
                 newer = fetch(newer_id, r)
@@ -1087,14 +1207,32 @@ def _merge_conv_results(
     limit: int,
     *,
     in_flight_head: list[HybridResult] = (),
+    after_distilled: int = 0,
+    head_limit: int | None = None,
 ) -> list[HybridResult]:
-    """Splice a small conversation head ahead of the code stream.
+    """Splice a small conversation head into the stream below the notes.
 
     Mirrors ``_merge_memory_results``: conv turns are a distinct answer unit
-    for recall-shaped queries, so a rank-bounded head is prepended rather than
+    for recall-shaped queries, so a rank-bounded head is spliced rather than
     merged by score (conv cosine vs code RRF are not comparable).
 
-    ``in_flight_head`` are live, not-yet-indexed turns. Their local token score
+    ``after_distilled`` is how many distilled memory rows already lead the
+    stream — the head ``_merge_memory_results`` just placed. The conv head
+    goes *below* them. Ordering inside the memory answer is decided by
+    distillation, not by which splice ran last: at equal relevance a note that
+    consolidated many turns outranks one raw turn, because the note states the
+    fact and the turn merely contains it. Before this, the conv splice ran
+    second at position 0 and therefore took the whole top-3 whenever the lane
+    had any candidate at all — on the 2026-09-08 displacement set that cost
+    0.33 of answer_in_top3, and pushed two answering notes out of the top-10
+    entirely. Note that the rule is positional, not a score weight: the two
+    lanes' scores are not comparable, so "equal relevance" cannot be tested
+    numerically, and inventing a cross-lane weight to express it would be a
+    guess wearing a number.
+
+    ``in_flight_head`` are live, not-yet-indexed turns. They keep the lead:
+    nothing has had a chance to distill the turn that is happening right now,
+    so the rule above has nothing to say about them. Their local token score
     is not comparable to indexed RRF either, so they lead the conv head by
     recency rather than competing by score — but they cede at least one slot to
     indexed conv when both exist, so older relevant turns still show.
@@ -1103,23 +1241,30 @@ def _merge_conv_results(
     if not conv_head and not in_flight_head:
         return chunk_results
     conv_head.sort(key=lambda r: -r.rrf_score)
-    head_limit = min(3, max(1, limit))
+    # ``head_limit`` comes from the SlotPlan. The fallback is the value this
+    # function used to choose for itself, kept so direct callers (tests, the
+    # in-flight path) behave as before.
+    if head_limit is None:
+        head_limit = min(3, max(1, limit))
+    if head_limit <= 0:
+        return chunk_results
     lead = list(in_flight_head)
     if lead and conv_head:
         lead = lead[:max(1, head_limit - 1)]
-    merged: list[HybridResult] = []
+    lead_ids = {r.chunk_id for r in lead}
+    live: list[HybridResult] = []
+    indexed: list[HybridResult] = []
     seen: set[str] = set()
     for r in (*lead, *conv_head):
-        if len(merged) >= head_limit:
+        if len(live) + len(indexed) >= head_limit:
             break
-        if r.chunk_id not in seen:
-            merged.append(r)
-            seen.add(r.chunk_id)
-    for r in chunk_results:
-        if r.chunk_id not in seen:
-            merged.append(r)
-            seen.add(r.chunk_id)
-    return merged
+        if r.chunk_id in seen:
+            continue
+        seen.add(r.chunk_id)
+        (live if r.chunk_id in lead_ids else indexed).append(r)
+    body = [r for r in chunk_results if r.chunk_id not in seen]
+    cut = max(0, min(after_distilled, len(body)))
+    return [*live, *body[:cut], *indexed, *body[cut:]]
 
 
 def _effective_gap_and_coherence(
@@ -1270,7 +1415,10 @@ class SearchOrchestrator:
             project_infos
         )
         vector_lane_down = vector_lane_down or stale_vectors
-        retrieval_depth = limit * 3
+        # Depth is a floor, not a multiple of the display size. See
+        # SearchConfig.retrieval_depth_floor: tying it to ``limit`` alone made
+        # "what can be found" a function of "how many rows are printed".
+        retrieval_depth = max(limit * 3, self._config.search.retrieval_depth_floor)
 
         memory_intent = _has_memory_intent(query)
         # A meta-recall question IS a memory question by definition —
@@ -1330,9 +1478,19 @@ class SearchOrchestrator:
 
         # Phase 5: query-time overlay for tracked dirty files. This only runs
         # for a cwd-scoped single project and never touches persistent indexes.
+        #
+        # ``HYBRID_SEARCH_IN_FLIGHT=0`` turns both overlays (dirty files and
+        # live conversation turns) off. They read the working tree and the
+        # running session's transcript rather than the index, so a result
+        # served from them is not reproducible from the index alone: a
+        # benchmark against a frozen snapshot still sees whatever another
+        # session is typing right now, and on 2026-09-08 two such turns took
+        # the lead slots of a measurement run. The switch exists so "measure
+        # the index" and "answer the user" can be the same code path.
         cwd_scoped_project = (
             cwd
             and len(project_infos) == 1
+            and _in_flight_enabled()
             and self._detect_primary_project(cwd, project_infos) == project_infos[0].id
         )
         if cwd_scoped_project:
@@ -1402,6 +1560,29 @@ class SearchOrchestrator:
                     primary_project_id=primary_project_id,
                     exclude_pattern=exclude_pattern,
                 )
+            # No span lane here, and the reason is the third instance of one
+            # pattern. A sentence-span index was built, measured, and removed
+            # on 2026-09-09: ranking memory PARENTS by their best sentence beat
+            # chunk-level BM25 by a wide margin in isolation (Set A top3
+            # 0.10 -> 0.40) and then changed nothing end-to-end — replacing the
+            # chunk list cost MRR 0.531 -> 0.488, and unioning with it bought
+            # one question of top3 while losing MRR on both sets.
+            #
+            # Two mechanisms, both worth knowing before trying again:
+            #
+            # * Folding compresses rank information. A parent's folded score is
+            #   its BEST span, and most parents own one decent span, so the
+            #   folded ordering is flatter than the chunk ordering and
+            #   contributes less to RRF.
+            # * The memory head is not chosen by relevance. Below,
+            #   ``_merge_memory_results`` orders candidates by node-type
+            #   priority, then groups qa by topic and represents each group by
+            #   its NEWEST member. A better retrieval ranking is read through
+            #   those two filters and mostly disappears.
+            #
+            # So the blocker is head selection, not retrieval granularity, and
+            # a retrieval-side change cannot reach it. Same lesson as the conv
+            # lexical rerank and the six ranking rules before it.
             mem_fused = reciprocal_rank_fusion(
                 mem_bm25_ids, mem_vector_ids,
                 k=self._config.search.rrf_k,
@@ -1462,6 +1643,76 @@ class SearchOrchestrator:
                 top_n=reranking_cfg.max_candidates,
                 weight=reranking_cfg.lexical_weight,
             )
+        # Conversation lane (A5). On recall-shaped queries, retrieve conv_turn
+        # chunks separately and splice a small head into the stream. Kept a
+        # distinct lane (not fused by raw score) because conv cosine and code
+        # RRF live on different scales — splicing a rank-bounded head is the
+        # typed late fusion the 2026-04-16 design called for, minus the
+        # incomparable-score merge the retrieval eval warned against.
+        #
+        # Retrieval happens HERE, above the planner, so the plan can see this
+        # lane's pool like every other. It used to run after planning and size
+        # its own head — the one lane WS1 never learned about, quietly taking
+        # three of ten slots that the plan had already promised elsewhere. The
+        # splice itself still runs after the memory splice, further down.
+        conv_results: list[HybridResult] = []
+        in_flight_conv: list[HybridResult] = []
+        if memory_intent and node_types is None:
+            conv_depth = max(retrieval_depth, 50)
+            conv_node_types = [_CONV_NODE_TYPE]
+            if len(project_infos) == 1:
+                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_single(
+                    project_infos[0], query, query_vector, conv_depth,
+                    file_pattern, conv_node_types, exclude_pattern,
+                )
+            else:
+                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_cross_project(
+                    project_infos, query, query_vector, conv_depth,
+                    file_pattern, conv_node_types,
+                    primary_project_id=primary_project_id,
+                    exclude_pattern=exclude_pattern,
+                )
+            conv_fused = reciprocal_rank_fusion(
+                conv_bm25_ids, conv_vector_ids,
+                k=self._config.search.rrf_k,
+                bm25_weight=effective_weight,
+            )
+            # The 50-row pool is a consensus cut, and it has the same blind
+            # spot as the head: a turn one retriever ranks 7th and the other
+            # does not return at all fuses below rows both merely tolerate.
+            # Three rules were tried against that on 2026-09-08 — a conv-lane
+            # BM25 weight sweep, a reserved head seat for the most one-sided
+            # candidate, and admitting single-lane leaders past this cut — and
+            # none moved the guard set off 0.30. The evidence says why: the
+            # turns still missing are ranked mid-pack by BOTH retrievers
+            # (17th and 17th), because the asked-about fact is one sentence in
+            # a 1,500-character episode. That is granularity, not consensus,
+            # and it needs an indexing change rather than another rule here.
+            conv_results = self._enrich_results(
+                conv_fused[:max(50, limit)], project_infos, query
+            )
+            conv_results = _filter_conv_noise(conv_results)
+            conv_results = _demote_meta_recall_conv(conv_results)
+            # No second-stage lexical rerank here, deliberately. The other
+            # two lanes get one, and the conv lane looks like it should need
+            # it most — a turn chunk is a whole episode, so its single vector
+            # is dominated by the episode's subject while the asked-about
+            # fact is one sentence inside it, and on the raw-only guard set
+            # the answering turn ranked 1st in BM25 and ~200th in vectors.
+            # It was tried on 2026-09-08 (whole pool, not just the head) and
+            # measured as nothing: Set A identical, Set B MRR 0.037 → 0.033.
+            # Widening the window also drops the guard that keeps a deep
+            # low-signal chunk from riding coverage alone into the head. A
+            # change that buys nothing does not get to cost that.
+            # Phase 5 (conv): collect live-session turns the async per-turn
+            # indexer hasn't caught yet. The Stop hook indexes detached, so the
+            # freshest turns of an ongoing session — and the turn in progress —
+            # lag the store; they lead the conv head so recall sees them now.
+            if cwd_scoped_project:
+                in_flight_conv = self._collect_conv_in_flight_results(
+                    project_infos[0], query, limit
+                )
+
         # WS1 — every lane's candidates are known here, and this is the
         # single point where slot allocation is decided. The splice and
         # layout stages below consume the plan's numbers; none of them
@@ -1495,6 +1746,7 @@ class SearchOrchestrator:
             n_memory=len(memory_candidates),
             n_cards=len(module_cards),
             n_members=len(module_members),
+            n_conv=len(conv_results) + len(in_flight_conv),
         )
 
         if memory_results and plan.memory_slots > 0:
@@ -1516,51 +1768,24 @@ class SearchOrchestrator:
                     head_limit=plan.memory_slots, insert_at=2,
                 )
 
-        # Conversation lane (A5). On recall-shaped queries, retrieve conv_turn
-        # chunks separately and splice a small head ahead of code. Kept a
-        # distinct lane (not fused by raw score) because conv cosine and code
-        # RRF live on different scales — splicing a rank-bounded head is the
-        # typed late fusion the 2026-04-16 design called for, minus the
-        # incomparable-score merge the retrieval eval warned against.
-        if memory_intent and node_types is None:
-            conv_depth = max(retrieval_depth, 50)
-            conv_node_types = [_CONV_NODE_TYPE]
-            if len(project_infos) == 1:
-                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_single(
-                    project_infos[0], query, query_vector, conv_depth,
-                    file_pattern, conv_node_types, exclude_pattern,
-                )
-            else:
-                conv_bm25_ids, conv_vector_ids, _, _, _, _ = self._search_cross_project(
-                    project_infos, query, query_vector, conv_depth,
-                    file_pattern, conv_node_types,
-                    primary_project_id=primary_project_id,
-                    exclude_pattern=exclude_pattern,
-                )
-            conv_fused = reciprocal_rank_fusion(
-                conv_bm25_ids, conv_vector_ids,
-                k=self._config.search.rrf_k,
-                bm25_weight=effective_weight,
+        if conv_results or in_flight_conv:
+            # How many distilled rows the memory splice just put in front.
+            # Counted from the stream rather than assumed from the plan: the
+            # splice dedupes against chunk ids, so it can place fewer rows
+            # than it was allotted, and the conv head must land right under
+            # what is actually there. Bounded by the plan so a memory-heavy
+            # chunk stream cannot push conv out of reach.
+            leading_distilled = 0
+            for r in chunk_results[: plan.memory_slots]:
+                if r.node_type not in _MEMORY_NODE_TYPES:
+                    break
+                leading_distilled += 1
+            chunk_results = _merge_conv_results(
+                chunk_results, conv_results, limit,
+                in_flight_head=in_flight_conv,
+                after_distilled=leading_distilled,
+                head_limit=plan.conv_slots,
             )
-            conv_results = self._enrich_results(
-                conv_fused[:max(50, limit)], project_infos, query
-            )
-            conv_results = _filter_conv_noise(conv_results)
-            conv_results = _demote_meta_recall_conv(conv_results)
-            # Phase 5 (conv): collect live-session turns the async per-turn
-            # indexer hasn't caught yet. The Stop hook indexes detached, so the
-            # freshest turns of an ongoing session — and the turn in progress —
-            # lag the store; they lead the conv head so recall sees them now.
-            in_flight_conv: list[HybridResult] = []
-            if cwd_scoped_project:
-                in_flight_conv = self._collect_conv_in_flight_results(
-                    project_infos[0], query, limit
-                )
-            if conv_results or in_flight_conv:
-                chunk_results = _merge_conv_results(
-                    chunk_results, conv_results, limit,
-                    in_flight_head=in_flight_conv,
-                )
 
         # Stale-fact guard: whatever lane a qa arrived from, among the qa
         # slots of the final list the newest answer shows first.

@@ -18,6 +18,13 @@ on their own. Contracts (from the handoff, upgraded to code):
 - ``memory_intent`` queries are exempt from the memory cap — the record
   IS the answer — but chunks still keep one slot when they exist, so a
   misclassified prompt cannot blank the code lane entirely.
+- The conversation lane is planned here too, and only on ``memory_intent``
+  (it is not retrieved otherwise). It was the lane WS1 missed: it sized its
+  own head downstream, so on every recall query it took three of ten slots
+  the plan had already handed to chunks, and ``chunk_floor`` recorded a
+  number the response never honoured. Its size is unchanged by being
+  planned — this made the plan true, not different. The size was then
+  measured (2026-09-08 sweep, see ``_CONV_INTENT_HEAD``): 3 is a cliff.
 - Auxiliary priority: cards → memory → members (ablation: cards carried
   retrieval wins, members were the top pollution source with one
   contribution).
@@ -30,11 +37,22 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-# Memory head size for explicit recall queries. Carried over unchanged
-# from the pre-planner `_merge_memory_results` default: exempt from the
-# under-half cap, but not "fill every slot" — the answer excerpt lives in
-# one or two records, the rest of the list stays available for evidence.
+# Memory head size for explicit recall queries. Carried over from the
+# pre-planner `_merge_memory_results` default and, since 2026-09-08, measured:
+# a 3x3 sweep of (memory, conv) head sizes against the displacement set, the
+# raw-only guard set and the code-axis gold found 3 to be a floor rather than
+# a habit. Dropping it to 2 costs answer_in_top3 on the displacement set
+# (0.67 -> 0.60); raising it to 4 buys +0.005 MRR there and costs the guard
+# set (MRR 0.053 -> 0.045). The code axis does not move at any setting.
 _MEMORY_INTENT_HEAD = 3
+
+# Conversation head size for explicit recall queries. Also measured in the
+# 2026-09-08 sweep: 3 is a cliff, not a carryover. At 2 the raw-only guard set
+# collapses (answer_found 0.30 -> 0.10) because the turns that hold a fact no
+# note restates sit at conv ranks 2-3; at 4 nothing improves. Round 3 planned
+# this lane without resizing it "because there is nothing to size against yet"
+# — there is now.
+_CONV_INTENT_HEAD = 3
 
 # Anti-flood cap for module members, carried over from the pre-planner
 # code: members leaked up to 11 rows at limit=40 while contributing one
@@ -81,10 +99,14 @@ class SlotPlan:
     memory_slots: int  # spliced memory head (qa/card/term/episodic/commit)
     card_slots: int    # module cards
     member_slots: int  # module members
+    conv_slots: int = 0  # spliced conversation head (conv_turn + in-flight)
 
     @property
     def aux_total(self) -> int:
-        return self.memory_slots + self.card_slots + self.member_slots
+        return (
+            self.memory_slots + self.card_slots + self.member_slots
+            + self.conv_slots
+        )
 
 
 def plan_slots(
@@ -96,11 +118,12 @@ def plan_slots(
     n_memory: int,
     n_cards: int,
     n_members: int,
+    n_conv: int = 0,
 ) -> SlotPlan:
     """Decide every lane's slot count in one place."""
     if limit <= 0:
         return SlotPlan(limit=max(limit, 0), chunk_floor=0, memory_slots=0,
-                        card_slots=0, member_slots=0)
+                        card_slots=0, member_slots=0, conv_slots=0)
 
     if memory_intent:
         # Module lanes are off for recall queries (they answer structure,
@@ -108,12 +131,20 @@ def plan_slots(
         # chunks keep one slot when any exist.
         chunk_reserve = 1 if n_chunks > 0 else 0
         memory = min(_MEMORY_INTENT_HEAD, n_memory, max(0, limit - chunk_reserve))
+        # Distilled notes are served before raw turns, so the conv head takes
+        # what is left after the memory head and the chunk reserve. When the
+        # budget is tight the raw lane yields first: the note states the fact,
+        # the turn only contains it.
+        conv = min(
+            _CONV_INTENT_HEAD, n_conv, max(0, limit - chunk_reserve - memory)
+        )
         return SlotPlan(
             limit=limit,
-            chunk_floor=limit - memory,
+            chunk_floor=limit - memory - conv,
             memory_slots=memory,
             card_slots=0,
             member_slots=0,
+            conv_slots=conv,
         )
 
     chunk_floor = min(math.ceil(limit / 2), n_chunks)
