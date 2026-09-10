@@ -41,7 +41,9 @@ for name in names:
                 "SELECT COUNT(*) FROM qa_supersession WHERE project_id = ?",
                 (pinfo.id,),
             ).fetchone()[0]
-        mapping = compute_supersession([(c.id, c.content or "") for c in chunks])
+        mapping = compute_supersession(
+            [(c.id, c.content or "") for c in chunks], project_name=name
+        )
         with db.transaction() as conn:
             db.replace_qa_supersession(conn, pinfo.id, mapping)
         print(f"{name}: qa={len(chunks)}  supersession {before} -> {len(mapping)}")

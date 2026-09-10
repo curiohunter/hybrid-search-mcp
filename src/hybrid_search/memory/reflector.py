@@ -47,6 +47,7 @@ from hybrid_search.memory.supersession import (
     _strict_group_indices,
     _topic_item,
 )
+from hybrid_search.search import qa_topics
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,11 @@ def collect_clusters(project_root: Path) -> list[Cluster]:
     entries.sort(
         key=lambda e: ((e[2] is None), -(e[2].timestamp() if e[2] else 0.0), str(e[0]))
     )
-    items = [_topic_item(content) for _, content, _ in entries]
+    # The project's own name is the most over-weighted token in its own
+    # corpus; clustering on it produces "consolidations" whose only common
+    # ground is which repo they happened in.
+    demote = qa_topics.project_identity_tokens(project_root.name)
+    items = [_topic_item(content, demote) for _, content, _ in entries]
 
     done_hashes = _existing_sources_hashes(project_root)
     clusters: list[Cluster] = []

@@ -332,3 +332,54 @@ class TestDevWorkflowVocabularyStaysDistinctive:
             assert word not in qa_topics._KO_GENERIC_LEMMAS, word
             assert word not in qa_topics._KO_GENERIC_PREFIXES, word
 
+class TestProjectIdentityIsNotATopic:
+    """A corpus's own name carries no topic inside that corpus.
+
+    It sits in every shell prompt, every worktree path and every absolute
+    path a turn quotes, and `_is_identifier` gives snake_case names 3x
+    weight — the highest in the module. On 2026-09-09 two turns sharing
+    nothing else were grouped on it, and because the supersession splice
+    REPLACES a stale hit at full capacity, a gold question's answer left
+    the results entirely.
+
+    The name is known (the registry record at index time,
+    ``HybridResult.project`` at query time), so nothing here is inferred.
+    """
+
+    def test_identity_tokens_cover_the_name_and_its_parts(self) -> None:
+        ident = qa_topics.project_identity_tokens("acme_webapp")
+        assert "acme_webapp" in ident      # the identifier form
+        # and its split parts, normalized the same way any English token
+        # is — "acme" is stemmed to "acm", so the set matches whatever a
+        # turn quoting the name would produce.
+        assert "acm" in ident
+        assert "webapp" in ident
+        assert ident == frozenset(topic_tokens("acme_webapp"))
+
+    def test_the_name_cannot_carry_a_grouping_decision(self) -> None:
+        ident = qa_topics.project_identity_tokens("acme_webapp")
+        a = topic_tokens("적재 쪽 얘기인데 acme-webapp-80", demote=ident)
+        b = topic_tokens("acme_webapp 워크트리에서 개발 서버 띄우는 명령어", demote=ident)
+        shared = {t for t in a.keys() & b.keys()
+                  if min(a[t], b[t]) >= qa_topics._W_NORMAL}
+        assert shared == set(), shared
+
+    def test_without_the_name_the_same_pair_looks_topical(self) -> None:
+        # The regression this guards: with no project context the two
+        # turns above share distinctive tokens and can group.
+        a = topic_tokens("적재 쪽 얘기인데 acme-webapp-80")
+        b = topic_tokens("acme_webapp 워크트리에서 개발 서버 띄우는 명령어")
+        shared = {t for t in a.keys() & b.keys()
+                  if min(a[t], b[t]) >= qa_topics._W_NORMAL}
+        assert shared, "fixture no longer reproduces the pre-fix behavior"
+
+    def test_a_real_topic_word_survives_beside_the_name(self) -> None:
+        ident = qa_topics.project_identity_tokens("acme_webapp")
+        toks = topic_tokens("acme_webapp 정산 배치 시각", demote=ident)
+        assert toks["정산"] == qa_topics._W_NORMAL
+        assert toks["acme_webapp"] == qa_topics._W_GENERIC
+
+    def test_no_project_name_is_the_old_behavior(self) -> None:
+        assert qa_topics.project_identity_tokens(None) == frozenset()
+        assert qa_topics.project_identity_tokens("") == frozenset()
+

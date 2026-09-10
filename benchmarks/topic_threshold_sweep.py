@@ -132,7 +132,8 @@ def main() -> int:
     chunks = [c for c in db.get_chunks_by_node_type(pinfo.id, "qa_log")
               if not ss._is_machine_payload(c.content or "")]
     db.close()
-    items = [ss._topic_item(c.content or "") for c in chunks]
+    demote = topics.project_identity_tokens(args.project)
+    items = [ss._topic_item(c.content or "", demote) for c in chunks]
 
     rng = random.Random(20260909)
     n = len(items)
