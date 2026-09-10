@@ -87,28 +87,18 @@ _ANSWERLESS_QUERY_OVERLAP = 0.85
 # docs/plans/2026-09-10-displacement-audit.md §6.
 _MIN_QUESTION_MASS = 4.0
 
-# Index-time supersession needs a HIGHER question bar than query-time
-# grouping, and this is the number 16 hand-labelled displacements produced
-# (~/.hybrid-search/benchmarks/valuein_displacement_labels.json, keyed by
-# displaced chunk — the corpus's own turns, so the labels stay outside the
-# repo).
+# NOT here: a higher index-time question-overlap bar. It was implemented
+# at 0.70 on the evidence of the displacement labels (it refused 5 of 8
+# damage cases for 2 legitimate ones) and then removed, because the two
+# bars above turned out to catch the same cases: with them in place,
+# dropping the bar back to the query-time value left displacement
+# precision at 100% (9/9 labelled legitimate) while restoring 71
+# mappings. A rule that changes nothing except how much it refuses is
+# not a rule, it is a tax on recall.
 #
-# Every case was read in full and labelled by one question: does the
-# successor answer substantially the same question as the record it
-# replaced? 8 did (legitimate), 8 did not (damage) — the map's
-# displacement precision was 50%. Sorting by question overlap separates
-# them better than anything else measured:
-#
-#   damage      q_ov: 1.00 0.87 0.87 0.60 0.50 0.40 0.39 0.38
-#   legitimate  q_ov: 1.00 1.00 1.00 1.00 1.00 1.00 0.52 0.43
-#
-# Six of eight legitimate displacements are near-verbatim repeats of the
-# same question. Requiring 0.70 refuses 5 of 8 damage cases and costs 2
-# legitimate ones; the answer-less mass bar above catches 2 more damage
-# for 1 more legitimate. `qa_topics._active_thresholds()[0]` (0.30 on the
-# prefix backend) is calibrated for query-time candidates the query has
-# already filtered — corpus-wide it is far too generous.
-_SUPERSESSION_QUERY_OVERLAP = 0.70
+# The lesson is about order. Judged alone, the question bar looked like
+# the best single separator in the labelled set. It was measuring the
+# same failures the symmetric bar measures, from a worse angle.
 
 # Containment is not similarity. `qa_topics.weighted_overlap` divides the
 # shared weight by the LIGHTER side, which is right at query time — a
@@ -249,7 +239,7 @@ def _same_topic_strict(
         return False
     if qa_topics._distinctive_shared_count(a[0], b[0]) < qa_topics._MIN_DISTINCTIVE_SHARED:
         return False
-    query_thr = max(qa_topics._active_thresholds()[0], _SUPERSESSION_QUERY_OVERLAP)
+    query_thr = qa_topics._active_thresholds()[0]
     if qa_topics.weighted_overlap(a[0], b[0]) < query_thr:
         return False
     return _symmetric_question_overlap(a[0], b[0]) >= _MIN_SYMMETRIC_QUESTION_OVERLAP
