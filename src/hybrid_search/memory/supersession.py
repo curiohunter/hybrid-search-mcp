@@ -47,6 +47,14 @@ __all__ = ["compute_supersession"]
 # dropped from grouping — no silent wrong mapping, just no mapping.
 _MAX_ENTRIES = 2000
 
+# Question overlap required when one side carries no answer excerpt.
+# `qa_topics._QUERY_ONLY_OVERLAP` (0.6) is calibrated for query-time
+# candidates, which the query itself has already filtered; corpus-wide the
+# same bar admits any two turns that name the project. Answer-less pairs
+# in this corpus that clear 0.6 sit at a median 0.91, so the genuine ones
+# are near-identical question text and survive this.
+_ANSWERLESS_QUERY_OVERLAP = 0.85
+
 _FRONTMATTER_LINE_RE = re.compile(r"^([A-Za-z_][\w-]*):\s*(.*)$")
 
 
@@ -109,11 +117,36 @@ def _same_topic_strict(
     Private qa_topics thresholds are reused on purpose — one calibration
     source (benchmarks/topic_gold_set.json), not a second set of magic
     numbers."""
+    # When either side has no parseable answer excerpt, `same_topic` falls
+    # back to question overlap ALONE (_QUERY_ONLY_OVERLAP = 0.6). Corpus-
+    # wide that is far too little: two turns whose questions share only the
+    # project's own name clear it easily, because the name sits in every
+    # shell prompt and every worktree path in its own corpus.
+    #
+    # Measured 2026-09-09 on the dogfood corpus: 305 of 2,017 qa records
+    # (15%) carry no excerpt, and they were involved in 179 of 396
+    # mappings — 45%. One evicted the answer to a gold question outright,
+    # because the splice REPLACES a stale hit at full capacity. None of
+    # that is the topic matcher's doing; it predates it, and a gold set
+    # whose fixtures all have answers can never see it.
+    #
+    # These pairs are not banned, because a BARE turn log superseded by
+    # the consolidated note built from it is the design — that mapping is
+    # how the note reaches someone who hit the raw turn. The bar is raised
+    # instead: with no answer to corroborate, the questions must be nearly
+    # the same text, not merely about the same project.
+    if not (a[1] and b[1]):
+        return (
+            qa_topics._distinctive_shared_count(a[0], b[0])
+            >= qa_topics._MIN_DISTINCTIVE_SHARED
+            and qa_topics.weighted_overlap(a[0], b[0]) >= _ANSWERLESS_QUERY_OVERLAP
+        )
     if not qa_topics.same_topic(a, b):
         return False
     if qa_topics._distinctive_shared_count(a[0], b[0]) < qa_topics._MIN_DISTINCTIVE_SHARED:
         return False
-    return qa_topics.weighted_overlap(a[0], b[0]) >= qa_topics._QUERY_OVERLAP
+    query_thr = qa_topics._active_thresholds()[0]
+    return qa_topics.weighted_overlap(a[0], b[0]) >= query_thr
 
 
 def _strict_group_indices(
@@ -182,7 +215,13 @@ def compute_supersession(
         with_ts = [m for m in members if m[2] is not None]
         if not with_ts:
             continue  # no trustworthy "newest" — refuse to guess
-        newest = max(with_ts, key=lambda m: (m[2], m[0]))
+        # The winner must actually carry an answer: a record with no
+        # excerpt has nothing to correct anything WITH, and the splice
+        # would replace a real answer with an empty one.
+        answered = [m for m in with_ts if _topic_item(m[1])[1]]
+        if not answered:
+            continue
+        newest = max(answered, key=lambda m: (m[2], m[0]))
         for chunk_id, content, _ in members:
             if chunk_id == newest[0]:
                 continue

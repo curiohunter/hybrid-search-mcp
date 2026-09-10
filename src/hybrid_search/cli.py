@@ -703,7 +703,10 @@ def _run_qa_supersession(
         finally:
             db.close()
         if mapping:
-            print(f"QA supersession: {len(mapping)} stale entr(ies) mapped.")
+            from hybrid_search.search.qa_topics import topic_backend
+
+            print(f"QA supersession: {len(mapping)} stale entr(ies) mapped "
+                  f"({topic_backend()}).")
     except Exception as exc:  # never block reindex on the mapping pass
         logger.debug("qa supersession pass skipped: %s", exc)
 
@@ -1579,6 +1582,34 @@ def _print_index_coverage(config: Config, pinfo, project_path: Path) -> None:
     )
 
 
+def _print_topic_backend_status(config: Config, pinfo) -> None:
+    """Warn when the stored qa supersession map predates a backend switch.
+
+    Installing or removing the ``[korean]`` extra changes how qa text is
+    tokenized without touching a single file, so nothing else in the
+    pipeline notices — not mtime, not a content hash. The map is then
+    ignored at query time (silently, by design: a wrong correction is
+    worse than none), and this line is where the user finds out why.
+    """
+    try:
+        from hybrid_search.search.qa_topics import topic_backend
+
+        idx = IndexPaths(get_project_dir(config.projects_dir, pinfo.id))
+        if not idx.store_db.exists():
+            return
+        db = StoreDB(idx.store_db)
+        try:
+            if db.qa_supersession_is_current():
+                return
+            stored = db.get_meta(db.QA_TOPIC_BACKEND_KEY) or "ko-prefix-1"
+        finally:
+            db.close()
+        print(f"    ⚠ qa supersession was built by {stored}, running "
+              f"{topic_backend()} — ignored until `reindex`")
+    except Exception:  # never let a status line break status
+        pass
+
+
 def _check_project_status(project_path: Path) -> None:
     """Print per-project health (index, wiki, git hook, .gitignore, CLAUDE.md)."""
     config = load_config()
@@ -1602,6 +1633,7 @@ def _check_project_status(project_path: Path) -> None:
     _print_index_coverage(config, pinfo, project_path)
     if pinfo.last_indexed_at:
         print(f"    Last indexed: {pinfo.last_indexed_at}")
+    _print_topic_backend_status(config, pinfo)
 
     # Wiki
     wiki_dir = project_path / ".hybrid-search" / "wiki"
