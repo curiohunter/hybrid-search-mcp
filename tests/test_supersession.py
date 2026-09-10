@@ -7,10 +7,9 @@ direction wrong deletes an answer rather than updating it.
 
 from __future__ import annotations
 
-import pytest
-
-from hybrid_search.search import qa_topics
 from hybrid_search.memory.supersession import compute_supersession
+from hybrid_search.search import qa_topics
+
 
 class TestConsolidationIsNeverStale:
     """A Reflector note is not an older version of another Reflector note.
@@ -46,6 +45,8 @@ class TestConsolidationIsNeverStale:
             f"## Answer excerpt\n\n{body}\n"
         )
 
+    BODY = "푸시 전에 적용하지 않은 마이그레이션이 남았는지 스키마를 본다"
+
     # The fixture bodies carry TWO distinctive content words on purpose
     # (마이그레이션, 스키마). `_MIN_DISTINCTIVE_SHARED` is 2, and under the
     # morphological backend a sentence of process vocabulary alone —
@@ -54,28 +55,22 @@ class TestConsolidationIsNeverStale:
     # supersession contract these cases are about.
     def test_a_note_is_not_superseded_by_another_note(self):
         entries = [
-            ("older", self._note("2026-09-04T10:00:00+00:00", "aaaa",
-                                 "푸시 전에 적용하지 않은 마이그레이션이 남았는지 스키마를 본다")),
-            ("newer", self._note("2026-09-04T16:00:00+00:00", "bbbb",
-                                 "푸시 전에 적용하지 않은 마이그레이션이 남았는지 스키마를 본다")),
+            ("older", self._note("2026-09-04T10:00:00+00:00", "aaaa", self.BODY)),
+            ("newer", self._note("2026-09-04T16:00:00+00:00", "bbbb", self.BODY)),
         ]
         assert compute_supersession(entries) == {}
 
     def test_a_note_still_supersedes_the_turn_logs_it_was_built_from(self):
         entries = [
-            ("log", self._turn_log("2026-09-01T10:00:00+00:00",
-                                   "푸시 전에 적용하지 않은 마이그레이션이 남았는지 스키마를 본다")),
-            ("note", self._note("2026-09-04T16:00:00+00:00", "bbbb",
-                                "푸시 전에 적용하지 않은 마이그레이션이 남았는지 스키마를 본다")),
+            ("log", self._turn_log("2026-09-01T10:00:00+00:00", self.BODY)),
+            ("note", self._note("2026-09-04T16:00:00+00:00", "bbbb", self.BODY)),
         ]
         assert compute_supersession(entries) == {"log": "note"}
 
     def test_turn_logs_still_supersede_each_other(self):
         entries = [
-            ("old", self._turn_log("2026-09-01T10:00:00+00:00",
-                                   "푸시 전에 적용하지 않은 마이그레이션이 남았는지 스키마를 본다")),
-            ("new", self._turn_log("2026-09-05T10:00:00+00:00",
-                                   "푸시 전에 적용하지 않은 마이그레이션이 남았는지 스키마를 본다")),
+            ("old", self._turn_log("2026-09-01T10:00:00+00:00", self.BODY)),
+            ("new", self._turn_log("2026-09-05T10:00:00+00:00", self.BODY)),
         ]
         assert compute_supersession(entries) == {"old": "new"}
 
