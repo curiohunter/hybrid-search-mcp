@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from hybrid_search.search.qa_topics import (
+    _KO_STOPWORD_PREFIXES,
     same_topic,
     topic_group_indices,
     topic_tokens,
@@ -174,6 +175,85 @@ class TestTopicGroupIndices:
         a = _pair("default timeout", "Default timeout is 5 seconds.")
         b = _pair("unrelated proxy setup", "Proxy is egress.internal with trust_env off.")
         assert topic_group_indices([a, b]) == [[0], [1]]
+
+
+class TestKoreanStopwordFloor:
+    """The Korean counterpart of _EN_STOPWORDS (added 2026-09-09).
+
+    English got 80 dropped stopwords plus a stemmer in 2026-07-13; the
+    Korean side kept only 24 question words, so copulas, demonstratives,
+    quantifiers and 하다/되다/있다/없다 inflections rode at full weight and
+    counted as DISTINCTIVE shared tokens. The damage is length-dependent
+    — one-sentence answers never accumulate enough of them — which is why
+    only the long-answer gold slice exposes it.
+    """
+
+    def test_function_words_are_dropped(self) -> None:
+        toks = topic_tokens("그것은 실제로 다른 경우와 같은 것이 아니라고 합니다")
+        assert toks == {}
+
+    def test_topic_nouns_survive_beside_function_words(self) -> None:
+        toks = topic_tokens("그것은 실제로 정산 배치가 아니라고 합니다")
+        assert set(toks) == {"정산", "배치"}
+
+    def test_list_is_not_extended_past_what_measurement_supports(self) -> None:
+        """The list stops where the benchmark stopped paying for it.
+
+        Completing the 하다/되다/있다 paradigm (했습, 없습, 됐습, 하겠 …) and
+        adding the demonstratives (이게, 그건, 이제 …) was implemented and
+        measured on 2026-09-09: pairwise precision moved 10.6 -> 10.1
+        accepted per 10k, and Set A lost a rank (C6 1 -> 2, MRR 0.571 ->
+        0.546) for it. Both halves cost that rank independently. So
+        했습니다 stays in while 합니다 is dropped — an asymmetry that is a
+        decision, not an oversight, and this test says so out loud.
+        """
+        assert "합니" in _KO_STOPWORD_PREFIXES
+        assert "했습" not in _KO_STOPWORD_PREFIXES
+
+    def test_prefix_collisions_are_not_dropped(self) -> None:
+        # 그래(그래서) / 그리(그리고) / 이미(이미) / 자기(자기) are function
+        # words, but their 2-char prefixes are also the head of real topic
+        # words. The prefix scheme cannot tell them apart, so none of the
+        # four may be listed.
+        for word in ("그래프", "그리드", "이미지", "자기오염"):
+            assert word[:2] in topic_tokens(word), word
+
+    def test_long_korean_answers_on_adjacent_topics_do_not_group(self) -> None:
+        # Shape of the 2026-09-09 valuein finding: two distinct facts about
+        # one workflow, stated at consolidated-note length. Before the floor
+        # they grouped on 것이/다른/아니/실제/있다 alone.
+        a = _pair(
+            "머지한 다음에 원격까지 올렸나요",
+            "이 질문에는 말이 아니라 실물로 답합니다. 지금 로컬 브랜치가 origin/main보다 "
+            "앞서 있는지 보고, 실제로 올라간 커밋 목록을 다시 확인해서 그대로 보여드립니다. "
+            "남의 커밋이 섞여 있으면 그대로 밀지 않고 먼저 알립니다. 다른 세션이 만든 작업을 "
+            "내가 대신 올리는 것은 아니기 때문입니다.",
+        )
+        b = _pair(
+            "안 쓰는 워크트리 정리해 주세요",
+            "워크트리를 지우기 전에 그 안에 남은 미머지 작업이 있는지 먼저 셉니다. 다른 세션이 "
+            "만들어 둔 브랜치가 아직 메인에 들어가지 않았을 수 있어서, 커밋이 남아 있으면 "
+            "지우지 않고 알립니다. 실제로 남의 작업을 통째로 날린 적이 있어서 이 순서는 "
+            "그대로 지킵니다.",
+        )
+        assert not same_topic(a, b)
+
+    def test_removing_shared_noise_strengthens_a_genuine_pair(self) -> None:
+        # The floor is not a blunt threshold raise: it shrinks the
+        # denominator too, so a pair carried by real topic words scores
+        # HIGHER after it. This is why same-slice recall did not move.
+        a = _pair(
+            "정산 배치 언제 도는지 알려줘",
+            "수강료 정산 배치는 매일 새벽 2시(KST)에 돕니다. cron 표현식은 0 2 * * * 이고, "
+            "실패하면 다시 돌리지 않고 알림만 남깁니다. 지금 설정은 그대로입니다.",
+        )
+        b = _pair(
+            "정산 배치 시각 바뀐 거 확인해줘",
+            "수강료 정산 배치 시각이 새벽 2시에서 4시로 바뀌었습니다. cron 표현식은 "
+            "0 4 * * * 입니다. 실패 시 재시도하지 않는 것은 이전과 같습니다.",
+        )
+        assert same_topic(a, b)
+        assert weighted_overlap(a[1], b[1]) > 0.5
 
 
 class TestGoldSetGate:
