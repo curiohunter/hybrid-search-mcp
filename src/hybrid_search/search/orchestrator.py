@@ -1028,12 +1028,30 @@ def _is_consolidation_result(r: HybridResult) -> bool:
     return (_frontmatter_value(r.content, "memory_type") or "") == "consolidated"
 
 
+# How closely a query must match a qa record's OWN question before the
+# record becomes untouchable. Above this the searcher is not stumbling
+# onto a stale answer — they named this record, and handing them a
+# "correction" instead of it answers a question they did not ask.
+_ASKED_FOR_THIS_OVERLAP = 0.8
+
+
+def _query_names_this_record(
+    asked_for: dict[str, float], r: HybridResult
+) -> bool:
+    """True when the query is essentially this record's own question."""
+    own = qa_topics.topic_tokens(_frontmatter_value(r.content, "query") or "")
+    if not own:
+        return False
+    return qa_topics.weighted_overlap(asked_for, own) >= _ASKED_FOR_THIS_OVERLAP
+
+
 def _splice_superseding(
     results: list[HybridResult],
     superseding: dict[str, str],
     fetch: "Callable[[str, HybridResult], HybridResult | None]",
     cap: int = _SUPERSESSION_SPLICE_CAP,
     limit: int | None = None,
+    query: str = "",
 ) -> list[HybridResult]:
     """Surface the newest same-topic qa wherever a stale qa hit appears.
 
@@ -1048,9 +1066,18 @@ def _splice_superseding(
     place — the stale answer drops out entirely rather than displacing
     the tail code hit. Runs after confidence classification, so spliced
     entries never feed the gap/coherence inputs.
+
+    That replacement is the destructive edge of this feature, and
+    ``query`` guards it: a record whose own question the query all but
+    quotes is never replaced, only annotated. The displacement audit
+    (benchmarks/displacement_audit.py) measured the cost of not doing so
+    — asking a record's own question deleted that very record from the
+    results in 11% of probes, and no gold set could see it, because a
+    gold set asks its own questions rather than the corpus's.
     """
     if not superseding:
         return results
+    asked_for = qa_topics.topic_tokens(query) if query else {}
     limit = len(results) if limit is None else max(limit, 1)
     position = {r.chunk_id: i for i, r in enumerate(results)}
     out: list[HybridResult] = []
@@ -1067,6 +1094,11 @@ def _splice_superseding(
             # already recorded. Without the search-side half the repair
             # would need a reindex to take effect.
             newer_id = None
+        if newer_id and asked_for and _query_names_this_record(asked_for, r):
+            # The searcher asked for THIS record. A correction may still be
+            # inserted above it when there is room (handled below by the
+            # spare-capacity branch), but it must never take its slot.
+            newer_id = None if len(results) + inserted >= limit else newer_id
         if r.node_type == "qa_log" and newer_id:
             if newer_id not in position and spliced < cap:
                 newer = fetch(newer_id, r)
@@ -2302,7 +2334,9 @@ class SearchOrchestrator:
                     return _apply_revalidation_flag(built, reval.get(newer_id))
                 return None
 
-            return _splice_superseding(results, superseding, fetch, limit=limit)
+            return _splice_superseding(
+                results, superseding, fetch, limit=limit, query=query
+            )
         except Exception:  # pragma: no cover — never fail a search on this
             logger.debug("supersession splice skipped", exc_info=True)
             return results

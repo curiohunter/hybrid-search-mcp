@@ -15,6 +15,8 @@ sees retrieved chunks. These tests cover the three layers of the fix:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from hybrid_search.memory.supersession import compute_supersession
@@ -428,3 +430,65 @@ class TestConsolidationIsNotReplaced:
         out = _splice_superseding([stale], {"log": "note"},
                                   lambda *_: newer, limit=1)
         assert [r.chunk_id for r in out] == ["note"]
+
+class TestTheRecordTheQueryNamed:
+    """A record the query all but quotes is never replaced.
+
+    The splice's destructive edge: at full capacity a correction takes
+    the stale hit's slot, and the stale hit leaves the results. That is
+    right when the searcher stumbled onto a stale answer. It is wrong
+    when they named the record — then the "correction" answers a
+    question nobody asked, and the one they did ask for is gone.
+
+    Measured before this guard existed (benchmarks/displacement_audit.py,
+    120 probes over the dogfood corpus): asking a record's own question
+    deleted that record from the results in 11% of probes, and the map
+    cost more self-retrievals than it earned. No gold set can see this —
+    a gold set asks its own questions, never the corpus's.
+    """
+
+    QUESTION = "정산 배치 시각이 언제로 바뀌었는지 알려줘"
+
+    def _qa(self, chunk_id: str, question: str) -> HybridResult:
+        r = _mk(chunk_id)
+        return replace(r, content=f'---\nquery: "{question}"\n---\n\nbody')
+
+    def test_named_record_keeps_its_slot_at_full_capacity(self) -> None:
+        stale = self._qa("old", self.QUESTION)
+        results = [stale, _mk("code", node_type="function")]
+        out = _splice_superseding(
+            results, {"old": "new"}, lambda nid, s: _mk(nid),
+            limit=2, query=self.QUESTION,
+        )
+        assert [r.chunk_id for r in out] == ["old", "code"]
+
+    def test_an_unrelated_query_still_gets_the_correction(self) -> None:
+        # The guard must not disable supersession generally: a searcher
+        # who did NOT name this record still gets the newer answer.
+        stale = self._qa("old", self.QUESTION)
+        results = [stale, _mk("code", node_type="function")]
+        out = _splice_superseding(
+            results, {"old": "new"}, lambda nid, s: _mk(nid),
+            limit=2, query="업로드 CSV 인코딩 변환은 어떻게 하고 있나",
+        )
+        assert [r.chunk_id for r in out] == ["new", "code"]
+
+    def test_with_room_the_correction_is_inserted_beside_it(self) -> None:
+        # Naming the record blocks REPLACEMENT, not exposure: with spare
+        # capacity both are shown, newest first.
+        stale = self._qa("old", self.QUESTION)
+        results = [stale, _mk("code", node_type="function")]
+        out = _splice_superseding(
+            results, {"old": "new"}, lambda nid, s: _mk(nid),
+            limit=5, query=self.QUESTION,
+        )
+        assert [r.chunk_id for r in out] == ["new", "old", "code"]
+
+    def test_no_query_is_the_old_behavior(self) -> None:
+        stale = self._qa("old", self.QUESTION)
+        results = [stale, _mk("code", node_type="function")]
+        out = _splice_superseding(
+            results, {"old": "new"}, lambda nid, s: _mk(nid), limit=2,
+        )
+        assert [r.chunk_id for r in out] == ["new", "code"]
+
