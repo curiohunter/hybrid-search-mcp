@@ -7,6 +7,7 @@ direction wrong deletes an answer rather than updating it.
 
 from __future__ import annotations
 
+from hybrid_search.memory import supersession
 from hybrid_search.memory.supersession import compute_supersession
 from hybrid_search.search import qa_topics
 
@@ -239,21 +240,20 @@ class TestProjectNameIsNotEnough:
     def test_the_project_name_alone_does_not_supersede(self) -> None:
         assert self._mapping("acme_webapp") == {}
 
-class TestThinQuestionsStillGroup:
-    """A two-token question clears any ratio bar — and still maps today.
+class TestARatioNeedsSomethingToBeARatioOf:
+    """A two-token question clears any overlap bar trivially.
 
-    This is a KNOWN defect kept in place, not an oversight. Refusing
-    these pairs was implemented and measured on 2026-09-10: the
-    destructive metric improved (map-caused displacement 12% -> 10%,
-    benchmarks/displacement_audit.py) with Set A and the code axis
-    untouched, but Set B fell 0.05 -> 0.02 — and Set B is a floor
-    constraint. A lower bar (3.0) lost the same questions, so the cost is
-    not coming from the thinnest pairs: the splice is an exposure path as
-    well as a correction, and cutting mappings cuts both.
+    With no answer to corroborate, the whole decision rests on the
+    question text — and sharing 2 tokens out of 2 is "100% overlap"
+    while being no evidence at all. Measured on the dogfood corpus
+    (2026-09-10): of the 112 mappings the answer-less path produced,
+    question mass had a median of 7.0 but a 10th percentile of 2.0, and
+    a quarter sat under 4.0. One paired a generic question with another
+    generic question at ratio 1.00 on ['가장', '좋겠'].
 
-    The test asserts the CURRENT behavior so that a future fix has to
-    change it deliberately, with the trade-off in view. See
-    `_MIN_QUESTION_MASS` and docs/plans/2026-09-10-displacement-audit.md.
+    Below the bar the pair is not judged at all — the same refusal the
+    undated branch makes: when the evidence cannot support a decision,
+    decline rather than decide badly.
     """
 
     def _entry(self, ts: str, query: str, answer: str | None) -> str:
@@ -267,15 +267,78 @@ class TestThinQuestionsStillGroup:
             f"{body}"
         )
 
-    def test_a_two_word_question_still_maps_today(self) -> None:
+    ANSWER = "정산 배치를 새벽 4시로 옮겼습니다"
+
+    def test_a_two_word_question_is_not_evidence(self) -> None:
         entries = [
             ("bare", self._entry("2026-09-01T10:00:00+00:00", "가장 좋겠니", None)),
             ("answered", self._entry("2026-09-05T10:00:00+00:00", "가장 좋겠니",
-                                     "정산 배치를 새벽 4시로 옮겼습니다")),
+                                     self.ANSWER)),
+        ]
+        assert compute_supersession(entries) == {}
+
+    def test_a_substantial_question_still_maps(self) -> None:
+        # The bar is on mass, not on being answer-less: the same shape
+        # with a question carrying real content is still mapped.
+        question = "수강료 정산 배치 스케줄러 설정을 어디서 바꾸는지 알려줘"
+        entries = [
+            ("bare", self._entry("2026-09-01T10:00:00+00:00", question, None)),
+            ("answered", self._entry("2026-09-05T10:00:00+00:00", question,
+                                     self.ANSWER)),
         ]
         assert compute_supersession(entries) == {"bare": "answered"}
-        # …and this is why that is uncomfortable: the two questions carry
-        # no topic between them, only shared scaffolding.
-        from hybrid_search.search import qa_topics
 
-        assert sum(qa_topics.topic_tokens("가장 좋겠니").values()) < 4.0
+
+class TestTheMapIsMonotonicInThePredicate:
+    """A stricter predicate must never CREATE a mapping.
+
+    It used to. Successors were read off greedy complete-link groups, so
+    removing one edge split a group and a record that had been its
+    group's winner could land in another group and acquire a successor it
+    never pairwise matched. Measured 2026-09-10 on the dogfood corpus:
+    tightening the predicate produced 35 brand-new mappings and
+    retargeted 33 — and one of the new ones deleted a gold question's
+    answer. That is why every threshold move in this line kept costing
+    the same question whichever way it went.
+
+    Successors are now decided pairwise, which makes the map monotonic:
+    tightening can only take a successor away.
+    """
+
+    def _entry(self, cid: str, ts: str, query: str, answer: str) -> tuple[str, str]:
+        return (cid, (
+            "---\n"
+            f'query: "{query}"\n'
+            f"timestamp: {ts}\n"
+            "trigger: stop_hook\n"
+            "---\n"
+            f"\n## Answer excerpt\n\n{answer}\n"
+        ))
+
+    def test_tightening_only_removes(self) -> None:
+        entries = [
+            self._entry("a", "2026-09-01T10:00:00+00:00",
+                        "수강료 정산 배치 스케줄러 설정 위치",
+                        "스케줄러 설정에서 cron 을 바꿉니다"),
+            self._entry("b", "2026-09-03T10:00:00+00:00",
+                        "수강료 정산 배치 스케줄러 설정 어디",
+                        "스케줄러 설정에서 cron 을 바꿉니다"),
+            self._entry("c", "2026-09-05T10:00:00+00:00",
+                        "정산 배치 스케줄러 cron 표현식",
+                        "cron 표현식은 0 4 * * * 입니다"),
+        ]
+        loose = compute_supersession(entries)
+        saved = supersession._SUPERSESSION_QUERY_OVERLAP
+        supersession._SUPERSESSION_QUERY_OVERLAP = 0.99
+        try:
+            strict = compute_supersession(entries)
+        finally:
+            supersession._SUPERSESSION_QUERY_OVERLAP = saved
+        # The property that matters: tightening never ADDS a key. A
+        # record that had no successor cannot acquire one, and a record
+        # that had one can only lose it or fall back to an older match it
+        # already paired with — never to something it never matched.
+        # (Falling back is expected and fine; measured at 80 of 253 on
+        # the dogfood corpus. Acquiring one was the bug: 35 of 203.)
+        for old in strict:
+            assert old in loose, f"tightening invented a mapping for {old}"
