@@ -190,12 +190,19 @@ def main() -> int:
             #     it out — noise, and calling that damage would drown the
             #     signal in it.
             by_map = dis_id in saved
-            # What took its place? Everything the ON pass has that the OFF
-            # pass did not — the splice's insertions.
+            # What took its place? Not "whatever the ON pass added" — the
+            # map says exactly which chunk supersedes this one, and using
+            # the first insertion instead pairs the wrong texts. That
+            # mis-pairing showed up as replacements OLDER than what they
+            # replaced, which supersession cannot produce, and it was only
+            # visible because someone laid the cases out in a table
+            # (2026-09-10). Read the report, not just the counts.
             added = [(c, t) for c, t in on if c not in {x for x, _ in off}]
-            kept = set()
-            for _c, t in added:
-                kept |= _query_terms(t)
+            successor = saved.get(dis_id)
+            paired = next((t for c, t in added if c == successor), None)
+            if paired is None:
+                paired = added[0][1] if added else ""
+            kept = _query_terms(paired)
             lost = dis_terms - kept
             row["displaced"].append({
                 "chunk": dis_id,
@@ -204,7 +211,8 @@ def main() -> int:
                 "terms_lost_by_replacement": sorted(lost),
                 "suspected_damage": bool(lost) and by_map,
                 "displaced_text": dis_text[:400],
-                "replacement_text": (added[0][1][:400] if added else ""),
+                "replacement_chunk": successor,
+                "replacement_text": paired[:400],
             })
         rows.append(row)
 

@@ -243,3 +243,44 @@ class TestProjectNameIsNotEnough:
 
     def test_the_project_name_alone_does_not_supersede(self) -> None:
         assert self._mapping("acme_webapp") == {}
+
+class TestThinQuestionsStillGroup:
+    """A two-token question clears any ratio bar — and still maps today.
+
+    This is a KNOWN defect kept in place, not an oversight. Refusing
+    these pairs was implemented and measured on 2026-09-10: the
+    destructive metric improved (map-caused displacement 12% -> 10%,
+    benchmarks/displacement_audit.py) with Set A and the code axis
+    untouched, but Set B fell 0.05 -> 0.02 — and Set B is a floor
+    constraint. A lower bar (3.0) lost the same questions, so the cost is
+    not coming from the thinnest pairs: the splice is an exposure path as
+    well as a correction, and cutting mappings cuts both.
+
+    The test asserts the CURRENT behavior so that a future fix has to
+    change it deliberately, with the trade-off in view. See
+    `_MIN_QUESTION_MASS` and docs/plans/2026-09-10-displacement-audit.md.
+    """
+
+    def _entry(self, ts: str, query: str, answer: str | None) -> str:
+        body = f"\n## Answer excerpt\n\n{answer}\n" if answer else "\n"
+        return (
+            "---\n"
+            f'query: "{query}"\n'
+            f"timestamp: {ts}\n"
+            "trigger: stop_hook\n"
+            "---\n"
+            f"{body}"
+        )
+
+    def test_a_two_word_question_still_maps_today(self) -> None:
+        entries = [
+            ("bare", self._entry("2026-09-01T10:00:00+00:00", "가장 좋겠니", None)),
+            ("answered", self._entry("2026-09-05T10:00:00+00:00", "가장 좋겠니",
+                                     "정산 배치를 새벽 4시로 옮겼습니다")),
+        ]
+        assert compute_supersession(entries) == {"bare": "answered"}
+        # …and this is why that is uncomfortable: the two questions carry
+        # no topic between them, only shared scaffolding.
+        from hybrid_search.search import qa_topics
+
+        assert sum(qa_topics.topic_tokens("가장 좋겠니").values()) < 4.0
