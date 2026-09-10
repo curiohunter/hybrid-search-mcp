@@ -2229,7 +2229,16 @@ class SearchOrchestrator:
             if not db_cache:
                 return results
             superseding: dict[str, str] = {}
-            for db, _ in db_cache.values():
+            for db, pname in db_cache.values():
+                # The stored map is only data for the tokenization that
+                # built it; installing or removing the [korean] extra
+                # changes that without touching any qa file.
+                if not db.qa_supersession_is_current():
+                    logger.warning(
+                        "qa supersession for %s was built by a different topic "
+                        "backend — ignoring it; run `reindex` to rebuild", pname,
+                    )
+                    continue
                 superseding.update(db.get_qa_superseding(qa_ids))
             if not superseding:
                 return results
