@@ -9,10 +9,11 @@ same-topic pairs under-grouped (update newer_first 6/6 KO → 1/6 EN)
 while generic English tokens ("unit", "test") over-grouped an
 adversarial pair. This module fixes both with:
 
-  1. Language-aware normalization — Korean keeps the josa-tolerant
-     2-char prefix; English is stemmed (Snowball); code identifiers
-     (``max_connections``, ``SSLContext``, ``http2``) keep their exact
-     lowercased form AND contribute their split parts.
+  1. Language-aware normalization — Korean by morphological analysis
+     when the optional ``[korean]`` extra is installed, else the
+     josa-tolerant 2-char prefix; English is stemmed (Snowball); code
+     identifiers (``max_connections``, ``SSLContext``, ``http2``) keep
+     their exact lowercased form AND contribute their split parts.
   2. Weighted overlap — identifiers count 3x, generic low-information
      words (unit/test/file/학생/파일) count 0.3x, so shared generic
      vocabulary can no longer carry a grouping decision.
@@ -21,9 +22,20 @@ adversarial pair. This module fixes both with:
   4. Complete-link grouping — every member must match every other
      member, so A≈B≈C chains can never pull A and C into one group.
 
-Thresholds are calibrated on benchmarks/topic_gold_set.json (ko/en/mixed
-× same/adjacent/bridge) with a hard zero-false-group constraint on the
-adjacent and bridge slices; see benchmarks/topic_gold_eval.py.
+The Korean side ran without any stopword floor at all until 2026-09-09 —
+English got 80 stopwords and a stemmer in 2026-07-13, Korean got 24
+question words — so copulas, demonstratives and 하다/되다/있다/없다
+inflections all counted as DISTINCTIVE shared tokens. The damage grows
+with answer length, which is why one-sentence gold pairs never showed it
+and 1.5k-char consolidated notes collapsed seven separate facts into one
+supersession clique.
+
+Thresholds are per-backend and calibrated against TWO signals, because
+either alone is blind: benchmarks/topic_gold_set.json is the recall floor
+(hard zero false groups on adjacent/bridge — benchmarks/topic_gold_eval.py)
+and pairwise acceptance over a real qa corpus is the precision signal
+(benchmarks/topic_threshold_sweep.py). The gold set is 88 synthetic pairs
+and has twice stayed green while corpus behavior moved underneath it.
 """
 
 from __future__ import annotations
@@ -31,7 +43,14 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 
-__all__ = ["topic_tokens", "weighted_overlap", "same_topic", "topic_group_indices"]
+__all__ = [
+    "strip_path_directories",
+    "topic_tokens",
+    "weighted_overlap",
+    "same_topic",
+    "topic_group_indices",
+    "topic_backend",
+]
 
 # Tokenized on the ORIGINAL text (no casefold) so camelCase survives long
 # enough to be detected as an identifier. \w keeps underscores intact.
@@ -102,8 +121,28 @@ _KO_GENERIC_PREFIXES = frozenset({
     "진행", "사용", "설정", "작업", "상태", "결과", "내용", "목록",
 })
 
+# The morphological backend's own low-information tier. Separate from the
+# prefix set above because the two tokenizations were calibrated
+# separately: a 2-char prefix pools words the analyzer keeps apart, so an
+# entry that is safely low-information as a lemma can be wrong as a
+# prefix. Adding this list's extra entries to the prefix path was measured
+# and cost a rank (see §5.4 of the audit plan) — under the analyzer it
+# costs nothing, because 브랜치 can no longer be mistaken for 브랜드.
+_KO_GENERIC_LEMMAS = _KO_GENERIC_PREFIXES | frozenset({
+    # Process verbs and quantity words at DF >= 15% over 2,231 real qa
+    # notes. The criterion is stated so this tier stays reproducible
+    # instead of becoming a per-pair fix: language-general process
+    # vocabulary only, never a domain noun however frequent (문항 48%,
+    # 해설 24%, 교재 23% are the dogfood corpus's own subject matter and
+    # keep full weight, or the list overfits one project).
+    "고치", "나오", "필요", "다음", "완료", "전체", "반영", "돌리",
+    "실제", "통과", "들어가", "바꾸", "남기", "알리",
+})
+
 # Korean function words as 2-char prefixes — DROPPED, the counterpart of
-# _EN_STOPWORDS. Until 2026-09-09 the Korean side had no such floor: this
+# _EN_STOPWORDS. FALLBACK PATH ONLY: with the morphological backend these
+# are all reached by part-of-speech instead, and this list is not consulted.
+# Until 2026-09-09 the Korean side had no such floor at all: this
 # module fixed English's missing stemmer in 2026-07-13 but left English's
 # 80-word stopword list with no Korean twin, so copulas, demonstratives,
 # quantifiers and 하다/되다/있다/없다 inflections all rode at _W_NORMAL and
@@ -154,6 +193,98 @@ _KO_STOPWORD_PREFIXES = frozenset({
     # 그 밖의 고빈도 관형·부사
     "실제", "다른", "다르",
 })
+
+
+# --- Korean: morphological backend (optional) --------------------------
+#
+# The prefix rules above are a stand-in for a morphological analyzer, and
+# that is the whole reason the hand list exists. Every published Korean
+# stopword list (stopwordsiso ko: 595 entries) holds BASE forms and bare
+# particles, because it presupposes an analyzer upstream; only 40% of the
+# prefixes above have any counterpart there, and the rest are inflected
+# surfaces (있습/했다/됩니/것이) no such list carries. Meanwhile that same
+# published list cannot be used as-is, because it drops words that ARE the
+# topic in this corpus (근거, 결론, 기준, 비교).
+#
+# With an analyzer the whole problem dissolves into part-of-speech tags:
+# 조사 (J*), 어미 (E*), 접사 (X*), 의존명사 (NNB), 대명사 (NP), 수사 (NR),
+# 관형사 (MM) and 부사 (MAG/MAJ) carry no topic, and 이다/아니다 are their own
+# tags (VCP/VCN). The 2-char truncation goes away with them, and so does
+# its collision problem — 이미(MAG) and 이미지(NNG) become different tokens,
+# 그래서(MAJ) stops eating 그래프(NNG).
+#
+# So kiwipiepy is an OPTIONAL extra (`pip install memory-layer-mcp[korean]`,
+# ~104MB of model) and this module degrades to the prefix path without it,
+# the same shape as the snowballstemmer fallback below. What survives the
+# switch is small and defensible: light verbs that POS cannot rule out
+# because they are genuinely VV/VA, and a handful of 형식명사 that kiwi tags
+# NNG.
+#
+# The two backends do NOT produce interchangeable tokens, so the stored
+# supersession map records which one built it (see storage/db.py) and the
+# query path refuses a map built by the other — a wrong correction is
+# worse than none.
+
+_KIWI_CONTENT_TAGS = frozenset({
+    "NNG",  # 일반명사
+    "NNP",  # 고유명사
+    "VV",   # 동사
+    "VA",   # 형용사
+    "XR",   # 어근 (정확-, 명확- … carries the content of X하다)
+})
+
+# Light verbs and 형식명사 that POS alone cannot rule out: kiwi tags them
+# NNG/VV/VA like any content word, but they appear in Q&As about every
+# topic. Lemma forms (kiwi returns 하 for 했습니다, 위하 for 위해서).
+_KO_LIGHT_LEMMAS = frozenset({
+    # 하다 / 되다 / 있다 / 없다 / 같다 and the -하다 light verbs
+    "하", "되", "있", "없", "같", "말",
+    "위하", "대하", "통하", "의하", "관하", "인하", "시키", "드리",
+    "보이", "지나", "가지",
+    # 형식명사 — kiwi calls these NNG, but they are scaffolding
+    "경우", "정도", "자체", "나머지", "마지막", "부분", "때", "번",
+    # NOT here: 이유. It was, for one draft, and instrumenting the corpus
+    # showed its document frequency fall to 0% — this project's whole
+    # thesis is answering *why*, so 이유 is the last word to throw away.
+})
+
+
+@lru_cache(maxsize=1)
+def _kiwi():
+    """Kiwi morphological analyzer, or None when the optional ``[korean]``
+    extra is not installed. Import and model load happen once."""
+    try:
+        from kiwipiepy import Kiwi
+
+        return Kiwi()
+    except Exception:
+        return None
+
+
+def topic_backend() -> str:
+    """Identifier for the tokenization in force — stamped on the stored
+    supersession map so a backend change cannot be read as data."""
+    return "ko-kiwi-1" if _kiwi() is not None else "ko-prefix-1"
+
+
+def _korean_morphemes(text: str) -> list[str]:
+    """Content morphemes of the Hangul in ``text``, or [] without kiwi.
+
+    Non-Hangul forms are left to the identifier/English path below, which
+    understands snake_case and camelCase in a way kiwi's SL tag does not.
+    """
+    kiwi = _kiwi()
+    if kiwi is None:
+        return []
+    out: list[str] = []
+    for token in kiwi.tokenize(text):
+        if token.tag not in _KIWI_CONTENT_TAGS:
+            continue
+        form = token.form
+        if not _is_hangul(form) or form in _KO_LIGHT_LEMMAS:
+            continue
+        out.append(form)
+    return out
 
 
 @lru_cache(maxsize=1)
@@ -226,35 +357,77 @@ def strip_attachment_boilerplate(text: str) -> str:
     return _ATTACHMENT_BOILERPLATE_RE.sub(" ", text or "")
 
 
+# Filesystem paths, reduced to their basename. Same problem as the banner
+# above, from a different direction: every turn in a project quotes the
+# same directory chain, and its segments are snake_case, so `_is_identifier`
+# hands them 3x weight — the highest in the module. Two turns that share
+# nothing but `/Users/<name>/project/<repo>/...` then look like one topic.
+#
+# On 2026-09-09 that was not theoretical: a gold question's answer was
+# mapped as superseded by an unrelated shell-command paste, and since the
+# splice REPLACES a stale hit at full capacity, the answer left the results
+# entirely. Restoring it is what surfaced this rule.
+#
+# The basename survives on purpose. A file's NAME is a topic — "qa_topics.py
+# 어디 고쳤지" is a question about that file — while the directory chain to it
+# is scaffolding shared by everything in the repo.
+_PATH_RE = re.compile(r"(?:~|\.{0,2}/)[\w.\-]+(?:/[\w.\-]+)+/?")
+
+
+def strip_path_directories(text: str) -> str:
+    """Reduce filesystem paths to their basename."""
+    def _basename(match: re.Match[str]) -> str:
+        segments = match.group(0).rstrip("/").split("/")
+        return f" {segments[-1]} " if segments else " "
+
+    return _PATH_RE.sub(_basename, text or "")
+
+
 def topic_tokens(text: str | None) -> dict[str, float]:
     """Normalized token → weight map for topic comparison.
 
-    Korean: josa-tolerant 2-char prefix (unchanged from the original
-    matcher). English: lowercase + Snowball stem, stopwords dropped.
+    Korean: content morphemes by part-of-speech when the ``[korean]``
+    extra is installed, else the josa-tolerant 2-char prefix (the
+    original matcher). English: lowercase + Snowball stem, stopwords
+    dropped.
     Identifiers: exact lowercased form at 3x weight, plus their split
     parts as ordinary English tokens. Pure digits dropped (timestamps
     and line numbers must never count as topical overlap).
     """
     if not text:
         return {}
-    text = strip_attachment_boilerplate(text)
+    text = strip_path_directories(strip_attachment_boilerplate(text))
     if not text.strip():
         return {}
     stem = _en_stemmer()
     out: dict[str, float] = {}
 
-    def _put(token: str, weight: float) -> None:
-        if len(token) < 2:
+    def _put(token: str, weight: float, *, min_len: int = 2) -> None:
+        # min_len 2 is a PREFIX rule: a 1-char 2-char-prefix is a
+        # truncation artifact, never a word. A lemma is not — 얇다 lemmatizes
+        # to 얇, and 값·물·키·돌 are ordinary nouns. Applying the prefix rule
+        # to lemmas silently deleted them, and cost a gold question whose
+        # subject was 얇은 입력 (2026-09-09).
+        if len(token) < min_len:
             return
         prev = out.get(token, 0.0)
         if weight > prev:
             out[token] = weight
+
+    # With the [korean] extra the whole text is analyzed once, by
+    # part-of-speech; without it each Hangul run falls back to the prefix
+    # rules in the loop below. Either way the non-Hangul path is the same.
+    morphological = _kiwi() is not None
+    for form in _korean_morphemes(text):
+        _put(form, _W_GENERIC if form in _KO_GENERIC_LEMMAS else _W_NORMAL, min_len=1)
 
     for mixed in _TOKEN_RE.findall(text):
         for raw in _split_mixed_script(mixed):
             if raw.isdigit():
                 continue
             if _is_hangul(raw):
+                if morphological:
+                    continue
                 if raw in _KO_INSTRUCTION or raw.endswith("해줘"):
                     continue
                 prefix = raw[:2]
@@ -306,6 +479,36 @@ def _distinctive_shared_count(a: dict[str, float], b: dict[str, float]) -> int:
 # "connect") must never group on its own: two distinctive shared tokens
 # are required on every path.
 _MIN_DISTINCTIVE_SHARED = 2
+_QUERY_ONLY_OVERLAP = 0.6
+
+# Per-backend, because the ratio means different things in each. The
+# analyzer throws away the particles and inflections the prefix path
+# keeps, so both sides of every ratio shrink and every overlap rises —
+# a genuinely-same gold pair went 0.57 -> 0.85, and so did pairs that
+# share nothing but vocabulary. Reusing the prefix point under the
+# analyzer passed all 88 gold pairs while corpus-wide acceptance rose
+# 10.6 -> 14.5 per 10k on junk pairs; the gold set is far too small to
+# see that, which is exactly why it is the recall FLOOR and the corpus
+# is the precision signal (benchmarks/topic_threshold_sweep.py).
+#
+# Both points are the lowest corpus acceptance that still clears the
+# gate, at matched gold recall (35/37):
+#
+#   backend        gold same   corpus accept/10k
+#   ko-prefix-1      35/37           10.6
+#   ko-kiwi-1        35/37            6.3
+#
+# 36/37 was available under the analyzer at 11.0 per 10k and declined:
+# one gold pair is not worth 75% more false grouping, and this matcher
+# sacrifices recall before precision — a false group deletes an answer.
+_THRESHOLDS = {
+    #                query, answer, answer-only
+    "ko-prefix-1": (0.30, 0.18, 0.28),
+    "ko-kiwi-1": (0.48, 0.26, 0.37),
+}
+
+# Module-level names kept for the sweep tools and for tests that pin a
+# single point; `_active_thresholds()` is what the matcher reads.
 _QUERY_OVERLAP = 0.30
 _ANSWER_OVERLAP = 0.18
 # Cross-language pairs (KO question ↔ EN question) share no question
@@ -313,7 +516,17 @@ _ANSWER_OVERLAP = 0.18
 # the fact (max_connections, vitest.config.ts). Adjacent-topic answer
 # overlap tops out well below this on the gold set.
 _ANSWER_ONLY_OVERLAP = 0.28
-_QUERY_ONLY_OVERLAP = 0.6
+
+
+def _active_thresholds() -> tuple[float, float, float]:
+    """(query, answer, answer-only) for the tokenization in force.
+
+    A sweep tool that assigns the module-level names wins, so the
+    calibration harness can hold one point across backends."""
+    if (_QUERY_OVERLAP, _ANSWER_OVERLAP, _ANSWER_ONLY_OVERLAP) != (0.30, 0.18, 0.28):
+        return _QUERY_OVERLAP, _ANSWER_OVERLAP, _ANSWER_ONLY_OVERLAP
+    return _THRESHOLDS.get(topic_backend(), (_QUERY_OVERLAP, _ANSWER_OVERLAP,
+                                             _ANSWER_ONLY_OVERLAP))
 
 
 def same_topic(
@@ -325,6 +538,7 @@ def same_topic(
     facts* — so the answer signal is always required when both answers
     exist, and at least two distinctive (non-generic) shared tokens are
     required on every path."""
+    query_thr, answer_thr, answer_only_thr = _active_thresholds()
     qa_union_a = {**a[1], **a[0]}
     qa_union_b = {**b[1], **b[0]}
     if _distinctive_shared_count(qa_union_a, qa_union_b) < _MIN_DISTINCTIVE_SHARED:
@@ -332,9 +546,9 @@ def same_topic(
     q_ov = weighted_overlap(a[0], b[0])
     if a[1] and b[1]:
         a_ov = weighted_overlap(a[1], b[1])
-        if q_ov >= _QUERY_OVERLAP and a_ov >= _ANSWER_OVERLAP:
+        if q_ov >= query_thr and a_ov >= answer_thr:
             return True
-        return a_ov >= _ANSWER_ONLY_OVERLAP
+        return a_ov >= answer_only_thr
     return q_ov >= _QUERY_ONLY_OVERLAP
 
 

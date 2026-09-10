@@ -43,7 +43,18 @@ Repository = "https://github.com/curiohunter/hybrid-search-mcp"
 
 [project.optional-dependencies]
 gpu = []
-dev = ["pytest>=8.0", "ruff>=0.4"]
+dev = ["pytest>=8.0", "ruff>=0.4", "kiwipiepy>=0.20"]
+# Korean morphological analysis for qa topic matching. Optional because the
+# model is ~104MB and resident memory grows by roughly the same order —
+# a real cost for an MCP server that stays running, and this package's
+# pitch is a one-shot `pip install`. Without it the matcher falls back to
+# josa-tolerant 2-char prefixes plus a hand list, which passes the same
+# gold-set gate at slightly lower recall (35/37 vs 36/37); with it the
+# prefix truncation and most of the hand list go away. Installing or
+# removing it changes the tokenization, so the stored qa supersession map
+# records which backend built it and is ignored (with a warning) when they
+# disagree — run `reindex` after changing this.
+korean = ["kiwipiepy>=0.20"]
 
 [project.scripts]
 hybrid-search-mcp = "hybrid_search.cli:main"

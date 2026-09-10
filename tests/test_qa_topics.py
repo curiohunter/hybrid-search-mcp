@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import hybrid_search.search.qa_topics as qa_topics
 from hybrid_search.search.qa_topics import (
     _KO_STOPWORD_PREFIXES,
     same_topic,
@@ -24,6 +25,23 @@ GOLD = Path(__file__).parent.parent / "benchmarks" / "topic_gold_set.json"
 
 def _pair(query: str, answer: str) -> tuple[dict, dict]:
     return (topic_tokens(query), topic_tokens(answer))
+
+
+def _prefix_tokens(text: str) -> dict:
+    """topic_tokens forced onto the prefix backend.
+
+    The Korean path has two backends (morphological when the ``[korean]``
+    extra is installed, prefix otherwise) and the properties below are
+    backend-specific, so a test that means one of them must say which.
+    """
+    import hybrid_search.search.qa_topics as qt
+
+    real = qt._kiwi
+    qt._kiwi = lambda: None
+    try:
+        return topic_tokens(text)
+    finally:
+        qt._kiwi = real
 
 
 class TestTopicTokens:
@@ -214,12 +232,14 @@ class TestKoreanStopwordFloor:
         # 그래(그래서) / 그리(그리고) / 이미(이미) / 자기(자기) are function
         # words, but their 2-char prefixes are also the head of real topic
         # words. The prefix scheme cannot tell them apart, so none of the
-        # four may be listed.
+        # four may be listed. (The morphological backend has no such
+        # problem — it keeps 그래프 whole — which is why this asserts on
+        # the prefix path specifically.)
         for word in ("그래프", "그리드", "이미지", "자기오염"):
-            assert word[:2] in topic_tokens(word), word
+            assert word[:2] in _prefix_tokens(word), word
 
     def test_long_korean_answers_on_adjacent_topics_do_not_group(self) -> None:
-        # Shape of the 2026-09-09 valuein finding: two distinct facts about
+        # Shape of the 2026-09-09 field finding: two distinct facts about
         # one workflow, stated at consolidated-note length. Before the floor
         # they grouped on 것이/다른/아니/실제/있다 alone.
         a = _pair(
@@ -292,3 +312,23 @@ class TestGoldSetGate:
             assert passed / total >= floor, (
                 f"{lang}/same recall {passed}/{total} below floor {floor:.0%}"
             )
+
+class TestDevWorkflowVocabularyStaysDistinctive:
+    """머지·푸시·배포·커밋·브랜치 must NOT be low-information.
+
+    They look exactly like the English generic tier (test, file, code,
+    request) and demoting them was implemented and measured on
+    2026-09-09: corpus-wide pairwise acceptance improved 8.5 -> 5.9 per
+    10k and every gold slice still passed — and Set A top3 fell 0.70 ->
+    0.65, on the one question that asks about the push procedure itself
+    ("메인에 올리기 전에 뭘 확인하기로 했었지"). Demote the vocabulary of a
+    workflow and you lose the people asking about that workflow. The
+    objective function makes Set A top3 >= 0.70 a hard floor, so this is
+    a rejected branch, not an oversight.
+    """
+
+    def test_workflow_words_keep_full_weight(self) -> None:
+        for word in ("머지", "푸시", "배포", "커밋", "브랜치"):
+            assert word not in qa_topics._KO_GENERIC_LEMMAS, word
+            assert word not in qa_topics._KO_GENERIC_PREFIXES, word
+

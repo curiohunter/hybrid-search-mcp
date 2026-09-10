@@ -94,31 +94,43 @@ def cmd_eval() -> int:
 
 
 def cmd_sweep() -> int:
+    """Grid-search the three thresholds under zero false groups.
+
+    ``_ANSWER_ONLY_OVERLAP`` is swept too (it was not, until 2026-09-09):
+    a cross-language or imperative pair shares no question tokens at all,
+    so it takes the answer-only path and the other two thresholds never
+    see it. That is the path the long-answer slice crosses.
+    """
     pairs = json.loads(GOLD.read_text())["pairs"]
-    grid_q = [round(0.20 + 0.02 * i, 2) for i in range(16)]  # 0.20..0.50
-    grid_a = [round(0.10 + 0.02 * i, 2) for i in range(16)]  # 0.10..0.40
+    grid_q = [round(0.20 + 0.02 * i, 2) for i in range(16)]   # 0.20..0.50
+    grid_a = [round(0.10 + 0.02 * i, 2) for i in range(16)]   # 0.10..0.40
+    grid_ao = [round(0.24 + 0.03 * i, 2) for i in range(13)]  # 0.24..0.60
     rows = []
     for q_thr in grid_q:
         for a_thr in grid_a:
-            qa_topics._QUERY_OVERLAP = q_thr
-            qa_topics._ANSWER_OVERLAP = a_thr
-            report = evaluate(pairs)
-            false_groups = sum(
-                s["total"] - s["pass"]
-                for (_, rel), s in report["slices"].items()
-                if rel in ("adjacent", "bridge")
-            )
-            same_pass = sum(
-                s["pass"] for (_, rel), s in report["slices"].items() if rel == "same"
-            )
-            same_total = sum(
-                s["total"] for (_, rel), s in report["slices"].items() if rel == "same"
-            )
-            rows.append((false_groups, -same_pass, q_thr, a_thr, same_pass, same_total))
+            for ao_thr in grid_ao:
+                qa_topics._QUERY_OVERLAP = q_thr
+                qa_topics._ANSWER_OVERLAP = a_thr
+                qa_topics._ANSWER_ONLY_OVERLAP = ao_thr
+                report = evaluate(pairs)
+                false_groups = sum(
+                    s["total"] - s["pass"]
+                    for (_, rel), s in report["slices"].items()
+                    if rel in ("adjacent", "bridge")
+                )
+                same_pass = sum(
+                    s["pass"] for (_, rel), s in report["slices"].items() if rel == "same"
+                )
+                same_total = sum(
+                    s["total"] for (_, rel), s in report["slices"].items() if rel == "same"
+                )
+                rows.append((false_groups, -same_pass, q_thr, a_thr, ao_thr,
+                             same_pass, same_total))
     rows.sort()
-    print("false_groups  same_recall  q_thr  a_thr")
-    for fg, _, q_thr, a_thr, sp, st in rows[:15]:
-        print(f"{fg:12}  {sp}/{st:9}  {q_thr:.2f}  {a_thr:.2f}")
+    print(f"backend: {qa_topics.topic_backend()}")
+    print("false_groups  same_recall  q_thr  a_thr  ao_thr")
+    for fg, _, q_thr, a_thr, ao_thr, sp, st in rows[:20]:
+        print(f"{fg:12}  {sp}/{st:9}  {q_thr:.2f}  {a_thr:.2f}  {ao_thr:.2f}")
     return 0
 
 

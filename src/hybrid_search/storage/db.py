@@ -704,10 +704,20 @@ class StoreDB:
     # orchestrator reads it at query time to splice the correction in
     # next to a stale hit the retrievers surfaced on their own.
 
+    QA_TOPIC_BACKEND_KEY = "qa_topic_backend"
+
     def replace_qa_supersession(
         self, conn: sqlite3.Connection, project_id: str, mapping: dict[str, str]
     ) -> None:
-        """Overwrite the project's supersession rows with ``mapping``."""
+        """Overwrite the project's supersession rows with ``mapping``.
+
+        The tokenization that produced the mapping is stamped alongside
+        it: the Korean backends (morphological vs prefix) do not produce
+        interchangeable tokens, so a map built by one must not be read as
+        data by the other. Installing or removing the ``[korean]`` extra
+        changes the backend without touching a single qa file, which no
+        content-hash or mtime check would ever notice.
+        """
         conn.execute(
             "DELETE FROM qa_supersession WHERE project_id = ?", (project_id,)
         )
@@ -717,6 +727,28 @@ class StoreDB:
                 "(chunk_id, superseded_by, project_id) VALUES (?, ?, ?)",
                 [(old, new, project_id) for old, new in mapping.items()],
             )
+        from hybrid_search.search.qa_topics import topic_backend
+
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            (self.QA_TOPIC_BACKEND_KEY, topic_backend()),
+        )
+
+    def qa_supersession_is_current(self) -> bool:
+        """False when the stored mapping was built by another topic
+        backend — the caller should ignore it and ask for a reindex. A
+        wrong correction is worse than no correction.
+
+        A map with no stamp predates the marker (indexes written before
+        2026-09-09); it was necessarily built by the prefix backend,
+        which is what an install without the extra still uses.
+        """
+        from hybrid_search.search.qa_topics import topic_backend
+
+        stored = self.get_meta(self.QA_TOPIC_BACKEND_KEY)
+        if stored is None:
+            return topic_backend() == "ko-prefix-1"
+        return stored == topic_backend()
 
     def get_qa_superseding(self, chunk_ids: list[str]) -> dict[str, str]:
         """``{chunk_id: superseding chunk_id}`` for the ids that have one."""

@@ -12,10 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 from hybrid_search.config import load_config
+from hybrid_search.memory.supersession import compute_supersession
 from hybrid_search.project import ProjectRegistry
 from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
-from hybrid_search.memory.supersession import compute_supersession
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--config", required=True)
