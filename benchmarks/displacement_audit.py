@@ -109,6 +109,13 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--seed", type=int, default=20260910)
     ap.add_argument("--out", required=True)
+    ap.add_argument(
+        "--labels",
+        help="JSON of hand-labelled displacements ({labels: {chunk_id: "
+             "{verdict: legitimate|damage}}}), which turns the two rates "
+             "below into an accuracy. Keep it OUTSIDE the repo — the "
+             "rationales identify real turns (CLAUDE.md).",
+    )
     args = ap.parse_args()
 
     # The overlays read the working tree and the running session, so leaving
@@ -163,6 +170,10 @@ def main() -> int:
             db.close()
         print("  supersession map restored")
 
+    labels = {}
+    if args.labels:
+        labels = json.loads(Path(args.labels).read_text(encoding="utf-8"))["labels"]
+
     rows = []
     for cid, question, content in probes:
         on = with_map.get(cid, [])
@@ -207,6 +218,7 @@ def main() -> int:
             row["displaced"].append({
                 "chunk": dis_id,
                 "by_map": by_map,
+                "label": (labels.get(dis_id) or {}).get("verdict"),
                 "matched_terms": sorted(dis_terms),
                 "terms_lost_by_replacement": sorted(lost),
                 "suspected_damage": bool(lost) and by_map,
@@ -237,6 +249,23 @@ def main() -> int:
           f"{len(damage_rows)}  ({len(damage_rows) / n:.0%})  ← suspected damage")
     print(f"  (rank wobble at the limit, not the map : {len(wobble_rows)} — "
           f"reported, not counted)")
+    print()
+    if labels:
+        # With labels the two rates above become one number: of the
+        # displacements the map caused, how many destroyed an answer.
+        seen = {d["chunk"]: d["label"]
+                for r in rows for d in r["displaced"] if d["by_map"]}
+        known = {c: v for c, v in seen.items() if v}
+        dmg = sum(1 for v in known.values() if v == "damage")
+        print("=== labelled accuracy (the two rates above, resolved) ===")
+        print(f"  displacements labelled : {len(known)}/{len(seen)}")
+        if known:
+            print(f"  legitimate  : {len(known) - dmg}  "
+                  f"({(len(known) - dmg) / len(known):.0%}) ← the feature working")
+            print(f"  damage      : {dmg}  ({dmg / len(known):.0%}) ← an answer deleted")
+        if len(known) < len(seen):
+            print("  unlabelled displacements are in the report — label them "
+                  "before trusting a comparison")
     print()
     print("suspected-damage examples are in the report; read them, do not "
           "trust the count alone.")

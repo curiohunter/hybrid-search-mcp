@@ -85,7 +85,53 @@ _ANSWERLESS_QUERY_OVERLAP = 0.85
 # correction vs damage) so the two signals can be compared as accuracy
 # rather than as two rates pointing opposite ways. See
 # docs/plans/2026-09-10-displacement-audit.md §6.
-_MIN_QUESTION_MASS = 4.0  # unused — see above
+_MIN_QUESTION_MASS = 4.0
+
+# Index-time supersession needs a HIGHER question bar than query-time
+# grouping, and this is the number 16 hand-labelled displacements produced
+# (~/.hybrid-search/benchmarks/valuein_displacement_labels.json, keyed by
+# displaced chunk — the corpus's own turns, so the labels stay outside the
+# repo).
+#
+# Every case was read in full and labelled by one question: does the
+# successor answer substantially the same question as the record it
+# replaced? 8 did (legitimate), 8 did not (damage) — the map's
+# displacement precision was 50%. Sorting by question overlap separates
+# them better than anything else measured:
+#
+#   damage      q_ov: 1.00 0.87 0.87 0.60 0.50 0.40 0.39 0.38
+#   legitimate  q_ov: 1.00 1.00 1.00 1.00 1.00 1.00 0.52 0.43
+#
+# Six of eight legitimate displacements are near-verbatim repeats of the
+# same question. Requiring 0.70 refuses 5 of 8 damage cases and costs 2
+# legitimate ones; the answer-less mass bar above catches 2 more damage
+# for 1 more legitimate. `qa_topics._active_thresholds()[0]` (0.30 on the
+# prefix backend) is calibrated for query-time candidates the query has
+# already filtered — corpus-wide it is far too generous.
+_SUPERSESSION_QUERY_OVERLAP = 0.70
+
+# Containment is not similarity. `qa_topics.weighted_overlap` divides the
+# shared weight by the LIGHTER side, which is right at query time — a
+# short query matching part of a long record is a hit. Corpus-wide it
+# reads a short question fully contained in a long pasted block as 1.00
+# while the block shares almost nothing with it, and pasted blocks are
+# everywhere in a qa corpus (people quote whole exchanges back).
+#
+# That artifact deleted the answer to a gold question: a turn whose query
+# was a pasted transcript scored 1.00 against an unrelated one-line
+# question and was replaced by it. Requiring the overlap to cover a share
+# of the HEAVIER side too is symmetric, so containment alone cannot pass.
+#
+# Calibrated on 21 hand-labelled displacements
+# (~/.hybrid-search/benchmarks/valuein_displacement_labels.json). Of the
+# pairs the other rules still let through:
+#
+#   damage      symmetric overlap: 0.07 0.21 0.29 0.29
+#   legitimate  symmetric overlap: 0.19 0.36 0.38 0.50 0.92 1.00 1.00 1.00 1.00
+#
+# 0.33 sits in the gap: it refuses all four remaining damage cases and
+# costs one legitimate one.
+_MIN_SYMMETRIC_QUESTION_OVERLAP = 0.33
 
 _FRONTMATTER_LINE_RE = re.compile(r"^([A-Za-z_][\w-]*):\s*(.*)$")
 
@@ -141,6 +187,22 @@ def _is_machine_payload(content: str) -> bool:
     return query.startswith("<")
 
 
+def _symmetric_question_overlap(
+    a: dict[str, float], b: dict[str, float]
+) -> float:
+    """Shared question weight over the HEAVIER side (0..1).
+
+    The mirror of `qa_topics.weighted_overlap`, which uses the lighter
+    side. Both together mean "each question is largely the other" rather
+    than "one contains the other" — see `_MIN_SYMMETRIC_QUESTION_OVERLAP`.
+    """
+    if not a or not b:
+        return 0.0
+    shared = sum(min(a[t], b[t]) for t in a.keys() & b.keys())
+    denom = max(sum(a.values()), sum(b.values()))
+    return shared / denom if denom else 0.0
+
+
 def _same_topic_strict(
     a: tuple[dict[str, float], dict[str, float]],
     b: tuple[dict[str, float], dict[str, float]],
@@ -176,6 +238,8 @@ def _same_topic_strict(
     # instead: with no answer to corroborate, the questions must be nearly
     # the same text, not merely about the same project.
     if not (a[1] and b[1]):
+        if min(sum(a[0].values()), sum(b[0].values())) < _MIN_QUESTION_MASS:
+            return False
         return (
             qa_topics._distinctive_shared_count(a[0], b[0])
             >= qa_topics._MIN_DISTINCTIVE_SHARED
@@ -185,15 +249,25 @@ def _same_topic_strict(
         return False
     if qa_topics._distinctive_shared_count(a[0], b[0]) < qa_topics._MIN_DISTINCTIVE_SHARED:
         return False
-    query_thr = qa_topics._active_thresholds()[0]
-    return qa_topics.weighted_overlap(a[0], b[0]) >= query_thr
+    query_thr = max(qa_topics._active_thresholds()[0], _SUPERSESSION_QUERY_OVERLAP)
+    if qa_topics.weighted_overlap(a[0], b[0]) < query_thr:
+        return False
+    return _symmetric_question_overlap(a[0], b[0]) >= _MIN_SYMMETRIC_QUESTION_OVERLAP
 
 
 def _strict_group_indices(
     items: list[tuple[dict[str, float], dict[str, float]]],
 ) -> list[list[int]]:
     """Complete-link grouping under the strict predicate (same shape as
-    `qa_topics.topic_group_indices`, which hardcodes the lenient one)."""
+    `qa_topics.topic_group_indices`, which hardcodes the lenient one).
+
+    Used by the Reflector, which genuinely needs CLUSTERS — a
+    consolidation note is written from a set of records that belong
+    together. `compute_supersession` deliberately does NOT use it: it
+    needs one successor per record, and deriving that from group
+    membership made the map non-monotonic in the predicate (see the
+    comment in `compute_supersession`).
+    """
     groups: list[list[int]] = []
     for i, item in enumerate(items):
         for group in groups:
@@ -256,36 +330,65 @@ def compute_supersession(
     )
     items = [_topic_item(content, demote) for _, content, _ in dated]
 
+    # For each record, the NEWEST record that is the same topic as THAT
+    # record — decided pairwise, not by group membership.
+    #
+    # Group membership used to decide it (greedy complete-link, newest
+    # first), and that made the whole map non-monotonic in the predicate:
+    # removing one edge splits a group, and a record that had been its
+    # group's winner can land in a different group and acquire a
+    # successor it never pairwise matched. Measured 2026-09-10 — making
+    # the predicate STRICTER produced 35 brand-new mappings and
+    # retargeted 33, and one of the new ones deleted a gold question's
+    # answer. Tightening a threshold could therefore create damage, which
+    # is why every threshold move in this line kept costing the same
+    # question no matter which direction it went.
+    #
+    # Pairwise is monotonic (a stricter predicate can only take a
+    # successor away, never invent one), needs no anti-chaining rule (A
+    # only ever maps to something A itself matched), and answers the
+    # question the splice actually asks: "for THIS stale hit, what is the
+    # current answer on its topic?" Scanning newest-first and stopping at
+    # the first match keeps it cheap despite being O(n^2) in the worst
+    # case.
     mapping: dict[str, str] = {}
-    for group in _strict_group_indices(items):
-        if len(group) < 2:
+    for i, (chunk_id, content, _ts) in enumerate(dated):
+        if _is_consolidation(content):
+            # A consolidation is not an older version of anything. It
+            # synthesises its own cluster of records, so two notes on
+            # adjacent topics are two answers, not an answer and its
+            # update — and the topic matcher pairs them readily because a
+            # Reflector run writes many notes on one day about one area.
+            # Superseding one by the other is destructive: at full
+            # capacity the splice REPLACES the stale hit, so the note that
+            # actually answered the question leaves the results
+            # (2026-09-09). Notes still supersede the raw logs they were
+            # built from — that direction is the design.
             continue
-        members = [dated[i] for i in group]
-        with_ts = [m for m in members if m[2] is not None]
-        if not with_ts:
-            continue  # no trustworthy "newest" — refuse to guess
-        # The winner must actually carry an answer: a record with no
-        # excerpt has nothing to correct anything WITH, and the splice
-        # would replace a real answer with an empty one.
-        answered = [m for m in with_ts if _topic_item(m[1], demote)[1]]
-        if not answered:
-            continue
-        newest = max(answered, key=lambda m: (m[2], m[0]))
-        for chunk_id, content, _ in members:
-            if chunk_id == newest[0]:
+        # `dated` is newest-first (undated last), so everything before i
+        # is newer than i. Which candidates are eligible depends on
+        # whether i has an answer of its own:
+        #
+        #   · i HAS an answer — only a NEWER answer may replace it. That
+        #     is supersession proper: a fact restated later.
+        #   · i has NO answer — any answered record on its topic may take
+        #     its place, older included. That is not supersession by time
+        #     but the exposure path the design wants: someone who hits a
+        #     bare turn should be handed the record that answers it, and
+        #     the labelled cases confirm it (3 of 8 legitimate
+        #     displacements were exactly this shape).
+        #
+        # Either way the FIRST match wins, which is the newest one.
+        candidates = range(i) if items[i][1] else range(len(dated))
+        for j in candidates:
+            if j == i:
                 continue
-            if _is_consolidation(content):
-                # A consolidation is not an older version of anything. It
-                # synthesises its own cluster of records, so two notes on
-                # adjacent topics are two answers, not an answer and its
-                # update — and the topic matcher pairs them readily because
-                # a Reflector run writes many notes on one day about one
-                # area. Superseding one by the other is destructive: at full
-                # capacity the splice REPLACES the stale hit, so the note
-                # that actually answered the question leaves the results
-                # (2026-09-09: the top-ranked note of a gold question
-                # vanished exactly this way). Notes still supersede the raw
-                # logs they were built from — that direction is the design.
+            # The winner must carry an answer: a record with no excerpt
+            # has nothing to correct anything WITH, and the splice would
+            # replace a real answer with an empty one.
+            if dated[j][2] is None or not items[j][1]:
                 continue
-            mapping[chunk_id] = newest[0]
+            if _same_topic_strict(items[i], items[j]):
+                mapping[chunk_id] = dated[j][0]
+                break
     return mapping
