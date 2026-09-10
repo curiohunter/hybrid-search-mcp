@@ -200,3 +200,46 @@ class TestAnswerlessRecords:
                                   "포트 3001로 개발 서버를 띄운다")),
         ]
         assert compute_supersession(entries) == {}
+
+class TestProjectNameIsNotEnough:
+    """The corpus's own name must not group two records on its own.
+
+    2026-09-09: a gold question's answer was mapped as superseded by an
+    unrelated shell paste, on nothing but the project name — which sits in
+    every shell prompt and every worktree path in its own corpus, and
+    which `_is_identifier` weights 3x for being snake_case. The answer
+    then left the results, because the splice REPLACES a stale hit at full
+    capacity.
+
+    The fixture keeps the real shape: one side has no ``## Answer
+    excerpt``, so the pair is judged on question text alone.
+    """
+
+    def _entry(self, ts: str, query: str, answer: str | None) -> str:
+        body = f"\n## Answer excerpt\n\n{answer}\n" if answer else "\n"
+        return (
+            "---\n"
+            f'query: "{query}"\n'
+            f"timestamp: {ts}\n"
+            "trigger: stop_hook\n"
+            "---\n"
+            f"{body}"
+        )
+
+    def _mapping(self, project_name: str | None) -> dict[str, str]:
+        entries = [
+            ("bare", self._entry("2026-09-01T10:00:00+00:00",
+                                 "acme_webapp 확인", None)),
+            ("other", self._entry("2026-09-05T10:00:00+00:00",
+                                  "acme_webapp 재시작",
+                                  "개발 서버를 3001 포트로 다시 띄웠습니다")),
+        ]
+        return compute_supersession(entries, project_name=project_name)
+
+    def test_the_fixture_reproduces_the_bug_without_the_name(self) -> None:
+        # Guards the guard: if this stops grouping for some other reason,
+        # the assertion below would prove nothing.
+        assert self._mapping(None) == {"bare": "other"}
+
+    def test_the_project_name_alone_does_not_supersede(self) -> None:
+        assert self._mapping("acme_webapp") == {}
