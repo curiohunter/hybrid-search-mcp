@@ -20,10 +20,9 @@ from dataclasses import replace
 import pytest
 
 from hybrid_search.memory.supersession import compute_supersession
-from hybrid_search.search.orchestrator import HybridResult, _splice_superseding
 from hybrid_search.search.orchestrator import (
-    HybridResult,
     _SUPERSEDED_MARK,
+    HybridResult,
     _splice_superseding,
 )
 from hybrid_search.storage.db import ChunkRecord, FileRecord, StoreDB
