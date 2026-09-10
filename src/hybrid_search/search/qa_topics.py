@@ -94,6 +94,65 @@ _EN_GENERIC_WORDS = (
 _KO_GENERIC_PREFIXES = frozenset({
     "학생", "파일", "오류", "에러", "문제", "확인", "변경", "추가",
     "방식", "관련",
+    # Domain-neutral verbs and nouns — the Korean side of the
+    # "make"/"add"/"change"/"value" entries above. Kept at 0.3 rather
+    # than dropped: many shared generics still nudge a genuinely-same
+    # pair, and one shared generic must not decide alone.
+    "만들", "생성", "삭제", "수정", "적용", "실행", "발생", "처리",
+    "진행", "사용", "설정", "작업", "상태", "결과", "내용", "목록",
+})
+
+# Korean function words as 2-char prefixes — DROPPED, the counterpart of
+# _EN_STOPWORDS. Until 2026-09-09 the Korean side had no such floor: this
+# module fixed English's missing stemmer in 2026-07-13 but left English's
+# 80-word stopword list with no Korean twin, so copulas, demonstratives,
+# quantifiers and 하다/되다/있다/없다 inflections all rode at _W_NORMAL and
+# counted as DISTINCTIVE shared tokens.
+#
+# The damage is length-dependent, which is why the gold set never caught
+# it: its one-sentence answers are too short for the noise to accumulate.
+# On real consolidated notes (~1.5k chars) it grouped seven distinct
+# git-workflow facts into one clique — 21 pairs, 6 of them passing even
+# the strict index-time predicate — carried by 것이/다른/아니/실제/있다.
+#
+# Derived from document frequency over 2,236 real qa notes, then filtered
+# to closed-class items only: a high-DF DOMAIN noun must not be listed,
+# that would overfit one corpus. Four candidates are deliberately absent
+# because the 2-char prefix collides with a real topic word —
+# 그래(그래프), 그리(그리드), 이미(이미지), 자기(자기오염/자기평가).
+#
+# The list is also deliberately INCOMPLETE as a paradigm: 합니/입니/있습 are
+# here, 했습/없습/됐습/하겠 are not, and the demonstratives (이게/그건/이제 …)
+# are not. Completing either half was implemented and measured — pairwise
+# precision moved only 10.6 -> 10.1 accepted per 10k while Set A lost a
+# rank (MRR 0.571 -> 0.546), each half costing it independently. A change
+# that costs a measured rank and buys nothing measurable does not ship;
+# see docs/plans/2026-09-09-topic-matcher-audit.md §5.4. Add to this list
+# only with a benchmark run behind it.
+_KO_STOPWORD_PREFIXES = frozenset({
+    # 있다 / 없다 / 되다 / 하다 / 이다 inflections
+    "있습", "있는", "있다", "있어", "있으", "있었", "있고",
+    "없다", "없는", "없이", "없어", "없었",
+    "된다", "되는", "되지", "됐다", "되고", "됩니",
+    "한다", "하는", "하지", "했다", "하고", "하면", "해서", "해야",
+    "했고", "했는", "합니", "입니", "습니",
+    # 아니다 / 같다
+    "아니", "같다", "같은", "같이",
+    # 의존명사 · 지시 · 대명사
+    "것이", "것은", "것을", "것도", "것만", "것과", "것으",
+    "이것", "그것", "저것", "여기", "거기", "저기",
+    "내가", "네가", "제가", "우리", "당신", "남의",
+    "경우", "정도", "자체", "때문", "위해", "대해", "통해",
+    # 접속 · 지시 부사
+    "그렇", "이렇", "저렇", "그런", "이런", "저런",
+    "그러", "따라", "또는", "만약",
+    # 시간 · 정도 부사
+    "지금", "다시", "아직", "그냥", "바로", "매우", "아주", "정말",
+    "훨씬", "먼저", "나중", "이전", "이후", "처음", "마지",
+    # 수량 · 범위
+    "하나", "전부", "모두", "모든", "각각", "여러", "몇몇", "대부",
+    # 그 밖의 고빈도 관형·부사
+    "실제", "다른", "다르",
 })
 
 
@@ -199,6 +258,8 @@ def topic_tokens(text: str | None) -> dict[str, float]:
                 if raw in _KO_INSTRUCTION or raw.endswith("해줘"):
                     continue
                 prefix = raw[:2]
+                if prefix in _KO_STOPWORD_PREFIXES:
+                    continue
                 _put(prefix, _W_GENERIC if prefix in _KO_GENERIC_PREFIXES else _W_NORMAL)
                 continue
             lowered = raw.lower()
