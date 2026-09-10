@@ -62,6 +62,31 @@ _MAX_ENTRIES = 2000
 # question text alone, and other ubiquitous vocabulary exists.
 _ANSWERLESS_QUERY_OVERLAP = 0.85
 
+# A ratio needs something to be a ratio OF, and this bar is NOT APPLIED —
+# it is recorded here because the defect it names is real and measured,
+# and the next person should not have to rediscover either half.
+#
+# The defect (2026-09-10, dogfood corpus): over the 112 mappings the
+# answer-less path produced, question mass on the lighter side has a
+# median of 7.0 but a 10th percentile of 2.0, and 29 of them — a quarter
+# — sit below 4.0. A question of two tokens clears any ratio trivially:
+# sharing 2 of 2 is "100% overlap" and no evidence at all. One mapping
+# paired ['가장','좋겠'] with ['가장','좋겠'] at 1.00.
+#
+# Why it is not applied: refusing those pairs improves the destructive
+# metric (map-caused displacement 12% -> 10%, benchmarks/
+# displacement_audit.py) and leaves Set A and the code axis untouched —
+# but Set B drops 0.05 -> 0.02, and Set B is a floor constraint in this
+# line's objective function. 3.0 was tried too; same drop, so the lost
+# exposure is not coming from the thinnest pairs. The splice is both a
+# correction and an exposure path, and cutting mappings cuts both.
+#
+# What would settle it: label the displacement cases (legitimate
+# correction vs damage) so the two signals can be compared as accuracy
+# rather than as two rates pointing opposite ways. See
+# docs/plans/2026-09-10-displacement-audit.md §6.
+_MIN_QUESTION_MASS = 4.0  # unused — see above
+
 _FRONTMATTER_LINE_RE = re.compile(r"^([A-Za-z_][\w-]*):\s*(.*)$")
 
 
