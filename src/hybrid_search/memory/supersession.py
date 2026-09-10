@@ -50,9 +50,16 @@ _MAX_ENTRIES = 2000
 # Question overlap required when one side carries no answer excerpt.
 # `qa_topics._QUERY_ONLY_OVERLAP` (0.6) is calibrated for query-time
 # candidates, which the query itself has already filtered; corpus-wide the
-# same bar admits any two turns that name the project. Answer-less pairs
-# in this corpus that clear 0.6 sit at a median 0.91, so the genuine ones
-# are near-identical question text and survive this.
+# same bar admits far too much. Answer-less pairs in this corpus that
+# clear 0.6 sit at a median 0.91, so the genuine ones are near-identical
+# question text and survive this.
+#
+# Kept even after the project's own naming stopped carrying weight
+# (`project_identity_tokens`, which removes the CAUSE of the case that
+# surfaced this). Relaxing it back to 0.6 with that fix in place was
+# measured: corpus acceptance 9.7 -> 10.5 per 10k, 36 more mappings. The
+# root fix is not a superset of this bar — answer-less pairs run on
+# question text alone, and other ubiquitous vocabulary exists.
 _ANSWERLESS_QUERY_OVERLAP = 0.85
 
 _FRONTMATTER_LINE_RE = re.compile(r"^([A-Za-z_][\w-]*):\s*(.*)$")
@@ -81,15 +88,23 @@ def _parse_timestamp(content: str) -> datetime | None:
         return None
 
 
-def _topic_item(content: str) -> tuple[dict[str, float], dict[str, float]]:
+def _topic_item(
+    content: str, demote: frozenset[str] = frozenset()
+) -> tuple[dict[str, float], dict[str, float]]:
     """(question tokens, answer tokens) — mirrors the orchestrator's
-    `_qa_topic_tokens` so index-time groups agree with query-time ones."""
-    question = qa_topics.topic_tokens(_frontmatter_value(content, "query") or "")
+    `_qa_topic_tokens` so index-time groups agree with query-time ones.
+
+    ``demote`` is the project's own naming (see
+    `qa_topics.project_identity_tokens`); both sides must pass the same
+    set or the two groupings drift apart."""
+    question = qa_topics.topic_tokens(
+        _frontmatter_value(content, "query") or "", demote=demote
+    )
     answer: dict[str, float] = {}
     if "## Answer excerpt" in content:
         excerpt = content.split("## Answer excerpt", 1)[1]
         excerpt = excerpt.split("## Top results", 1)[0]
-        answer = qa_topics.topic_tokens(excerpt)
+        answer = qa_topics.topic_tokens(excerpt, demote=demote)
     return question, answer
 
 
@@ -172,13 +187,22 @@ def _is_consolidation(content: str) -> bool:
 
 def compute_supersession(
     entries: list[tuple[str, str]],
+    *,
+    project_name: str | None = None,
 ) -> dict[str, str]:
     """``{superseded chunk_id: superseding chunk_id}`` over a qa corpus.
 
     ``entries`` is ``(chunk_id, content)`` for every qa_log chunk of one
     project. Grouping is the calibrated complete-link matcher; within a
     group the newest timestamp wins and every other member maps to it.
+
+    ``project_name`` demotes the corpus's own naming to low-information
+    (`qa_topics.project_identity_tokens`). Corpus-wide it is the single
+    most over-weighted token there is — every shell prompt and every
+    quoted path carries it — and grouping on it alone is what deleted a
+    gold question's answer on 2026-09-09.
     """
+    demote = qa_topics.project_identity_tokens(project_name)
     if len(entries) < 2:
         return {}
 
@@ -205,7 +229,7 @@ def compute_supersession(
     dated.sort(
         key=lambda e: ((e[2] is None), -(e[2].timestamp() if e[2] else 0.0), e[0])
     )
-    items = [_topic_item(content) for _, content, _ in dated]
+    items = [_topic_item(content, demote) for _, content, _ in dated]
 
     mapping: dict[str, str] = {}
     for group in _strict_group_indices(items):
@@ -218,7 +242,7 @@ def compute_supersession(
         # The winner must actually carry an answer: a record with no
         # excerpt has nothing to correct anything WITH, and the splice
         # would replace a real answer with an empty one.
-        answered = [m for m in with_ts if _topic_item(m[1])[1]]
+        answered = [m for m in with_ts if _topic_item(m[1], demote)[1]]
         if not answered:
             continue
         newest = max(answered, key=lambda m: (m[2], m[0]))

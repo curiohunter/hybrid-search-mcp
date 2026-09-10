@@ -936,15 +936,20 @@ def _qa_topic_tokens(r: HybridResult) -> tuple[dict[str, float], dict[str, float
     # The frontmatter query is the question; r.name is the qa FILE STEM
     # ("12-045318-f4f257fb") — hash fragments there dilute the overlap
     # denominator, so the name is only a fallback when frontmatter is gone.
+    # Each result is tokenized against ITS OWN project's naming, which the
+    # result carries. Two hits from different projects therefore demote
+    # different tokens — correct, since "the project's own name" is only
+    # uninformative inside that project.
+    demote = qa_topics.project_identity_tokens(r.project)
     question = qa_topics.topic_tokens(
-        _frontmatter_value(r.content, "query") or r.name or ""
+        _frontmatter_value(r.content, "query") or r.name or "", demote=demote
     )
     answer: dict[str, float] = {}
     content = r.content or ""
     if "## Answer excerpt" in content:
         excerpt = content.split("## Answer excerpt", 1)[1]
         excerpt = excerpt.split("## Top results", 1)[0]
-        answer = qa_topics.topic_tokens(excerpt)
+        answer = qa_topics.topic_tokens(excerpt, demote=demote)
     return question, answer
 
 

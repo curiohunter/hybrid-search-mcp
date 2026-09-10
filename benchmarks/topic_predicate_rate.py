@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from hybrid_search.config import load_config
 from hybrid_search.memory import supersession as ss
 from hybrid_search.project import ProjectRegistry
+from hybrid_search.search import qa_topics as topics
 from hybrid_search.storage.db import StoreDB
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir
 
@@ -28,7 +29,8 @@ db = StoreDB(IndexPaths(get_project_dir(cfg.projects_dir, p.id)).store_db)
 chunks = [c for c in db.get_chunks_by_node_type(p.id, "qa_log")
           if not ss._is_machine_payload(c.content or "")]
 db.close()
-items = [ss._topic_item(c.content or "") for c in chunks]
+demote = topics.project_identity_tokens(a.project)
+items = [ss._topic_item(c.content or "", demote) for c in chunks]
 qs = [(ss._frontmatter_value(c.content or "", "query") or "")[:80] for c in chunks]
 rng = random.Random(20260909)
 n = len(items)
