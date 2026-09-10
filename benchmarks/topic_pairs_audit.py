@@ -18,8 +18,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from hybrid_search.search import qa_topics
 from hybrid_search.memory import supersession
+from hybrid_search.search import qa_topics
 
 
 def load(path: pathlib.Path):
