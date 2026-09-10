@@ -328,12 +328,12 @@ class TestTheMapIsMonotonicInThePredicate:
                         "cron 표현식은 0 4 * * * 입니다"),
         ]
         loose = compute_supersession(entries)
-        saved = supersession._SUPERSESSION_QUERY_OVERLAP
-        supersession._SUPERSESSION_QUERY_OVERLAP = 0.99
+        saved = supersession._MIN_SYMMETRIC_QUESTION_OVERLAP
+        supersession._MIN_SYMMETRIC_QUESTION_OVERLAP = 0.99
         try:
             strict = compute_supersession(entries)
         finally:
-            supersession._SUPERSESSION_QUERY_OVERLAP = saved
+            supersession._MIN_SYMMETRIC_QUESTION_OVERLAP = saved
         # The property that matters: tightening never ADDS a key. A
         # record that had no successor cannot acquire one, and a record
         # that had one can only lose it or fall back to an older match it
