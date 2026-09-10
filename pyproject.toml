@@ -43,7 +43,10 @@ Repository = "https://github.com/curiohunter/hybrid-search-mcp"
 
 [project.optional-dependencies]
 gpu = []
-dev = ["pytest>=8.0", "ruff>=0.4", "kiwipiepy>=0.20"]
+# NOT kiwipiepy: `dev` must exercise the DEFAULT install path, which is
+# what almost everyone runs. To test the analyzer path, install the
+# `korean` extra alongside — the suite passes on both.
+dev = ["pytest>=8.0", "ruff>=0.4"]
 # Korean morphological analysis for qa topic matching. Optional because the
 # model is ~104MB and resident memory grows by roughly the same order —
 # a real cost for an MCP server that stays running, and this package's
