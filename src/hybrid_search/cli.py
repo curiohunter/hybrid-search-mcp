@@ -697,7 +697,7 @@ def _run_qa_supersession(
         try:
             qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
             entries = [(c.id, c.content or "") for c in qa_chunks]
-            mapping = compute_supersession(entries)
+            mapping = compute_supersession(entries, project_name=pinfo.name)
             with db.transaction() as conn:
                 db.replace_qa_supersession(conn, pinfo.id, mapping)
         finally:

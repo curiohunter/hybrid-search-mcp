@@ -44,6 +44,7 @@ import re
 from functools import lru_cache
 
 __all__ = [
+    "project_identity_tokens",
     "strip_path_directories",
     "topic_tokens",
     "weighted_overlap",
@@ -383,7 +384,36 @@ def strip_path_directories(text: str) -> str:
     return _PATH_RE.sub(_basename, text or "")
 
 
-def topic_tokens(text: str | None) -> dict[str, float]:
+@lru_cache(maxsize=128)
+def project_identity_tokens(project_name: str | None) -> frozenset[str]:
+    """Tokens that are just the corpus naming itself.
+
+    A project's own name is the least informative token in its own
+    corpus — it sits in every shell prompt, every worktree path and every
+    absolute path quoted in a turn — and yet `_is_identifier` hands
+    snake_case names 3x weight, the highest in the module. On 2026-09-09
+    that pairing (two turns sharing nothing but the project name) mapped a
+    gold question's answer as superseded by an unrelated shell paste, and
+    the splice deleted the answer from the results.
+
+    Nothing here is guessed: the name is known at index time (the registry
+    record) and at query time (``HybridResult.project``). Callers that
+    know neither pass nothing and get the old behavior.
+
+    Demoted, not dropped: a corpus of one project still contains genuine
+    questions about that project, and many shared generics may still nudge
+    a real pair. What the demotion removes is the ability of the name
+    ALONE to carry a grouping decision, since a generic token cannot be a
+    distinctive shared token.
+    """
+    if not project_name:
+        return frozenset()
+    return frozenset(topic_tokens(project_name))
+
+
+def topic_tokens(
+    text: str | None, *, demote: frozenset[str] = frozenset()
+) -> dict[str, float]:
     """Normalized token → weight map for topic comparison.
 
     Korean: content morphemes by part-of-speech when the ``[korean]``
@@ -393,6 +423,9 @@ def topic_tokens(text: str | None) -> dict[str, float]:
     Identifiers: exact lowercased form at 3x weight, plus their split
     parts as ordinary English tokens. Pure digits dropped (timestamps
     and line numbers must never count as topical overlap).
+
+    ``demote`` caps a token at the low-information weight whatever else it
+    would have earned — see `project_identity_tokens`.
     """
     if not text:
         return {}
@@ -410,6 +443,8 @@ def topic_tokens(text: str | None) -> dict[str, float]:
         # subject was 얇은 입력 (2026-09-09).
         if len(token) < min_len:
             return
+        if token in demote:
+            weight = _W_GENERIC
         prev = out.get(token, 0.0)
         if weight > prev:
             out[token] = weight
