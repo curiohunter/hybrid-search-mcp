@@ -1058,13 +1058,26 @@ def _owns_an_answer(r: "HybridResult") -> bool:
     return "## Answer excerpt" in (r.content or "")
 
 
+# How many extra rows the lexical lane may add to the memory candidate
+# pool, on top of the fused top-N. Small on purpose: it exists so the tail
+# slot can see the lane's best, not to widen the head's choices — these
+# rows carry the lane's lowest fused scores and sort last everywhere else.
+_LEXICAL_TAIL_POOL = 3
+
+# Slots the lexical lane gets below the heads on a recall query, taken
+# from the code tail. Two because the lane's #1 is not reliably the
+# answer — see `_splice_lexical_memory_tail`.
+_LEXICAL_TAIL_SLOTS = 2
+
+
 def _splice_lexical_memory_tail(
     results: list[HybridResult],
     memory_candidates: list[HybridResult],
     at: int,
     limit: int,
+    slots: int = _LEXICAL_TAIL_SLOTS,
 ) -> list[HybridResult]:
-    """Give the lexical lane one slot BELOW the heads, never inside them.
+    """Give the lexical lane a few slots BELOW the heads, never inside them.
 
     The memory head is ordered by the fused score, and on a Korean recall
     query that score cannot represent the lexical lane: the query-type
@@ -1087,18 +1100,17 @@ def _splice_lexical_memory_tail(
     heads, paid for out of the code tail, which a recall query barely
     uses. Nothing above it moves.
     """
-    if not memory_candidates or limit <= 0:
+    if not memory_candidates or limit <= 0 or at >= limit:
         return results
     present = {r.chunk_id for r in results[:limit]}
-    best = min(
+    picks = sorted(
         (r for r in memory_candidates
          if r.bm25_rank is not None and r.chunk_id not in present),
         key=lambda r: r.bm25_rank,
-        default=None,
-    )
-    if best is None or at >= limit:
+    )[:slots]
+    if not picks:
         return results
-    return [*results[:at], best, *results[at:]]
+    return [*results[:at], *picks, *results[at:]]
 
 
 def _splice_superseding(
@@ -1717,7 +1729,20 @@ class SearchOrchestrator:
                 k=self._config.search.rrf_k,
                 bm25_weight=effective_weight,
             )
-            memory_results = self._enrich_results(mem_fused[:max(100, limit)], project_infos, query)
+            # The candidate pool is the fused top-N PLUS the lexical lane's
+            # own best few. Selecting the tail slot's occupant out of the
+            # fused order alone would defeat the slot: the records it exists
+            # for are exactly the ones that order disqualifies. Measured
+            # 2026-09-11 — Set A's C18 gold is lane-BM25 #1 and sits past
+            # fused #100, so the slot kept picking BM25 #3.
+            mem_pool = mem_fused[:max(100, limit)]
+            pooled = {f.chunk_id for f in mem_pool}
+            mem_pool = mem_pool + sorted(
+                (f for f in mem_fused[max(100, limit):]
+                 if f.bm25_rank is not None and f.chunk_id not in pooled),
+                key=lambda f: f.bm25_rank,
+            )[:_LEXICAL_TAIL_POOL]
+            memory_results = self._enrich_results(mem_pool, project_infos, query)
             if not memory_intent:
                 # Ambient gate: only splice a Q&A that at least one retriever
                 # ranked well within its own lane. Keeps junk qa out of the
