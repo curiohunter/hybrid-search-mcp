@@ -24,6 +24,7 @@ from hybrid_search.search.orchestrator import (
     _SUPERSEDED_MARK,
     HybridResult,
     _splice_superseding,
+    _splice_lexical_memory_tail,
 )
 from hybrid_search.storage.db import ChunkRecord, FileRecord, StoreDB
 
@@ -548,3 +549,61 @@ class TestTheRecordTheQueryNamed:
         )
         assert [r.chunk_id for r in out] == ["new", "code"]
 
+
+
+class TestTheLexicalTailSlot:
+    """One slot for the lexical lane, below every head.
+
+    On a Korean recall query the fused score cannot represent the lexical
+    lane at all: the query-type weight is 0.15, so with k=60 and a
+    50-deep vector list the best score reachable without a vector rank
+    sits under the worst score reachable with one. Three ways of spending
+    a HEAD slot on that evidence were measured on 2026-09-11 and each
+    traded one gold answer for another — the head is three slots and the
+    marginal answer sits in the third. This slot can only add.
+    """
+
+    def _mem(self, chunk_id: str, bm25_rank: int | None) -> HybridResult:
+        return HybridResult(
+            chunk_id=chunk_id, rrf_score=0.001, bm25_rank=bm25_rank,
+            vector_rank=None, file_path=f".hybrid-search/qa/2026/09/{chunk_id}.md",
+            project="p", name=chunk_id, qualified_name=None, node_type="qa_log",
+            start_line=None, end_line=None, content="본문", snippet="",
+        )
+
+    def _row(self, chunk_id: str) -> HybridResult:
+        return HybridResult(
+            chunk_id=chunk_id, rrf_score=0.01, bm25_rank=None, vector_rank=1,
+            file_path=f"src/{chunk_id}.py", project="p", name=chunk_id,
+            qualified_name=None, node_type="function", start_line=1, end_line=2,
+            content="code", snippet="",
+        )
+
+    def test_the_best_lexical_hit_lands_below_the_heads(self):
+        results = [self._row(f"r{i}") for i in range(10)]
+        cands = [self._mem("weak", 40), self._mem("best", 1)]
+        out = _splice_lexical_memory_tail(results, cands, at=6, limit=10)
+        assert [r.chunk_id for r in out[:6]] == [f"r{i}" for i in range(6)]
+        assert out[6].chunk_id == "best"
+
+    def test_nothing_above_the_slot_moves(self):
+        results = [self._row(f"r{i}") for i in range(10)]
+        out = _splice_lexical_memory_tail(results, [self._mem("best", 1)], at=6, limit=10)
+        assert out[:6] == results[:6]
+
+    def test_a_hit_already_shown_is_not_duplicated(self):
+        best = self._mem("best", 1)
+        results = [best, *[self._row(f"r{i}") for i in range(9)]]
+        out = _splice_lexical_memory_tail(results, [best], at=6, limit=10)
+        assert out == results
+
+    def test_candidates_with_no_lexical_rank_are_not_eligible(self):
+        """The slot is the lexical lane's. A vector-only hit has no claim."""
+        results = [self._row(f"r{i}") for i in range(10)]
+        out = _splice_lexical_memory_tail(results, [self._mem("vec_only", None)], at=6, limit=10)
+        assert out == results
+
+    def test_a_slot_past_the_limit_is_not_taken(self):
+        results = [self._row(f"r{i}") for i in range(3)]
+        out = _splice_lexical_memory_tail(results, [self._mem("best", 1)], at=6, limit=3)
+        assert out == results
