@@ -1058,6 +1058,49 @@ def _owns_an_answer(r: "HybridResult") -> bool:
     return "## Answer excerpt" in (r.content or "")
 
 
+def _splice_lexical_memory_tail(
+    results: list[HybridResult],
+    memory_candidates: list[HybridResult],
+    at: int,
+    limit: int,
+) -> list[HybridResult]:
+    """Give the lexical lane one slot BELOW the heads, never inside them.
+
+    The memory head is ordered by the fused score, and on a Korean recall
+    query that score cannot represent the lexical lane: the query-type
+    weight is 0.15, so with k=60 and a 50-deep vector list the best score
+    reachable without a vector rank (0.15/61) sits under the worst score
+    reachable with one (0.85/110). A record that is the #1 lexical match
+    of the whole memory corpus scores below the 50th semantic one.
+
+    Three ways to spend the head on it were measured on 2026-09-11 and all
+    three traded one gold answer for another, because the head is three
+    slots and the marginal answer sits in the third:
+
+        symmetric weight (0.5)            found 0.75 -> 0.80, top3 -> 0.60
+        equal lane depths + that weight   found 0.75 -> 0.80, top3 -> 0.55
+        one head seat reserved lexically  found 0.75,         top3 -> 0.65
+
+    The shape of those results is the finding: lexical evidence reliably
+    brings MORE gold answers into the response and reliably makes the top
+    three worse. So it gets a slot where it can only add — under both
+    heads, paid for out of the code tail, which a recall query barely
+    uses. Nothing above it moves.
+    """
+    if not memory_candidates or limit <= 0:
+        return results
+    present = {r.chunk_id for r in results[:limit]}
+    best = min(
+        (r for r in memory_candidates
+         if r.bm25_rank is not None and r.chunk_id not in present),
+        key=lambda r: r.bm25_rank,
+        default=None,
+    )
+    if best is None or at >= limit:
+        return results
+    return [*results[:at], best, *results[at:]]
+
+
 def _splice_superseding(
     results: list[HybridResult],
     superseding: dict[str, str],
@@ -1876,6 +1919,18 @@ class SearchOrchestrator:
         # Stale-fact guard: whatever lane a qa arrived from, among the qa
         # slots of the final list the newest answer shows first.
         chunk_results = _order_qa_by_recency(chunk_results)
+
+        # One slot for the lexical lane, below every head. See
+        # `_splice_lexical_memory_tail` — the fused score cannot carry a
+        # lexical-only memory hit, and every attempt to make it carry one
+        # inside the head cost a better answer.
+        if memory_intent and memory_candidates:
+            chunk_results = _splice_lexical_memory_tail(
+                chunk_results,
+                memory_candidates,
+                at=plan.memory_slots + plan.conv_slots,
+                limit=limit,
+            )
 
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
@@ -2912,7 +2967,22 @@ class SearchOrchestrator:
             bm25_results = bm25_eng.search(query, limit=bm25_limit)
             bm25_ids = [r.chunk_id for r in bm25_results]
             if chunk_filter:
-                bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
+                # Over-fetch, then filter, then TRIM BACK TO `depth`. The
+                # over-fetch exists so the filter has enough to work with;
+                # keeping everything it found made the two lanes different
+                # sizes, and RRF reads that difference as evidence.
+                #
+                # Measured 2026-09-11 on the memory lane: BM25 handed the
+                # fusion 429 candidates and the vector index exactly 50, so
+                # "absent from the other lane" cost a document far more on
+                # one side than the other. Being absent from a 50-long list
+                # is common; being absent from a 429-long one is a verdict.
+                # At the Korean weight (0.15) that asymmetry hid inside the
+                # blend; raising the weight to 0.5 exposed it as the lexical
+                # lane flooding the head (Set A found 0.75 -> 0.80 while
+                # top3 fell 0.70 -> 0.60). Same-size lanes make the two
+                # absences mean the same thing.
+                bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter][:depth]
 
             # Vector search — skipped when the query could not be embedded,
             # or when this index was written by a different embedding model
