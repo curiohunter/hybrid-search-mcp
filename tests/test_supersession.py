@@ -24,7 +24,14 @@ class TestConsolidationIsNeverStale:
     question went unanswered.
     """
 
-    def _note(self, ts: str, sources_hash: str, body: str) -> str:
+    def _note(
+        self,
+        ts: str,
+        sources_hash: str,
+        body: str,
+        sources: tuple[str, ...] = (),
+    ) -> str:
+        listed = "".join(f"  - {src}\n" for src in sources)
         return (
             "---\n"
             f'query: "스키마 마이그레이션 순서가 뭐였지?"\n'
@@ -32,7 +39,8 @@ class TestConsolidationIsNeverStale:
             "trigger: reflector\n"
             "memory_type: consolidated\n"
             f"sources_hash: {sources_hash}\n"
-            "---\n\n"
+            + (f"sources:\n{listed}" if sources else "")
+            + "---\n\n"
             f"## Answer excerpt\n\n{body}\n"
         )
 
@@ -64,9 +72,51 @@ class TestConsolidationIsNeverStale:
     def test_a_note_still_supersedes_the_turn_logs_it_was_built_from(self):
         entries = [
             ("log", self._turn_log("2026-09-01T10:00:00+00:00", self.BODY)),
-            ("note", self._note("2026-09-04T16:00:00+00:00", "bbbb", self.BODY)),
+            ("note", self._note(
+                "2026-09-04T16:00:00+00:00", "bbbb", self.BODY,
+                sources=("2026/09/01-100000-aaaaaaaa.md",),
+            )),
         ]
         assert compute_supersession(entries) == {"log": "note"}
+
+    def test_both_source_forms_resolve_to_a_record_key(self):
+        """A note lists turn logs by date-time and notes by cluster id.
+
+        Both are resolvable from CONTENT alone, which is all this module
+        gets: a turn log repeats its filename's instant in `timestamp:`
+        (237/237 on the dogfood corpus) and a note carries its cluster id
+        in `sources_hash:`.
+        """
+        note = self._note(
+            "2026-09-04T16:00:00+00:00", "bbbb", self.BODY,
+            sources=(
+                "2026/09/01-100000-aaaaaaaa.md",
+                "consolidated/2026-09-01-c9fa7450.md",
+            ),
+        )
+        assert supersession._consolidation_sources(note) == frozenset(
+            {"2026/09/01-100000", "consolidated/c9fa7450"}
+        )
+        log = self._turn_log("2026-09-01T10:00:00+00:00", self.BODY)
+        assert supersession._record_key(log) == "2026/09/01-100000"
+        inner = self._note("2026-09-01T10:00:00+00:00", "c9fa7450", self.BODY)
+        assert supersession._record_key(inner) == "consolidated/c9fa7450"
+
+    def test_a_sources_list_does_not_swallow_later_frontmatter_keys(self):
+        """The list ends where the next key begins."""
+        note = (
+            "---\n"
+            'query: "스키마 마이그레이션 순서가 뭐였지?"\n'
+            "sources:\n"
+            "  - 2026/09/01-100000-aaaaaaaa.md\n"
+            "memory_type: consolidated\n"
+            "other:\n"
+            "  - 2026/07/07-070000-dddddddd.md\n"
+            "---\n\n## Answer excerpt\n\n본문\n"
+        )
+        assert supersession._consolidation_sources(note) == frozenset(
+            {"2026/09/01-100000"}
+        )
 
     def test_turn_logs_still_supersede_each_other(self):
         entries = [
