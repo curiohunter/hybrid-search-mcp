@@ -418,17 +418,74 @@ class TestConsolidationIsNotReplaced:
                                   lambda *_: None, limit=1)
         assert out == [stale]
 
-    def test_a_turn_log_is_still_replaced_at_full_capacity(self):
-        stale = HybridResult(
-            chunk_id="log", rrf_score=1.0, bm25_rank=1, vector_rank=1,
-            file_path=".hybrid-search/qa/2026/09/01-x.md", project="p",
-            name="log", qualified_name=None, node_type="qa_log",
-            start_line=None, end_line=None, content="본문", snippet="",
+    def _turn(
+        self, chunk_id: str, content: str = "본문\n## Answer excerpt\n답"
+    ) -> HybridResult:
+        return HybridResult(
+            chunk_id=chunk_id, rrf_score=1.0, bm25_rank=1, vector_rank=1,
+            file_path=f".hybrid-search/qa/2026/09/01-{chunk_id}.md", project="p",
+            name=chunk_id, qualified_name=None, node_type="qa_log",
+            start_line=None, end_line=None, content=content, snippet="",
         )
+
+    def test_a_note_still_replaces_a_bare_turn_with_no_answer(self):
+        """A record that owns no answer has nothing a note can delete.
+
+        Two records exist per turn — one written when the question
+        arrives, one when it is answered — and the first holds only the
+        question and a dump of what retrieval showed at the time. Handing
+        its slot to the note that answers it is the designed exposure
+        path; the labelled corpus calls it legitimate, and refusing it
+        blindly cost Set A a question (C9, 2026-09-11).
+        """
+        bare = self._turn("prefetch", content="---\nquery: \"x\"\n---\n## Top results")
+        newer = self._note("note", ".hybrid-search/qa/consolidated/b.md")
+        out = _splice_superseding([bare], {"prefetch": "note"},
+                                  lambda *_: newer, limit=1)
+        assert [r.chunk_id for r in out] == ["note"]
+
+    def test_a_note_never_takes_its_source_turns_slot(self):
+        """The destructive branch, refused for notes only.
+
+        A note is a synthesis, so it holds less than the turns it was
+        built from — whatever it dropped is deleted outright when it takes
+        one of their slots, and what it dropped is exactly what a searcher
+        who landed on the turn was looking for. Measured 2026-09-11: a
+        note kept its session's cost conclusion and dropped that session's
+        list of uncommitted files; the probe was asking for the list.
+        """
+        stale = self._turn("log")
         newer = self._note("note", ".hybrid-search/qa/consolidated/b.md")
         out = _splice_superseding([stale], {"log": "note"},
                                   lambda *_: newer, limit=1)
-        assert [r.chunk_id for r in out] == ["note"]
+        assert [r.chunk_id for r in out] == ["log"]
+        assert "superseded" in out[0].trust_meta
+
+    def test_a_note_is_still_inserted_when_there_is_room(self):
+        """Refusing the slot is not refusing the note.
+
+        Exposure is the other half of what the splice does, and the
+        Reflector exists for it: with spare capacity the note still comes
+        in above its source, which stays visible and marked.
+        """
+        stale = self._turn("log")
+        newer = self._note("note", ".hybrid-search/qa/consolidated/b.md")
+        out = _splice_superseding([stale], {"log": "note"},
+                                  lambda *_: newer, limit=5)
+        assert [r.chunk_id for r in out] == ["note", "log"]
+
+    def test_a_plain_correction_still_replaces_at_full_capacity(self):
+        """The correction path is untouched.
+
+        Only notes lose the slot. A later turn that restates a fact is a
+        correction, and refusing IT would hand the searcher the answer
+        that was already known to be wrong.
+        """
+        stale = self._turn("log")
+        newer = self._turn("fix")
+        out = _splice_superseding([stale], {"log": "fix"},
+                                  lambda *_: newer, limit=1)
+        assert [r.chunk_id for r in out] == ["fix"]
 
 class TestTheRecordTheQueryNamed:
     """A record the query all but quotes is never replaced.
