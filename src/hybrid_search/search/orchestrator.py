@@ -1045,6 +1045,19 @@ def _query_names_this_record(
     return qa_topics.weighted_overlap(asked_for, own) >= _ASKED_FOR_THIS_OVERLAP
 
 
+def _owns_an_answer(r: "HybridResult") -> bool:
+    """True when a qa hit carries an answer of its own.
+
+    What a record OWNS is its question and its answer excerpt. The
+    `## Top results` block below them is a quotation of other chunks,
+    retrievable on their own terms, so a replacement that drops those
+    words has destroyed nothing. Two records exist per turn — one written
+    when the question arrives, one when it is answered — and only the
+    second owns anything.
+    """
+    return "## Answer excerpt" in (r.content or "")
+
+
 def _splice_superseding(
     results: list[HybridResult],
     superseding: dict[str, str],
@@ -1103,10 +1116,46 @@ def _splice_superseding(
             if newer_id not in position and spliced < cap:
                 newer = fetch(newer_id, r)
                 if newer is not None:
+                    room = len(results) + inserted < limit
+                    if (
+                        not room
+                        and _is_consolidation_result(newer)
+                        and _owns_an_answer(r)
+                    ):
+                        # A note is a LOSSY synthesis of the records it was
+                        # built from, so letting it take one of their slots
+                        # deletes whatever the synthesis left out — and what
+                        # it left out is what the searcher asked for, or they
+                        # would not have landed on the source turn.
+                        #
+                        # Measured 2026-09-11: a note built from a turn kept
+                        # that session's cost conclusion and dropped that
+                        # session's list of uncommitted files; the probe was
+                        # asking for the list. Every index-time bar scored
+                        # the pair at or near 1.00, because ON TOPIC it is
+                        # the same thing — which is why the refusal belongs
+                        # here, where the query is known, and not in another
+                        # threshold.
+                        #
+                        # Scoped by what the stale hit OWNS, because that is
+                        # all a replacement can destroy. A bare pre-fetch log
+                        # holds no answer of its own, so handing its slot to
+                        # the note that answers its question takes nothing
+                        # away — that is the designed exposure path, it is
+                        # what the labelled corpus calls legitimate, and
+                        # refusing it blindly cost Set A a question (C9).
+                        #
+                        # Only the destructive branch is refused. With room
+                        # the note is still inserted above its source, which
+                        # is the exposure path the Reflector exists for.
+                        r = _mark_superseded(r)
+                        marked += 1
+                        out.append(r)
+                        continue
                     position[newer_id] = i
                     spliced += 1
                     out.append(newer)
-                    if len(results) + inserted < limit:
+                    if room:
                         inserted += 1
                         out.append(_mark_superseded(r))
                     # else: full — the correction takes the stale slot.

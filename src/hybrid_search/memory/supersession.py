@@ -124,6 +124,14 @@ _MIN_QUESTION_MASS = 4.0
 _MIN_SYMMETRIC_QUESTION_OVERLAP = 0.33
 
 _FRONTMATTER_LINE_RE = re.compile(r"^([A-Za-z_][\w-]*):\s*(.*)$")
+_SOURCE_LINE_RE = re.compile(r"^\s+-\s+(\S+)\s*$")
+# A Reflector note lists its members as qa-relative paths. Both forms the
+# writer emits are resolvable from CONTENT alone, which is all this module
+# gets: a dated turn log carries the same instant in its `timestamp:`
+# frontmatter (checked 237/237 on the dogfood corpus), and a note carries
+# its cluster id in `sources_hash:`.
+_DATED_SOURCE_RE = re.compile(r"^(\d{4})/(\d{2})/(\d{2})-(\d{6})-")
+_NOTE_SOURCE_RE = re.compile(r"^consolidated/\d{4}-\d{2}-\d{2}-([0-9a-f]+)\.md$")
 
 
 def _frontmatter_value(content: str, key: str) -> str | None:
@@ -167,6 +175,73 @@ def _topic_item(
         excerpt = excerpt.split("## Top results", 1)[0]
         answer = qa_topics.topic_tokens(excerpt, demote=demote)
     return question, answer
+
+
+# NOT applied, and recorded here because both halves were measured and
+# the next person should not have to rediscover either.
+#
+# A Reflector note names the records it was built from (`sources:`), and
+# it needs naming them because its question is not its own: the note
+# copies the newest member's `query:` verbatim (`reflector.py`,
+# `representative_query`), so every question-based signal reads that copy
+# as if the note had asked it. Measured 2026-09-11 on two corpora: of the
+# mappings whose successor is a note, 13 of 30 and 5 of 12 — 43% both
+# times — pointed at a record the note was never built from.
+#
+# Requiring provenance was implemented and measured: it deleted 4 of
+# those edges and retargeted 14 onto real turns, invented none, and cost
+# Set A top3 0.70 -> 0.65. The counterexample says why, and it is not a
+# tuning problem. ONE TURN LEAVES TWO RECORDS — the pre-fetch log written
+# when the question arrives and the answer log written when it is
+# answered — and the note lists only the one it clustered. Set A's C9 is
+# the other one: a bare pre-fetch record, superseded by the note that
+# answers its question, which the first corpus's labels call legitimate.
+# By record identity that edge is "blind"; by turn identity it is exact.
+#
+# So 43% is not a defect rate, it is the wrong granularity. The unit is
+# the turn and qa records carry no turn id. Give them one and this gate
+# becomes a one-line filter; until then it refuses real answers, and the
+# helpers below stay pinned by tests so that day is cheap.
+
+
+def _source_key(raw: str) -> str | None:
+    """Normalise one `sources:` entry to a record key."""
+    m = _DATED_SOURCE_RE.match(raw)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}/{m.group(3)}-{m.group(4)}"
+    m = _NOTE_SOURCE_RE.match(raw)
+    if m:
+        return f"consolidated/{m.group(1)}"
+    return None
+
+
+def _record_key(content: str) -> str | None:
+    """A record's own identity, in the form a note's sources list uses."""
+    if _is_consolidation(content):
+        h = _frontmatter_value(content, "sources_hash")
+        return f"consolidated/{h}" if h else None
+    ts = _parse_timestamp(content)
+    return ts.strftime("%Y/%m/%d-%H%M%S") if ts is not None else None
+
+
+def _consolidation_sources(content: str) -> frozenset[str]:
+    """The record keys a Reflector note was actually built from."""
+    if not content.startswith("---"):
+        return frozenset()
+    out: set[str] = set()
+    in_sources = False
+    for line in content.split("\n", 400)[1:]:
+        if line.startswith("---"):
+            break
+        m = _SOURCE_LINE_RE.match(line)
+        if m:
+            if in_sources:
+                key = _source_key(m.group(1))
+                if key:
+                    out.add(key)
+            continue
+        in_sources = line.strip() == "sources:"
+    return frozenset(out)
 
 
 def _is_machine_payload(content: str) -> bool:
