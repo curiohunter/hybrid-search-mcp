@@ -392,3 +392,79 @@ class TestTheMapIsMonotonicInThePredicate:
         # the dogfood corpus. Acquiring one was the bug: 35 of 203.)
         for old in strict:
             assert old in loose, f"tightening invented a mapping for {old}"
+
+
+class TestSameWordsDifferentWork:
+    """Two records that name no artifact in common did different work.
+
+    Decided by the tool's owner on 2026-09-12. "메인에 머지하고 푸시" recurs
+    for months in this corpus and merges a different branch each time;
+    reading the later one as an update of the earlier deletes the earlier,
+    and words alone cannot tell the two readings apart. With the rule in
+    the criterion, hand labels and an independent judge went from Cohen's
+    κ 0.50 to 0.80 over the same 31 cases.
+    """
+
+    BODY = "메인에 머지하고 푸시했다. 빌드 확인 후 워크트리를 정리했다"
+
+    def _turn(self, ts: str, extra: str = "", body: str | None = None) -> str:
+        return (
+            "---\n"
+            'query: "메인에 머지하고 푸시"\n'
+            f"timestamp: {ts}\n"
+            "trigger: stop_hook\n"
+            f"{extra}"
+            "---\n\n"
+            f"## Answer excerpt\n\n{body or self.BODY}\n"
+        )
+
+    def test_disjoint_branches_are_not_the_same_topic(self):
+        entries = [
+            ("old", self._turn("2026-08-26T10:00:00+00:00",
+                               'branch: "feat/alpha"\nhead: "911a88d"\n')),
+            ("new", self._turn("2026-09-04T10:00:00+00:00",
+                               'branch: "feat/beta"\nhead: "fd37238"\n')),
+        ]
+        assert compute_supersession(entries) == {}
+
+    def test_the_same_branch_still_supersedes(self):
+        entries = [
+            ("old", self._turn("2026-08-26T10:00:00+00:00", 'branch: "feat/alpha"\n')),
+            ("new", self._turn("2026-09-04T10:00:00+00:00", 'branch: "feat/alpha"\n')),
+        ]
+        assert compute_supersession(entries) == {"old": "new"}
+
+    def test_silence_on_either_side_leaves_the_pair_alone(self):
+        """Absence means unknown, never different."""
+        entries = [
+            ("old", self._turn("2026-08-26T10:00:00+00:00")),
+            ("new", self._turn("2026-09-04T10:00:00+00:00", 'branch: "feat/beta"\n')),
+        ]
+        assert compute_supersession(entries) == {"old": "new"}
+
+    def test_recorded_identity_beats_prose(self):
+        """`touched:` is exact; scanning the body is only the fallback."""
+        rec = self._turn(
+            "2026-09-04T10:00:00+00:00",
+            'branch: "feat/beta"\ntouched: ["src/a.py"]\n',
+            body="다른 파일 src/zzz.py 를 언급만 한다",
+        )
+        assert supersession._artifacts(rec) == frozenset({"feat/beta", "src/a.py"})
+
+    def test_the_sources_list_is_provenance_not_work(self):
+        """A note lists the qa files it was built from — it did not edit them.
+
+        Reading that list as work made every note disjoint from every turn
+        and cost Set A a question before it was caught (2026-09-12).
+        """
+        note = (
+            "---\n"
+            'query: "메인에 머지하고 푸시"\n'
+            "timestamp: 2026-09-04T10:00:00+00:00\n"
+            "memory_type: consolidated\n"
+            "sources_hash: c9fa7450\n"
+            "sources:\n"
+            "  - 2026/08/24-051500-fcfdb050.md\n"
+            "---\n\n## Answer excerpt\n\n푸시 절차를 정리한다\n"
+        )
+        assert supersession._artifacts(note) == frozenset()
