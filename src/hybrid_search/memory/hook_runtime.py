@@ -261,7 +261,77 @@ def build_session_context(
             ctx = f"{ctx}\n{line}" if ctx else line
     except Exception:
         pass
+    # The measurement cycle's verdict, where the next session already looks.
+    # A loop that has to be asked for its result is a script; this is the
+    # half that makes it a loop.
+    line = _cycle_line()
+    if line:
+        ctx = f"{ctx}\n{line}" if ctx else line
     return ctx[:_MAX_CONTEXT_CHARS]
+
+
+# How long a measurement may go stale before the session is told. Two weeks
+# is roughly a thousand new dogfood records — enough that the last reading
+# describes a corpus that no longer exists.
+_CYCLE_STALE_DAYS = 14
+
+
+def _cycle_line() -> str:
+    """One line about the last `benchmarks/cycle.py` run. Silent when clean.
+
+    Reads the record directly rather than importing the runner: benchmarks
+    are not shipped in the wheel, and a hook must never depend on them.
+    """
+    try:
+        import json
+        from datetime import date
+
+        cdir = Path("~/.hybrid-search/benchmarks/cycle").expanduser()
+        runs = sorted(cdir.glob("20*.json"))
+        if not runs:
+            return ""
+        now = json.loads(runs[-1].read_text(encoding="utf-8"))
+        prev = (
+            json.loads(runs[-2].read_text(encoding="utf-8"))
+            if len(runs) > 1 else None
+        )
+        bits: list[str] = []
+        if prev:
+            for path, name in (
+                ("set_a.answer_in_top3", "Set A top3"),
+                ("set_a.answer_found", "Set A found"),
+                ("set_b.answer_found", "Set B found"),
+                ("code.primary_top5", "코드축 top5"),
+            ):
+                cur, old = _cycle_dig(now, path), _cycle_dig(prev, path)
+                if cur is not None and old is not None and cur < old:
+                    bits.append(f"{name} {old}→{cur}")
+        pending = sum(
+            len(d.get("unlabelled") or [])
+            for d in (now.get("displacement") or {}).values()
+        )
+        if pending:
+            bits.append(f"판정 대기 {pending}건")
+        try:
+            age = (date.today() - date.fromisoformat(now["date"])).days
+        except (KeyError, ValueError):
+            age = 0
+        if age >= _CYCLE_STALE_DAYS:
+            bits.append(f"마지막 측정 {age}일 전 — python benchmarks/cycle.py")
+        if not bits:
+            return ""
+        return f"[cycle {now.get('date','?')}] " + " · ".join(bits)
+    except Exception:
+        return ""
+
+
+def _cycle_dig(obj: dict, path: str):
+    cur = obj
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
 
 
 def _router_enabled() -> bool:
