@@ -29,6 +29,8 @@
 | 2026-09-11 | [하이브리드 융합](2026-09-11-hybrid-fusion.md) | RRF vs 볼록 결합 vs 적응 가중치 — 셋 다 재보고 셋 다 기각, 이유는 각각 다르다 |
 | 2026-09-11 | [에이전트 메모리 지형](2026-09-11-agent-memory-landscape.md) | supersession·consolidation·벤치마크. 아무도 "억제가 유효한 기억을 지웠나"를 안 잰다 |
 | 2026-09-11 | [외부 적대 심사 (DeepSeek)](2026-09-11-deepseek-adversarial-review.md) | 설계 하나를 반례로 무너뜨렸다. 수용/기각 표 |
+| 2026-09-12 | [사전 등록 — 3차 코퍼스](2026-09-12-preregistration-corpus3.md) | 코퍼스를 열기 전에 라벨 규칙·블라인드·중단 규칙을 못 박았다 |
+| 2026-09-12 | [순환을 깨는 측정 5단계](2026-09-12-breaking-the-circularity.md) | 넷을 실행했고 대체로 우리에게 불리하다. κ=0.54, 쟁점은 기계로 안 풀린다 |
 
 **이전 조사는 계획서 안에 있다** (옮기지 않았다 — 그 계획의 문맥에서 읽어야 한다):
 - 2026-09-01 3축 조사 (GraphRAG / write-time 합성 / 심볼릭 스토어) — `docs/plans/2026-09-01-retrieval-master-plan.md`
