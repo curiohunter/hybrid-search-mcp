@@ -1280,3 +1280,58 @@ class TestCycleLine:
         self._write(tmp_path, "2026-01-01", {"date": "2026-01-01"})
         line = self._line(tmp_path, monkeypatch)
         assert "benchmarks/cycle.py" in line
+
+
+class TestWorktreesShareOneMemory:
+    """Every worktree of one repo resolves to the same project.
+
+    A linked worktree registers under its own path, and its index holds the
+    handful of files that worktree changed and no memory at all. On
+    2026-09-12 the dogfood repo had 22 such worktrees — every one of them
+    with 0 qa records against the main checkout's 2,023 — and the same
+    question asked from a worktree came back with zero memory rows while
+    the main folder returned ten. The write path had resolved worktrees
+    since 2026-09-04; the read path matched raw paths and did not.
+    """
+
+    def _repo(self, tmp_path):
+        main = tmp_path / "repo"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        wt = tmp_path / "repo-wt"
+        wt.mkdir()
+        (wt / ".git").write_text(
+            f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n", encoding="utf-8")
+        return main, wt
+
+    def test_a_worktree_resolves_to_the_main_checkout(self, tmp_path):
+        from hybrid_search.memory.hook_runtime import canonical_project_root
+
+        main, wt = self._repo(tmp_path)
+        assert canonical_project_root(str(wt)) == main
+        assert canonical_project_root(str(wt / "src" / "deep")) == main
+
+    def test_the_main_checkout_resolves_to_itself(self, tmp_path):
+        from hybrid_search.memory.hook_runtime import canonical_project_root
+
+        main, _ = self._repo(tmp_path)
+        assert canonical_project_root(str(main)) == main
+
+    def test_search_picks_the_main_project_from_inside_a_worktree(self, tmp_path):
+        """The read path, which is the half that was missing."""
+        from hybrid_search.search.orchestrator import SearchOrchestrator
+
+        main, wt = self._repo(tmp_path)
+        infos = [
+            SimpleNamespace(id="main", path=str(main), name="repo"),
+            SimpleNamespace(id="wt", path=str(wt), name="repo-wt"),
+        ]
+        assert SearchOrchestrator._detect_primary_project(str(wt), infos) == "main"
+
+    def test_an_unrelated_directory_still_matches_nothing(self, tmp_path):
+        from hybrid_search.search.orchestrator import SearchOrchestrator
+
+        main, _ = self._repo(tmp_path)
+        other = tmp_path / "elsewhere"
+        other.mkdir()
+        infos = [SimpleNamespace(id="main", path=str(main), name="repo")]
+        assert SearchOrchestrator._detect_primary_project(str(other), infos) is None

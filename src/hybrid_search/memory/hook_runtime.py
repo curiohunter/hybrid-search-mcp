@@ -133,16 +133,22 @@ def _linked_worktree_main_root(git_marker: Path, worktree_root: Path) -> Path | 
     return None
 
 
-def resolve_project_root(event: dict) -> Path | None:
-    """Pick the project root from a hook payload's ``cwd``.
+def canonical_project_root(cwd: str | None) -> Path | None:
+    """The one directory a project's memory belongs to, given any path inside it.
 
-    Hooks often run with ``cwd`` set to the file/task subdirectory. Resolve to
-    the enclosing git root first so memory is written once per project, not
-    into arbitrary nested content folders. A linked worktree resolves to its
-    MAIN checkout so worktree sessions share the project's memory instead of
-    writing into a tree that disappears with the worktree.
+    Resolve to the enclosing git root, so memory is written once per project
+    and not into arbitrary nested content folders — and a LINKED WORKTREE
+    resolves to its main checkout, so every worktree of one repo shares one
+    memory instead of growing an island that dies with the worktree.
+
+    Every path that decides "which project is this" must come through here.
+    Two callers once disagreed: the hooks resolved worktrees correctly and
+    wrote qa into the main checkout, while search matched the cwd against
+    registered paths and found the WORKTREE's own project — which had 0 qa
+    records against the main checkout's 2,023. Same repo, same question,
+    and the memory lane came back empty because the user happened to be
+    standing in a worktree (2026-09-12 field check).
     """
-    cwd = event.get("cwd")
     if not cwd:
         return None
     try:
@@ -162,6 +168,11 @@ def resolve_project_root(event: dict) -> Path | None:
         if (path / ".hybrid-search").exists():
             return path
     return None
+
+
+def resolve_project_root(event: dict) -> Path | None:
+    """Pick the project root from a hook payload's ``cwd``."""
+    return canonical_project_root(event.get("cwd"))
 
 
 def classify_prompt_for_memory(prompt: str) -> bool:

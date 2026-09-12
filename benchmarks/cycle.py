@@ -64,6 +64,16 @@ def _sh(*args: str) -> str:
     return (out.stdout or "").strip()
 
 
+# Figures are compared at the precision they are printed at, with a hair of
+# slack — a float that differs in the 5th decimal is the same reading.
+_EPS = 1e-9
+
+
+def _r(v):
+    """Round a metric for both display and comparison."""
+    return round(v, 4) if isinstance(v, (int, float)) else v
+
+
 def _dig(obj: dict, path: str):
     cur = obj
     for part in path.split("."):
@@ -218,16 +228,20 @@ def report(now: dict, prev: dict | None) -> tuple[str, bool]:
     lines.append("| 지표 | 이전 | 이번 | |")
     lines.append("|---|---|---|---|")
     for path, name, higher in GATES:
-        cur = _dig(now, path)
-        old = _dig(prev, path) if prev else None
+        cur, old = _dig(now, path), (_dig(prev, path) if prev else None)
         if cur is None:
             continue
         mark = "—"
-        if old is not None and cur != old:
-            worse = (cur < old) if higher else (cur > old)
+        # Compare at the precision the report prints. Without this a change
+        # in how a figure is ROUNDED reads as a regression: the first cycle
+        # stored 0.14634146341463414 and the next stored 0.1463, and the
+        # gate called it a loss (2026-09-12, first run of this file).
+        if old is not None and abs(_r(cur) - _r(old)) > _EPS:
+            worse = (_r(cur) < _r(old)) if higher else (_r(cur) > _r(old))
             mark = "**회귀**" if worse else "개선"
             regressed = regressed or worse
-        lines.append(f"| {name} | {old if old is not None else '—'} | {cur} | {mark} |")
+        lines.append(f"| {name} | {_r(old) if old is not None else '—'} "
+                     f"| {_r(cur)} | {mark} |")
     for key in ("set_a", "set_b"):
         sp = _dig(now, f"{key}.spread")
         if sp:
