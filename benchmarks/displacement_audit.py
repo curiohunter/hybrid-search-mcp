@@ -87,17 +87,28 @@ def _owned_text(record: str) -> str:
     return head
 
 
-def _probe_set(db: StoreDB, project_id: str, sample: int, seed: int):
+def _probe_set(db: StoreDB, project_id: str, sample: int, seed: int,
+               since: str | None = None):
     """qa records that carry an answer, with the question they answered.
 
     Records with no ``## Answer excerpt`` are skipped: they are not what a
     probe should be able to find, so a miss would say nothing.
+
+    ``since`` (ISO date) keeps only records written after it. That is what
+    makes a repeated run a HOLDOUT rather than a re-read: the rules in
+    effect were frozen before those records existed, so they cannot have
+    been fitted to them. One corpus, one user, but a clean test set that
+    refills itself every week.
     """
     probes = []
     for chunk in db.get_chunks_by_node_type(project_id, "qa_log"):
         content = chunk.content or ""
         if ss._is_machine_payload(content):
             continue
+        if since:
+            ts = ss._frontmatter_value(content, "timestamp") or ""
+            if ts[:10] < since:
+                continue
         question = ss._frontmatter_value(content, "query") or ""
         if len(question) < 8:
             continue
@@ -127,6 +138,12 @@ def main() -> int:
     ap.add_argument("--sample", type=int, default=150)
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--seed", type=int, default=20260910)
+    ap.add_argument(
+        "--since",
+        help="ISO date; probe only qa records written on or after it. Turns a "
+             "repeat run into a holdout — those records did not exist when the "
+             "rules were frozen.",
+    )
     ap.add_argument("--out", required=True)
     ap.add_argument(
         "--labels",
@@ -149,7 +166,7 @@ def main() -> int:
         return 1
     store_path = IndexPaths(get_project_dir(config.projects_dir, pinfo.id)).store_db
     db = StoreDB(store_path)
-    probes = _probe_set(db, pinfo.id, args.sample, args.seed)
+    probes = _probe_set(db, pinfo.id, args.sample, args.seed, args.since)
     saved = db.get_qa_superseding([c.id for c in
                                    db.get_chunks_by_node_type(pinfo.id, "qa_log")])
     db.close()
@@ -158,7 +175,8 @@ def main() -> int:
         return 1
 
     print(f"probes: {len(probes)} qa records (their own questions) · "
-          f"supersession map: {len(saved)} entries")
+          f"supersession map: {len(saved)} entries"
+          + (f" · holdout since {args.since}" if args.since else ""))
 
     embedder = Embedder(config.embedding, config.models_dir)
     orch = SearchOrchestrator(config=config, registry=registry, embedder=embedder)
