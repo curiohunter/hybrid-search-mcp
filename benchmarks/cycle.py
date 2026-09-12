@@ -125,7 +125,8 @@ def labelled_projects() -> dict[str, Path]:
     return found
 
 
-def measure(config: Path, out: Path, since: str | None, quick: bool) -> dict:
+def measure(config: Path, out: Path, since: str | None, quick: bool,
+            sample: int = 600) -> dict:
     gold = HOME_BENCH
     rec: dict = {}
     py = sys.executable
@@ -177,7 +178,7 @@ def measure(config: Path, out: Path, since: str | None, quick: bool) -> dict:
         print(f"· 밀어냄 감사 — {project}" + (f" (홀드아웃 {since} 이후)" if since else ""))
         dst = out / f"disp_{project}.json"
         cmd = [py, "benchmarks/displacement_audit.py", "--config", str(config),
-               "--project", project, "--sample", "600",
+               "--project", project, "--sample", str(sample),
                "--labels", str(labels), "--out", str(dst)]
         if since:
             cmd += ["--since", since]
@@ -202,6 +203,39 @@ def measure(config: Path, out: Path, since: str | None, quick: bool) -> dict:
         total_damage += dmg
     rec["damage_total"] = total_damage
     return rec
+
+
+def _recent_qa_minutes() -> int | None:
+    """Minutes since the newest qa record anywhere. None when there are none.
+
+    The measurement is a few thousand searches against the same embedding
+    backend the user's own session uses, and this line has already had one
+    bulk job and one live session collide. A qa file written in the last
+    few minutes means someone is working; the scheduler will come back in
+    an hour.
+    """
+    newest = 0.0
+    root = Path("~/.hybrid-search/projects").expanduser()
+    reg = Path("~/.hybrid-search/config.toml").expanduser()
+    if not reg.is_file():
+        return None
+    import time
+    for qa_dir in Path("~/project").expanduser().glob("*/*/.hybrid-search/qa"):
+        for f in qa_dir.rglob("*.md"):
+            try:
+                newest = max(newest, f.stat().st_mtime)
+            except OSError:
+                continue
+    if not newest:
+        # Fall back to index mtime — cheaper and still a liveness signal.
+        for db in root.glob("*/store.db"):
+            try:
+                newest = max(newest, db.stat().st_mtime)
+            except OSError:
+                continue
+    if not newest:
+        return None
+    return int((time.time() - newest) / 60)
 
 
 def previous() -> dict | None:
@@ -277,10 +311,34 @@ def main() -> int:
     ap.add_argument("--quick", action="store_true", help="밀어냄 감사를 건너뛴다")
     ap.add_argument("--no-holdout", action="store_true",
                     help="이전 주기 이후 레코드로 좁히지 않고 코퍼스 전체를 잰다")
+    ap.add_argument("--if-stale", type=int, metavar="DAYS",
+                    help="마지막 주기가 이보다 최근이면 아무것도 하지 않고 끝낸다")
+    ap.add_argument("--defer-if-busy", type=int, metavar="MINUTES", nargs="?",
+                    const=20,
+                    help="최근 이 시간 안에 qa 활동이 있으면 물러난다 (기본 20분)")
+    ap.add_argument("--sample", type=int, default=600,
+                    help="밀어냄 감사 프로브 수")
     args = ap.parse_args()
 
     CYCLE_DIR.mkdir(parents=True, exist_ok=True)
     prev = previous()
+
+    # Two ways to say "not now", so this can sit in a scheduler that fires
+    # every hour of the window the laptop is reliably on.
+    if args.if_stale is not None and prev:
+        try:
+            age = (date.today() - date.fromisoformat(prev["date"])).days
+        except (KeyError, ValueError):
+            age = 10**6
+        if age < args.if_stale:
+            print(f"마지막 주기가 {age}일 전 — {args.if_stale}일이 안 됐으므로 넘어간다")
+            return 0
+    if args.defer_if_busy:
+        busy = _recent_qa_minutes()
+        if busy is not None and busy < args.defer_if_busy:
+            print(f"{busy}분 전에 qa 활동이 있었다 — 작업 중으로 보고 물러난다 "
+                  "(검색 백엔드를 두고 다투지 않는다)")
+            return 0
     os.environ.setdefault("HYBRID_SEARCH_IN_FLIGHT", "0")
 
     config = SNAP / "config.toml"
@@ -303,7 +361,7 @@ def main() -> int:
         "dirty": bool(_sh("git", "status", "--porcelain")),
         "holdout_since": since,
     }
-    now.update(measure(config, work, since, args.quick))
+    now.update(measure(config, work, since, args.quick, args.sample))
 
     text, regressed = report(now, prev)
     (CYCLE_DIR / f"{today}.json").write_text(
