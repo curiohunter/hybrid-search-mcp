@@ -281,10 +281,11 @@ def build_session_context(
     return ctx[:_MAX_CONTEXT_CHARS]
 
 
-# How long a measurement may go stale before the session is told. Two weeks
-# is roughly a thousand new dogfood records — enough that the last reading
-# describes a corpus that no longer exists.
-_CYCLE_STALE_DAYS = 14
+# How long a measurement may go stale before the session is told to run one.
+# A week is roughly 2,500 new dogfood records — past that the last reading
+# describes a corpus that no longer exists, and the holdout has refilled
+# enough to be worth spending.
+_CYCLE_STALE_DAYS = 7
 
 
 def _cycle_line(project_root: Path) -> str:
@@ -335,11 +336,20 @@ def _cycle_line(project_root: Path) -> str:
             age = (date.today() - date.fromisoformat(now["date"])).days
         except (KeyError, ValueError):
             age = 0
-        if age >= _CYCLE_STALE_DAYS:
-            bits.append(f"마지막 측정 {age}일 전 — python benchmarks/cycle.py")
+        stale = age >= _CYCLE_STALE_DAYS
+        if stale:
+            bits.append(f"마지막 측정 {age}일 전")
         if not bits:
             return ""
-        return f"[cycle {now.get('date','?')}] " + " · ".join(bits)
+        line = f"[cycle {now.get('date','?')}] " + " · ".join(bits)
+        if stale:
+            # Addressed to the agent, not the user. Nobody schedules this:
+            # the measurement is a few thousand searches against the same
+            # embedding backend the session is using, so a cron would fight
+            # the user's own work. The agent knows when the session is idle.
+            line += ("\n  → 이 세션에 여유가 생기면 `python benchmarks/cycle.py` 를 "
+                     "돌리고 결과를 보고할 것 (20~40분, 백그라운드로).")
+        return line
     except Exception:
         return ""
 
