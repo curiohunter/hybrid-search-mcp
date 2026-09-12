@@ -1070,6 +1070,16 @@ _LEXICAL_TAIL_POOL = 3
 _LEXICAL_TAIL_SLOTS = 2
 
 
+def _canonical_root(cwd: str) -> "Path | None":
+    """`memory.hook_runtime.canonical_project_root`, imported lazily."""
+    try:
+        from hybrid_search.memory.hook_runtime import canonical_project_root
+
+        return canonical_project_root(cwd)
+    except Exception:
+        return None
+
+
 def _splice_lexical_memory_tail(
     results: list[HybridResult],
     memory_candidates: list[HybridResult],
@@ -3033,8 +3043,18 @@ class SearchOrchestrator:
     def _detect_primary_project(
         cwd: str, project_infos: list[ProjectInfo]
     ) -> str | None:
-        """Find the registered project whose path contains the cwd (or vice versa)."""
-        cwd_path = Path(cwd).resolve()
+        """Find the registered project whose path contains the cwd (or vice versa).
+
+        The cwd is canonicalised first, which for a linked worktree means the
+        MAIN checkout. Without that step a worktree matched its own
+        registered project — one holding the handful of files that worktree
+        changed and NO memory at all, while the repo's 2,023 qa records sat
+        in the main checkout's index. The write path resolved worktrees from
+        the start; this read path did not, so a session inside a worktree
+        wrote its memory to one place and searched another
+        (2026-09-12 field check).
+        """
+        cwd_path = _canonical_root(cwd) or Path(cwd).resolve()
         for pinfo in project_infos:
             project_path = Path(pinfo.path).resolve()
             try:
