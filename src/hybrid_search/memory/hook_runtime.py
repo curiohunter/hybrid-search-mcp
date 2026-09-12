@@ -275,7 +275,7 @@ def build_session_context(
     # The measurement cycle's verdict, where the next session already looks.
     # A loop that has to be asked for its result is a script; this is the
     # half that makes it a loop.
-    line = _cycle_line()
+    line = _cycle_line(project_root)
     if line:
         ctx = f"{ctx}\n{line}" if ctx else line
     return ctx[:_MAX_CONTEXT_CHARS]
@@ -287,12 +287,20 @@ def build_session_context(
 _CYCLE_STALE_DAYS = 14
 
 
-def _cycle_line() -> str:
+def _cycle_line(project_root: Path) -> str:
     """One line about the last `benchmarks/cycle.py` run. Silent when clean.
+
+    Only in the project that OWNS the runner. The cycle measures the
+    dogfood corpus, but the command that re-runs it lives in this tool's
+    own repo — telling someone to type it while they are working in the
+    measured project is an instruction they cannot follow, in a session
+    that is not about the tool at all.
 
     Reads the record directly rather than importing the runner: benchmarks
     are not shipped in the wheel, and a hook must never depend on them.
     """
+    if not (project_root / "benchmarks" / "cycle.py").is_file():
+        return ""
     try:
         import json
         from datetime import date
