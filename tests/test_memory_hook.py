@@ -1233,7 +1233,7 @@ class TestCycleLine:
         d.mkdir(parents=True, exist_ok=True)
         (d / f"{name}.json").write_text(json.dumps(doc), encoding="utf-8")
 
-    def _line(self, tmp_path, monkeypatch):
+    def _line(self, tmp_path, monkeypatch, owner=True):
         from hybrid_search.memory import hook_runtime
         real = Path.expanduser
 
@@ -1244,7 +1244,31 @@ class TestCycleLine:
             return real(self)
 
         monkeypatch.setattr(Path, "expanduser", fake)
-        return hook_runtime._cycle_line()
+        root = tmp_path / "proj"
+        if owner:
+            (root / "benchmarks").mkdir(parents=True, exist_ok=True)
+            (root / "benchmarks" / "cycle.py").write_text("", encoding="utf-8")
+        else:
+            root.mkdir(parents=True, exist_ok=True)
+        return hook_runtime._cycle_line(root)
+
+    def test_silent_in_a_project_that_does_not_own_the_runner(
+        self, tmp_path, monkeypatch
+    ):
+        """The measured project is not where the command lives.
+
+        The dogfood corpus belongs to a math academy's app. Telling its
+        session to run a benchmark from another repo is an instruction it
+        cannot follow, in a session that is not about the tool.
+        """
+        import datetime
+        today = datetime.date.today().isoformat()
+        self._write(tmp_path, today, {
+            "date": today,
+            "displacement": {"p": {"unlabelled": ["a", "b"]}},
+        })
+        assert self._line(tmp_path, monkeypatch, owner=False) == ""
+        assert "판정 대기 2건" in self._line(tmp_path, monkeypatch, owner=True)
 
     def test_silent_when_there_is_no_cycle(self, tmp_path, monkeypatch):
         assert self._line(tmp_path, monkeypatch) == ""
