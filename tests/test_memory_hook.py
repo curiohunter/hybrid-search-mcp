@@ -1217,3 +1217,66 @@ class TestHarnessDebrisDetection:
         self._qa(tmp_path, "01-000003-cccc", "task notification 처리 어떻게 하지")
 
         assert integrity.detect_harness_debris(tmp_path) == []
+
+
+class TestCycleLine:
+    """The measurement cycle reports itself into the next session.
+
+    A loop that has to be asked for its result is a script. This line is
+    the half that closes it: the next session sees what regressed and what
+    is waiting to be judged, without running anything.
+    """
+
+    def _write(self, tmp_path, name, doc):
+        import json
+        d = tmp_path / "benchmarks" / "cycle"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    def _line(self, tmp_path, monkeypatch):
+        from hybrid_search.memory import hook_runtime
+        real = Path.expanduser
+
+        def fake(self):
+            s = str(self)
+            if s.startswith("~/.hybrid-search"):
+                return tmp_path / s[len("~/.hybrid-search/"):]
+            return real(self)
+
+        monkeypatch.setattr(Path, "expanduser", fake)
+        return hook_runtime._cycle_line()
+
+    def test_silent_when_there_is_no_cycle(self, tmp_path, monkeypatch):
+        assert self._line(tmp_path, monkeypatch) == ""
+
+    def test_silent_when_nothing_moved(self, tmp_path, monkeypatch):
+        import datetime
+        today = datetime.date.today().isoformat()
+        body = {"date": today, "set_a": {"answer_in_top3": 0.7, "answer_found": 0.9}}
+        self._write(tmp_path, "2026-01-01", dict(body, date="2026-01-01"))
+        self._write(tmp_path, today, body)
+        assert self._line(tmp_path, monkeypatch) == ""
+
+    def test_a_regression_is_named_with_both_numbers(self, tmp_path, monkeypatch):
+        import datetime
+        today = datetime.date.today().isoformat()
+        self._write(tmp_path, "2026-01-01",
+                    {"date": "2026-01-01", "set_a": {"answer_in_top3": 0.7}})
+        self._write(tmp_path, today,
+                    {"date": today, "set_a": {"answer_in_top3": 0.65}})
+        line = self._line(tmp_path, monkeypatch)
+        assert "Set A top3 0.7→0.65" in line
+
+    def test_unjudged_displacements_are_counted(self, tmp_path, monkeypatch):
+        import datetime
+        today = datetime.date.today().isoformat()
+        self._write(tmp_path, today, {
+            "date": today,
+            "displacement": {"p": {"unlabelled": ["a", "b", "c"]}},
+        })
+        assert "판정 대기 3건" in self._line(tmp_path, monkeypatch)
+
+    def test_a_stale_measurement_asks_to_be_re_run(self, tmp_path, monkeypatch):
+        self._write(tmp_path, "2026-01-01", {"date": "2026-01-01"})
+        line = self._line(tmp_path, monkeypatch)
+        assert "benchmarks/cycle.py" in line
