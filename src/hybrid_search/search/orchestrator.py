@@ -1071,9 +1071,9 @@ _LEXICAL_TAIL_SLOTS = 2
 
 
 def _canonical_root(cwd: str) -> "Path | None":
-    """`memory.hook_runtime.canonical_project_root`, imported lazily."""
+    """`project.canonical_project_root`, imported lazily."""
     try:
-        from hybrid_search.memory.hook_runtime import canonical_project_root
+        from hybrid_search.project import canonical_project_root
 
         return canonical_project_root(cwd)
     except Exception:
