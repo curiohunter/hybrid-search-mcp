@@ -1351,6 +1351,27 @@ class TestWorktreesShareOneMemory:
         ]
         assert SearchOrchestrator._detect_primary_project(str(wt), infos) == "main"
 
+    def test_indexing_from_a_worktree_registers_the_main_checkout(self, tmp_path):
+        """The third place that decides "which project is this".
+
+        Search and the hooks both resolve worktrees; indexing did not, and
+        that is how 22 ghost projects accumulated — each a partial copy of
+        the tree with no memory at all, 143 MB of them (2026-09-12 cleanup).
+        """
+        from hybrid_search.project import canonical_project_root
+
+        main, wt = self._repo(tmp_path)
+        registered: list[str] = []
+
+        class FakeRegistry:
+            def register(self, name, path):
+                registered.append(path)
+
+        # The two indexers share one line; assert the line, not the callers.
+        resolved = canonical_project_root(str(wt)) or Path(str(wt)).resolve()
+        FakeRegistry().register(resolved.name, str(resolved))
+        assert registered == [str(main)]
+
     def test_an_unrelated_directory_still_matches_nothing(self, tmp_path):
         from hybrid_search.search.orchestrator import SearchOrchestrator
 
