@@ -171,3 +171,171 @@ class TestStaleHooksGetRefreshed:
         )
         assert status == "already-installed"
         assert "npx husky run" in h.read_text()
+
+
+class TestOurOwnBodyBehindAStrangersBanner:
+    """The guard shipped, the install said "already-installed", and the
+    un-guarded body kept running.
+
+    Ownership was judged on one line: the comment right after the shebang.
+    In a hook whose first block belongs to someone else — a project's own
+    tooling, Husky, anything that got there first — our pre-v2 section sat
+    *behind* that line, so the whole head read as a stranger's and was
+    copied forward on every upgrade. The result was a repo where every
+    commit in a linked worktree still fired a reindex of the main project:
+    two of them were found running at once, one for an hour.
+    """
+
+    HEADER = "Hybrid Search auto-reindex (post-commit)"
+
+    _STRANGER = (
+        "#!/bin/sh\n"
+        "\n"
+        "# Somebody else's hook\n"
+        "other_tool_update() {\n"
+        "  other-tool update --quiet &\n"
+        "}\n"
+        "other_tool_update\n"
+    )
+    # Our v1 section: appended under its own header, no worktree guard.
+    _OURS_V1 = (
+        "\n# --- Hybrid Search auto-reindex ---\n"
+        'PROJECT_DIR="$(git rev-parse --show-toplevel)"\n'
+        'LOCK_FILE="$PROJECT_DIR/.hybrid-search/.reindex.lock"\n'
+        '"/old/python" -m hybrid_search.cli reindex --git-delta '
+        '--cwd "$PROJECT_DIR" || true\n'
+    )
+
+    def _current(self):
+        return cli._build_post_commit_script(Path("/v"))
+
+    def _install(self, tmp_path, text):
+        h = tmp_path / "post-commit"
+        h.write_text(text)
+        status = cli._install_hook_file(h, self._current(), section_header=self.HEADER)
+        return h, status
+
+    def test_the_stale_body_is_removed_from_under_the_current_one(self, tmp_path):
+        h, status = self._install(
+            tmp_path,
+            self._STRANGER
+            + self._OURS_V1
+            + f"\n# --- {self.HEADER} ---\n"
+            + self._current().split("\n", 1)[1],
+        )
+        body = h.read_text()
+        assert status == "updated"
+        assert body.count("hybrid_search.cli reindex") == 1
+        assert "/old/python" not in body
+        assert body.count("--git-common-dir") == 1, "the guarded body must be the only one"
+
+    def test_the_strangers_lines_survive_the_repair(self, tmp_path):
+        h, _ = self._install(
+            tmp_path,
+            self._STRANGER
+            + self._OURS_V1
+            + f"\n# --- {self.HEADER} ---\n"
+            + self._current().split("\n", 1)[1],
+        )
+        body = h.read_text()
+        assert "other_tool_update" in body
+        assert body.startswith("#!/bin/sh")
+
+    def test_the_stale_body_alone_is_replaced_not_doubled(self, tmp_path):
+        """Same file without the current section: still one body afterwards."""
+        h, status = self._install(tmp_path, self._STRANGER + self._OURS_V1)
+        body = h.read_text()
+        assert status == "updated"
+        assert body.count("hybrid_search.cli reindex") == 1
+        assert "other_tool_update" in body
+        assert "--git-common-dir" in body
+
+    def test_a_strangers_own_section_is_not_mistaken_for_ours(self, tmp_path):
+        """Other tools use `# --- ... ---` headers too. Only sections that
+        name us, or call our CLI, may be cut."""
+        h, _ = self._install(
+            tmp_path,
+            "#!/bin/sh\n\n# --- Some Other Tool ---\nrun-other-tool\n" + self._OURS_V1,
+        )
+        body = h.read_text()
+        assert "# --- Some Other Tool ---" in body
+        assert "run-other-tool" in body
+        assert body.count("hybrid_search.cli reindex") == 1
+
+    def test_reinstalling_the_repaired_hook_changes_nothing(self, tmp_path):
+        h, _ = self._install(tmp_path, self._STRANGER + self._OURS_V1)
+        before = h.read_text()
+        status = cli._install_hook_file(h, self._current(), section_header=self.HEADER)
+        assert status == "already-installed"
+        assert h.read_text() == before
+
+
+class TestTheLockAndTheWriteNameTheSameProject:
+    """Standing in a worktree must not change which project is locked.
+
+    The pipeline canonicalises a linked worktree to its main checkout;
+    `cmd_reindex` resolved the path itself and did not. So a reindex fired
+    from a worktree took the writer lock on hash(worktree) and then wrote
+    hash(main) — the lock guarded an index nobody was writing. A second
+    indexer, started from the main checkout, saw that index unlocked and
+    walked straight in: two processes writing one index, found on
+    2026-09-17. The stray hash also got a real directory on disk,
+    registered to no project — a ghost index left behind by every
+    worktree reindex.
+    """
+
+    def _worktree(self, tmp_path):
+        main = tmp_path / "repo"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        tree = tmp_path / "repo-wt"
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n")
+        return main, tree
+
+    def test_a_worktree_locks_the_main_checkouts_project(self, tmp_path, monkeypatch):
+        import argparse
+
+        main, tree = self._worktree(tmp_path)
+        seen: dict[str, str] = {}
+
+        def _get_project_dir(projects_dir, pid):
+            seen.setdefault("lock_id", pid)
+            d = tmp_path / "idx" / pid
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+
+        monkeypatch.setattr(
+            "hybrid_search.storage.indexes.get_project_dir", _get_project_dir
+        )
+        monkeypatch.setattr(cli, "load_config", lambda: _StubConfig(tmp_path))
+        monkeypatch.setattr(cli, "ProjectRegistry", lambda *a, **k: _StubRegistry())
+
+        def _body(args, config, registry, project_path, project_name, cwd):
+            seen["written_path"] = project_path
+
+        monkeypatch.setattr(cli, "_reindex_locked", _body)
+
+        cli.cmd_reindex(
+            argparse.Namespace(cwd=str(tree), force=False, include_content=False)
+        )
+
+        from hybrid_search.project import project_hash
+
+        assert seen["written_path"] == str(main.resolve()), "wrote the worktree, not main"
+        assert seen["lock_id"] == project_hash(str(main.resolve())), (
+            "locked a different project than the one being written"
+        )
+
+
+class _StubConfig:
+    def __init__(self, tmp_path):
+        self.global_dir = tmp_path / "g"
+        self.projects_dir = tmp_path / "idx"
+        self.indexing = None
+        self.embedding = None
+        self.models_dir = tmp_path / "m"
+
+
+class _StubRegistry:
+    def list_all(self):
+        return []
