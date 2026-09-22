@@ -7,6 +7,8 @@ import pytest
 from hybrid_search.memory.routing_template import (
     BEGIN_RE,
     END_RE,
+    USER_BEGIN,
+    USER_END,
     LEGACY_AGENTS_MARKER,
     LEGACY_CLAUDE_MARKER,
     ROUTING_BODY,
@@ -53,16 +55,88 @@ def test_no_change_returns_no_diff(tmp_path: Path) -> None:
     assert result.written is False
 
 
-def test_update_replaces_existing_v1_body(tmp_path: Path) -> None:
+def test_update_installs_current_body(tmp_path: Path) -> None:
     path = tmp_path / "CLAUDE.md"
     old = RoutingBlock("claude", "## Old\n\nstale").render() + "\n"
     path.write_text(old, encoding="utf-8")
     result = apply_update(path, claude_block())
     assert result.status == "update"
     assert result.written is True
-    assert "-## Old" in result.diff
     assert "+## 검색 전략" in result.diff
-    assert "stale" not in path.read_text(encoding="utf-8")
+    assert ROUTING_BODY.strip() in path.read_text(encoding="utf-8")
+
+
+def _user_region(text: str) -> str:
+    return text.split(USER_BEGIN, 1)[1].split(USER_END, 1)[0]
+
+
+def test_hand_written_line_inside_block_survives_update(tmp_path: Path) -> None:
+    # The bug: a rule written right under the routing table (the natural spot)
+    # was inside the machine-owned block, so the next reindex deleted it.
+    path = tmp_path / "CLAUDE.md"
+    edited = claude_block().render().replace(
+        "| **정밀 조회**",
+        "| **DB 맵** | \"테이블 목록\" | `db_map_tables` | Grep |\n| **정밀 조회**",
+        1,
+    )
+    path.write_text("# Project\n\n" + edited + "\n", encoding="utf-8")
+
+    result = apply_update(path, claude_block())
+    text = path.read_text(encoding="utf-8")
+
+    assert result.status == "update"
+    assert "db_map_tables" in text
+    assert "db_map_tables" in _user_region(text)
+    assert result.preserved == ("| **DB 맵** | \"테이블 목록\" | `db_map_tables` | Grep |",)
+    # And it stays put: the rescue is idempotent, not a every-run reshuffle.
+    assert apply_update(path, claude_block()).status == "no_change"
+    assert path.read_text(encoding="utf-8") == text
+
+
+def test_user_region_survives_a_template_change(tmp_path: Path) -> None:
+    path = tmp_path / "CLAUDE.md"
+    apply_update(path, claude_block())
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(USER_END, "## 우리 규칙\n- 커밋 전 스캔\n" + USER_END),
+        encoding="utf-8",
+    )
+
+    result = apply_update(path, RoutingBlock("claude", ROUTING_BODY + "\n- 새 규칙 한 줄\n"))
+    text = path.read_text(encoding="utf-8")
+
+    assert result.status == "update"
+    assert "- 새 규칙 한 줄" in text
+    assert "## 우리 규칙" in _user_region(text)
+    assert "- 커밋 전 스캔" in _user_region(text)
+    # A template upgrade must not treat its own retired lines as user content.
+    assert result.preserved == ()
+
+
+def test_retired_template_lines_are_not_rescued(tmp_path: Path) -> None:
+    path = tmp_path / "CLAUDE.md"
+    old_body = ROUTING_BODY + "\n- 이 줄은 다음 버전에서 사라진다\n"
+    apply_update(path, RoutingBlock("claude", old_body))
+
+    result = apply_update(path, claude_block())
+    text = path.read_text(encoding="utf-8")
+
+    assert result.preserved == ()
+    assert "이 줄은 다음 버전에서 사라진다" not in text
+
+
+def test_rescue_without_snapshot_prefers_keeping_lines(tmp_path: Path) -> None:
+    # No snapshot (fresh clone, or an install that predates it): we cannot tell
+    # a retired template line from a human one, so we keep it.
+    path = tmp_path / "CLAUDE.md"
+    apply_update(path, RoutingBlock("claude", ROUTING_BODY + "\n- 출처 불명 한 줄\n"))
+    snapshot = path.parent / ".hybrid-search" / "runtime" / "routing-body-claude.md"
+    snapshot.unlink()
+
+    result = apply_update(path, claude_block())
+
+    assert result.preserved == ("- 출처 불명 한 줄",)
+    assert "- 출처 불명 한 줄" in _user_region(path.read_text(encoding="utf-8"))
 
 
 def test_migrates_legacy_claude_at_same_position(tmp_path: Path) -> None:

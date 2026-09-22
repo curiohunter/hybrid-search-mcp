@@ -262,6 +262,9 @@ default for a CLI tool like this.
 `setup` wires everything in one shot: MCP server registration, Claude Code
 hooks, the `/search` · `/maintain` skills, this project's memory hooks,
 Codex hooks, a `CLAUDE.md` routing block, and `.gitignore` entries.
+The routing block is rewritten on every reindex, so project-specific rules go
+in the `user-additions` sub-region inside it — updates never touch that, and a
+rule found anywhere else in the block is moved there rather than dropped.
 **Restart Claude Code** — the first file you open triggers background
 indexing, and from then on every `git commit` re-indexes just the changed
 files. Nothing else to run.
