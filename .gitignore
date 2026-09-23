@@ -48,3 +48,11 @@ benchmarks/**/raw_*.json
 benchmarks/**/compounding_*.json
 benchmarks/**/results_v2.json
 benchmarks/memory_bench_v2_valuein_*.json
+# Tracked before the rule above existed, untracked 2026-09-23 — each quotes
+# the dogfood corpus: its file paths, the questions its user typed.
+benchmarks/router_gold.json
+benchmarks/query_set.json
+benchmarks/memory_bench_v2_cases.json
+benchmarks/round3_rerun/calibration_rows_*.jsonl
+benchmarks/authority_poc/external_queries.json
+benchmarks/agent_loop_*.json
