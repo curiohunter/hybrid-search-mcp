@@ -870,8 +870,20 @@ def _merge_memory_results(
     # best retrieval score decides — a fresh adjacent-topic Q&A must not
     # take the guaranteed slot from an old exact-topic one. Cards stay
     # score-ordered (curated, no supersession-by-time semantics).
-    qa_candidates = [r for r in memory_head if r.node_type == "qa_log"]
-    others = [r for r in memory_head if r.node_type != "qa_log"]
+    #
+    # Reflector notes stay out of the grouping. A note is made from the raw
+    # records it would be grouped with, so it matches their topic by
+    # construction, and a group is represented by its best-scoring member —
+    # one of those raw records. On 2026-09-23 that is how 3 of 20 recall
+    # answers vanished: the note sat in a five-member group behind its own
+    # sources and never became a candidate. A note is not a newer version
+    # of a turn; it competes as itself.
+    qa_candidates = [
+        r for r in memory_head
+        if r.node_type == "qa_log" and not _is_consolidation_result(r)
+    ]
+    grouped = {id(r) for r in qa_candidates}
+    others = [r for r in memory_head if id(r) not in grouped]
 
     def _prio(r: HybridResult) -> int:
         """Curated memory outranks recorded turns, before score is consulted.
@@ -909,8 +921,10 @@ def _merge_memory_results(
         candidates.append((_prio(representative), -group_relevance,
                            len(others) + seq, representative))
     candidates.sort()
-    memory_head = [r for _, _, _, r in candidates]
     head_limit = min(head_limit, max(1, limit))
+    memory_head = _seat_a_distillate(
+        [r for _, _, _, r in candidates], head_limit
+    )
     head: list[HybridResult] = []
     seen: set[str] = set()
     for r in memory_head[:head_limit]:
@@ -921,6 +935,55 @@ def _merge_memory_results(
     body = [r for r in chunk_results if r.chunk_id not in seen]
     insert_at = max(0, min(insert_at, len(body)))
     return body[:insert_at] + head + body[insert_at:]
+
+
+# A head smaller than this is left alone. The ambient lane has one memory
+# slot, and giving it to a Reflector note would decide the code axis by
+# record kind — which is what the 2026-09-09 `_prio` experiment showed
+# costs the code hits around it.
+_DISTILLATE_SEAT_MIN_HEAD = 2
+
+
+def _seat_a_distillate(
+    ordered: list[HybridResult], head_limit: int
+) -> list[HybridResult]:
+    """Raw turn logs may not fill every head seat while a Reflector note waits.
+
+    A Reflector note is made FROM raw qa records and shares their words, so
+    as the corpus grows its own sources rank above it, one each, and fill the
+    head together. Measured 2026-09-23 on a frozen snapshot: the answering
+    note sat at pool rank 2-14 on 13 of 20 recall questions while three raw
+    records took the head. The note's date works against it too — it is
+    written once, and the recency boost keeps favouring the turns that came
+    after it.
+
+    When the head is raw-only and a note is in the pool, the best note
+    replaces the lowest raw seat and LEADS the head. Cards and terms are
+    curated already and are never displaced.
+
+    Leading is a ranking by kind, chosen on purpose (2026-09-23, owner's
+    call, study `2026-09-23-distillate-vs-raw-log.md` §9): in the last seat
+    the note was in the top three on 0.75 of recall questions but MRR stayed
+    at 0.30, because the agent reads two raw turns before the conclusion.
+    Leading lifted MRR to 0.59. The cost is that a note is a snapshot of the
+    day it was written; `_order_qa_by_recency` still moves a newer turn on
+    the same topic above it, and that is what keeps a changed decision from
+    being served stale.
+    """
+    if head_limit < _DISTILLATE_SEAT_MIN_HEAD or len(ordered) <= head_limit:
+        return ordered
+    head = ordered[:head_limit]
+    if not all(
+        r.node_type == "qa_log" and not _is_consolidation_result(r) for r in head
+    ):
+        return ordered
+    note = next(
+        (r for r in ordered[head_limit:] if _is_consolidation_result(r)), None
+    )
+    if note is None:
+        return ordered
+    rest = [r for r in ordered[head_limit - 1:] if r is not note]
+    return [note, *head[:-1], *rest]
 
 
 # Topic matching lives in qa_topics: language-aware normalization
