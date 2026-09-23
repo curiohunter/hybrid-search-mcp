@@ -265,6 +265,17 @@ _ARTIFACT_RES = (
     re.compile(r"\bws-[\w-]+"),
 )
 
+# A default branch is where a turn FINISHED, not what it worked on. Every
+# turn that ends in the main checkout records `branch: main`, so counting it
+# made any two such records overlap and switched the rule above off for the
+# whole class it was written for. 2026-09-23: all six damage cases the judge
+# found were `{main, <head>}` on both sides, the intersection `main` alone.
+# Without it, two main-checkout records compare on head and touched files.
+# Measured on the dogfood snapshot: map 195 -> 146, the 49 edges it cut
+# judged damage 38 · legitimate 11, no legitimate label lost its link, and
+# Set A, Set B and the code axis did not move.
+_DEFAULT_BRANCHES = frozenset({"main", "master"})
+
 
 def _artifacts(content: str) -> frozenset[str]:
     """Branches, commits, files and worktrees a record OWNS a mention of.
@@ -281,7 +292,7 @@ def _artifacts(content: str) -> frozenset[str]:
     recorded: set[str] = set()
     for key in ("branch", "head"):
         val = _frontmatter_value(content, key)
-        if val:
+        if val and val.lower() not in _DEFAULT_BRANCHES:
             recorded.add(val.lower())
     touched = _frontmatter_value(content, "touched")
     if touched:
