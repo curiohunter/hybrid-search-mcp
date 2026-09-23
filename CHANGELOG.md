@@ -8,6 +8,18 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A frozen snapshot now freezes the clock too.** Ranking aged memory
+  records against the wall clock (`_apply_memory_boost`'s 30-day half-life,
+  the `Nd ago` label), so the same snapshot measured ten days later scored
+  differently with code and corpus unchanged — pinning the clock alone moved
+  Set A top3 0.20 → 0.35 on 2026-09-23. `hybrid_search.clock` is now the one
+  clock ranking reads; it honours `HYBRID_SEARCH_NOW` (ISO-8601).
+  `cycle.py`'s `freeze()` writes the instant into the snapshot as `frozen_at`,
+  and every `--config` runner (`cycle`, `run_conv_bench`, `run_valuein_bench`,
+  `displacement_audit`, `supersession_recall`) pins to it. An explicit
+  `HYBRID_SEARCH_NOW` wins, which is how a snapshot taken before this change
+  is measured at a chosen instant. The cycle record now carries `clock`.
+
 - **Translation lane no longer POSTs to a server that has no chat model.**
   `providers.py` records ollama's missing chat lane as `chat_model=""` and its
   comment says the lane "must not land on a server with only an embedding
