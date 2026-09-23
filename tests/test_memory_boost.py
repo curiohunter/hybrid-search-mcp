@@ -754,3 +754,43 @@ class TestNoteLeadsButNewerTurnSupersedes:
 
         ids = [r.chunk_id for r in out]
         assert ids.index("newer") < ids.index("note")
+
+
+class TestReorderNeedsTheSameWork:
+    """The reorder is supersession, so the 2026-09-12 rule holds there too:
+    two records that each name artifacts and share none did different work,
+    and the newer one does not move above the older (2026-09-23)."""
+
+    _seat = TestReflectorNoteSeat
+    TOPIC = "배포 단계 순서 스테이징 확인 후 프로덕션 반영"
+
+    def _note(self, body: str) -> HybridResult:
+        return self._seat._note(self, "note", 1.0, body)
+
+    def _turn(self, touched: str | None) -> HybridResult:
+        when = datetime.now(timezone.utc).isoformat()
+        work = f'branch: "feat/other"\ntouched: ["{touched}"]\n' if touched else ""
+        return _mk(
+            "newer", "qa_log", rrf=3.0, mtime=when,
+            content=f'---\nquery: "{self.TOPIC}"\n{work}---\n\n'
+                    f'## Answer excerpt\n\n{self.TOPIC}\n',
+        )
+
+    def _order(self, note: HybridResult, turn: HybridResult) -> list[str]:
+        head = [note, turn, _mk("code", "function", rrf=1.0)]
+        return [r.chunk_id for r in _order_qa_by_recency(head)]
+
+    def test_different_work_keeps_the_note_first(self) -> None:
+        note = self._note(f"{self.TOPIC} — scripts/deploy.sh 로 스테이징부터")
+        ids = self._order(note, self._turn("app/billing/refund.ts"))
+        assert ids.index("note") < ids.index("newer")
+
+    def test_shared_artifact_still_supersedes(self) -> None:
+        note = self._note(f"{self.TOPIC} — scripts/deploy.sh 로 스테이징부터")
+        ids = self._order(note, self._turn("scripts/deploy.sh"))
+        assert ids.index("newer") < ids.index("note")
+
+    def test_a_turn_naming_nothing_still_supersedes(self) -> None:
+        note = self._note(f"{self.TOPIC} — scripts/deploy.sh 로 스테이징부터")
+        ids = self._order(note, self._turn(None))
+        assert ids.index("newer") < ids.index("note")
