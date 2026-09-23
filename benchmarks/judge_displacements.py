@@ -46,6 +46,9 @@ from hybrid_search.project import ProjectRegistry  # noqa: E402
 from hybrid_search.storage.db import StoreDB  # noqa: E402
 from hybrid_search.storage.indexes import IndexPaths, get_project_dir  # noqa: E402
 
+sys.path.insert(0, str(REPO / "benchmarks"))
+from displacement_audit import label_for  # noqa: E402
+
 HOME_BENCH = Path("~/.hybrid-search/benchmarks").expanduser()
 BODY_CHARS = 900
 BATCH = 10
@@ -143,7 +146,8 @@ def main() -> int:
     pending: dict[str, str] = {}
     for row in report["rows"]:
         for c in row.get("displaced") or []:
-            if c.get("by_map") and c["chunk"] not in labels["labels"]:
+            if c.get("by_map") and not label_for(labels["labels"], c["chunk"],
+                                                 c.get("replacement_chunk")):
                 pending.setdefault(c["chunk"], row.get("query") or "")
     if not pending:
         print(f"{project}: 판정 대기 없음")
@@ -159,12 +163,14 @@ def main() -> int:
     db.close()
 
     cases = []
+    successors: dict[str, str] = {}
     for chunk, probe in pending.items():
         succ = smap.get(chunk)
         if not succ or chunk not in content or succ not in content:
             continue
         dq, dbody = owned(content[chunk])
         sq, sbody = owned(content[succ])
+        successors[chunk] = succ
         case = {"case": chunk, "displaced_question": dq, "displaced_body": dbody,
                 "successor_question": sq, "successor_body": sbody}
         if probe:
@@ -189,12 +195,18 @@ def main() -> int:
     added = 0
     for v in verdicts:
         cid = v.get("case")
-        if not cid or cid in labels["labels"]:
+        if not cid:
+            continue
+        held = labels["labels"].get(cid)
+        if held and held.get("judge") != "llm":
             continue  # a person's verdict always outranks the model's
         if v.get("verdict") not in ("legitimate", "damage"):
             continue
         labels["labels"][cid] = {
             "verdict": v["verdict"],
+            # A verdict is about a PAIR. When the map later names a different
+            # successor, this label no longer describes what is shown.
+            "successor": successors.get(cid),
             "judge": "llm",
             "model": args.model,
             "why": (v.get("why") or "")[:120],
