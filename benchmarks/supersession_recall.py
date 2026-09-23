@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from hybrid_search import clock  # noqa: E402
 from hybrid_search.config import load_config  # noqa: E402
 from hybrid_search.memory import supersession as ss  # noqa: E402
 from hybrid_search.project import ProjectRegistry  # noqa: E402
@@ -166,6 +167,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    clock.pin_to_snapshot(args.config)
     config = load_config(Path(args.config))
     registry = ProjectRegistry(config.global_dir)
     pinfo = registry.get_by_name(args.project)
