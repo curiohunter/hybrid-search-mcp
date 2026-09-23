@@ -207,7 +207,8 @@ class HybridSearchResponse:
     # classification actually uses (score_gap keeps the raw top1-top2).
     effective_gap: float | None = None
     # ADV3 observability contract: "used" when the KO→EN dual-query
-    # memory lane ran with a translation, "skipped" when a
+    # memory lane ran with a translation, "unavailable" when the
+    # provider has no chat model at all, "skipped" when a
     # Hangul-dominant query fell back to the single lane (translation
     # missing/failed/disabled), None when the lane was not applicable.
     cross_language_lane: str | None = None
@@ -1643,7 +1644,17 @@ class SearchOrchestrator:
             # below — no new positional guarantee, and confidence still
             # classifies on the ORIGINAL query's anchoring rules, so the
             # strong demotion / corpus-absent caps are untouched.
-            if is_korean_dominant(query):
+            if is_korean_dominant(query) and not translation.provider_has_chat_lane(
+                self._config.embedding.backend
+            ):
+                # Permanent condition, not a per-query skip: an
+                # embedding-only provider (ollama) has no model to
+                # translate with. Reported apart from "skipped" because for
+                # days this was invisible — the lane looked merely unlucky
+                # while every Korean query burned a worker thread, a 6s
+                # deadline and a 400 against a saturated endpoint.
+                cross_language_state = "unavailable"
+            elif is_korean_dominant(query):
                 en_results, cross_language_state = self._cross_language_with_deadline(
                     query, project_infos,
                     depth=memory_depth,
