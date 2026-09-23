@@ -4030,7 +4030,11 @@ def cmd_memory_card_create(args: argparse.Namespace) -> None:
     root = _resolve_memory_root(args)
     if root is None:
         sys.exit(1)
-    path = cards.create_card_from_qa(root, args.from_qa, card_type=args.type)
+    try:
+        path = cards.create_card_from_qa(root, args.from_qa, card_type=args.type)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
     if path is None:
         print(f"qa log not found or unreadable: {args.from_qa}", file=sys.stderr)
         sys.exit(1)
