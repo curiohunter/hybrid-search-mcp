@@ -16,7 +16,7 @@ import pytest
 
 from hybrid_search import providers
 from hybrid_search.config import EmbeddingConfig
-from hybrid_search.index.embedder import Embedder
+from hybrid_search.index.embedder import MAX_BATCH_TOKENS, Embedder
 from hybrid_search.search.translation import QueryTranslator
 
 
@@ -243,7 +243,7 @@ class TestEmbedDeadline:
 
     def _embedder(self, monkeypatch):
         from hybrid_search.config import EmbeddingConfig
-        from hybrid_search.index.embedder import Embedder
+        from hybrid_search.index.embedder import MAX_BATCH_TOKENS, Embedder
 
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         monkeypatch.delenv("HYBRID_SEARCH_EMBED_DEADLINE", raising=False)
@@ -299,3 +299,50 @@ class TestEmbedDeadline:
         with pytest.raises(ConnectionError, match="timed out after"):
             emb.embed_texts(["안녕"])
         assert calls["n"] == 1, "no deadline still fails on the socket timeout"
+
+
+class TestBatchTokenCeiling:
+    """One bulk request must not hold a single-runner server for minutes.
+
+    Ollama serves a model from one runner and 0.33 ignores
+    OLLAMA_NUM_PARALLEL for embedding-only models, so an interactive query
+    waits out whatever request is in flight. Measured 2026-09-23: the wait
+    tracked request duration almost exactly (32k tokens → 15.3s wait) while
+    throughput was flat, so the ceiling is a latency decision.
+    """
+
+    def test_hosted_providers_keep_the_global_cap(self):
+        assert providers.resolve("openai").max_batch_tokens == 0
+        assert providers.resolve("gemini").max_batch_tokens == 0
+
+    def test_ollama_caps_below_the_global_limit(self):
+        cap = providers.resolve("ollama").max_batch_tokens
+        assert 0 < cap < MAX_BATCH_TOKENS
+        # A single input may itself reach the model's per-input ceiling, so
+        # the cap must never sit under it — that would make one chunk
+        # unembeddable rather than merely slow.
+        assert cap >= providers.resolve("ollama").max_input_tokens
+
+    def test_ollama_splits_where_openai_does_not(self):
+        text = "token " * 1_000  # ≈1,000 tokens each
+        texts = [text] * 12      # ≈12,000 tokens total
+
+        ollama = Embedder(EmbeddingConfig(backend="ollama"))
+        hosted = Embedder(EmbeddingConfig(backend="openai"))
+
+        ollama_batches = ollama._split_into_token_batches(texts)
+        hosted_batches = hosted._split_into_token_batches(texts)
+
+        assert len(hosted_batches) == 1
+        assert len(ollama_batches) > 1
+        cap = providers.resolve("ollama").max_batch_tokens
+        for batch in ollama_batches:
+            # Every batch either fits the cap or is a single oversized input.
+            assert len(batch) == 1 or sum(
+                len(Embedder._enc.encode(t)) for t in batch
+            ) <= cap
+
+    def test_no_text_is_dropped_by_the_split(self):
+        texts = [f"token {i} " * 500 for i in range(9)]
+        batches = Embedder(EmbeddingConfig(backend="ollama"))._split_into_token_batches(texts)
+        assert [t for b in batches for t in b] == texts

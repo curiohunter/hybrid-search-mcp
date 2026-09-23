@@ -27,6 +27,7 @@ from hybrid_search.search.translation import (
     QueryTranslator,
     is_enabled,
     is_korean_dominant,
+    provider_has_chat_lane,
 )
 
 
@@ -51,6 +52,52 @@ class TestKoreanDominant:
     ])
     def test_english_and_empty_do_not(self, query: str) -> None:
         assert is_korean_dominant(query) is False
+
+
+# --- provider without a chat lane ---------------------------------------------
+
+class TestEmbeddingOnlyProvider:
+    """An embedding-only endpoint must never be POSTed a chat request.
+
+    providers.py records ollama's missing chat lane as chat_model="" and
+    says translation "must not land on a server with only an embedding
+    model". Nothing enforced it, so `"model": ""` went out and every
+    Hangul-dominant query took a 400 that was not even cached.
+    """
+
+    def test_ollama_has_no_chat_lane(self) -> None:
+        assert provider_has_chat_lane("ollama") is False
+        assert provider_has_chat_lane("openai") is True
+
+    def test_explicit_model_override_re_enables_it(self, monkeypatch) -> None:
+        # Someone who pulls a generation model onto that server can opt in.
+        monkeypatch.setenv("HYBRID_SEARCH_TRANSLATION_MODEL", "qwen3:8b")
+        assert provider_has_chat_lane("ollama") is True
+
+    def test_translate_sends_nothing(self, tmp_path: Path) -> None:
+        calls = []
+
+        def fn(query: str) -> str:
+            calls.append(query)
+            return "should never be called"
+
+        tr = QueryTranslator(
+            tmp_path / "cache.jsonl", request_fn=fn, provider="ollama",
+        )
+        assert tr.available is False
+        assert tr.translate("배포 순서를 어떻게 정했었지") is None
+        assert calls == []
+
+    def test_provider_with_chat_model_still_translates(self, tmp_path: Path) -> None:
+        tr = QueryTranslator(
+            tmp_path / "cache.jsonl",
+            request_fn=lambda q: "how did we order the deploy steps",
+            provider="openai",
+        )
+        assert tr.available is True
+        assert tr.translate("배포 순서를 어떻게 정했었지") == (
+            "how did we order the deploy steps"
+        )
 
 
 # --- QueryTranslator ----------------------------------------------------------
@@ -167,6 +214,23 @@ class TestCrossLanguageLane:
         orch._embedder.embed_query.assert_called_once_with(
             "what was our latest conversation?"
         )
+
+    def test_embedding_only_provider_never_reaches_the_network(
+        self, monkeypatch
+    ) -> None:
+        """The orchestrator's own translate path stops at the missing model.
+
+        Real QueryTranslator, real provider resolution — only the config is
+        a stub. Before the guard this POSTed `"model": ""` to the ollama
+        endpoint and took a 400 for every Korean query.
+        """
+        monkeypatch.setenv("HYBRID_SEARCH_TRANSLATION", "1")
+        orch = _mk_orch()
+        orch._config.embedding.backend = "ollama"
+
+        assert orch._translate_query("배포 순서를 어떻게 정했었지") is None
+        assert orch._translator is not None
+        assert orch._translator.available is False
 
     def test_ambient_gate_applies_when_no_memory_intent(self, monkeypatch) -> None:
         monkeypatch.setenv("HYBRID_SEARCH_TRANSLATION", "1")
