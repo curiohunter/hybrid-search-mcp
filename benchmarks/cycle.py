@@ -132,7 +132,7 @@ def labelled_projects() -> dict[str, Path]:
 
 
 def measure(config: Path, out: Path, since: str | None, quick: bool,
-            sample: int = 600) -> dict:
+            sample: int = 600, prev_raw: Path | None = None) -> dict:
     gold = HOME_BENCH
     rec: dict = {}
     py = sys.executable
@@ -188,6 +188,11 @@ def measure(config: Path, out: Path, since: str | None, quick: bool,
                "--labels", str(labels), "--out", str(dst)]
         if since:
             cmd += ["--since", since]
+        # Last cycle's report carries the probes that were in the window
+        # then; the audit counts the ones pushed out of it since.
+        carry = prev_raw / f"disp_{project}.json" if prev_raw else None
+        if carry and carry.is_file():
+            cmd += ["--carry", str(carry)]
         _run(cmd)
         if not dst.is_file():
             continue
@@ -205,6 +210,8 @@ def measure(config: Path, out: Path, since: str | None, quick: bool,
             "damage": dmg,
             "unlabelled": sorted(k for k, v in seen.items() if not v),
             "self_retrieval": d["self_found_with_map"],
+            "carried": d.get("carried", 0),
+            "window_exits": len(d.get("window_exits") or []),
         }
         total_damage += dmg
     rec["damage_total"] = total_damage
@@ -292,11 +299,17 @@ def report(now: dict, prev: dict | None) -> tuple[str, bool]:
     disp = now.get("displacement") or {}
     if disp:
         lines.append("")
-        lines.append("| 코퍼스 | 프로브 | 밀어냄 | 라벨됨 | damage | 자기회수 |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| 코퍼스 | 프로브 | 밀어냄 | 라벨됨 | damage | 자기회수 | 창 이탈 |")
+        lines.append("|---|---|---|---|---|---|---|")
         for proj, d in disp.items():
+            # damage = an answer deleted; 창 이탈 = an answer pushed past the
+            # limit with nothing deleted. Different failures, reported side by
+            # side — the second is what read as "damage 0" on 2026-09-23.
+            exits = (f"{d['window_exits']}/{d['carried']}" if d.get("carried")
+                     else "—")
             lines.append(f"| {proj} | {d['probes']} | {d['displaced']} | "
-                         f"{d['labelled']} | {d['damage']} | {d['self_retrieval']} |")
+                         f"{d['labelled']} | {d['damage']} | {d['self_retrieval']} "
+                         f"| {exits} |")
         pending = {p: d["unlabelled"] for p, d in disp.items() if d["unlabelled"]}
         if pending:
             lines.append("")
@@ -370,7 +383,10 @@ def main() -> int:
         "dirty": bool(_sh("git", "status", "--porcelain")),
         "holdout_since": since,
     }
-    now.update(measure(config, work, since, args.quick, args.sample))
+    # A same-day rerun's "previous" raw dir is this run's own — no carry.
+    prev_raw = (CYCLE_DIR / f"raw-{prev['date']}"
+                if prev and prev.get("date") != today else None)
+    now.update(measure(config, work, since, args.quick, args.sample, prev_raw))
 
     text, regressed = report(now, prev)
     (CYCLE_DIR / f"{today}.json").write_text(
