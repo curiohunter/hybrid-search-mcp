@@ -36,6 +36,10 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from hybrid_search import clock  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[1]
 
 HOME_BENCH = Path("~/.hybrid-search/benchmarks").expanduser()
@@ -99,6 +103,8 @@ def freeze() -> Path:
         cfg.replace('data_dir = "~/.hybrid-search"', f'data_dir = "{SNAP}"'),
         encoding="utf-8",
     )
+    # The corpus is frozen now; so is the clock the ranking ages it by.
+    clock.stamp_snapshot(SNAP)
     return SNAP / "config.toml"
 
 
@@ -358,6 +364,8 @@ def main() -> int:
     if not args.no_freeze or not config.is_file():
         print("· 인덱스를 얼린다")
         config = freeze()
+    pinned = clock.pin_to_snapshot(config)
+    print(f"· 시계: {pinned or '고정 안 됨 (스냅샷에 frozen_at 없음 — 다시 얼릴 것)'}")
 
     today = date.today().isoformat()
     work = CYCLE_DIR / f"raw-{today}"
@@ -370,6 +378,7 @@ def main() -> int:
     now: dict = {
         "date": today,
         "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "clock": pinned,
         "code_sha": _sh("git", "rev-parse", "--short", "HEAD") or "unknown",
         "dirty": bool(_sh("git", "status", "--porcelain")),
         "holdout_since": since,
