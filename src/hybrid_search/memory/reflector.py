@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from hybrid_search.memory import reader
+from hybrid_search.memory.qa_shape import answer_excerpt
 from hybrid_search.memory.supersession import (
     _is_machine_payload,
     _parse_timestamp,
@@ -137,10 +138,7 @@ def _existing_sources_hashes(project_root: Path) -> set[str]:
 
 
 def _answer_text(content: str) -> str:
-    if "## Answer excerpt" not in content:
-        return ""
-    text = content.split("## Answer excerpt", 1)[1]
-    return text.split("## Top results", 1)[0].strip()
+    return answer_excerpt(content)
 
 
 def _is_low_value(content: str) -> bool:

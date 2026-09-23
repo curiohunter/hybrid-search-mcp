@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from hybrid_search.memory import quality
+from hybrid_search.memory.qa_shape import answer_excerpt, owns_answer
 from hybrid_search.memory import reader as qa_reader
 
 CARD_DIRNAME = ".hybrid-search/memory/cards"
@@ -96,16 +97,6 @@ def _extract_topics(query: str, body: str) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _extract_section(body: str, heading: str) -> str:
-    marker = f"## {heading}"
-    start = body.find(marker)
-    if start < 0:
-        return ""
-    rest = body[start + len(marker):].lstrip()
-    end = rest.find("\n## ")
-    return (rest[:end] if end >= 0 else rest).strip()
-
-
 def _summary_from_body(query: str, body: str) -> str:
     """First paragraph of the answer that is actually an answer.
 
@@ -116,7 +107,7 @@ def _summary_from_body(query: str, body: str) -> str:
     outranking qa logs in the memory head — every card in one project was in
     that state on 2026-09-08. Skip provenance, keep looking for prose.
     """
-    excerpt = _extract_section(body, "Answer excerpt") or body
+    excerpt = answer_excerpt(body) or body
     for para in re.split(r"\n\s*\n", excerpt):
         if quality.is_metadata_block(para):
             continue
@@ -219,6 +210,11 @@ def create_card_from_qa(project_root: Path, qa_id: str, *, card_type: str = "mem
         raise ValueError(f"unsupported memory card type: {card_type}")
     qa_path = idx.path
     body = qa_reader.read_qa_body(qa_path)
+    if not owns_answer(body):
+        # The record written when the question arrived. Its body is other
+        # chunks' snippets, so a card made from it summarises somebody
+        # else's hit (2026-09-23).
+        raise ValueError(f"qa log owns no answer: {qa_id}")
     summary = _summary_from_body(idx.query, body)
     files = _extract_files(body)
     topics = _extract_topics(idx.query, body)
@@ -271,6 +267,8 @@ def compact_qa_to_cards(
         if idx.id in existing:
             continue
         if cutoff and (idx.timestamp is None or idx.timestamp < cutoff):
+            continue
+        if not owns_answer(qa_reader.read_qa_body(idx.path)):
             continue
         candidates.append(idx)
     if limit is not None:
