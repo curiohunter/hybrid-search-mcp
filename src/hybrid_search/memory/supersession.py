@@ -124,6 +124,14 @@ _MIN_QUESTION_MASS = 4.0
 _MIN_SYMMETRIC_QUESTION_OVERLAP = 0.33
 
 _FRONTMATTER_LINE_RE = re.compile(r"^([A-Za-z_][\w-]*):\s*(.*)$")
+_SOURCE_LINE_RE = re.compile(r"^\s+-\s+(\S+)\s*$")
+# A Reflector note lists its members as qa-relative paths. Both forms the
+# writer emits are resolvable from CONTENT alone, which is all this module
+# gets: a dated turn log carries the same instant in its `timestamp:`
+# frontmatter (checked 237/237 on the dogfood corpus), and a note carries
+# its cluster id in `sources_hash:`.
+_DATED_SOURCE_RE = re.compile(r"^(\d{4})/(\d{2})/(\d{2})-(\d{6})-")
+_NOTE_SOURCE_RE = re.compile(r"^consolidated/\d{4}-\d{2}-\d{2}-([0-9a-f]+)\.md$")
 
 
 def _frontmatter_value(content: str, key: str) -> str | None:
@@ -169,6 +177,137 @@ def _topic_item(
     return question, answer
 
 
+# NOT applied, and recorded here because both halves were measured and
+# the next person should not have to rediscover either.
+#
+# A Reflector note names the records it was built from (`sources:`), and
+# it needs naming them because its question is not its own: the note
+# copies the newest member's `query:` verbatim (`reflector.py`,
+# `representative_query`), so every question-based signal reads that copy
+# as if the note had asked it. Measured 2026-09-11 on two corpora: of the
+# mappings whose successor is a note, 13 of 30 and 5 of 12 — 43% both
+# times — pointed at a record the note was never built from.
+#
+# Requiring provenance was implemented and measured: it deleted 4 of
+# those edges and retargeted 14 onto real turns, invented none, and cost
+# Set A top3 0.70 -> 0.65. The counterexample says why, and it is not a
+# tuning problem. ONE TURN LEAVES TWO RECORDS — the pre-fetch log written
+# when the question arrives and the answer log written when it is
+# answered — and the note lists only the one it clustered. Set A's C9 is
+# the other one: a bare pre-fetch record, superseded by the note that
+# answers its question, which the first corpus's labels call legitimate.
+# By record identity that edge is "blind"; by turn identity it is exact.
+#
+# So 43% is not a defect rate, it is the wrong granularity. The unit is
+# the turn and qa records carry no turn id. Give them one and this gate
+# becomes a one-line filter; until then it refuses real answers, and the
+# helpers below stay pinned by tests so that day is cheap.
+
+
+def _source_key(raw: str) -> str | None:
+    """Normalise one `sources:` entry to a record key."""
+    m = _DATED_SOURCE_RE.match(raw)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}/{m.group(3)}-{m.group(4)}"
+    m = _NOTE_SOURCE_RE.match(raw)
+    if m:
+        return f"consolidated/{m.group(1)}"
+    return None
+
+
+def _record_key(content: str) -> str | None:
+    """A record's own identity, in the form a note's sources list uses."""
+    if _is_consolidation(content):
+        h = _frontmatter_value(content, "sources_hash")
+        return f"consolidated/{h}" if h else None
+    ts = _parse_timestamp(content)
+    return ts.strftime("%Y/%m/%d-%H%M%S") if ts is not None else None
+
+
+def _consolidation_sources(content: str) -> frozenset[str]:
+    """The record keys a Reflector note was actually built from."""
+    if not content.startswith("---"):
+        return frozenset()
+    out: set[str] = set()
+    in_sources = False
+    for line in content.split("\n", 400)[1:]:
+        if line.startswith("---"):
+            break
+        m = _SOURCE_LINE_RE.match(line)
+        if m:
+            if in_sources:
+                key = _source_key(m.group(1))
+                if key:
+                    out.add(key)
+            continue
+        in_sources = line.strip() == "sources:"
+    return frozenset(out)
+
+
+# The artifacts a turn acted on: branch names, commit hashes, file paths,
+# worktree names. Two records that name NONE of the same ones did different
+# work, however alike their wording.
+#
+# 2026-09-12, decided by the tool's owner after an independent judge and the
+# labels split on exactly this: "메인에 머지하고 푸시" appears in this corpus
+# again and again, and each time it merges a different branch. Reading the
+# later one as an update of the earlier deletes the earlier — and the two
+# readings could not be told apart from words alone. With this rule written
+# into the criterion, our labels and the independent judge went from
+# Cohen's κ 0.50 to 0.80 over the same 31 cases.
+#
+# Not a threshold. Either the two sets intersect or they do not, and when
+# either side names nothing the rule does not apply at all.
+_ARTIFACT_RES = (
+    re.compile(r"\b(?:feat|fix|refactor|chore|docs|release|test|ws)[-/][a-z0-9][\w./-]{2,}"),
+    re.compile(r"\b[0-9a-f]{7,40}\b"),
+    re.compile(r"\b[\w./-]+\.(?:py|ts|tsx|js|jsx|sql|md|json|toml|sh|yaml|yml|rs|go|rb)\b"),
+    re.compile(r"\bws-[\w-]+"),
+)
+
+
+def _artifacts(content: str) -> frozenset[str]:
+    """Branches, commits, files and worktrees a record OWNS a mention of.
+
+    Read from the record's own question and answer only. The `## Top
+    results` block below them quotes other chunks, paths and all, so
+    reading it would credit this record with everything retrieval
+    happened to show it.
+    """
+    # Recorded identity first. `hooks._worked_on` writes `branch:`,
+    # `head:` and `touched:` at Stop time, which is exact — the scan
+    # below is the fallback for records written before that existed, and
+    # for clients that do not report it.
+    recorded: set[str] = set()
+    for key in ("branch", "head"):
+        val = _frontmatter_value(content, key)
+        if val:
+            recorded.add(val.lower())
+    touched = _frontmatter_value(content, "touched")
+    if touched:
+        recorded |= {
+            m.strip().strip('"').strip("'").lower()
+            for m in touched.strip("[]").split(",")
+            if m.strip().strip('"').strip("'")
+        }
+    if recorded:
+        return frozenset(recorded)
+
+    head = content.split("## Top results", 1)[0]
+    # The frontmatter is provenance, not work. A Reflector note lists the
+    # qa files it was built from there, and reading those as "files this
+    # record touched" made every note disjoint from every turn — which
+    # cost Set A a question before it was caught (2026-09-12). The
+    # question is the only line of the frontmatter that is the record's
+    # own words, so it is added back by hand.
+    body = head.split("---", 2)[-1] if head.startswith("---") else head
+    scan = (_frontmatter_value(content, "query") or "") + "\n" + body
+    out: set[str] = set()
+    for pattern in _ARTIFACT_RES:
+        out |= {m.lower() for m in pattern.findall(scan)}
+    return frozenset(out)
+
+
 def _is_machine_payload(content: str) -> bool:
     """Machine-generated queries (task notifications, hook payloads) are
     events, not facts — a "newest task notification" is never a
@@ -191,6 +330,11 @@ def _symmetric_question_overlap(
     shared = sum(min(a[t], b[t]) for t in a.keys() & b.keys())
     denom = max(sum(a.values()), sum(b.values()))
     return shared / denom if denom else 0.0
+
+
+def _disjoint_work(a: frozenset[str], b: frozenset[str]) -> bool:
+    """True when both records name artifacts and share none — see `_artifacts`."""
+    return bool(a) and bool(b) and not (a & b)
 
 
 def _same_topic_strict(
@@ -319,6 +463,11 @@ def compute_supersession(
         key=lambda e: ((e[2] is None), -(e[2].timestamp() if e[2] else 0.0), e[0])
     )
     items = [_topic_item(content, demote) for _, content, _ in dated]
+    # What each record actually acted on. Scoped to the destructive map on
+    # purpose: the Reflector's clustering uses the same predicate, and
+    # whether a note may be built from turns that touched different
+    # branches is a separate question with its own cost.
+    work = [_artifacts(content) for _, content, _ in dated]
 
     # For each record, the NEWEST record that is the same topic as THAT
     # record — decided pairwise, not by group membership.
@@ -377,6 +526,11 @@ def compute_supersession(
             # has nothing to correct anything WITH, and the splice would
             # replace a real answer with an empty one.
             if dated[j][2] is None or not items[j][1]:
+                continue
+            # Same words, different work — see `_artifacts`. Only fires
+            # when BOTH records name something; silence on either side
+            # leaves the pair to the matcher exactly as before.
+            if _disjoint_work(work[i], work[j]):
                 continue
             if _same_topic_strict(items[i], items[j]):
                 mapping[chunk_id] = dated[j][0]

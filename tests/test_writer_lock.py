@@ -11,6 +11,7 @@ Lockfile", leaving the run aborted. That happened twice in one session.
 from __future__ import annotations
 
 import os
+import shutil
 
 import pytest
 
@@ -18,8 +19,37 @@ from hybrid_search import cli
 
 
 class TestWriterLock:
-    def test_lock_lives_beside_the_project_index(self, tmp_path):
-        assert cli._writer_lock_path(tmp_path).parent == tmp_path
+    def test_lock_lives_outside_the_project_index(self, tmp_path):
+        """Outside, because a full rebuild renames the index directory away
+        and would take an inside lock with it."""
+        index_dir = tmp_path / "abc123"
+        lock = cli._writer_lock_path(index_dir)
+        assert lock.parent == tmp_path
+        assert lock.name == "abc123.writer.lock"
+
+    def test_the_conversation_lock_lives_there_too(self, tmp_path):
+        index_dir = tmp_path / "abc123"
+        assert cli._conv_lock_path(index_dir) == tmp_path / "abc123.conv-index.lock"
+
+    def test_the_lock_survives_an_atomic_rebuild_swap(self, tmp_path):
+        """The hole this closes: `<dir>.rebuilding` is renamed over `<dir>`
+        at the end of a full rebuild. With the lock inside, it vanished at
+        that moment — and a second indexer started on top of the first.
+        Two were found writing one project, one of them for an hour."""
+        index_dir = tmp_path / "abc123"
+        index_dir.mkdir()
+        lock = cli._writer_lock_path(index_dir)
+        assert cli._acquire_conv_lock(lock) is True
+
+        rebuilding = tmp_path / "abc123.rebuilding"
+        rebuilding.mkdir()
+        backup = tmp_path / "abc123.backup"
+        index_dir.rename(backup)
+        rebuilding.rename(index_dir)
+        shutil.rmtree(backup)
+
+        assert lock.exists(), "writer lock was swapped away mid-run"
+        assert lock.read_text().strip() == str(os.getpid())
 
     def test_a_live_holder_is_reported(self, tmp_path):
         lock = tmp_path / ".writer.lock"
@@ -64,7 +94,7 @@ class TestReindexRefusesToDoubleWrite:
         project.mkdir()
         index_dir = tmp_path / "idx"
         index_dir.mkdir()
-        (index_dir / ".writer.lock").write_text("1")
+        cli._writer_lock_path(index_dir).write_text("1")
 
         monkeypatch.setattr(cli, "get_project_dir", lambda *a, **k: index_dir, raising=False)
         monkeypatch.setattr(

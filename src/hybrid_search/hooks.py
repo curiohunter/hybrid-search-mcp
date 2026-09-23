@@ -207,6 +207,10 @@ _TRANSCRIPT_TAIL_LINES = 400
 # Collect a bounded assistant excerpt; qa_log applies the final storage cap.
 _ANSWER_EXCERPT_COLLECT_MAX_CHARS = 4000
 
+# Files recorded per turn. A refactor can touch dozens; the first few
+# identify the work, and the rest only pad the frontmatter.
+_WORKED_ON_MAX_FILES = 12
+
 
 def _read_transcript_tail(transcript_path: Path) -> list[dict]:
     """Return the tail of a JSONL transcript as a list of decoded records.
@@ -297,6 +301,7 @@ def _extract_assistant_summary(
     leftover budget.
     """
     seen_tools: list[str] = []
+    seen_paths: list[str] = []
     text_chars = 0
     texts: list[str] = []
     for i in range(from_idx, len(records)):
@@ -324,6 +329,13 @@ def _extract_assistant_summary(
                 name = block.get("name") or ""
                 if name and name not in seen_tools:
                     seen_tools.append(name)
+                # The tool's TARGET, not just its name. "this turn ran
+                # Edit" says nothing about which work it was; the path
+                # does, and it is the only thing that tells one
+                # "메인에 머지하고 푸시" from the next one.
+                path = ((block.get("input") or {}).get("file_path") or "").strip()
+                if path and path not in seen_paths:
+                    seen_paths.append(path)
 
     # Tail-biased excerpt assembly: newest blocks claim the budget first,
     # output order stays chronological.
@@ -336,13 +348,64 @@ def _extract_assistant_summary(
         tail.append(piece)
         budget -= len(piece)
     excerpt = "\n\n".join(e.strip() for e in reversed(tail) if e.strip())
-    return seen_tools, text_chars, excerpt
+    return seen_tools, text_chars, excerpt, seen_paths
+
+
+def _git(root: Path, *args: str) -> str | None:
+    """One short read-only git call, or None when this is not a repo."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    val = (out.stdout or "").strip()
+    return val if out.returncode == 0 and val else None
+
+
+def _worked_on(root: Path, event: dict, touched: list[str]) -> dict | None:
+    """What this turn ACTED ON — branch, HEAD, files, session.
+
+    The record already says how fast the search was and how many chunks it
+    scanned. It has never said which branch, which commit, or which files,
+    and that gap is why "이 둘은 같은 일인가" had to be guessed from wording:
+    the same operational sentence recurs for months over different work,
+    and nothing in the record told them apart (decided 2026-09-12, see
+    `memory/supersession._artifacts`).
+
+    Best-effort. A missing git binary, a non-repo directory or a hook
+    payload without a session id each just leave their key out; the
+    reader treats absence as "unknown", never as "different".
+    """
+    out: dict = {}
+    sid = event.get("session_id")
+    if isinstance(sid, str) and sid:
+        out["session"] = sid
+    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch and branch != "HEAD":
+        out["branch"] = branch
+    head = _git(root, "rev-parse", "--short", "HEAD")
+    if head:
+        out["head"] = head
+    files: list[str] = []
+    for raw in touched:
+        try:
+            rel = str(Path(raw).resolve().relative_to(root.resolve()))
+        except (ValueError, OSError):
+            continue
+        if rel not in files:
+            files.append(rel)
+    if files:
+        out["files"] = files[:_WORKED_ON_MAX_FILES]
+    return out or None
 
 
 def _find_last_turn(
     records: list[dict],
-) -> tuple[str | None, list[str], int, str, int]:
-    """Return (last_user_prompt, tools_used, answer_chars, answer_excerpt, idx).
+) -> tuple[str | None, list[str], int, str, int, list[str]]:
+    """Return (prompt, tools_used, answer_chars, answer_excerpt, idx, touched).
 
     Walks the tail backwards to find the most recent genuine user prompt,
     then collects the assistant activity that followed it. ``idx`` is the
@@ -356,9 +419,9 @@ def _find_last_turn(
         prompt = _extract_user_text(rec)
         if prompt is None:
             continue
-        tools, chars, excerpt = _extract_assistant_summary(records, idx + 1)
-        return prompt, tools, chars, excerpt, idx
-    return None, [], 0, "", -1
+        tools, chars, excerpt, touched = _extract_assistant_summary(records, idx + 1)
+        return prompt, tools, chars, excerpt, idx, touched
+    return None, [], 0, "", -1, []
 
 
 # ── UserPromptSubmit hook — auto-MCP on exploratory prompts ───────────
@@ -593,7 +656,7 @@ def _handle_stop(event: dict) -> dict | None:
     if not records:
         return None
 
-    prompt, tools, answer_chars, answer_excerpt, turn_idx = _find_last_turn(records)
+    prompt, tools, answer_chars, answer_excerpt, turn_idx, touched = _find_last_turn(records)
     if prompt is None:
         return None
 
@@ -607,6 +670,7 @@ def _handle_stop(event: dict) -> dict | None:
             answer_chars=answer_chars,
             answer_excerpt=answer_excerpt,
             trigger="stop_hook",
+            worked_on=_worked_on(root, event, touched),
             async_write=False,
             dedup=True,
         )

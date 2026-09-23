@@ -871,8 +871,20 @@ def _merge_memory_results(
     # best retrieval score decides — a fresh adjacent-topic Q&A must not
     # take the guaranteed slot from an old exact-topic one. Cards stay
     # score-ordered (curated, no supersession-by-time semantics).
-    qa_candidates = [r for r in memory_head if r.node_type == "qa_log"]
-    others = [r for r in memory_head if r.node_type != "qa_log"]
+    #
+    # Reflector notes stay out of the grouping. A note is made from the raw
+    # records it would be grouped with, so it matches their topic by
+    # construction, and a group is represented by its best-scoring member —
+    # one of those raw records. On 2026-09-23 that is how 3 of 20 recall
+    # answers vanished: the note sat in a five-member group behind its own
+    # sources and never became a candidate. A note is not a newer version
+    # of a turn; it competes as itself.
+    qa_candidates = [
+        r for r in memory_head
+        if r.node_type == "qa_log" and not _is_consolidation_result(r)
+    ]
+    grouped = {id(r) for r in qa_candidates}
+    others = [r for r in memory_head if id(r) not in grouped]
 
     def _prio(r: HybridResult) -> int:
         """Curated memory outranks recorded turns, before score is consulted.
@@ -910,8 +922,10 @@ def _merge_memory_results(
         candidates.append((_prio(representative), -group_relevance,
                            len(others) + seq, representative))
     candidates.sort()
-    memory_head = [r for _, _, _, r in candidates]
     head_limit = min(head_limit, max(1, limit))
+    memory_head = _seat_a_distillate(
+        [r for _, _, _, r in candidates], head_limit
+    )
     head: list[HybridResult] = []
     seen: set[str] = set()
     for r in memory_head[:head_limit]:
@@ -922,6 +936,55 @@ def _merge_memory_results(
     body = [r for r in chunk_results if r.chunk_id not in seen]
     insert_at = max(0, min(insert_at, len(body)))
     return body[:insert_at] + head + body[insert_at:]
+
+
+# A head smaller than this is left alone. The ambient lane has one memory
+# slot, and giving it to a Reflector note would decide the code axis by
+# record kind — which is what the 2026-09-09 `_prio` experiment showed
+# costs the code hits around it.
+_DISTILLATE_SEAT_MIN_HEAD = 2
+
+
+def _seat_a_distillate(
+    ordered: list[HybridResult], head_limit: int
+) -> list[HybridResult]:
+    """Raw turn logs may not fill every head seat while a Reflector note waits.
+
+    A Reflector note is made FROM raw qa records and shares their words, so
+    as the corpus grows its own sources rank above it, one each, and fill the
+    head together. Measured 2026-09-23 on a frozen snapshot: the answering
+    note sat at pool rank 2-14 on 13 of 20 recall questions while three raw
+    records took the head. The note's date works against it too — it is
+    written once, and the recency boost keeps favouring the turns that came
+    after it.
+
+    When the head is raw-only and a note is in the pool, the best note
+    replaces the lowest raw seat and LEADS the head. Cards and terms are
+    curated already and are never displaced.
+
+    Leading is a ranking by kind, chosen on purpose (2026-09-23, owner's
+    call, study `2026-09-23-distillate-vs-raw-log.md` §9): in the last seat
+    the note was in the top three on 0.75 of recall questions but MRR stayed
+    at 0.30, because the agent reads two raw turns before the conclusion.
+    Leading lifted MRR to 0.59. The cost is that a note is a snapshot of the
+    day it was written; `_order_qa_by_recency` still moves a newer turn on
+    the same topic above it, and that is what keeps a changed decision from
+    being served stale.
+    """
+    if head_limit < _DISTILLATE_SEAT_MIN_HEAD or len(ordered) <= head_limit:
+        return ordered
+    head = ordered[:head_limit]
+    if not all(
+        r.node_type == "qa_log" and not _is_consolidation_result(r) for r in head
+    ):
+        return ordered
+    note = next(
+        (r for r in ordered[head_limit:] if _is_consolidation_result(r)), None
+    )
+    if note is None:
+        return ordered
+    rest = [r for r in ordered[head_limit - 1:] if r is not note]
+    return [note, *head[:-1], *rest]
 
 
 # Topic matching lives in qa_topics: language-aware normalization
@@ -1046,6 +1109,84 @@ def _query_names_this_record(
     return qa_topics.weighted_overlap(asked_for, own) >= _ASKED_FOR_THIS_OVERLAP
 
 
+def _owns_an_answer(r: "HybridResult") -> bool:
+    """True when a qa hit carries an answer of its own.
+
+    What a record OWNS is its question and its answer excerpt. The
+    `## Top results` block below them is a quotation of other chunks,
+    retrievable on their own terms, so a replacement that drops those
+    words has destroyed nothing. Two records exist per turn — one written
+    when the question arrives, one when it is answered — and only the
+    second owns anything.
+    """
+    return "## Answer excerpt" in (r.content or "")
+
+
+# How many extra rows the lexical lane may add to the memory candidate
+# pool, on top of the fused top-N. Small on purpose: it exists so the tail
+# slot can see the lane's best, not to widen the head's choices — these
+# rows carry the lane's lowest fused scores and sort last everywhere else.
+_LEXICAL_TAIL_POOL = 3
+
+# Slots the lexical lane gets below the heads on a recall query, taken
+# from the code tail. Two because the lane's #1 is not reliably the
+# answer — see `_splice_lexical_memory_tail`.
+_LEXICAL_TAIL_SLOTS = 2
+
+
+def _canonical_root(cwd: str) -> "Path | None":
+    """`project.canonical_project_root`, imported lazily."""
+    try:
+        from hybrid_search.project import canonical_project_root
+
+        return canonical_project_root(cwd)
+    except Exception:
+        return None
+
+
+def _splice_lexical_memory_tail(
+    results: list[HybridResult],
+    memory_candidates: list[HybridResult],
+    at: int,
+    limit: int,
+    slots: int = _LEXICAL_TAIL_SLOTS,
+) -> list[HybridResult]:
+    """Give the lexical lane a few slots BELOW the heads, never inside them.
+
+    The memory head is ordered by the fused score, and on a Korean recall
+    query that score cannot represent the lexical lane: the query-type
+    weight is 0.15, so with k=60 and a 50-deep vector list the best score
+    reachable without a vector rank (0.15/61) sits under the worst score
+    reachable with one (0.85/110). A record that is the #1 lexical match
+    of the whole memory corpus scores below the 50th semantic one.
+
+    Three ways to spend the head on it were measured on 2026-09-11 and all
+    three traded one gold answer for another, because the head is three
+    slots and the marginal answer sits in the third:
+
+        symmetric weight (0.5)            found 0.75 -> 0.80, top3 -> 0.60
+        equal lane depths + that weight   found 0.75 -> 0.80, top3 -> 0.55
+        one head seat reserved lexically  found 0.75,         top3 -> 0.65
+
+    The shape of those results is the finding: lexical evidence reliably
+    brings MORE gold answers into the response and reliably makes the top
+    three worse. So it gets a slot where it can only add — under both
+    heads, paid for out of the code tail, which a recall query barely
+    uses. Nothing above it moves.
+    """
+    if not memory_candidates or limit <= 0 or at >= limit:
+        return results
+    present = {r.chunk_id for r in results[:limit]}
+    picks = sorted(
+        (r for r in memory_candidates
+         if r.bm25_rank is not None and r.chunk_id not in present),
+        key=lambda r: r.bm25_rank,
+    )[:slots]
+    if not picks:
+        return results
+    return [*results[:at], *picks, *results[at:]]
+
+
 def _splice_superseding(
     results: list[HybridResult],
     superseding: dict[str, str],
@@ -1104,10 +1245,46 @@ def _splice_superseding(
             if newer_id not in position and spliced < cap:
                 newer = fetch(newer_id, r)
                 if newer is not None:
+                    room = len(results) + inserted < limit
+                    if (
+                        not room
+                        and _is_consolidation_result(newer)
+                        and _owns_an_answer(r)
+                    ):
+                        # A note is a LOSSY synthesis of the records it was
+                        # built from, so letting it take one of their slots
+                        # deletes whatever the synthesis left out — and what
+                        # it left out is what the searcher asked for, or they
+                        # would not have landed on the source turn.
+                        #
+                        # Measured 2026-09-11: a note built from a turn kept
+                        # that session's cost conclusion and dropped that
+                        # session's list of uncommitted files; the probe was
+                        # asking for the list. Every index-time bar scored
+                        # the pair at or near 1.00, because ON TOPIC it is
+                        # the same thing — which is why the refusal belongs
+                        # here, where the query is known, and not in another
+                        # threshold.
+                        #
+                        # Scoped by what the stale hit OWNS, because that is
+                        # all a replacement can destroy. A bare pre-fetch log
+                        # holds no answer of its own, so handing its slot to
+                        # the note that answers its question takes nothing
+                        # away — that is the designed exposure path, it is
+                        # what the labelled corpus calls legitimate, and
+                        # refusing it blindly cost Set A a question (C9).
+                        #
+                        # Only the destructive branch is refused. With room
+                        # the note is still inserted above its source, which
+                        # is the exposure path the Reflector exists for.
+                        r = _mark_superseded(r)
+                        marked += 1
+                        out.append(r)
+                        continue
                     position[newer_id] = i
                     spliced += 1
                     out.append(newer)
-                    if len(results) + inserted < limit:
+                    if room:
                         inserted += 1
                         out.append(_mark_superseded(r))
                     # else: full — the correction takes the stale slot.
@@ -1626,7 +1803,20 @@ class SearchOrchestrator:
                 k=self._config.search.rrf_k,
                 bm25_weight=effective_weight,
             )
-            memory_results = self._enrich_results(mem_fused[:max(100, limit)], project_infos, query)
+            # The candidate pool is the fused top-N PLUS the lexical lane's
+            # own best few. Selecting the tail slot's occupant out of the
+            # fused order alone would defeat the slot: the records it exists
+            # for are exactly the ones that order disqualifies. Measured
+            # 2026-09-11 — Set A's C18 gold is lane-BM25 #1 and sits past
+            # fused #100, so the slot kept picking BM25 #3.
+            mem_pool = mem_fused[:max(100, limit)]
+            pooled = {f.chunk_id for f in mem_pool}
+            mem_pool = mem_pool + sorted(
+                (f for f in mem_fused[max(100, limit):]
+                 if f.bm25_rank is not None and f.chunk_id not in pooled),
+                key=lambda f: f.bm25_rank,
+            )[:_LEXICAL_TAIL_POOL]
+            memory_results = self._enrich_results(mem_pool, project_infos, query)
             if not memory_intent:
                 # Ambient gate: only splice a Q&A that at least one retriever
                 # ranked well within its own lane. Keeps junk qa out of the
@@ -1838,6 +2028,18 @@ class SearchOrchestrator:
         # Stale-fact guard: whatever lane a qa arrived from, among the qa
         # slots of the final list the newest answer shows first.
         chunk_results = _order_qa_by_recency(chunk_results)
+
+        # One slot for the lexical lane, below every head. See
+        # `_splice_lexical_memory_tail` — the fused score cannot carry a
+        # lexical-only memory hit, and every attempt to make it carry one
+        # inside the head cost a better answer.
+        if memory_intent and memory_candidates:
+            chunk_results = _splice_lexical_memory_tail(
+                chunk_results,
+                memory_candidates,
+                at=plan.memory_slots + plan.conv_slots,
+                limit=limit,
+            )
 
         # Phase 5: inject module cards when the query is likely structural.
         # Module cards give agents a subsystem-level answer unit so they don't
@@ -2874,7 +3076,22 @@ class SearchOrchestrator:
             bm25_results = bm25_eng.search(query, limit=bm25_limit)
             bm25_ids = [r.chunk_id for r in bm25_results]
             if chunk_filter:
-                bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter]
+                # Over-fetch, then filter, then TRIM BACK TO `depth`. The
+                # over-fetch exists so the filter has enough to work with;
+                # keeping everything it found made the two lanes different
+                # sizes, and RRF reads that difference as evidence.
+                #
+                # Measured 2026-09-11 on the memory lane: BM25 handed the
+                # fusion 429 candidates and the vector index exactly 50, so
+                # "absent from the other lane" cost a document far more on
+                # one side than the other. Being absent from a 50-long list
+                # is common; being absent from a 429-long one is a verdict.
+                # At the Korean weight (0.15) that asymmetry hid inside the
+                # blend; raising the weight to 0.5 exposed it as the lexical
+                # lane flooding the head (Set A found 0.75 -> 0.80 while
+                # top3 fell 0.70 -> 0.60). Same-size lanes make the two
+                # absences mean the same thing.
+                bm25_ids = [cid for cid in bm25_ids if cid in chunk_filter][:depth]
 
             # Vector search — skipped when the query could not be embedded,
             # or when this index was written by a different embedding model
@@ -2900,8 +3117,18 @@ class SearchOrchestrator:
     def _detect_primary_project(
         cwd: str, project_infos: list[ProjectInfo]
     ) -> str | None:
-        """Find the registered project whose path contains the cwd (or vice versa)."""
-        cwd_path = Path(cwd).resolve()
+        """Find the registered project whose path contains the cwd (or vice versa).
+
+        The cwd is canonicalised first, which for a linked worktree means the
+        MAIN checkout. Without that step a worktree matched its own
+        registered project — one holding the handful of files that worktree
+        changed and NO memory at all, while the repo's 2,023 qa records sat
+        in the main checkout's index. The write path resolved worktrees from
+        the start; this read path did not, so a session inside a worktree
+        wrote its memory to one place and searched another
+        (2026-09-12 field check).
+        """
+        cwd_path = _canonical_root(cwd) or Path(cwd).resolve()
         for pinfo in project_infos:
             project_path = Path(pinfo.path).resolve()
             try:

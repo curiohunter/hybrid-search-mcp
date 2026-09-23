@@ -900,7 +900,7 @@ class TestAnswerExcerptCapturesConclusion:
     def test_walk_survives_tool_results_and_keeps_conclusion(self) -> None:
         from hybrid_search.hooks import _find_last_turn
 
-        prompt, tools, chars, excerpt, _ = _find_last_turn(self._records())
+        prompt, tools, chars, excerpt, _, _ = _find_last_turn(self._records())
         assert prompt == "payssam 정산 어디서 처리해?"
         assert "mcp__hybrid-search__hybrid_search" in tools
         assert "payssam-client.ts" in excerpt, "conclusion missing (F4′)"
@@ -912,7 +912,7 @@ class TestAnswerExcerptCapturesConclusion:
         import hybrid_search.hooks as hooks_mod
 
         monkeypatch.setattr(hooks_mod, "_ANSWER_EXCERPT_COLLECT_MAX_CHARS", 40)
-        _, _, _, excerpt, _ = hooks_mod._find_last_turn(self._records())
+        _, _, _, excerpt, _, _ = hooks_mod._find_last_turn(self._records())
         # Budget too small for both → the conclusion wins, preamble drops.
         assert "payssam-client.ts" in excerpt or "처리됩니다" in excerpt
         assert "먼저 호출합니다" not in excerpt
@@ -926,7 +926,7 @@ class TestAnswerExcerptCapturesConclusion:
             {"type": "assistant",
              "message": {"content": [{"type": "text", "text": "다음 답"}]}},
         ]
-        prompt, _, _, excerpt, _ = _find_last_turn(records)
+        prompt, _, _, excerpt, _, _ = _find_last_turn(records)
         assert prompt == "다음 질문이야"
         assert excerpt == "다음 답"
 
@@ -1217,3 +1217,166 @@ class TestHarnessDebrisDetection:
         self._qa(tmp_path, "01-000003-cccc", "task notification 처리 어떻게 하지")
 
         assert integrity.detect_harness_debris(tmp_path) == []
+
+
+class TestCycleLine:
+    """The measurement cycle reports itself into the next session.
+
+    A loop that has to be asked for its result is a script. This line is
+    the half that closes it: the next session sees what regressed and what
+    is waiting to be judged, without running anything.
+    """
+
+    def _write(self, tmp_path, name, doc):
+        import json
+        d = tmp_path / "benchmarks" / "cycle"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    def _line(self, tmp_path, monkeypatch, owner=True):
+        from hybrid_search.memory import hook_runtime
+        real = Path.expanduser
+
+        def fake(self):
+            s = str(self)
+            if s.startswith("~/.hybrid-search"):
+                return tmp_path / s[len("~/.hybrid-search/"):]
+            return real(self)
+
+        monkeypatch.setattr(Path, "expanduser", fake)
+        root = tmp_path / "proj"
+        if owner:
+            (root / "benchmarks").mkdir(parents=True, exist_ok=True)
+            (root / "benchmarks" / "cycle.py").write_text("", encoding="utf-8")
+        else:
+            root.mkdir(parents=True, exist_ok=True)
+        return hook_runtime._cycle_line(root)
+
+    def test_silent_in_a_project_that_does_not_own_the_runner(
+        self, tmp_path, monkeypatch
+    ):
+        """The measured project is not where the command lives.
+
+        The dogfood corpus belongs to a math academy's app. Telling its
+        session to run a benchmark from another repo is an instruction it
+        cannot follow, in a session that is not about the tool.
+        """
+        import datetime
+        today = datetime.date.today().isoformat()
+        self._write(tmp_path, today, {
+            "date": today,
+            "displacement": {"p": {"unlabelled": ["a", "b"]}},
+        })
+        assert self._line(tmp_path, monkeypatch, owner=False) == ""
+        assert "판정 대기 2건" in self._line(tmp_path, monkeypatch, owner=True)
+
+    def test_silent_when_there_is_no_cycle(self, tmp_path, monkeypatch):
+        assert self._line(tmp_path, monkeypatch) == ""
+
+    def test_silent_when_nothing_moved(self, tmp_path, monkeypatch):
+        import datetime
+        today = datetime.date.today().isoformat()
+        body = {"date": today, "set_a": {"answer_in_top3": 0.7, "answer_found": 0.9}}
+        self._write(tmp_path, "2026-01-01", dict(body, date="2026-01-01"))
+        self._write(tmp_path, today, body)
+        assert self._line(tmp_path, monkeypatch) == ""
+
+    def test_a_regression_is_named_with_both_numbers(self, tmp_path, monkeypatch):
+        import datetime
+        today = datetime.date.today().isoformat()
+        self._write(tmp_path, "2026-01-01",
+                    {"date": "2026-01-01", "set_a": {"answer_in_top3": 0.7}})
+        self._write(tmp_path, today,
+                    {"date": today, "set_a": {"answer_in_top3": 0.65}})
+        line = self._line(tmp_path, monkeypatch)
+        assert "Set A top3 0.7→0.65" in line
+
+    def test_unjudged_displacements_are_counted(self, tmp_path, monkeypatch):
+        import datetime
+        today = datetime.date.today().isoformat()
+        self._write(tmp_path, today, {
+            "date": today,
+            "displacement": {"p": {"unlabelled": ["a", "b", "c"]}},
+        })
+        assert "판정 대기 3건" in self._line(tmp_path, monkeypatch)
+
+    def test_a_stale_measurement_asks_to_be_re_run(self, tmp_path, monkeypatch):
+        self._write(tmp_path, "2026-01-01", {"date": "2026-01-01"})
+        line = self._line(tmp_path, monkeypatch)
+        assert "benchmarks/cycle.py" in line
+
+
+class TestWorktreesShareOneMemory:
+    """Every worktree of one repo resolves to the same project.
+
+    A linked worktree registers under its own path, and its index holds the
+    handful of files that worktree changed and no memory at all. On
+    2026-09-12 the dogfood repo had 22 such worktrees — every one of them
+    with 0 qa records against the main checkout's 2,023 — and the same
+    question asked from a worktree came back with zero memory rows while
+    the main folder returned ten. The write path had resolved worktrees
+    since 2026-09-04; the read path matched raw paths and did not.
+    """
+
+    def _repo(self, tmp_path):
+        main = tmp_path / "repo"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        wt = tmp_path / "repo-wt"
+        wt.mkdir()
+        (wt / ".git").write_text(
+            f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n", encoding="utf-8")
+        return main, wt
+
+    def test_a_worktree_resolves_to_the_main_checkout(self, tmp_path):
+        from hybrid_search.memory.hook_runtime import canonical_project_root
+
+        main, wt = self._repo(tmp_path)
+        assert canonical_project_root(str(wt)) == main
+        assert canonical_project_root(str(wt / "src" / "deep")) == main
+
+    def test_the_main_checkout_resolves_to_itself(self, tmp_path):
+        from hybrid_search.memory.hook_runtime import canonical_project_root
+
+        main, _ = self._repo(tmp_path)
+        assert canonical_project_root(str(main)) == main
+
+    def test_search_picks_the_main_project_from_inside_a_worktree(self, tmp_path):
+        """The read path, which is the half that was missing."""
+        from hybrid_search.search.orchestrator import SearchOrchestrator
+
+        main, wt = self._repo(tmp_path)
+        infos = [
+            SimpleNamespace(id="main", path=str(main), name="repo"),
+            SimpleNamespace(id="wt", path=str(wt), name="repo-wt"),
+        ]
+        assert SearchOrchestrator._detect_primary_project(str(wt), infos) == "main"
+
+    def test_indexing_from_a_worktree_registers_the_main_checkout(self, tmp_path):
+        """The third place that decides "which project is this".
+
+        Search and the hooks both resolve worktrees; indexing did not, and
+        that is how 22 ghost projects accumulated — each a partial copy of
+        the tree with no memory at all, 143 MB of them (2026-09-12 cleanup).
+        """
+        from hybrid_search.project import canonical_project_root
+
+        main, wt = self._repo(tmp_path)
+        registered: list[str] = []
+
+        class FakeRegistry:
+            def register(self, name, path):
+                registered.append(path)
+
+        # The two indexers share one line; assert the line, not the callers.
+        resolved = canonical_project_root(str(wt)) or Path(str(wt)).resolve()
+        FakeRegistry().register(resolved.name, str(resolved))
+        assert registered == [str(main)]
+
+    def test_an_unrelated_directory_still_matches_nothing(self, tmp_path):
+        from hybrid_search.search.orchestrator import SearchOrchestrator
+
+        main, _ = self._repo(tmp_path)
+        other = tmp_path / "elsewhere"
+        other.mkdir()
+        infos = [SimpleNamespace(id="main", path=str(main), name="repo")]
+        assert SearchOrchestrator._detect_primary_project(str(other), infos) is None
