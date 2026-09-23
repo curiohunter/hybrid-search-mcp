@@ -629,3 +629,128 @@ class TestTopicGroupRepresentative:
                                     [weak, strong], limit=10, head_limit=2)
 
         assert out[0].chunk_id == "strong"
+
+
+class TestReflectorNoteSeat:
+    """Raw turn logs may not hold every memory-head seat while a note waits.
+
+    A Reflector note is distilled from raw qa records and shares their words,
+    so a growing corpus puts its own sources above it, one each. Two things
+    kept it out on 2026-09-23: the topic grouping swallowed it into a group
+    its sources represented, and three raw records filled the head.
+    """
+
+    def _raw(self, chunk_id: str, rrf: float, body: str) -> HybridResult:
+        return _mk(
+            chunk_id, "qa_log", rrf=rrf, mtime=datetime.now(timezone.utc).isoformat(),
+            content=f'---\nquery: "{body}"\n---\n\n## Answer excerpt\n\n{body}\n',
+        )
+
+    def _note(self, chunk_id: str, rrf: float, body: str) -> HybridResult:
+        r = _mk(
+            chunk_id, "qa_log", rrf=rrf, mtime="2026-09-04T00:00:00+00:00",
+            content=f'---\nquery: "{body}"\nmemory_type: consolidated\n---\n\n'
+                    f'## Answer excerpt\n\n{body}\n',
+        )
+        return HybridResult(**{**r.__dict__, "file_path": f"qa/consolidated/{chunk_id}.md"})
+
+    def _code(self) -> list[HybridResult]:
+        return [_mk("code", "function", rrf=1.0)]
+
+    def test_a_note_is_not_swallowed_by_its_sources_topic_group(self) -> None:
+        topic = "배포 단계 순서 스테이징 확인 후 프로덕션"
+        pool = [self._raw("src", rrf=2.0, body=topic),
+                self._note("note", rrf=1.5, body=topic)]
+
+        out = _merge_memory_results(self._code(), pool, limit=10, head_limit=2)
+
+        assert {r.chunk_id for r in out[:2]} == {"src", "note"}
+
+    def test_a_raw_only_head_gives_the_best_note_a_seat_at_its_front(self) -> None:
+        pool = [self._raw("r1", 3.0, "워크트리 포트 충돌"),
+                self._raw("r2", 2.9, "결제 취소 환불 정산"),
+                self._raw("r3", 2.8, "검수 화면 구성 레이아웃"),
+                self._raw("r4", 2.7, "원격 데이터베이스 적용 기록"),
+                self._note("n1", 1.0, "브랜치 위 브랜치 작업 표시"),
+                self._note("n2", 0.5, "채점 입구 교체 결정")]
+
+        out = _merge_memory_results(self._code(), pool, limit=10, head_limit=3)
+
+        assert [r.chunk_id for r in out[:3]] == ["n1", "r1", "r2"]
+
+    def test_a_head_that_already_holds_a_note_is_left_alone(self) -> None:
+        pool = [self._raw("r1", 3.0, "워크트리 포트 충돌"),
+                self._note("n1", 2.9, "결제 취소 환불 정산"),
+                self._raw("r2", 2.8, "검수 화면 구성 레이아웃"),
+                self._note("n2", 1.0, "채점 입구 교체 결정")]
+
+        out = _merge_memory_results(self._code(), pool, limit=10, head_limit=3)
+
+        assert [r.chunk_id for r in out[:3]] == ["r1", "n1", "r2"]
+
+    def test_curated_cards_are_never_displaced(self) -> None:
+        card = _mk("card", "memory_card", rrf=0.1, content="curated")
+        pool = [card, self._raw("r1", 3.0, "워크트리 포트 충돌"),
+                self._raw("r2", 2.9, "결제 취소 환불 정산"),
+                self._note("n1", 1.0, "채점 입구 교체 결정")]
+
+        out = _merge_memory_results(self._code(), pool, limit=10, head_limit=3)
+
+        assert [r.chunk_id for r in out[:3]] == ["card", "r1", "r2"]
+
+    def test_the_single_ambient_slot_is_left_to_score(self) -> None:
+        pool = [self._raw("r1", 3.0, "워크트리 포트 충돌"),
+                self._note("n1", 1.0, "채점 입구 교체 결정")]
+
+        out = _merge_memory_results(self._code(), pool, limit=10,
+                                    head_limit=1, insert_at=2)
+
+        assert [r.chunk_id for r in out] == ["code", "r1"]
+
+
+class TestNoteLeadsButNewerTurnSupersedes:
+    """B2: a seated note leads the head — unless a newer turn on its topic is shown.
+
+    The note is a snapshot of the day it was written. When a later turn on the
+    same topic changed the decision, putting the note first would put the stale
+    conclusion first. `_order_qa_by_recency` owns that job over the final list;
+    these tests pin that it still does it once notes lead.
+    """
+
+    _seat = TestReflectorNoteSeat
+
+    def _note(self, chunk_id: str, rrf: float, body: str) -> HybridResult:
+        return self._seat._note(self, chunk_id, rrf, body)
+
+    def _raw(self, chunk_id: str, rrf: float, body: str, days_ago: int = 0) -> HybridResult:
+        when = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        return _mk(
+            chunk_id, "qa_log", rrf=rrf, mtime=when.isoformat(),
+            content=f'---\nquery: "{body}"\n---\n\n## Answer excerpt\n\n{body}\n',
+        )
+
+    def test_a_seated_note_leads_the_head(self) -> None:
+        pool = [self._raw("r1", 3.0, "워크트리 포트 충돌"),
+                self._raw("r2", 2.9, "결제 취소 환불 정산"),
+                self._raw("r3", 2.8, "검수 화면 구성 레이아웃"),
+                self._note("n1", 1.0, "브랜치 위 브랜치 작업 표시")]
+
+        out = _merge_memory_results([_mk("code", "function", rrf=1.0)], pool,
+                                    limit=10, head_limit=3)
+
+        assert [r.chunk_id for r in out[:3]] == ["n1", "r1", "r2"]
+
+    def test_a_newer_turn_on_the_notes_topic_moves_above_it(self) -> None:
+        topic = "배포 단계 순서 스테이징 확인 후 프로덕션 반영"
+        pool = [self._raw("newer", 3.0, topic, days_ago=0),
+                self._raw("r2", 2.9, "결제 취소 환불 정산"),
+                self._raw("r3", 2.8, "검수 화면 구성 레이아웃"),
+                self._note("note", 1.0, topic)]
+
+        head = _merge_memory_results([_mk("code", "function", rrf=1.0)], pool,
+                                     limit=10, head_limit=3)
+        assert head[0].chunk_id == "note"  # B2 put the snapshot first
+        out = _order_qa_by_recency(head)
+
+        ids = [r.chunk_id for r in out]
+        assert ids.index("newer") < ids.index("note")
