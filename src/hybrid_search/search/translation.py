@@ -62,6 +62,23 @@ def is_enabled() -> bool:
     return os.environ.get(_TOGGLE_ENV, "1") != "0"
 
 
+def provider_has_chat_lane(provider: str | None = None) -> bool:
+    """True when this lane has a model it can actually call.
+
+    Ollama-style endpoints serve embeddings only. ``providers.py`` records
+    that as an empty ``chat_model`` and its comment says translation "must
+    not land on a server with only an embedding model" — but nothing
+    enforced it. The empty name went out as ``"model": ""``, the server
+    answered 400, and the failure was never cached, so every
+    Hangul-dominant query paid a fresh doomed round trip to an endpoint
+    our own indexing had already saturated (2026-09-22, mac-mini server
+    log: two such 400s inside one session, plus the lane's worker thread
+    and 6s deadline for each).
+    """
+    spec = providers.resolve(provider or os.environ.get(_PROVIDER_ENV) or None)
+    return bool(os.environ.get(_MODEL_ENV) or spec.chat_model)
+
+
 def is_korean_dominant(query: str) -> bool:
     """True when Hangul carries the query's content.
 
@@ -139,8 +156,17 @@ class QueryTranslator:
 
     # -- translation ------------------------------------------------------
 
+    @property
+    def available(self) -> bool:
+        """False when the resolved provider has no chat model to call."""
+        return bool(self._model)
+
     def translate(self, query: str) -> str | None:
         """English translation of ``query``, or None (fail open)."""
+        if not self.available:
+            # Belt and braces: the lane is gated before it gets here, but a
+            # direct caller must not POST an empty model name either.
+            return None
         key = self._key(query)
         cache = self._load_cache()
         if key in cache:
