@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+from hybrid_search.project import canonical_project_root
+
 _CONV_INDEX_ENV = "HYBRID_SEARCH_CONV_INDEX"
 
 
@@ -101,67 +103,9 @@ _EXPLORATORY_MIN_CHARS = 12
 _SKIP_PREFIXES = ("/", "!", "#")
 
 
-_GITDIR_RE = __import__("re").compile(r"^gitdir:\s*(.+)\s*$")
-
-
-def _linked_worktree_main_root(git_marker: Path, worktree_root: Path) -> Path | None:
-    """Main-checkout root when ``.git`` is a linked-worktree marker file.
-
-    The marker reads ``gitdir: <main>/.git/worktrees/<name>``. Memory must
-    land on the MAIN checkout — the same rule ecae799 gave the git hooks:
-    a worktree-rooted project means qa logs written into an ephemeral tree
-    (deleted with the worktree) and conversation indexing that no-ops on
-    an unregistered path. A session run inside a worktree used to leave
-    no memory at all (2026-09-04 field check).
-    """
-    try:
-        text = git_marker.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    m = _GITDIR_RE.match(text.strip())
-    if not m:
-        return None
-    gitdir = Path(m.group(1))
-    if not gitdir.is_absolute():
-        gitdir = (worktree_root / gitdir).resolve()
-    # <main>/.git/worktrees/<name> → strip three components for <main>.
-    parts = gitdir.parts
-    if len(parts) >= 3 and parts[-2] == "worktrees" and parts[-3] == ".git":
-        main_root = Path(*parts[:-3])
-        if (main_root / ".git").is_dir():
-            return main_root
-    return None
-
-
 def resolve_project_root(event: dict) -> Path | None:
-    """Pick the project root from a hook payload's ``cwd``.
-
-    Hooks often run with ``cwd`` set to the file/task subdirectory. Resolve to
-    the enclosing git root first so memory is written once per project, not
-    into arbitrary nested content folders. A linked worktree resolves to its
-    MAIN checkout so worktree sessions share the project's memory instead of
-    writing into a tree that disappears with the worktree.
-    """
-    cwd = event.get("cwd")
-    if not cwd:
-        return None
-    try:
-        cwd_path = Path(cwd).resolve()
-    except (OSError, ValueError):
-        return None
-    for path in (cwd_path, *cwd_path.parents):
-        marker = path / ".git"
-        if not marker.exists():
-            continue
-        if marker.is_file():
-            main_root = _linked_worktree_main_root(marker, path)
-            if main_root is not None:
-                return main_root
-        return path
-    for path in (cwd_path, *cwd_path.parents):
-        if (path / ".hybrid-search").exists():
-            return path
-    return None
+    """Pick the project root from a hook payload's ``cwd``."""
+    return canonical_project_root(event.get("cwd"))
 
 
 def classify_prompt_for_memory(prompt: str) -> bool:
@@ -261,7 +205,95 @@ def build_session_context(
             ctx = f"{ctx}\n{line}" if ctx else line
     except Exception:
         pass
+    # The measurement cycle's verdict, where the next session already looks.
+    # A loop that has to be asked for its result is a script; this is the
+    # half that makes it a loop.
+    line = _cycle_line(project_root)
+    if line:
+        ctx = f"{ctx}\n{line}" if ctx else line
     return ctx[:_MAX_CONTEXT_CHARS]
+
+
+# How long a measurement may go stale before the session is told to run one.
+# A week is roughly 2,500 new dogfood records — past that the last reading
+# describes a corpus that no longer exists, and the holdout has refilled
+# enough to be worth spending.
+_CYCLE_STALE_DAYS = 7
+
+
+def _cycle_line(project_root: Path) -> str:
+    """One line about the last `benchmarks/cycle.py` run. Silent when clean.
+
+    Only in the project that OWNS the runner. The cycle measures the
+    dogfood corpus, but the command that re-runs it lives in this tool's
+    own repo — telling someone to type it while they are working in the
+    measured project is an instruction they cannot follow, in a session
+    that is not about the tool at all.
+
+    Reads the record directly rather than importing the runner: benchmarks
+    are not shipped in the wheel, and a hook must never depend on them.
+    """
+    if not (project_root / "benchmarks" / "cycle.py").is_file():
+        return ""
+    try:
+        import json
+        from datetime import date
+
+        cdir = Path("~/.hybrid-search/benchmarks/cycle").expanduser()
+        runs = sorted(cdir.glob("20*.json"))
+        if not runs:
+            return ""
+        now = json.loads(runs[-1].read_text(encoding="utf-8"))
+        prev = (
+            json.loads(runs[-2].read_text(encoding="utf-8"))
+            if len(runs) > 1 else None
+        )
+        bits: list[str] = []
+        if prev:
+            for path, name in (
+                ("set_a.answer_in_top3", "Set A top3"),
+                ("set_a.answer_found", "Set A found"),
+                ("set_b.answer_found", "Set B found"),
+                ("code.primary_top5", "코드축 top5"),
+            ):
+                cur, old = _cycle_dig(now, path), _cycle_dig(prev, path)
+                if cur is not None and old is not None and cur < old:
+                    bits.append(f"{name} {old}→{cur}")
+        pending = sum(
+            len(d.get("unlabelled") or [])
+            for d in (now.get("displacement") or {}).values()
+        )
+        if pending:
+            bits.append(f"판정 대기 {pending}건")
+        try:
+            age = (date.today() - date.fromisoformat(now["date"])).days
+        except (KeyError, ValueError):
+            age = 0
+        stale = age >= _CYCLE_STALE_DAYS
+        if stale:
+            bits.append(f"마지막 측정 {age}일 전")
+        if not bits:
+            return ""
+        line = f"[cycle {now.get('date','?')}] " + " · ".join(bits)
+        if stale:
+            # Addressed to the agent, not the user. Nobody schedules this:
+            # the measurement is a few thousand searches against the same
+            # embedding backend the session is using, so a cron would fight
+            # the user's own work. The agent knows when the session is idle.
+            line += ("\n  → 이 세션에 여유가 생기면 `python benchmarks/cycle.py` 를 "
+                     "돌리고 결과를 보고할 것 (20~40분, 백그라운드로).")
+        return line
+    except Exception:
+        return ""
+
+
+def _cycle_dig(obj: dict, path: str):
+    cur = obj
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
 
 
 def _router_enabled() -> bool:

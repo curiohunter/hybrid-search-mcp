@@ -13,6 +13,7 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 import time
 from collections import Counter
@@ -300,7 +301,7 @@ def _confirm_rebuild_cost(args: argparse.Namespace, config: Config, project_path
 
 def cmd_reindex(args: argparse.Namespace) -> None:
     """Delta reindex the project at cwd."""
-    from hybrid_search.project import project_hash
+    from hybrid_search.project import canonical_project_root, project_hash
     from hybrid_search.storage.indexes import get_project_dir
 
     config = load_config()
@@ -311,7 +312,14 @@ def cmd_reindex(args: argparse.Namespace) -> None:
         )
     registry = ProjectRegistry(config.global_dir)
 
-    cwd = str(Path(args.cwd).resolve())
+    # One place decides "which project is this", and standing in a linked
+    # worktree must not change the answer. The pipeline canonicalises to the
+    # main checkout; this command did not, so from inside a worktree the
+    # writer lock was taken on hash(worktree) while the write went to
+    # hash(main). Two indexers then wrote one index at the same time — and
+    # an empty ghost index directory was created for the worktree's id,
+    # registered to nobody. Both were seen on 2026-09-17.
+    cwd = str(canonical_project_root(args.cwd) or Path(args.cwd).resolve())
     match = _detect_project(registry, cwd)
 
     if match:
@@ -4701,6 +4709,19 @@ def _lock_holder(lock_path: Path) -> int | None:
     return None
 
 
+def _index_lock_path(project_dir: Path, name: str) -> Path:
+    """A lock file *beside* the index directory, never inside it.
+
+    Inside was the obvious place and it was wrong: a full rebuild builds
+    into ``<dir>.rebuilding`` and then renames it over ``<dir>``, which
+    takes the live directory — and the lock file in it — away. From that
+    moment the lock does not exist, so a second writer walks straight in
+    while the first is still running. Two indexers were found writing one
+    project this way, one of them for an hour.
+    """
+    return project_dir.parent / f"{project_dir.name}{name}"
+
+
 def _writer_lock_path(project_dir: Path) -> Path:
     """One lock per project index, shared by every writing command.
 
@@ -4712,7 +4733,12 @@ def _writer_lock_path(project_dir: Path) -> Path:
     through with "Failed to acquire Lockfile", leaving the run aborted.
     All writers now queue on this one.
     """
-    return project_dir / ".writer.lock"
+    return _index_lock_path(project_dir, ".writer.lock")
+
+
+def _conv_lock_path(project_dir: Path) -> Path:
+    """Conversation indexing's lock — same reasoning as the writer lock."""
+    return _index_lock_path(project_dir, ".conv-index.lock")
 
 
 def _acquire_conv_lock(lock_path: Path) -> bool:
@@ -4867,13 +4893,15 @@ def cmd_index_conversations(args: argparse.Namespace) -> None:
     becomes a searchable ``conv_turn`` chunk: cross-tool recall where a
     question answered in one agent becomes context the other can find.
     """
-    from hybrid_search.project import project_hash
+    from hybrid_search.project import canonical_project_root, project_hash
     from hybrid_search.storage.indexes import get_project_dir
 
     config = load_config()
     registry = ProjectRegistry(config.global_dir)
 
-    cwd = str(Path(args.cwd).resolve())
+    # Canonical for the same reason as cmd_reindex: the lock and the write
+    # must name the same project when run from a linked worktree.
+    cwd = str(canonical_project_root(args.cwd) or Path(args.cwd).resolve())
     match = _detect_project(registry, cwd)
     if match:
         project_name, project_path = match
@@ -4881,7 +4909,7 @@ def cmd_index_conversations(args: argparse.Namespace) -> None:
         project_path, project_name = cwd, Path(cwd).name
 
     project_dir = get_project_dir(config.projects_dir, project_hash(str(Path(project_path).resolve())))
-    lock_path = project_dir / ".conv-index.lock"
+    lock_path = _conv_lock_path(project_dir)
     if not _acquire_conv_lock(lock_path):
         print("Conversation indexing already running, skipping.")
         return
@@ -5676,6 +5704,56 @@ nohup bash -c '
 """
 
 
+_SECTION_HEADER_RE = re.compile(r"^#\s*---\s*(?P<title>.*?)\s*---\s*$")
+
+
+def _drop_our_sections(text: str) -> str:
+    """``text`` with every hybrid-search section removed.
+
+    Ownership used to be judged on the banner line alone — the line right
+    after the shebang. In a hook whose *first* block belongs to someone
+    else (a project's own tooling, Husky, ...) our appended pre-v2 body sat
+    behind that banner, so the whole head read as a stranger's and was
+    copied forward verbatim on every upgrade. The un-guarded body survived
+    and kept firing a reindex from inside linked worktrees — the exact case
+    the v2 guard exists to prevent, still live in a repo that had been
+    "already-installed" for months. Ownership is judged on content here:
+    a section whose body calls our CLI is ours wherever it sits.
+    """
+    kept: list[str] = []
+    section: list[str] | None = None
+    section_is_ours = False
+
+    def flush() -> None:
+        if section is not None and not section_is_ours:
+            kept.extend(section)
+
+    for line in text.split("\n"):
+        match = _SECTION_HEADER_RE.match(line)
+        if match:
+            flush()
+            section = [line]
+            section_is_ours = "Hybrid Search" in match.group("title")
+            continue
+        if section is None:
+            kept.append(line)
+            continue
+        section.append(line)
+        if _HOOK_IDENTITY_MARKER in line:
+            section_is_ours = True
+    flush()
+    return "\n".join(kept)
+
+
+def _is_bare_preamble(text: str) -> bool:
+    """Nothing left but a shebang and blank lines."""
+    return not [
+        line
+        for line in text.split("\n")
+        if line.strip() and not line.lstrip().startswith("#!")
+    ]
+
+
 def _install_hook_file(
     hook_path: Path,
     hook_content: str,
@@ -5683,8 +5761,8 @@ def _install_hook_file(
 ) -> str:
     """Write ``hook_content`` to ``hook_path`` or append idempotently.
 
-    Returns a short status string: ``installed``, ``appended``, or
-    ``already-installed``. Makes the hook file executable.
+    Returns a short status string: ``installed``, ``appended``,
+    ``updated``, or ``already-installed``. Makes the hook file executable.
     """
     status: str
     if hook_path.exists():
@@ -5694,6 +5772,10 @@ def _install_hook_file(
         # not the whole file: once a pass has appended, the file carries
         # our section header even when every line in it is ours.
         head = existing.split(section_marker, 1)[0]
+        # ...and strip any earlier generation of ours out of that head, so
+        # a stranger's hook keeps only the stranger's lines.
+        foreign = _drop_our_sections(head)
+        stale_in_head = foreign != head
         if head.lstrip().startswith("#!") and "\n" in head:
             banner = head.split("\n", 1)[1].lstrip()
             # Both generations of our banner. Matching only the version
@@ -5707,11 +5789,14 @@ def _install_hook_file(
             ) or banner.startswith("# Hybrid Search")
         else:
             head_is_ours = False
+        # A file that is nothing but our sections plus a shebang is ours
+        # too, whatever its first comment line says.
+        head_is_ours = head_is_ours or _is_bare_preamble(foreign)
         # Our own body sitting in front of our own section: a duplicate the
         # append path wrote. It carries the current version marker, so the
         # cheap "already-installed" exit would leave it in place forever —
         # the repair has to happen here or not at all.
-        duplicated = head_is_ours and section_marker in existing
+        duplicated = (head_is_ours or stale_in_head) and section_marker in existing
 
         if _HOOK_VERSION_MARKER in existing and not duplicated:
             status = "already-installed"
@@ -5723,9 +5808,9 @@ def _install_hook_file(
                 hook_path.write_text(hook_content)
             else:
                 # Someone else's hook with our section appended at the end;
-                # cut our section and re-append the current one.
+                # cut every section of ours and re-append the current one.
                 hook_path.write_text(
-                    head.rstrip("\n")
+                    foreign.rstrip("\n")
                     + f"\n\n{section_marker}\n"
                     + hook_content.split("\n", 1)[1]
                 )
