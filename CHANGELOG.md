@@ -8,6 +8,19 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Translation lane no longer POSTs to a server that has no chat model.**
+  `providers.py` records ollama's missing chat lane as `chat_model=""` and its
+  comment says the lane "must not land on a server with only an embedding
+  model" — nothing enforced it. The empty name went out as `"model": ""`, the
+  server answered 400, and the failure was not cached, so every
+  Hangul-dominant query paid a worker thread, a 6s deadline and a doomed round
+  trip. The lane is now gated on `provider_has_chat_lane()`, `translate()`
+  refuses an empty model, and the observability contract gained
+  `cross_language_lane: "unavailable"` — reported apart from `"skipped"`
+  because the absence of that distinction is what hid this for days. Setting
+  `HYBRID_SEARCH_TRANSLATION_MODEL` re-enables the lane for anyone who pulls a
+  generation model onto that server.
+
 - **The routing block no longer eats hand-written rules.** `CLAUDE.md`'s
   `<!-- BEGIN/END hybrid-search-mcp routing v1 -->` span is rewritten
   wholesale on every `reindex` (auto-patch), `setup` and `install-hook`. The
@@ -22,6 +35,22 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   upgrade does not mistake its own retired lines for someone's rule. Pre-v1
   (legacy-marker) migration is unchanged — those bodies were entirely
   tool-written, and rescuing them would relocate a whole retired routing table.
+
+### Changed
+
+- **Bulk embed requests are bounded per provider, not by the OpenAI cap.**
+  `MAX_BATCH_TOKENS` (250k, sized for a hosted API) also governed ollama, which
+  serves a model from a single runner — so one bulk request could hold the
+  server for minutes while every interactive query queued behind it. Measured
+  2026-09-23 against the shared Mac-mini instance: an interactive query's wait
+  tracked the in-flight request's duration (32k-token request → 15.3s wait),
+  and both runs agreed that request duration grows with tokens while the
+  per-token gain from bigger batches flattens above ~8k. `ProviderSpec`
+  gained `max_batch_tokens`; ollama caps a request at 4,096 tokens (~10 typical
+  chunks, ≈2s at the idle rate, and equal to `max_input_tokens` so a maximal
+  single chunk still forms a legal batch), while hosted providers keep the
+  global cap. Necessary, not sufficient: under concurrent load even 4k requests
+  took ~10s, and only the BM25 fail-open covers that.
 
 ## 0.8.0 — provider-portable embeddings, and the failures that hid behind them
 

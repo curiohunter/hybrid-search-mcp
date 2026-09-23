@@ -38,7 +38,46 @@ class ProviderSpec:
     # Local servers (Ollama) accept any bearer token; a placeholder is
     # sent so the request shape stays identical across providers.
     requires_key: bool = True
+    # Token ceiling for ONE embed request. Not a provider limit but a
+    # politeness bound: Ollama serves a model from a single runner
+    # (`-np 1`, and 0.33 ignores OLLAMA_NUM_PARALLEL for embedding-only
+    # models — measured 2026-09-23), so one bulk request holds the server
+    # for its whole duration and every interactive query queues behind it.
+    # Request duration scales with the tokens in it while throughput does
+    # not, so a smaller ceiling buys latency almost for free. 0 means "use
+    # the global cap" — right for a hosted API, which serves many requests
+    # at once.
+    max_batch_tokens: int = 0
 
+
+# Measured against the shared Mac-mini Ollama (2026-09-23,
+# qwen3-embedding:0.6b, one runner). Two runs, the second with warm-up and
+# order control; "wait" is what one interactive query paid while a bulk
+# request was in flight:
+#
+#   요청 토큰   요청(중위)         처리량              검색 대기(중위)
+#    2,000      6.5s               223 tok/s            9.2s
+#    4,000      9.9s               334 tok/s            5.3s
+#    8,000      2.7–14.9s          398–2,014 tok/s      2.5–6.4s
+#   32,000     15.5s             2,292 tok/s           15.3s
+#
+# Absolute numbers swing five-fold with whatever else is hitting that
+# server (other sessions, its own work), so only what both runs agree on
+# is load-bearing here:
+#   1. The wait tracks the in-flight request's duration. That is the
+#      mechanism — not bandwidth, a queue.
+#   2. Request duration grows with the tokens in the request.
+#   3. Bigger batches embed faster per token, with the gain flattening
+#      above ~8k.
+# So the ceiling trades bulk throughput for interactive latency, and the
+# number is set by the pre-fetch deadline (2.5s, past which the session's
+# injected context degrades to BM25-only): 4,096 is ~10 typical chunks per
+# request, about 2s at the idle rate, and it equals max_input_tokens so a
+# maximal single chunk still forms a legal batch.
+#
+# It is necessary, not sufficient — under concurrent load even 4k requests
+# took ~10s here. Nothing client-side fixes that; the fail-open does.
+OLLAMA_MAX_BATCH_TOKENS = 4_096
 
 PROVIDERS: dict[str, ProviderSpec] = {
     "openai": ProviderSpec(
@@ -97,6 +136,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         # margin used for Gemini.
         tokenizer_skew=1.25,
         requires_key=False,
+        max_batch_tokens=OLLAMA_MAX_BATCH_TOKENS,
     ),
 }
 
