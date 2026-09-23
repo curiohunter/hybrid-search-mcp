@@ -115,8 +115,18 @@ def test_qa_log_becomes_searchable_after_reindex(
         async_write=False,
     )
     assert written is not None and written.exists()
+    # The Stop hook then writes the record that owns the answer. The one
+    # above owns only its question and stays out of the index (2026-09-23).
+    answered = qa_log.record_turn(
+        query="how does sign_in work",
+        cwd=str(repo),
+        answer_chars=64,
+        answer_excerpt="sign_in looks the user up, then opens a session.",
+        project_infos=registry.list_all(),
+    )
+    assert answered is not None and answered.exists()
 
-    # 3. Reindex — the qa file should now be picked up as a qa_log chunk.
+    # 3. Reindex — the answered qa file is picked up as a qa_log chunk.
     pipeline.index_project(str(repo))
 
     # 4. A later search. Use a query whose tokens overlap the stored
@@ -141,6 +151,10 @@ def test_qa_log_becomes_searchable_after_reindex(
     )
     assert qa_hit_paths, (
         f"no qa file path in results. paths={paths}"
+    )
+    answered_rel = str(answered.relative_to(repo))
+    assert qa_hit_paths == [answered_rel], (
+        f"only the answered record is recalled. qa hits={qa_hit_paths}"
     )
 
 

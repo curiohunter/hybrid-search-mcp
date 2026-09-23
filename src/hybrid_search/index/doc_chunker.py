@@ -9,12 +9,41 @@ from pathlib import Path
 
 # Reuse CodeChunk structure for consistency
 from hybrid_search.index.ast_chunker import CodeChunk, _make_chunk_id, _non_ws_count
+from hybrid_search.memory.qa_shape import owns_answer
+from hybrid_search.memory.quality import is_metadata_block
 
 LARGE_DOC_CHUNK_THRESHOLD = 4000
 
 
 QA_LOG_PATH_PREFIX = ".hybrid-search/qa/"
 MEMORY_CARD_PATH_PREFIX = ".hybrid-search/memory/cards/"
+
+_CARD_SUMMARY_RE = re.compile(r"^## Summary[ \t]*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+
+
+def is_withheld_memory(rel_path: str, source: str) -> bool:
+    """Memory-layer records that own nothing and stay out of the index.
+
+    The file stays on disk — selfeval and the audits read it there — but it
+    gets no chunk, because everything retrievable in it belongs to another
+    record:
+
+    - a qa log with no answer of its own: the record written when the
+      question arrived, whose body is other chunks' snippets. One in four
+      qa records here, one in five in the largest dogfood corpus
+      (2026-09-23), each able to take a slot from the record that answers.
+    - a memory card whose summary is a metrics block: made before
+      2026-09-08 from such a record, it holds a question and nothing else.
+
+    Decided by the record's kind, not by a judgement of what is important.
+    """
+    rel = rel_path.replace("\\", "/")
+    if rel.startswith(QA_LOG_PATH_PREFIX):
+        return not owns_answer(source)
+    if rel.startswith(MEMORY_CARD_PATH_PREFIX):
+        match = _CARD_SUMMARY_RE.search(source)
+        return bool(match) and is_metadata_block(match.group(1))
+    return False
 
 
 def chunk_doc_file(
@@ -38,6 +67,8 @@ def chunk_doc_file(
     # Normalize separators so the check works on Windows-style paths too.
     rel_norm = rel_path.replace("\\", "/")
 
+    if is_withheld_memory(rel_norm, source):
+        return []
     if rel_norm.startswith(QA_LOG_PATH_PREFIX):
         return [_whole_file_chunk(source, rel_path, project_id, "markdown", node_type="qa_log")]
     if rel_norm.startswith(MEMORY_CARD_PATH_PREFIX):

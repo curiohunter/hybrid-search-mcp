@@ -120,6 +120,7 @@ class TestQALogChunking:
         # they must *not* be split apart so the query and hits stay together.
         source = (
             "---\nquery: \"hello\"\n---\n\n# Q: hello\n\n"
+            "## Answer excerpt\n\nhi back\n\n"
             "## Top results\n\n### 1. `a.py`\n- chunk_id: `c1`\n\n> hi\n"
         )
         chunks = self._chunk(source, ".hybrid-search/qa/2026/04/21-000000-deadbeef.md")
@@ -127,17 +128,26 @@ class TestQALogChunking:
 
     def test_qa_log_node_type(self) -> None:
         chunks = self._chunk(
-            "---\nquery: \"x\"\n---\n\n# Q: x\n",
+            "---\nquery: \"x\"\n---\n\n# Q: x\n\n## Answer excerpt\n\nx.\n",
             ".hybrid-search/qa/2026/04/21-111111-aaaabbbb.md",
         )
         assert chunks[0].node_type == "qa_log"
 
     def test_qa_log_embedding_input_mentions_tag(self) -> None:
         chunks = self._chunk(
-            "---\nquery: \"y\"\n---\n\n# Q: y\n",
+            "---\nquery: \"y\"\n---\n\n# Q: y\n\n## Answer excerpt\n\ny.\n",
             ".hybrid-search/qa/2026/04/21-222222-ccccdddd.md",
         )
         assert "[qa_log]" in chunks[0].embedding_input
+
+    def test_question_only_qa_log_gets_no_chunk(self) -> None:
+        # The record written when the question arrives owns nothing of its
+        # own (test_withheld_memory.py has the full story).
+        chunks = self._chunk(
+            "---\nquery: \"z\"\n---\n\n# Q: z\n\n## Top results\n\n_(no results)_\n",
+            ".hybrid-search/qa/2026/04/21-333333-eeeeffff.md",
+        )
+        assert chunks == []
 
     def test_non_qa_markdown_still_splits(self) -> None:
         # Regression: only .hybrid-search/qa/ triggers the bypass.
