@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hybrid_search import clock  # noqa: E402
 from hybrid_search.config import load_config  # noqa: E402
+from hybrid_search.memory.qa_shape import answer_excerpt  # noqa: E402
 from hybrid_search.memory import supersession as ss  # noqa: E402
 from hybrid_search.project import ProjectRegistry  # noqa: E402
 from hybrid_search.search import qa_topics as topics  # noqa: E402
@@ -72,10 +73,7 @@ def _which_bar(a, b) -> str:
 def _parts(content: str) -> tuple[str, str, str]:
     q = re.search(r'query:\s*"([^"]*)', content or "")
     ts = re.search(r"timestamp:\s*(\S{10})", content or "")
-    answer = ""
-    if "## Answer excerpt" in (content or ""):
-        answer = content.split("## Answer excerpt", 1)[1]
-        answer = answer.split("## Top results", 1)[0].strip()
+    answer = answer_excerpt(content)
     return (q.group(1) if q else "")[:260], (ts.group(1) if ts else "?"), answer[:420]
 
 

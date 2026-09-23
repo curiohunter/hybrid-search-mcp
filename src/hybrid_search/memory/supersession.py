@@ -35,6 +35,7 @@ import logging
 import re
 from datetime import datetime
 
+from hybrid_search.memory.qa_shape import answer_excerpt
 from hybrid_search.search import qa_topics
 
 logger = logging.getLogger(__name__)
@@ -170,9 +171,8 @@ def _topic_item(
         _frontmatter_value(content, "query") or "", demote=demote
     )
     answer: dict[str, float] = {}
-    if "## Answer excerpt" in content:
-        excerpt = content.split("## Answer excerpt", 1)[1]
-        excerpt = excerpt.split("## Top results", 1)[0]
+    excerpt = answer_excerpt(content)
+    if excerpt:
         answer = qa_topics.topic_tokens(excerpt, demote=demote)
     return question, answer
 
