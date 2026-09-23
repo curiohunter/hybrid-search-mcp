@@ -6,6 +6,19 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- **The displacement audit now counts answers pushed out of the window.**
+  On 2026-09-23 it reported damage 0 while a gold answer had slid from rank 2
+  to rank 12: the corpus had grown 36% and nothing was deleted, so an audit
+  that only diffs deletions could not see it — and its holdout probes did not
+  exist last cycle. `--carry <last cycle's report>` re-asks every probe that
+  was in the window last time and reports the ones now outside it, beside
+  damage rather than instead of it. Probes still in the window are written
+  back as `carried_in_window`, so the watch set accumulates; a record whose
+  file was rewritten is counted as gone, not as an exit. `cycle.py` passes the
+  previous cycle's report and shows a `창 이탈` column.
+
 ### Fixed
 
 - **A frozen snapshot now freezes the clock too.** Ranking aged memory
