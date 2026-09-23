@@ -68,6 +68,24 @@ def _query_terms(text: str) -> set[str]:
     return {t for t, w in topics.topic_tokens(text).items() if w >= topics._W_NORMAL}
 
 
+def label_for(labels: dict, chunk: str, successor: str | None) -> dict | None:
+    """The label that still describes (chunk, successor), else None.
+
+    A label judged one pair. Labels written before 2026-09-23 did not pin
+    their successor and are trusted as before; a pinned one whose successor
+    has since changed is stale — it would put a verdict on a pair nobody
+    judged (found when a hand label's rationale described a successor the
+    map no longer named).
+    """
+    label = labels.get(chunk)
+    if not label:
+        return None
+    pinned = label.get("successor")
+    if pinned and successor and pinned != successor:
+        return None
+    return label
+
+
 def _owned_text(record: str) -> str:
     """The part of a qa record that is the record's OWN.
 
@@ -260,7 +278,7 @@ def main() -> int:
             row["displaced"].append({
                 "chunk": dis_id,
                 "by_map": by_map,
-                "label": (labels.get(dis_id) or {}).get("verdict"),
+                "label": (label_for(labels, dis_id, successor) or {}).get("verdict"),
                 "matched_terms": sorted(dis_terms),
                 "owned_matched_terms": sorted(owned),
                 "terms_lost_by_replacement": sorted(lost),
