@@ -40,6 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from hybrid_search import clock  # noqa: E402
 from hybrid_search.config import load_config  # noqa: E402
 from hybrid_search.index.embedder import Embedder  # noqa: E402
 from hybrid_search.project import ProjectRegistry  # noqa: E402
@@ -161,6 +162,8 @@ def main() -> None:
     # working tree and the running session's transcript, so leaving them on
     # makes a run depend on whatever another session happens to be doing.
     os.environ.setdefault("HYBRID_SEARCH_IN_FLIGHT", "0")
+    # The snapshot froze the corpus; its frozen_at freezes the recency clock.
+    clock.pin_to_snapshot(args.config)
     config = load_config(Path(args.config) if args.config else None)
     registry = ProjectRegistry(config.global_dir)
     embedder = Embedder(config.embedding, config.models_dir)
