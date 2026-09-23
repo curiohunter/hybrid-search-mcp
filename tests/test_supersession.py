@@ -24,7 +24,14 @@ class TestConsolidationIsNeverStale:
     question went unanswered.
     """
 
-    def _note(self, ts: str, sources_hash: str, body: str) -> str:
+    def _note(
+        self,
+        ts: str,
+        sources_hash: str,
+        body: str,
+        sources: tuple[str, ...] = (),
+    ) -> str:
+        listed = "".join(f"  - {src}\n" for src in sources)
         return (
             "---\n"
             f'query: "스키마 마이그레이션 순서가 뭐였지?"\n'
@@ -32,7 +39,8 @@ class TestConsolidationIsNeverStale:
             "trigger: reflector\n"
             "memory_type: consolidated\n"
             f"sources_hash: {sources_hash}\n"
-            "---\n\n"
+            + (f"sources:\n{listed}" if sources else "")
+            + "---\n\n"
             f"## Answer excerpt\n\n{body}\n"
         )
 
@@ -64,9 +72,51 @@ class TestConsolidationIsNeverStale:
     def test_a_note_still_supersedes_the_turn_logs_it_was_built_from(self):
         entries = [
             ("log", self._turn_log("2026-09-01T10:00:00+00:00", self.BODY)),
-            ("note", self._note("2026-09-04T16:00:00+00:00", "bbbb", self.BODY)),
+            ("note", self._note(
+                "2026-09-04T16:00:00+00:00", "bbbb", self.BODY,
+                sources=("2026/09/01-100000-aaaaaaaa.md",),
+            )),
         ]
         assert compute_supersession(entries) == {"log": "note"}
+
+    def test_both_source_forms_resolve_to_a_record_key(self):
+        """A note lists turn logs by date-time and notes by cluster id.
+
+        Both are resolvable from CONTENT alone, which is all this module
+        gets: a turn log repeats its filename's instant in `timestamp:`
+        (237/237 on the dogfood corpus) and a note carries its cluster id
+        in `sources_hash:`.
+        """
+        note = self._note(
+            "2026-09-04T16:00:00+00:00", "bbbb", self.BODY,
+            sources=(
+                "2026/09/01-100000-aaaaaaaa.md",
+                "consolidated/2026-09-01-c9fa7450.md",
+            ),
+        )
+        assert supersession._consolidation_sources(note) == frozenset(
+            {"2026/09/01-100000", "consolidated/c9fa7450"}
+        )
+        log = self._turn_log("2026-09-01T10:00:00+00:00", self.BODY)
+        assert supersession._record_key(log) == "2026/09/01-100000"
+        inner = self._note("2026-09-01T10:00:00+00:00", "c9fa7450", self.BODY)
+        assert supersession._record_key(inner) == "consolidated/c9fa7450"
+
+    def test_a_sources_list_does_not_swallow_later_frontmatter_keys(self):
+        """The list ends where the next key begins."""
+        note = (
+            "---\n"
+            'query: "스키마 마이그레이션 순서가 뭐였지?"\n'
+            "sources:\n"
+            "  - 2026/09/01-100000-aaaaaaaa.md\n"
+            "memory_type: consolidated\n"
+            "other:\n"
+            "  - 2026/07/07-070000-dddddddd.md\n"
+            "---\n\n## Answer excerpt\n\n본문\n"
+        )
+        assert supersession._consolidation_sources(note) == frozenset(
+            {"2026/09/01-100000"}
+        )
 
     def test_turn_logs_still_supersede_each_other(self):
         entries = [
@@ -342,3 +392,79 @@ class TestTheMapIsMonotonicInThePredicate:
         # the dogfood corpus. Acquiring one was the bug: 35 of 203.)
         for old in strict:
             assert old in loose, f"tightening invented a mapping for {old}"
+
+
+class TestSameWordsDifferentWork:
+    """Two records that name no artifact in common did different work.
+
+    Decided by the tool's owner on 2026-09-12. "메인에 머지하고 푸시" recurs
+    for months in this corpus and merges a different branch each time;
+    reading the later one as an update of the earlier deletes the earlier,
+    and words alone cannot tell the two readings apart. With the rule in
+    the criterion, hand labels and an independent judge went from Cohen's
+    κ 0.50 to 0.80 over the same 31 cases.
+    """
+
+    BODY = "메인에 머지하고 푸시했다. 빌드 확인 후 워크트리를 정리했다"
+
+    def _turn(self, ts: str, extra: str = "", body: str | None = None) -> str:
+        return (
+            "---\n"
+            'query: "메인에 머지하고 푸시"\n'
+            f"timestamp: {ts}\n"
+            "trigger: stop_hook\n"
+            f"{extra}"
+            "---\n\n"
+            f"## Answer excerpt\n\n{body or self.BODY}\n"
+        )
+
+    def test_disjoint_branches_are_not_the_same_topic(self):
+        entries = [
+            ("old", self._turn("2026-08-26T10:00:00+00:00",
+                               'branch: "feat/alpha"\nhead: "911a88d"\n')),
+            ("new", self._turn("2026-09-04T10:00:00+00:00",
+                               'branch: "feat/beta"\nhead: "fd37238"\n')),
+        ]
+        assert compute_supersession(entries) == {}
+
+    def test_the_same_branch_still_supersedes(self):
+        entries = [
+            ("old", self._turn("2026-08-26T10:00:00+00:00", 'branch: "feat/alpha"\n')),
+            ("new", self._turn("2026-09-04T10:00:00+00:00", 'branch: "feat/alpha"\n')),
+        ]
+        assert compute_supersession(entries) == {"old": "new"}
+
+    def test_silence_on_either_side_leaves_the_pair_alone(self):
+        """Absence means unknown, never different."""
+        entries = [
+            ("old", self._turn("2026-08-26T10:00:00+00:00")),
+            ("new", self._turn("2026-09-04T10:00:00+00:00", 'branch: "feat/beta"\n')),
+        ]
+        assert compute_supersession(entries) == {"old": "new"}
+
+    def test_recorded_identity_beats_prose(self):
+        """`touched:` is exact; scanning the body is only the fallback."""
+        rec = self._turn(
+            "2026-09-04T10:00:00+00:00",
+            'branch: "feat/beta"\ntouched: ["src/a.py"]\n',
+            body="다른 파일 src/zzz.py 를 언급만 한다",
+        )
+        assert supersession._artifacts(rec) == frozenset({"feat/beta", "src/a.py"})
+
+    def test_the_sources_list_is_provenance_not_work(self):
+        """A note lists the qa files it was built from — it did not edit them.
+
+        Reading that list as work made every note disjoint from every turn
+        and cost Set A a question before it was caught (2026-09-12).
+        """
+        note = (
+            "---\n"
+            'query: "메인에 머지하고 푸시"\n'
+            "timestamp: 2026-09-04T10:00:00+00:00\n"
+            "memory_type: consolidated\n"
+            "sources_hash: c9fa7450\n"
+            "sources:\n"
+            "  - 2026/08/24-051500-fcfdb050.md\n"
+            "---\n\n## Answer excerpt\n\n푸시 절차를 정리한다\n"
+        )
+        assert supersession._artifacts(note) == frozenset()
