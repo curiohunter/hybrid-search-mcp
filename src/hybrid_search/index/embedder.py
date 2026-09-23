@@ -272,6 +272,9 @@ class Embedder:
             Embedder._enc = tiktoken.encoding_for_model("text-embedding-3-small")
 
         max_count = self._config.batch_size
+        # A provider that serves one request at a time gets a tighter
+        # ceiling than the hosted-API cap (see ProviderSpec.max_batch_tokens).
+        max_tokens = self._spec.max_batch_tokens or MAX_BATCH_TOKENS
         batches: list[list[str]] = []
         current_batch: list[str] = []
         current_tokens = 0
@@ -281,7 +284,7 @@ class Embedder:
             # Start new batch if adding this text would exceed limits
             if current_batch and (
                 len(current_batch) >= max_count
-                or current_tokens + token_count > MAX_BATCH_TOKENS
+                or current_tokens + token_count > max_tokens
             ):
                 batches.append(current_batch)
                 current_batch = []
