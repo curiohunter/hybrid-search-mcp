@@ -50,6 +50,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from hybrid_search import clock  # noqa: E402
 from hybrid_search.config import load_config  # noqa: E402
 from hybrid_search.index.embedder import Embedder  # noqa: E402
 from hybrid_search.memory import supersession as ss  # noqa: E402
@@ -157,6 +158,8 @@ def main() -> int:
     # The overlays read the working tree and the running session, so leaving
     # them on makes the audit depend on what another session is doing.
     os.environ.setdefault("HYBRID_SEARCH_IN_FLIGHT", "0")
+    # Same for the clock: the snapshot's frozen_at, not the day of the run.
+    clock.pin_to_snapshot(args.config)
 
     config = load_config(Path(args.config))
     registry = ProjectRegistry(config.global_dir)
