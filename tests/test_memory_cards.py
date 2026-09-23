@@ -114,3 +114,34 @@ def test_create_domain_term_from_qa(tmp_path: Path) -> None:
     parsed = cards.parse_card(card_path)
     assert parsed is not None
     assert parsed.type == "domain_term"
+
+
+def _write_question_only(root: Path) -> Path:
+    """The record written when the question arrives — no answer of its own."""
+    (root / ".git").mkdir(exist_ok=True)
+    path = qa_log.record(
+        query="How does the retry queue back off?",
+        response=_Resp(),
+        cwd=str(root),
+        async_write=False,
+        trigger="user_prompt_submit",
+    )
+    assert path is not None
+    return path
+
+
+def test_no_card_from_a_record_that_owns_no_answer(tmp_path: Path) -> None:
+    qa_path = _write_question_only(tmp_path)
+    try:
+        cards.create_card_from_qa(tmp_path, qa_path.stem)
+    except ValueError as exc:
+        assert "owns no answer" in str(exc)
+    else:
+        raise AssertionError("a question-only record must not become a card")
+
+
+def test_compact_skips_records_that_own_no_answer(tmp_path: Path) -> None:
+    _write_turn(tmp_path)
+    _write_question_only(tmp_path)
+    result = cards.compact_qa_to_cards(tmp_path, dry_run=True)
+    assert result["candidates"] == 1
