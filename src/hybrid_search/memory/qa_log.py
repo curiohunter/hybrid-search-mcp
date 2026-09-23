@@ -112,6 +112,14 @@ class QARecord:
     # revalidation projection compares these against HEAD content.
     # None → legacy timestamp fallback.
     anchor_evidence: dict | None = None
+    # v6 (2026-09-12) — what the turn ACTED ON:
+    # {"session":..., "branch":..., "head":..., "files":[...]}.
+    # Identity, not telemetry. Two turns whose wording is the same but
+    # whose branch/commit/files do not intersect did different work, and
+    # supersession must not treat the later one as an update of the
+    # earlier (`memory/supersession._artifacts`). Every key is optional —
+    # absence means "unknown", never "different".
+    worked_on: dict | None = None
 
 
 def is_enabled() -> bool:
@@ -257,6 +265,14 @@ def _format_record(record: QARecord) -> str:
         lines.append(f"memory_type: {record.memory_type}")
     if record.verification:
         lines.append(f"verification: {record.verification}")
+    if record.worked_on:
+        w = record.worked_on
+        for key in ("session", "branch", "head"):
+            if w.get(key):
+                lines.append(f'{key}: "{_yaml_escape(str(w[key]))}"')
+        if w.get("files"):
+            joined = ", ".join(f'"{_yaml_escape(f)}"' for f in w["files"])
+            lines.append(f"touched: [{joined}]")
     if record.anchor_evidence and record.anchor_evidence.get("hashes"):
         import json as _json
         # The algo marker versions the hash semantics: "index" = the
@@ -596,6 +612,7 @@ def record_turn(
     async_write: bool = False,
     dedup: bool = True,
     client: str | None = None,
+    worked_on: dict | None = None,
 ) -> Path | None:
     """Persist a conversation turn that did NOT go through the MCP tool.
 
@@ -658,6 +675,7 @@ def record_turn(
             client=client,
             memory_type=mtype,
             verification=verification,
+            worked_on=worked_on,
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("qa_log record_turn prepare failed: %s", exc)

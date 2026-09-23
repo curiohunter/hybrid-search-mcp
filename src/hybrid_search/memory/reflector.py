@@ -81,6 +81,12 @@ The note must:
 - keep only insights: decisions, reasons, constraints, gotchas —
   never restate tool logs or transcripts,
 - be self-contained prose (a future agent sees only this note first),
+- open the body with a single `# ` heading naming what this note
+  concluded. The `query:` frontmatter is copied from one member and
+  does not describe the note, so this heading is the only line that
+  says what the note is — write it as the conclusion a future session
+  would look for. (Notes already do this; it is written down so they
+  keep doing it.)
 - start with frontmatter exactly:
 
 ---

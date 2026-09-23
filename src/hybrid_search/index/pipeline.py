@@ -31,7 +31,7 @@ from hybrid_search.index.scanner import (
     scan_project,
     scan_project_subset,
 )
-from hybrid_search.project import ProjectRegistry, project_hash
+from hybrid_search.project import ProjectRegistry, canonical_project_root, project_hash
 from hybrid_search.providers import (
     EMBEDDING_FINGERPRINT_KEY,
     LEGACY_FINGERPRINT,
@@ -203,7 +203,13 @@ class IndexingPipeline:
     ) -> IndexingResult:
         """Index or re-index a project."""
         start = time.monotonic()
-        abs_path = Path(project_path).resolve()
+        # One place decides "which project is this", and it is not the
+        # caller's cwd. Indexing from inside a linked worktree used to
+        # register the worktree as its own project — 22 of them accumulated
+        # here, each a partial copy of the tree with no memory at all
+        # (2026-09-12 cleanup, 143 MB).
+        abs_path = canonical_project_root(str(project_path)) or Path(
+            project_path).resolve()
 
         if not abs_path.is_dir():
             raise ValueError(f"Project path does not exist: {abs_path}")

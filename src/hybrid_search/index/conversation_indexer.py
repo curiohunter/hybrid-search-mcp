@@ -36,7 +36,7 @@ from hybrid_search.index.transcript_source import (
     parse_codex_session,
 )
 from hybrid_search.memory.quality import tag_untrusted
-from hybrid_search.project import ProjectRegistry, project_hash
+from hybrid_search.project import ProjectRegistry, canonical_project_root, project_hash
 from hybrid_search.search.bm25 import BM25Engine
 from hybrid_search.search.vector import VectorEngine
 from hybrid_search.storage.db import (
@@ -170,7 +170,10 @@ class ConversationIndexer:
     def _resolve_project(
         self, project_path: str, project_name: str | None
     ) -> tuple[Path, str, str]:
-        abs_path = Path(project_path).resolve()
+        # See `pipeline.index_project` — worktrees resolve to the main
+        # checkout so one repo keeps one memory.
+        abs_path = canonical_project_root(str(project_path)) or Path(
+            project_path).resolve()
         if not abs_path.is_dir():
             raise ValueError(f"Project path does not exist: {abs_path}")
         pid = project_hash(str(abs_path))

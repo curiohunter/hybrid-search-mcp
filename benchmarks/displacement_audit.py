@@ -68,17 +68,47 @@ def _query_terms(text: str) -> set[str]:
     return {t for t, w in topics.topic_tokens(text).items() if w >= topics._W_NORMAL}
 
 
-def _probe_set(db: StoreDB, project_id: str, sample: int, seed: int):
+def _owned_text(record: str) -> str:
+    """The part of a qa record that is the record's OWN.
+
+    Its question and its answer excerpt. The `## Top results` block below
+    them is a dump of what retrieval showed at the time — a quotation of
+    other chunks, each retrievable on its own terms — so a replacement
+    that drops those words has destroyed nothing.
+
+    Counting them destroyed the audit's own signal (2026-09-11): of the
+    suspected-damage cases across two corpora, five were bare pre-fetch
+    logs whose entire match lived in that dump, and every one of them was
+    labelled legitimate by hand. A detector whose positives are mostly
+    quotation noise cannot be read without the labels it was meant to
+    save.
+    """
+    head = record.split("## Top results", 1)[0]
+    return head
+
+
+def _probe_set(db: StoreDB, project_id: str, sample: int, seed: int,
+               since: str | None = None):
     """qa records that carry an answer, with the question they answered.
 
     Records with no ``## Answer excerpt`` are skipped: they are not what a
     probe should be able to find, so a miss would say nothing.
+
+    ``since`` (ISO date) keeps only records written after it. That is what
+    makes a repeated run a HOLDOUT rather than a re-read: the rules in
+    effect were frozen before those records existed, so they cannot have
+    been fitted to them. One corpus, one user, but a clean test set that
+    refills itself every week.
     """
     probes = []
     for chunk in db.get_chunks_by_node_type(project_id, "qa_log"):
         content = chunk.content or ""
         if ss._is_machine_payload(content):
             continue
+        if since:
+            ts = ss._frontmatter_value(content, "timestamp") or ""
+            if ts[:10] < since:
+                continue
         question = ss._frontmatter_value(content, "query") or ""
         if len(question) < 8:
             continue
@@ -108,6 +138,12 @@ def main() -> int:
     ap.add_argument("--sample", type=int, default=150)
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--seed", type=int, default=20260910)
+    ap.add_argument(
+        "--since",
+        help="ISO date; probe only qa records written on or after it. Turns a "
+             "repeat run into a holdout — those records did not exist when the "
+             "rules were frozen.",
+    )
     ap.add_argument("--out", required=True)
     ap.add_argument(
         "--labels",
@@ -130,7 +166,7 @@ def main() -> int:
         return 1
     store_path = IndexPaths(get_project_dir(config.projects_dir, pinfo.id)).store_db
     db = StoreDB(store_path)
-    probes = _probe_set(db, pinfo.id, args.sample, args.seed)
+    probes = _probe_set(db, pinfo.id, args.sample, args.seed, args.since)
     saved = db.get_qa_superseding([c.id for c in
                                    db.get_chunks_by_node_type(pinfo.id, "qa_log")])
     db.close()
@@ -139,7 +175,8 @@ def main() -> int:
         return 1
 
     print(f"probes: {len(probes)} qa records (their own questions) · "
-          f"supersession map: {len(saved)} entries")
+          f"supersession map: {len(saved)} entries"
+          + (f" · holdout since {args.since}" if args.since else ""))
 
     embedder = Embedder(config.embedding, config.models_dir)
     orch = SearchOrchestrator(config=config, registry=registry, embedder=embedder)
@@ -213,13 +250,19 @@ def main() -> int:
             paired = next((t for c, t in added if c == successor), None)
             if paired is None:
                 paired = added[0][1] if added else ""
-            kept = _query_terms(paired)
-            lost = dis_terms - kept
+            # Damage is judged on what the displaced record OWNED. It
+            # matched the query (`dis_terms`, above, over the whole
+            # record), but only its own question and answer can be
+            # destroyed by a replacement — see `_owned_text`.
+            owned = dis_terms & _query_terms(_owned_text(dis_text))
+            kept = _query_terms(_owned_text(paired))
+            lost = owned - kept
             row["displaced"].append({
                 "chunk": dis_id,
                 "by_map": by_map,
                 "label": (labels.get(dis_id) or {}).get("verdict"),
                 "matched_terms": sorted(dis_terms),
+                "owned_matched_terms": sorted(owned),
                 "terms_lost_by_replacement": sorted(lost),
                 "suspected_damage": bool(lost) and by_map,
                 "displaced_text": dis_text[:400],
