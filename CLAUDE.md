@@ -44,6 +44,11 @@ python -m pytest tests/ -x -q
 **Confidence 계약 (weak → fallback)**:
 - `hybrid_search` 응답의 `confidence: weak`이면 답하기 전에 `fallback_hint`에 적힌 대체 도구로 한 번 더 시도할 것.
 - `strong`/`mixed`면 그대로 진행.
+
+<!-- BEGIN hybrid-search-mcp user-additions -->
+<!-- 이 구역만 사람이 쓴다 — 도구 업데이트는 여기를 덮어쓰지 않는다.
+     위 표나 규칙에 프로젝트 고유 항목을 더하려면 이 안에 적을 것. -->
+<!-- END hybrid-search-mcp user-additions -->
 <!-- END hybrid-search-mcp routing v1 -->
 
 ## 공개물에 코퍼스를 인용하지 말 것 (2026-09-07)
