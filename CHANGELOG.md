@@ -21,6 +21,21 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   `HYBRID_SEARCH_TRANSLATION_MODEL` re-enables the lane for anyone who pulls a
   generation model onto that server.
 
+- **The routing block no longer eats hand-written rules.** `CLAUDE.md`'s
+  `<!-- BEGIN/END hybrid-search-mcp routing v1 -->` span is rewritten
+  wholesale on every `reindex` (auto-patch), `setup` and `install-hook`. The
+  most natural place to write a project rule — right under the routing table —
+  was therefore inside machine-owned text, so rules written there vanished on
+  the next `/maintain`, silently and repeatedly. The block now carries a
+  human-owned sub-region (`<!-- BEGIN/END hybrid-search-mcp user-additions -->`)
+  that updates never touch, and any line found in the machine-owned part that
+  no template wrote is **moved into** that region instead of dropped; the CLI
+  prints what moved. `apply_update` keeps a pristine copy of the body it last
+  wrote in `.hybrid-search/runtime/routing-body-<target>.md`, so a template
+  upgrade does not mistake its own retired lines for someone's rule. Pre-v1
+  (legacy-marker) migration is unchanged — those bodies were entirely
+  tool-written, and rescuing them would relocate a whole retired routing table.
+
 ### Changed
 
 - **Bulk embed requests are bounded per provider, not by the OpenAI cap.**

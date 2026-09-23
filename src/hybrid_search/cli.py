@@ -218,6 +218,16 @@ def _ensure_claude_md(project_path: str, *, force: bool = False) -> None:
         print("CLAUDE.md: migrated legacy routing block to v1")
     elif result.status == "update":
         print("CLAUDE.md: hybrid-search routing block updated")
+    # Hand-written rules used to die here silently. Say out loud what moved.
+    if result.preserved:
+        print(
+            f"CLAUDE.md: 사람이 쓴 {len(result.preserved)}줄을 블록 안 "
+            "user-additions 구역으로 옮겼습니다 (삭제 아님) — 위치를 확인하세요:"
+        )
+        for line in result.preserved[:10]:
+            print(f"  | {line}")
+        if len(result.preserved) > 10:
+            print(f"  | … 외 {len(result.preserved) - 10}줄")
 
 
 def _remove_claude_md(project_path: str) -> bool:
