@@ -442,6 +442,31 @@ class TestSameWordsDifferentWork:
         ]
         assert compute_supersession(entries) == {"old": "new"}
 
+    def test_the_default_branch_is_where_not_what(self):
+        """Both turns ended in the main checkout, at different commits.
+
+        The shape of all six damage cases on 2026-09-23: recorded identity
+        `{main, <head>}` on each side, so the intersection was `main` alone
+        and the rule never fired. A default branch says where a turn
+        finished, not what it worked on.
+        """
+        entries = [
+            ("old", self._turn("2026-09-16T10:00:00+00:00",
+                               'branch: "main"\nhead: "da5a1eb"\n')),
+            ("new", self._turn("2026-09-18T10:00:00+00:00",
+                               'branch: "main"\nhead: "5f33be2"\n')),
+        ]
+        assert compute_supersession(entries) == {}
+
+    def test_the_same_commit_on_main_still_supersedes(self):
+        entries = [
+            ("old", self._turn("2026-09-16T10:00:00+00:00",
+                               'branch: "master"\nhead: "da5a1eb"\n')),
+            ("new", self._turn("2026-09-18T10:00:00+00:00",
+                               'branch: "master"\nhead: "da5a1eb"\n')),
+        ]
+        assert compute_supersession(entries) == {"old": "new"}
+
     def test_recorded_identity_beats_prose(self):
         """`touched:` is exact; scanning the body is only the fallback."""
         rec = self._turn(
