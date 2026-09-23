@@ -37,6 +37,15 @@ it afterwards, which you do not want to do to a live index.
 
     python benchmarks/displacement_audit.py --config $SNAP/config.toml \
         --project <name> --sample 150 --out /tmp/displacement.json
+
+**Deletion is not the only way to lose an answer.** On 2026-09-23 this
+audit reported damage 0 while a gold answer had slid from rank 2 to rank
+12 — still in the index, just outside the window a reader sees. The corpus
+had grown 36% and nothing was deleted. ``--carry <last cycle's report>``
+asks every probe that was IN the window last time its own question again
+and counts the ones that are now outside it. It reports beside damage, not
+instead of it: the two are different failures, and the holdout probes
+cannot see this one — they did not exist last cycle.
 """
 
 from __future__ import annotations
@@ -50,6 +59,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from hybrid_search import clock  # noqa: E402
 from hybrid_search.config import load_config  # noqa: E402
 from hybrid_search.index.embedder import Embedder  # noqa: E402
 from hybrid_search.memory import supersession as ss  # noqa: E402
@@ -149,6 +159,51 @@ def _run_pass(orch, project_path: str, probes, limit: int) -> dict[str, list]:
     return out
 
 
+def _carried_probes(prev_report: dict, current: dict[str, str],
+                    cap: int, seed: int):
+    """Last cycle's in-window probes that still exist, and how many do not.
+
+    In-window means either of last cycle's two sets: its own probes that
+    found themselves, and the carried probes that were still in the window
+    (``carried_in_window``). Without the second, a probe would be watched
+    for one cycle and then dropped. ``cap`` keeps the carry pass from
+    growing with the corpus; the sample is seeded so reruns ask the same.
+
+    Returns ``(asked, deferred, gone)``: probes to ask now, probes over the
+    cap that stay watched unasked, and the count that no longer exist.
+
+    ``current`` maps qa chunk id → content in the index being measured. A
+    chunk id is its path and byte range, so a record whose file was
+    rewritten comes back under a new id; that is counted as gone, not as a
+    window exit — the record did not lose its rank, it stopped being the
+    same record.
+    """
+    watched = {r["probe"]: r.get("query") or ""
+               for r in prev_report.get("rows") or [] if r.get("self_found_on")}
+    for r in prev_report.get("carried_in_window") or []:
+        watched.setdefault(r["probe"], r.get("query") or "")
+    carried, gone = [], 0
+    for cid, old_query in sorted(watched.items()):
+        content = current.get(cid)
+        if content is None:
+            gone += 1
+            continue
+        question = ss._frontmatter_value(content, "query") or old_query
+        carried.append((cid, question))
+    random.Random(seed).shuffle(carried)
+    # The ones over the cap are not asked this cycle but stay watched.
+    return carried[:cap], carried[cap:], gone
+
+
+def _window_exits(carried, results: dict[str, list]) -> list[dict]:
+    """Carried probes whose own record is no longer in their results."""
+    exits = []
+    for cid, question in carried:
+        if cid not in {c for c, _ in results.get(cid, [])}:
+            exits.append({"probe": cid, "query": question[:200]})
+    return exits
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -164,6 +219,12 @@ def main() -> int:
     )
     ap.add_argument("--out", required=True)
     ap.add_argument(
+        "--carry",
+        help="The previous cycle's report from this runner. Its probes that "
+             "were found in the window are asked again, and the ones now "
+             "outside it are counted as window exits.",
+    )
+    ap.add_argument(
         "--labels",
         help="JSON of hand-labelled displacements ({labels: {chunk_id: "
              "{verdict: legitimate|damage}}}), which turns the two rates "
@@ -175,6 +236,8 @@ def main() -> int:
     # The overlays read the working tree and the running session, so leaving
     # them on makes the audit depend on what another session is doing.
     os.environ.setdefault("HYBRID_SEARCH_IN_FLIGHT", "0")
+    # Same for the clock: the snapshot's frozen_at, not the day of the run.
+    clock.pin_to_snapshot(args.config)
 
     config = load_config(Path(args.config))
     registry = ProjectRegistry(config.global_dir)
@@ -185,8 +248,13 @@ def main() -> int:
     store_path = IndexPaths(get_project_dir(config.projects_dir, pinfo.id)).store_db
     db = StoreDB(store_path)
     probes = _probe_set(db, pinfo.id, args.sample, args.seed, args.since)
-    saved = db.get_qa_superseding([c.id for c in
-                                   db.get_chunks_by_node_type(pinfo.id, "qa_log")])
+    qa_chunks = db.get_chunks_by_node_type(pinfo.id, "qa_log")
+    saved = db.get_qa_superseding([c.id for c in qa_chunks])
+    carried, deferred, carried_gone = [], [], 0
+    if args.carry:
+        carried, deferred, carried_gone = _carried_probes(
+            json.loads(Path(args.carry).read_text(encoding="utf-8")),
+            {c.id: c.content or "" for c in qa_chunks}, args.sample, args.seed)
     db.close()
     if not probes:
         print("no answerable qa records to probe")
@@ -201,6 +269,12 @@ def main() -> int:
 
     print("  pass 1/2 — supersession map ON")
     with_map = _run_pass(orch, pinfo.path, probes, args.limit)
+    exits: list[dict] = []
+    if carried:
+        # The map stays ON: a window exit is about what a reader sees today.
+        print(f"  carry — {len(carried)} probes in the window last cycle")
+        exits = _window_exits(carried, _run_pass(
+            orch, pinfo.path, [(c, q, "") for c, q in carried], args.limit))
 
     # Pass 2 needs the map gone. The snapshot is a copy, and the table is
     # rebuilt from the qa content by benchmarks/recompute_supersession.py,
@@ -310,6 +384,13 @@ def main() -> int:
           f"{len(damage_rows)}  ({len(damage_rows) / n:.0%})  ← suspected damage")
     print(f"  (rank wobble at the limit, not the map : {len(wobble_rows)} — "
           f"reported, not counted)")
+    if args.carry:
+        print("=== window exits (in the window last cycle, outside it now) ===")
+        if carried:
+            print(f"  {len(exits)}/{len(carried)}  ({len(exits) / len(carried):.0%})"
+                  "  ← nothing was deleted; they were pushed past the limit")
+        print(f"  (record rewritten or removed since, not asked : {carried_gone}"
+              f" · over the cap, still watched : {len(deferred)})")
     print()
     if labels:
         # With labels the two rates above become one number: of the
@@ -340,6 +421,12 @@ def main() -> int:
             "probes_with_displacement": len(disp_rows),
             "probes_with_suspected_damage": len(damage_rows),
             "probes_with_rank_wobble_only": len(wobble_rows),
+            "carried": len(carried),
+            "carried_gone": carried_gone,
+            "window_exits": exits,
+            "carried_in_window": [
+                {"probe": c, "query": q[:200]} for c, q in carried + deferred
+                if c not in {e["probe"] for e in exits}],
             "rows": rows,
         }, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(f"report: {args.out}")
