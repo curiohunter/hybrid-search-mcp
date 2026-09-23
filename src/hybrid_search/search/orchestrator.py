@@ -20,6 +20,7 @@ from hybrid_search import clock
 from hybrid_search.config import Config
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.memory import quality
+from hybrid_search.memory.qa_shape import answer_excerpt, owns_answer
 from hybrid_search.memory.router import (
     classify_confidence,
     fallback_hint,
@@ -674,7 +675,7 @@ def _trust_meta(
             parts.append("today")
         else:
             parts.append(f"{int(age)}d ago")
-    elif kind == "qa" and "## Answer excerpt" not in (content or ""):
+    elif kind == "qa" and not owns_answer(content):
         parts.append("metadata-only")
     elif kind == "code":
         parts.append("indexed")
@@ -1010,10 +1011,8 @@ def _qa_topic_tokens(r: HybridResult) -> tuple[dict[str, float], dict[str, float
         _frontmatter_value(r.content, "query") or r.name or "", demote=demote
     )
     answer: dict[str, float] = {}
-    content = r.content or ""
-    if "## Answer excerpt" in content:
-        excerpt = content.split("## Answer excerpt", 1)[1]
-        excerpt = excerpt.split("## Top results", 1)[0]
+    excerpt = answer_excerpt(r.content)
+    if excerpt:
         answer = qa_topics.topic_tokens(excerpt, demote=demote)
     return question, answer
 
@@ -1120,7 +1119,7 @@ def _owns_an_answer(r: "HybridResult") -> bool:
     when the question arrives, one when it is answered — and only the
     second owns anything.
     """
-    return "## Answer excerpt" in (r.content or "")
+    return owns_answer(r.content)
 
 
 # How many extra rows the lexical lane may add to the memory candidate
@@ -2202,13 +2201,16 @@ class SearchOrchestrator:
                 scanned += 1
                 if scanned > self._RECENT_ACTIVITY_SCAN:
                     break
-                if not (qa.answer_excerpt_chars or 0):
-                    continue  # question-only records carry no state
                 if _is_meta_recall_text(qa.query):
                     continue
                 try:
                     content = qa.path.read_text(encoding="utf-8")
                 except OSError:
+                    continue
+                # Question-only records carry no state. Decided on the body,
+                # not the frontmatter field: Reflector notes and older
+                # records own an answer without `answer_excerpt_chars`.
+                if not owns_answer(content):
                     continue
                 ts = qa.timestamp.isoformat() if qa.timestamp else ""
                 rel = str(qa.path)

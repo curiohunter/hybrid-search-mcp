@@ -189,3 +189,35 @@ class TestRecentActivityHead:
             last_indexed_at=None, file_count=0, chunk_count=0,
         )
         assert orch._recent_activity_results(pinfo, "방금 뭐 했지") == []
+
+
+class TestRecentActivityOwnership:
+    """Answer ownership is read off the body (2026-09-23): a Reflector note
+    carries no `answer_excerpt_chars` field and was skipped as question-only;
+    a pre-fetch record quoting an answered one must stay out."""
+
+    def test_note_without_frontmatter_field_is_kept(self, env) -> None:
+        orch, pinfo = env
+        note_dir = Path(pinfo.path) / ".hybrid-search" / "qa" / "consolidated"
+        note_dir.mkdir(parents=True)
+        (note_dir / "2026-07-27-abcd1234.md").write_text(
+            '---\nquery: "배포 전 점검 순서"\ntimestamp: 2026-07-27T10:30:00+00:00\n'
+            "trigger: reflector\nmemory_type: consolidated\n---\n\n"
+            "## Answer excerpt\n\n배포 전에는 마이그레이션 드라이런부터 돌린다.\n",
+            encoding="utf-8",
+        )
+        ids = [r.chunk_id for r in orch._recent_activity_results(pinfo, "최근 작업 알려줘")]
+        assert "recent:qa:2026-07-27-abcd1234" in ids
+
+    def test_quoting_prefetch_record_is_excluded(self, env) -> None:
+        orch, pinfo = env
+        qa_dir = Path(pinfo.path) / ".hybrid-search" / "qa" / "2026" / "07"
+        (qa_dir / "27-103000-quoting.md").write_text(
+            '---\nquery: "배포 점검"\ntimestamp: 2026-07-27T10:30:00+00:00\n'
+            "trigger: user_prompt_submit\n---\n\n## Top results\n\n"
+            "### 1. `.hybrid-search/qa/2026/07/27-100000-newest.md`\n\n"
+            "> [qa - stop_hook] - **answer_chars**: 200  ## Answer excerpt  referral…\n",
+            encoding="utf-8",
+        )
+        ids = [r.chunk_id for r in orch._recent_activity_results(pinfo, "최근 작업 알려줘")]
+        assert "recent:qa:27-103000-quoting" not in ids
