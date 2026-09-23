@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from hybrid_search import clock
 from hybrid_search.config import Config
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.memory import quality
@@ -458,7 +459,7 @@ def _parse_mtime_days_ago(mtime: str | None, now: datetime | None = None) -> flo
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    now = now or datetime.now(timezone.utc)
+    now = now or clock.now()
     delta = (now - dt).total_seconds() / 86400.0
     return max(0.0, delta)
 
@@ -771,7 +772,7 @@ def _apply_memory_boost(
     has_memory = any(r.node_type in _MEMORY_NODE_TYPES for r in results)
     if not has_memory:
         return results
-    now = now or datetime.now(timezone.utc)
+    now = now or clock.now()
     adjusted: list[HybridResult] = []
     for r in results:
         if r.node_type not in _MEMORY_NODE_TYPES:
