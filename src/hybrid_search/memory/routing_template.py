@@ -16,6 +16,22 @@ CURRENT_VERSION = 1
 LEGACY_CLAUDE_MARKER = "<!-- hybrid-search -->"
 LEGACY_AGENTS_MARKER = "<!-- hybrid-search-mcp:codex-routing -->"
 
+# The routing block is machine-owned: every write replaces it wholesale. That
+# made the most natural place to write a project rule (right under the routing
+# table) a place where rules silently died on the next reindex. The block now
+# carries a human-owned sub-region that survives updates, and any hand-written
+# line found in the machine-owned part is moved into it instead of dropped.
+USER_BEGIN = "<!-- BEGIN hybrid-search-mcp user-additions -->"
+USER_END = "<!-- END hybrid-search-mcp user-additions -->"
+USER_HINT = (
+    "<!-- 이 구역만 사람이 쓴다 — 도구 업데이트는 여기를 덮어쓰지 않는다.\n"
+    "     위 표나 규칙에 프로젝트 고유 항목을 더하려면 이 안에 적을 것. -->"
+)
+
+_USER_REGION_RE = re.compile(
+    r"(?ms)^" + re.escape(USER_BEGIN) + r"\n(.*?)^" + re.escape(USER_END) + r"\n?"
+)
+
 ROUTING_BODY = """## 검색 전략 — 반드시 이 순서로
 
 이 프로젝트는 `hybrid-search-mcp` Memory Layer가 설치돼 있다. **아래 규칙을 예외 없이 지킬 것.**
@@ -60,10 +76,16 @@ class RoutingBlock:
     target: Literal["claude", "agents"]
     body: str
 
-    def render(self) -> str:
+    def render(self, user_body: str = "") -> str:
+        user = user_body.strip("\n")
+        region = f"{USER_BEGIN}\n{USER_HINT}\n"
+        if user.strip():
+            region += f"\n{user}\n"
+        region += USER_END
         return (
             f"<!-- BEGIN hybrid-search-mcp routing v{CURRENT_VERSION} -->\n"
-            f"{self.body.strip()}\n"
+            f"{self.body.strip()}\n\n"
+            f"{region}\n"
             f"<!-- END hybrid-search-mcp routing v{CURRENT_VERSION} -->"
         )
 
@@ -81,6 +103,7 @@ class UpdatePlan:
     current: str
     proposed: str
     message: str = ""
+    preserved: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,6 +111,7 @@ class ApplyResult:
     status: str
     diff: str
     written: bool
+    preserved: tuple[str, ...] = ()
 
 
 def claude_block() -> RoutingBlock:
@@ -132,10 +156,83 @@ def _strip_all_hybrid_markers(existing: str) -> str:
     return "\n".join(lines).strip("\n")
 
 
-def plan_update(existing: str, block: RoutingBlock) -> UpdatePlan:
-    """Classify the current file state and return the proposed write."""
+def _split_user_region(inner: str) -> tuple[str, str]:
+    """Split a block's inner text into (machine-owned, human-owned)."""
+    match = _USER_REGION_RE.search(inner)
+    if not match:
+        return inner, ""
+    managed = inner[: match.start()] + inner[match.end() :]
+    user = match.group(1).replace(USER_HINT, "")
+    return managed, user.strip("\n")
+
+
+def _is_marker_line(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        "hybrid-search-mcp routing" in stripped
+        or "hybrid-search-mcp user-additions" in stripped
+        or stripped in {LEGACY_CLAUDE_MARKER, LEGACY_AGENTS_MARKER}
+    )
+
+
+def _rescue_lines(managed: str, reference: str) -> list[str]:
+    """Lines of the machine-owned part that no template ever wrote.
+
+    ``reference`` is the union of the body we are about to write and the body
+    we last wrote (when known), so a template upgrade does not mistake its own
+    retired lines for something a human typed.
+    """
+    known = {line.strip() for line in reference.splitlines() if line.strip()}
+    rescued: list[str] = []
+    seen: set[str] = set()
+    for line in managed.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped in known or stripped in seen or _is_marker_line(line):
+            continue
+        seen.add(stripped)
+        rescued.append(line.rstrip())
+    return rescued
+
+
+def _merge_user_body(user_body: str, rescued: list[str]) -> str:
+    existing = {line.strip() for line in user_body.splitlines() if line.strip()}
+    new = [line for line in rescued if line.strip() not in existing]
+    parts = [part for part in (user_body.strip("\n"), "\n".join(new)) if part.strip()]
+    return "\n\n".join(parts)
+
+
+def _snapshot_path(path: Path, target: str) -> Path:
+    return path.parent / ".hybrid-search" / "runtime" / f"routing-body-{target}.md"
+
+
+def _read_snapshot(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _write_snapshot(path: Path, body: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def plan_update(
+    existing: str,
+    block: RoutingBlock,
+    previous_body: str | None = None,
+) -> UpdatePlan:
+    """Classify the current file state and return the proposed write.
+
+    Anything a human wrote inside the block is carried into the human-owned
+    sub-region of the new block; the tool never drops lines it did not write.
+    """
 
     rendered = block.render()
+    reference = block.body + "\n" + (previous_body or "")
     begins = list(BEGIN_RE.finditer(existing))
     ends = list(END_RE.finditer(existing))
 
@@ -153,13 +250,19 @@ def plan_update(existing: str, block: RoutingBlock) -> UpdatePlan:
         if end.start() < begin.end():
             return UpdatePlan("corrupted", existing, existing, "END marker appears before BEGIN")
         current_block = existing[begin.start():end.end()]
-        if current_block == rendered:
+        managed, user_body = _split_user_region(existing[begin.end():end.start()])
+        rescued = _rescue_lines(managed, reference)
+        new_block = block.render(_merge_user_body(user_body, rescued))
+        if current_block == new_block:
             return UpdatePlan("no_change", existing, existing)
-        proposed = existing[:begin.start()] + rendered + existing[end.end():]
-        return UpdatePlan("update", existing, proposed)
+        proposed = existing[:begin.start()] + new_block + existing[end.end():]
+        return UpdatePlan("update", existing, proposed, preserved=tuple(rescued))
 
     legacy_match = _legacy_pattern(block.target).search(existing)
     if legacy_match:
+        # No rescue here: a pre-v1 block carries no user sub-region and we keep
+        # no snapshot of those bodies, so every line would look hand-written and
+        # the whole retired routing table would land in the user region.
         proposed = existing[:legacy_match.start()] + rendered + existing[legacy_match.end():]
         if existing.endswith("\n") and not proposed.endswith("\n"):
             proposed += "\n"
@@ -204,7 +307,8 @@ def apply_update(
     """Read path, compute plan_update, and write unless dry-run."""
 
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    plan = plan_update(existing, block)
+    snapshot = _snapshot_path(path, block.target)
+    plan = plan_update(existing, block, previous_body=_read_snapshot(snapshot))
     if force and plan.status in {"corrupted", "version_mismatch"}:
         proposed = _append_block(_strip_all_hybrid_markers(existing), block.render())
         plan = UpdatePlan("fresh_install", existing, proposed)
@@ -216,4 +320,8 @@ def apply_update(
     if plan.proposed != plan.current and not dry_run:
         path.write_text(plan.proposed, encoding="utf-8")
         written = True
-    return ApplyResult(status=plan.status, diff=diff, written=written)
+    if not dry_run and plan.status != "corrupted":
+        _write_snapshot(snapshot, block.body)
+    return ApplyResult(
+        status=plan.status, diff=diff, written=written, preserved=plan.preserved
+    )
