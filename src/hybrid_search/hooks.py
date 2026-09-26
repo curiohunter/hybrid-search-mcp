@@ -521,7 +521,7 @@ def _run_programmatic_search(prompt: str, cwd: str, session_key: str | None = No
     # filename stem is the record id, which makes the row traceable back to
     # the saved exchange.
     try:
-        from hybrid_search.memory import selfeval
+        from hybrid_search.memory import hook_runtime, selfeval
 
         selfeval.record_prefetch(
             Path(cwd),
@@ -529,6 +529,7 @@ def _run_programmatic_search(prompt: str, cwd: str, session_key: str | None = No
             paths=_served_paths(response),
             qa_record_id=saved.stem if saved is not None else None,
             session_key=session_key,
+            quoted=hook_runtime.quoted_excerpts(response),
         )
     except Exception:
         pass
