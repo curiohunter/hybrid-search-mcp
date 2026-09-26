@@ -54,6 +54,8 @@ sys.path.insert(0, str(_ROOT / "src"))
 
 from hybrid_search.memory import qa_shape  # noqa: E402
 from hybrid_search.memory import supersession as ss  # noqa: E402
+from hybrid_search.memory.quality import is_metadata_bullet  # noqa: E402
+from hybrid_search.search import snippet as snip_mod  # noqa: E402
 
 SEED = 20260925            # X/Y assignment and batch order (plan §2.4)
 PROBE_SEED = 20260910      # the displacement audit's own seed — same probe set
@@ -174,7 +176,24 @@ def snippet_body(snippet: str) -> str:
     return "\n".join(lines)
 
 
-def render_item(rank: int, item: dict) -> str:
+def qa_window(content: str, query: str) -> str:
+    """The search window over a qa record, with its metadata taken out.
+
+    The dumped snippet often IS the frontmatter (2026-09-26: 2,836 of 3,666
+    snippet lines carried it, 394 showed ``trigger: stop_hook`` or
+    ``user_prompt_submit`` — the answer/pre-fetch kind label, in the open).
+    Cutting those lines would leave such records with no window at all, so
+    the window is rebuilt with the SAME function the orchestrator uses
+    (``make_snippet``, same query and node type) over the record without
+    its frontmatter, then ``- **key**: value`` bullets are dropped.
+    Quotations inside the record's own text stay: they are its words.
+    """
+    body = snip_mod._strip_frontmatter(content) or ""
+    window = snip_mod.make_snippet(None, body, query, node_type="qa_log")
+    return "\n".join(ln for ln in window.split("\n") if not is_metadata_bullet(ln))
+
+
+def render_item(rank: int, item: dict, query: str = "") -> str:
     """One list entry as the judge sees it: kind, path, date, text."""
     content = item.get("content") or ""
     date = ""
@@ -185,24 +204,24 @@ def render_item(rank: int, item: dict) -> str:
     head += f" · {date}" if date else ""
     if item.get("node_type") == "qa_log":
         answer = qa_shape.answer_excerpt(content)
-        snip = snippet_body(item.get("snippet") or "")
+        snip = qa_window(content, query)
         body = f"질문: {_flat(_qa_question(content), QUESTION_CHARS)}"
         if snip.strip():
             body += f"\n   스니펫: {_flat(snip, TEXT_CHARS)}"
         body += "\n   답: " + (_flat(answer, TEXT_CHARS) if answer else "(답 없음)")
     else:
-        body = _flat(content or item.get("snippet") or "", TEXT_CHARS)
+        body = _flat(content or snippet_body(item.get("snippet") or ""), TEXT_CHARS)
     return f"{head}\n   {body}"
 
 
-def seen_hit_rank(items: list[dict], phrases: list[str]) -> int | None:
+def seen_hit_rank(items: list[dict], phrases: list[str], query: str = "") -> int | None:
     """First-hit rank on what the JUDGE sees (the rendered entry), not on the
     whole record. Calibration compares the judge against this: a phrase deep
     in a long pasted question is invisible to the judge, and scoring it
     there would charge the judge for text it was never shown (§3.1)."""
     flat = [" ".join(p.split()) for p in phrases]
     for i, item in enumerate(items, start=1):
-        text = render_item(i, item)
+        text = render_item(i, item, query)
         if any(p and p in text for p in flat):
             return i
     return None
@@ -224,8 +243,8 @@ def build_cases(questions: list[dict], dump_m: dict, dump_g: dict,
         if q.get("any_of"):
             ranks[qid] = {"set": q["set"], "M": first_hit_rank(m, q["any_of"]),
                           "G": first_hit_rank(g, q["any_of"]),
-                          "M_seen": seen_hit_rank(m, q["any_of"]),
-                          "G_seen": seen_hit_rank(g, q["any_of"])}
+                          "M_seen": seen_hit_rank(m, q["any_of"], q["query"]),
+                          "G_seen": seen_hit_rank(g, q["any_of"], q["query"])}
         if q.get("probe_chunk"):
             self_found[qid] = {a: q["probe_chunk"] in ids
                                for a, ids in (("M", m_ids), ("G", g_ids))}
@@ -246,9 +265,11 @@ def render_case(case: dict, m: list[dict], g: list[dict], swapped: bool) -> str:
     x, y = (g, m) if g_x else (m, g)
     lines = [f"## 사례 {case['cid']}", "",
              f"질문: {_flat(case['query'], 600)}", "", "### X"]
-    lines += [render_item(i, it) for i, it in enumerate(x, start=1)] or ["(결과 없음)"]
+    lines += [render_item(i, it, case["query"])
+              for i, it in enumerate(x, start=1)] or ["(결과 없음)"]
     lines += ["", "### Y"]
-    lines += [render_item(i, it) for i, it in enumerate(y, start=1)] or ["(결과 없음)"]
+    lines += [render_item(i, it, case["query"])
+              for i, it in enumerate(y, start=1)] or ["(결과 없음)"]
     return "\n".join(lines) + "\n"
 
 

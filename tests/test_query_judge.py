@@ -121,19 +121,33 @@ class TestRender:
     def test_answerless_qa_says_so(self) -> None:
         # The quotation under Top results holds the heading string — it must not count.
         text = qj.render_item(1, _item("q", _qa("q only", None), node_type="qa_log"))
-        assert "답: (답 없음)" in text and "elsewhere" not in text and "당시" not in text
+        assert text.rstrip().endswith("답: (답 없음)") and "당시" not in text
 
-    def test_qa_shows_snippet_without_kind_labels(self) -> None:
-        item = {**_item("q", _qa("q", "a"), node_type="qa_log"),
-                "snippet": "[qa - stop_hook - decision - 3d ago]\n"
-                           "[needs_revalidation — x changed in abc]\nthe window [sic]"}
-        text = qj.render_item(1, item)
-        assert "스니펫: the window [sic]" in text
-        assert "stop_hook" not in text and "needs_revalidation" not in text
+    def test_qa_window_carries_no_kind_metadata(self) -> None:
+        # The leak found before judging: the search window sat on the
+        # frontmatter and showed the trigger (answer vs pre-fetch) in the open.
+        content = ('---\nquery: "how is the widget cached"\nquery_type: TURN\n'
+                   "total_chunks_searched: 0\ntrigger: stop_hook\n"
+                   'tools_used: ["Edit"]\nmemory_type: decision\n---\n\n'
+                   "# Q: how is the widget cached\n\n- **query_type**: TURN\n"
+                   "- **trigger**: stop_hook\n- **chunks_searched**: 0\n\n"
+                   "## Answer excerpt\n\nThe widget cache is keyed by id.\n")
+        text = qj.render_item(1, {**_item("q", content, node_type="qa_log"),
+                                  "snippet": "total_chunks_searched: 0 trigger: stop_hook"},
+                              "widget cache")
+        for key in ("trigger", "stop_hook", "query_type", "total_chunks_searched",
+                    "tools_used", "memory_type", "chunks_searched"):
+            assert key not in text, key
+        assert "스니펫:" in text and "widget cache is keyed" in text
 
-    def test_empty_snippet_line_is_omitted(self) -> None:
-        text = qj.render_item(1, _item("q", _qa("q", "a"), node_type="qa_log"))
-        assert "스니펫" not in text
+    def test_quotation_in_the_records_own_text_stays(self) -> None:
+        content = _qa("q", "see > [qa - stop_hook - decision - 1d ago] quoted")
+        text = qj.render_item(1, _item("q", content, node_type="qa_log"), "quoted")
+        assert "[qa - stop_hook" in text
+
+    def test_non_qa_snippet_fallback_drops_bracket_head(self) -> None:
+        item = {**_item("c", ""), "snippet": "[code - indexed]\nbody [sic]"}
+        assert qj.render_item(1, item).endswith("body [sic]")
 
     def test_text_is_capped(self) -> None:
         text = qj.render_item(3, _item("c", "가" * 1000))
