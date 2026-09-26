@@ -14,6 +14,11 @@ memory hit), so "is this helping?" can finally be measured.
 
 ### Upgrade impact — read before upgrading
 
+- **The MCP SDK is capped below 2.0** (`mcp[cli]>=1.0,<2`). mcp 2.x removed
+  the low-level `Server.list_tools` / `call_tool` registration this server
+  uses, so a fresh install that resolved mcp 2.x started a server that died
+  on launch. Existing installs on mcp 1.x are unaffected.
+
 - **Answerless memory leaves the index on the first index run.** On the first
   `index`/`reindex` after upgrading (including the post-commit hook), qa records
   with no `## Answer excerpt` are deleted from the index once
