@@ -351,6 +351,22 @@ def score(cases: dict, verdicts: dict[str, dict[str, str]]) -> dict:
     }
 
 
+def degraded_dumps(dumps: dict[str, dict]) -> dict[str, int]:
+    """{label: count} of dumps holding degraded (BM25-only) searches.
+
+    2026-09-26: the embedding backend timed out mid-dump and those searches
+    fell back to BM25 without failing — a difference no code change made.
+    A dump without the field predates it and counts as unknown, not clean.
+    """
+    out = {}
+    for label, d in dumps.items():
+        if "degraded" not in d:
+            out[label] = -1
+        elif d["degraded"]:
+            out[label] = len(d["degraded"])
+    return out
+
+
 def parse_verdicts(text: str) -> dict[str, str]:
     """A judge's JSON array → {cid: verdict}. Invalid entries are dropped
     (and later reported as unjudged), never guessed."""
@@ -421,7 +437,7 @@ def cmd_dump(args) -> int:
     registry = ProjectRegistry(config.global_dir)
     orch = SearchOrchestrator(config=config, registry=registry,
                               embedder=Embedder(config.embedding, config.models_dir))
-    results = {}
+    results, degraded = {}, []
     for i, q in enumerate(qs["questions"], start=1):
         resp = orch.hybrid_search(query=q["query"], cwd=qs["project_path"], limit=LIMIT)
         results[q["id"]] = [{
@@ -429,11 +445,17 @@ def cmd_dump(args) -> int:
             "content": r.content or "", "snippet": r.snippet or "",
             "file_mtime": r.file_mtime,
         } for r in resp.results[:LIMIT]]
+        if getattr(resp, "degraded", False):
+            degraded.append(q["id"])
         if i % 50 == 0:
             print(f"  … {i}/{len(qs['questions'])}", flush=True)
     head = subprocess.run(["git", "-C", str(_ROOT), "rev-parse", "--short", "HEAD"],
                           capture_output=True, text=True).stdout.strip()
+    if degraded:
+        print(f"WARNING: {len(degraded)} searches were degraded (BM25-only) — "
+              "this dump is not valid for judging")
     _write(args.out, {"label": args.label, "code": head, "config": args.config,
+                      "degraded": degraded,
                       "results": results})
     print(f"dump {args.label} (code {head}): {len(results)} questions → {args.out}")
     return 0
@@ -442,6 +464,11 @@ def cmd_dump(args) -> int:
 def cmd_pair(args) -> int:
     qs_m, qs_g = (json.loads(Path(p).read_text(encoding="utf-8")) for p in (args.m, args.g))
     noise = json.loads(Path(args.noise).read_text(encoding="utf-8")) if args.noise else None
+    bad = degraded_dumps({"M": qs_m, "G": qs_g, **({"M'": noise} if noise else {})})
+    if bad:
+        print(f"STOP: degraded searches in {bad} — a BM25-only search differs from "
+              "the code under test, so these dumps cannot be judged")
+        return 3
     if set(qs_m["results"]) != set(qs_g["results"]):
         print("the two dumps were not made from the same question file")
         return 1
