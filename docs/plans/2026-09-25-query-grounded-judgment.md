@@ -135,12 +135,22 @@ Set A 20 · Set B 41 을 붙여 파일로 얼리고, M · G · M′ 세 덤프�
 날짜는 qa 레코드면 frontmatter `timestamp` 앞 10자, 아니면 `file_mtime` 앞 10자, 둘 다
 없으면 생략.
 - qa 레코드(`node_type=qa_log`, 노트 포함): `질문:` 본문 `# Q:` 줄부터 `- **query_type**`
-  앞까지를 공백 정리해 **200자**, `스니펫:` 검색이 만든 스니펫(`HybridResult.snippet`,
-  에이전트가 실제로 보는 창)을 **400자** — 비어 있으면 줄째 생략, `답:` 은
+  앞까지를 공백 정리해 **200자**, `스니펫:` 에이전트가 보는 검색 창을 메타 없이
+  다시 만든 것(아래 `qa_window`)을 **400자** — 비어 있으면 줄째 생략, `답:` 은
   `qa_shape.answer_excerpt` 를 공백 정리해 **400자**. 답을 소유하지 않으면 `(답 없음)`.
   `## Top results` 의 인용은 보여주지 않는다. 종류 표지(노트/pre-fetch 등)는 붙이지
-  않는다 — 판정자가 종류로 편애하지 않게. 그래서 스니펫 앞에 붙는 `[qa - stop_hook -
-  … - 3d ago]` · `[needs_revalidation …]` 같은 **대괄호 머리 줄은 떼고** 본문만 보인다
+  않는다 — 판정자가 종류로 편애하지 않게.
+- **qa 의 스니펫은 다시 만든다 (`qa_window`, 2026-09-26 판정 전 수정).** 처음엔 덤프된
+  스니펫에서 `[qa - stop_hook - … - 3d ago]` 같은 대괄호 머리 줄만 뗐다. 첫 `--pair` 뒤
+  배치를 세어 보니 스니펫 줄 3,666개 중 **2,836개가 qa frontmatter 메타**를 담고 있었고,
+  **394줄은 `trigger: stop_hook` / `user_prompt_submit` 를 그대로** 보여 답 레코드와
+  pre-fetch 레코드를 구별하게 했다 — 검색 창이 frontmatter 에 걸린 것이다. 그 줄만 지우면
+  그런 레코드는 창이 비므로, 오케스트레이터와 **같은 함수** `search.snippet.make_snippet`
+  을 같은 인자(검색어, `qa_log`)로 frontmatter 를 뗀 본문에 다시 적용하고, 남는
+  `- **key**: value` 메타 불릿(`quality.is_metadata_bullet`)을 지운다. 레코드 본문 안의
+  인용(`> [qa - …]`, `## Top results` 목록)은 레코드 자신의 글이라 둔다. `make_snippet` 은
+  두 갈래 코드에서 같다(`git diff main d3f4f8e -- src/hybrid_search/search/snippet.py`
+  빈 결과). qa 가 아닌 항목이 스니펫으로 폴백할 때는 대괄호 머리 줄만 뗀다
   (`snippet_body`).
 - 그 밖: `content`(없으면 `snippet`)를 공백 정리해 **400자**.
 - 사례의 질문 줄은 600자. 넘치면 `…`.
