@@ -83,7 +83,7 @@ packages = ["src/hybrid_search"]
 # Runners live in the repository for whoever clones it; measurements of
 # someone's private corpus are not part of a distribution.
 [tool.hatch.build.targets.sdist]
-exclude = ["benchmarks", "docs/plans", "docs/handoff", ".hybrid-search", "HANDOFF.md"]
+exclude = ["benchmarks", "docs/plans", "docs/handoff", ".hybrid-search", "HANDOFF.md", "internal"]
 
 [tool.ruff]
 target-version = "py311"
