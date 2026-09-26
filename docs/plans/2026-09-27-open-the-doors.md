@@ -80,6 +80,7 @@ Set A/B · 코드축)로 수정. 아니면 이유를 적고 닫는다.
 - sdist 점검: `tar tzf dist/*.tar.gz | grep benchmarks` 가 비어야 함(CLAUDE.md).
 - 깨끗한 venv 에서 휠 설치 → `setup` → 첫 인덱싱 → 검색 한 번 리허설.
 - **정지점**: PyPI 업로드와 태그 push 는 주인 확인 후.
+- **알려진 문제** (2026-09-27 설치 리허설): `setup` 이 만든 미커밋 `.claude/settings.local.json` 이 새 프로젝트의 검색 결과에 in-flight 파일로 섞인다(노이즈). 검색 결과를 바꾸는 일이라 0.9.0 에서는 고치지 않는다.
 
 ## 5. 2단계 — 소프트 런칭 (가장 큰 병목)
 
