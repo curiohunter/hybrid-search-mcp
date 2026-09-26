@@ -4,13 +4,17 @@ Every Stop hook already parses the finished turn's transcript. This module
 rides that same pass and scores what actually happened after each
 ``hybrid_search`` call in the turn:
 
-- **adopted**: a top-N result file was opened afterwards (Read/Edit/Write —
-  we record the rank)
+- **adopted**: a top-N result file was opened afterwards (Read/Edit/Write,
+  or a shell read like ``grep -n X file`` / ``sed -n`` — we record the rank)
 - **betrayed**: the agent opened files *outside* the results, or fell back to
-  searching on its own (the Grep tool, or `rg`/`grep`/`find` through Bash) —
-  the search didn't carry the turn
+  searching on its own (the Grep tool, or a shell search that names no
+  file) — the search didn't carry the turn
 - **no_followup**: no file opened and no search after (the injected snippets
-  were enough, or the results went unused — indistinguishable here)
+  were enough, or the results went unused — see the quoted fields)
+
+Quoted memory hits can't be opened, so they are scored separately (v1.2):
+``quoted_adopted_rank`` is set when the answer carries an id or phrase found
+only in that hit. ``verdict`` stays the file-lane judgement.
 
 Rows append to ``.hybrid-search/selfeval/events.jsonl``. Betrayals where we
 know what the agent ended up reading also append to ``harvested.jsonl`` as
@@ -39,6 +43,12 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from hybrid_search.memory.selfeval_evidence import (
+    QUOTED_NODE_TYPES,
+    best_quoted_rank,
+    shell_actions,
+)
 
 _SELFEVAL_DIR = ".hybrid-search/selfeval"
 _EVENTS_FILE = "events.jsonl"
@@ -85,9 +95,9 @@ def _is_search_tool(name: str) -> bool:
 _OPEN_TOOLS = ("Read", "Edit", "Write", "NotebookEdit")
 
 # Betrayal evidence: the agent went looking on its own. The Grep tool is the
-# explicit form; a shell search is the same act with a different spelling,
-# and in some projects it is the *only* form that appears.
-_SHELL_SEARCH_PREFIXES = ("rg ", "grep ", "ag ", "ack ", "find ", "fd ")
+# explicit form; a shell search is the same act with a different spelling.
+# Shell *reads* (``grep -n X file``, ``sed -n 1,80p file``) are not searches:
+# since v1.2 they are scored like Read (see selfeval_evidence.shell_actions).
 
 
 def _open_target(name: str, tool_input: dict) -> str:
@@ -97,30 +107,14 @@ def _open_target(name: str, tool_input: dict) -> str:
     return (tool_input.get("file_path") or tool_input.get("path") or "").strip()
 
 
-def _is_shell_search(command: str) -> bool:
-    """True when a Bash command is a code search — a Grep in disguise.
-
-    Each ``&&``/``;`` segment is its own command, so ``cd x && rg y`` counts.
-    Within a segment only the head matters: a pipe *into* grep is filtering
-    another command's output, not searching the codebase for the answer.
-    """
-    cmd = (command or "").strip().lstrip("!")
-    for segment in cmd.replace(";", "&&").split("&&"):
-        head = segment.strip().lstrip("(").strip()
-        if head.startswith(_SHELL_SEARCH_PREFIXES):
-            return True
-    return False
-
-
-def _search_target(name: str, tool_input: dict) -> str | None:
-    """Search pattern when a tool call is a code search, else None."""
+def _followups(name: str, tool_input: dict) -> tuple[list[str], list[str]]:
+    """(files opened, searches run) by one tool call."""
     if name == "Grep":
-        return (tool_input.get("pattern") or "").strip()
+        return [], [(tool_input.get("pattern") or "").strip()]
     if name == "Bash":
-        cmd = (tool_input.get("command") or "").strip()
-        if _is_shell_search(cmd):
-            return cmd[:120]
-    return None
+        return shell_actions((tool_input.get("command") or "").strip())
+    opened = _open_target(name, tool_input)
+    return ([opened] if opened else []), []
 
 
 def _result_text(block: dict) -> str:
@@ -138,8 +132,8 @@ def _result_text(block: dict) -> str:
     return ""
 
 
-def _parse_result_paths(text: str) -> list[str]:
-    """Ordered unique file_paths out of a hybrid_search tool result."""
+def _parse_results(text: str) -> list[dict]:
+    """The ``results`` list out of a hybrid_search tool result, or []."""
     text = (text or "").strip()
     start = text.find("{")
     end = text.rfind("}")
@@ -149,20 +143,43 @@ def _parse_result_paths(text: str) -> list[str]:
         payload = json.loads(text[start : end + 1])
     except (ValueError, TypeError):
         return []
-    results = payload.get("results")
+    results = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(results, list):
         return []
+    return [r for r in results if isinstance(r, dict)]
+
+
+def _parse_result_paths(text: str) -> list[str]:
+    """Ordered unique file_paths out of a hybrid_search tool result."""
     seen: set[str] = set()
     paths: list[str] = []
-    for r in results:
-        if not isinstance(r, dict):
-            continue
+    for r in _parse_results(text):
         fp = r.get("file_path")
         if not isinstance(fp, str) or not fp or fp in seen:
             continue
         seen.add(fp)
         paths.append(fp)
     return paths
+
+
+def _parse_quoted(text: str) -> list[dict]:
+    """Memory-lane hits in a tool result, with the text the agent saw.
+
+    Rank is the hit's position in the result list: commit hits all share one
+    virtual path, so path-deduplicated ranks would collapse them.
+    """
+    quoted: list[dict] = []
+    for rank, r in enumerate(_parse_results(text)[:_MAX_TRACKED_PATHS], start=1):
+        if r.get("node_type") not in QUOTED_NODE_TYPES:
+            continue
+        body = r.get("content") or r.get("snippet") or ""
+        if isinstance(body, str) and body.strip():
+            quoted.append({"rank": rank, "excerpt": body})
+    return quoted
+
+
+def _assistant_text(block: dict) -> str:
+    return (block.get("text") or "") if block.get("type") == "text" else ""
 
 
 def _paths_match(read_path: str, result_path: str) -> bool:
@@ -179,9 +196,13 @@ def extract_turn_events(turn_records: list[dict]) -> list[dict]:
 
     ``turn_records`` is the transcript slice for ONE turn (everything after
     the genuine user prompt). Returns one dict per search call:
-    ``{"query", "paths", "reads", "greps"}`` where reads/greps are the
-    Read file_paths / Grep patterns issued *after* that search and before
-    the next one — followups attribute to the most recent search.
+    ``{"query", "paths", "reads", "greps", "quoted", "answer", "excluded"}``.
+    Reads/greps are issued *after* that search and before the next one —
+    followups attribute to the most recent search. Answer text runs to the
+    end of the turn instead: the final answer usually follows the last
+    search, and an earlier search's quoted hit can still be what it cites.
+    ``excluded`` is every other tool result in that window (see
+    ``selfeval_evidence.quoted_adopted``).
     """
     pending: dict[str, dict] = {}  # tool_use_id -> event awaiting its result
     events: list[dict] = []
@@ -205,6 +226,9 @@ def extract_turn_events(turn_records: list[dict]) -> list[dict]:
                         "paths": [],
                         "reads": [],
                         "greps": [],
+                        "quoted": [],
+                        "answer": [],
+                        "excluded": [],
                     }
                     events.append(event)
                     current = event
@@ -212,17 +236,27 @@ def extract_turn_events(turn_records: list[dict]) -> list[dict]:
                     if isinstance(uid, str) and uid:
                         pending[uid] = event
                 elif current is not None:
-                    opened = _open_target(name, ti)
-                    if opened:
-                        current["reads"].append(opened)
-                    searched = _search_target(name, ti)
-                    if searched is not None:
-                        current["greps"].append(searched)
+                    opened, searched = _followups(name, ti)
+                    current["reads"].extend(opened)
+                    current["greps"].extend(searched)
+            elif rec_type == "assistant":
+                text = _assistant_text(block)
+                if text:
+                    for event in events:
+                        event["answer"].append(text)
             elif rec_type == "user" and block.get("type") == "tool_result":
                 uid = block.get("tool_use_id")
                 event = pending.pop(uid, None) if isinstance(uid, str) else None
+                text = _result_text(block)
                 if event is not None:
-                    event["paths"] = _parse_result_paths(_result_text(block))
+                    event["paths"] = _parse_result_paths(text)
+                    event["quoted"] = _parse_quoted(text)
+                for other in events:
+                    if other is not event:
+                        other["excluded"].append(text)
+    for event in events:
+        event["answer"] = "\n".join(event["answer"])
+        event["excluded"] = "\n".join([event["query"], *event["excluded"]])
     return events
 
 
@@ -243,6 +277,11 @@ def score_event(event: dict) -> dict:
         else:
             outside_reads.append(read)
 
+    quoted = event.get("quoted") or []
+    quoted_rank = best_quoted_rank(
+        quoted, event.get("answer") or "", event.get("excluded") or ""
+    )
+
     grep_count = len(event["greps"])
     if adopted_rank is not None and not outside_reads and grep_count == 0:
         verdict = "adopted"
@@ -262,6 +301,8 @@ def score_event(event: dict) -> dict:
         "outside_reads": outside_reads[:5],
         "greps_after": grep_count,
         "verdict": verdict,
+        "quoted_served": len(quoted),
+        "quoted_adopted_rank": quoted_rank,
     }
 
 
@@ -376,12 +417,16 @@ def record_prefetch(
     paths: list[str],
     qa_record_id: str | None = None,
     session_key: str | None = None,
+    quoted: list[dict] | None = None,
 ) -> bool:
     """Queue one pre-fetch for the Stop hook to score. True when queued.
 
     Called from UserPromptSubmit, which knows what was served but not yet
     whether it was used. ``qa_record_id`` is the stem of the qa log written
     for the same prompt — it makes the row traceable back to that file.
+    ``quoted`` is ``[{"rank", "excerpt"}]`` for memory hits injected as
+    quotes: the excerpt is exactly what the agent saw, and nothing in the
+    transcript records it, so it has to be handed over here too.
     """
     try:
         if not query or not paths:
@@ -393,6 +438,8 @@ def record_prefetch(
             "query": query.strip(),
             "top_paths": list(paths)[:_MAX_TRACKED_PATHS],
         }
+        if quoted:
+            row["quoted"] = list(quoted)[:_MAX_TRACKED_PATHS]
         _append_jsonl(_pending_path(project_root, session_key), row)
         return True
     except Exception:
@@ -508,33 +555,45 @@ def extract_prefetch_event(turn_records: list[dict], pending: dict) -> dict:
 
     The tool lane attributes followups to the most recent search call. A
     pre-fetch happens once, before the turn starts, so **the whole turn is
-    its attribution window** — every Read/Grep in the slice counts.
+    its attribution window** — every Read/Grep in the slice counts, and all
+    of the turn's answer text is checked against the quoted hits.
     """
     reads: list[str] = []
     greps: list[str] = []
+    answer: list[str] = []
+    excluded: list[str] = [(pending.get("query") or "").strip()]
     for rec in turn_records:
         msg = rec.get("message") or {}
         content = msg.get("content")
         if not isinstance(content, list):
             continue
-        if rec.get("type") != "assistant":
-            continue
+        rec_type = rec.get("type")
         for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
+            if not isinstance(block, dict):
+                continue
+            if rec_type == "user" and block.get("type") == "tool_result":
+                excluded.append(_result_text(block))
+                continue
+            if rec_type != "assistant":
+                continue
+            if block.get("type") == "text":
+                answer.append(_assistant_text(block))
+                continue
+            if block.get("type") != "tool_use":
                 continue
             name = block.get("name") or ""
             ti = block.get("tool_input") or block.get("input") or {}
-            opened = _open_target(name, ti)
-            if opened:
-                reads.append(opened)
-            searched = _search_target(name, ti)
-            if searched is not None:
-                greps.append(searched)
+            opened, searched = _followups(name, ti)
+            reads.extend(opened)
+            greps.extend(searched)
     return {
         "query": (pending.get("query") or "").strip(),
         "paths": list(pending.get("top_paths") or []),
         "reads": reads,
         "greps": greps,
+        "quoted": [q for q in pending.get("quoted") or [] if isinstance(q, dict)],
+        "answer": "\n".join(answer),
+        "excluded": "\n".join(excluded),
     }
 
 
@@ -672,7 +731,17 @@ def _dedup_rows(rows: list[dict]) -> list[dict]:
 
 
 def _empty_counts() -> dict:
-    return {v: 0 for v in _VERDICTS} | {"total": 0}
+    return {v: 0 for v in _VERDICTS} | {"total": 0, "quoted_served": 0, "quoted_adopted": 0}
+
+
+def _count_row(counts: dict, row: dict) -> None:
+    counts[row["verdict"]] += 1
+    counts["total"] += 1
+    # Rows before v1.2 carry no quoted fields; they count as not served.
+    if row.get("quoted_served"):
+        counts["quoted_served"] += 1
+        if row.get("quoted_adopted_rank") is not None:
+            counts["quoted_adopted"] += 1
 
 
 def harvested(project_root: Path) -> list[dict]:
@@ -714,11 +783,9 @@ def summarize(project_root: Path, *, days: int = 7) -> dict | None:
             if verdict not in _VERDICTS:
                 continue
             lane = row.get("source") or "tool"
-            counts[verdict] += 1
-            counts["total"] += 1
+            _count_row(counts, row)
             if lane in lanes:
-                lanes[lane][verdict] += 1
-                lanes[lane]["total"] += 1
+                _count_row(lanes[lane], row)
         if counts["total"] == 0:
             return None
         harvested_rows = harvested(project_root)
@@ -733,6 +800,8 @@ def summarize(project_root: Path, *, days: int = 7) -> dict | None:
             "harvested_total": len(harvested_rows),
             "harvested_usable": usable_gold,
             "lanes": lanes,
+            "quoted_served": counts["quoted_served"],
+            "quoted_adopted": counts["quoted_adopted"],
             **{v: counts[v] for v in _VERDICTS},
         }
     except Exception:
@@ -749,9 +818,12 @@ def format_summary_line(project_root: Path, *, days: int = 7) -> str:
         f"{name} {lanes[name]['total']}" for name in _LANES if lanes.get(name, {}).get("total")
     )
     lane_str = f" ({lane_bits})" if lane_bits else ""
+    served = stats.get("quoted_served") or 0
+    quoted_str = f"quoted {stats.get('quoted_adopted') or 0}/{served} · " if served else ""
     return (
         f"[selfeval {stats['days']}d] searches {stats['total']}{lane_str} · "
         f"adopted {stats['adopted'] + stats['mixed']} · "
+        f"{quoted_str}"
         f"betrayed {stats['betrayed']} · "
         f"harvested {stats['harvested_total']} regression items"
     )
@@ -835,10 +907,13 @@ def _transcript_turn_index(project_root: Path) -> dict:
             for ev in getattr(chunk, "tools", ()) or ():
                 if ev.tool in _OPEN_TOOLS and ev.target:
                     reads.append(ev.target)
-                elif ev.tool == "Grep":
-                    greps.append(ev.target)
-                elif ev.tool == "Bash" and _is_shell_search(ev.target):
-                    greps.append(ev.target)
+                elif ev.tool in ("Grep", "Bash"):
+                    opened, searched = _followups(
+                        ev.tool,
+                        {"pattern": ev.target} if ev.tool == "Grep" else {"command": ev.target},
+                    )
+                    reads.extend(opened)
+                    greps.extend(searched)
             index[key] = {"reads": reads, "greps": greps}
     return index
 
