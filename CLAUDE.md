@@ -78,6 +78,13 @@ python -m pytest tests/ -x -q
 5. **의도적으로 공개한 것은 건드리지 않는다.** `docs/why.md`의 `결제선생`은
    "한국어 도메인 용어" 예시로 쓴 서사고, `밸류인`은 공개 브랜드명이다.
    지우면 왜 이 도구를 만들었는지가 훼손된다.
+6. **내부 개발 문서는 이 레포에 쓰지 않는다.** 계획 · 연구 · 인계 · SNS 초안 ·
+   벤치 보고서는 비공개 레포 `curiohunter/hybrid-search-mcp-internal` 에 두고,
+   이 레포 안 `internal/` 로 받아 쓴다(`.gitignore` 됨, 검색 인덱스에는
+   `.hybrid-search-ignore` 로 포함). 새 문서도 `internal/docs/{plans,studies,handoff}/`
+   에 쓰고 **그 레포에** 커밋한다. 공개 레포의 `docs/` 에는 사용자용 문서
+   (`why.md` 등)만. 2026-09-27 주인 결정 — 그날 옮기고 히스토리도 재작성했다.
+   `internal/` 이 없으면: `git clone https://github.com/curiohunter/hybrid-search-mcp-internal.git internal`.
 
 **히스토리는 되돌리기 어렵다.** 2026-09-07에 main·브랜치·태그를 재작성했지만,
 **닫힌 PR의 `refs/pull/*`는 push로 지워지지 않아** 옛 커밋이 남아 있고,
