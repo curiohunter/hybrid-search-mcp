@@ -325,6 +325,7 @@ hybrid-search-mcp qa-grep "authority"        # frontmatter + body match
 hybrid-search-mcp qa-stats --cwd .           # total / by type / by month
 hybrid-search-mcp qa-prune --older-than 90d  # rotation
 hybrid-search-mcp qa-prune --before 2026-01-01 --dry-run
+hybrid-search-mcp miss "why we dropped X"    # search missed something you discussed? log it (kept outside the repo)
 
 # Status & maintenance
 hybrid-search-mcp status                     # show indexed projects + hooks + skills
@@ -889,6 +890,7 @@ pre-fetch entirely.
 | `qa-grep <term>` | Substring search over frontmatter + body |
 | `qa-stats` | Totals by query_type and month |
 | `qa-prune --older-than 30d` | Delete logs older than a duration or `--before <ISO>` |
+| `miss "<what you looked for>"` | Log a missed recall to `~/.hybrid-search/benchmarks/misses-<project>.jsonl` with the searches just before it; these become regression questions |
 | `remove-project <name>` | Unregister a project |
 
 ---

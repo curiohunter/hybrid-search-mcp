@@ -3831,6 +3831,35 @@ def cmd_qa_reflect(args: argparse.Namespace) -> None:
     print("read each input file, write the note per its instructions, then run --finalize")
 
 
+def cmd_miss(args: argparse.Namespace) -> None:
+    """Record a missed recall — "we talked about this and it can't find it".
+
+    Appends to ``~/.hybrid-search/benchmarks/misses-<project>.jsonl`` (outside
+    the repo) with the searches that ran just before. See memory/misses.py.
+    """
+    from hybrid_search.memory import misses
+    from hybrid_search.project import canonical_project_root
+
+    if getattr(args, "project", None):
+        root = _resolve_qa_root(args)
+        if root is None:
+            sys.exit(1)
+    else:
+        cwd = getattr(args, "cwd", ".")
+        root = canonical_project_root(cwd) or Path(cwd).resolve()
+    try:
+        path, row = misses.record_miss(root, " ".join(args.question))
+    except ValueError as exc:
+        print(f"miss: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except OSError as exc:
+        print(f"miss: could not write the record ({exc})", file=sys.stderr)
+        sys.exit(1)
+    recent = row["recent_queries"]
+    print(f"recorded miss for {row['project']} → {path}")
+    print(f"  with {len(recent)} recent search(es) from the last {misses.RECENT_WINDOW_HOURS}h")
+
+
 def cmd_selfeval(args: argparse.Namespace) -> None:
     """Usage-derived search scorecard + harvested regression items.
 
@@ -6237,6 +6266,14 @@ def main() -> None:
         help="Re-fold harvested gold paths to project-relative; tag unusable ones",
     )
 
+    p_miss = sub.add_parser(
+        "miss",
+        help='Record a missed recall ("we discussed this before but search can\'t find it")',
+    )
+    p_miss.add_argument("question", nargs="+", help="What you were looking for, in your words")
+    p_miss.add_argument("--cwd", default=".", help="Project directory (auto-detect)")
+    p_miss.add_argument("--project", help="Project name (overrides --cwd)")
+
     p_qa_restore = sub.add_parser(
         "qa-restore",
         help="Restore an archived qa entry back into qa/",
@@ -6506,6 +6543,8 @@ def main() -> None:
         cmd_qa_stats(args)
     elif args.command == "selfeval":
         cmd_selfeval(args)
+    elif args.command == "miss":
+        cmd_miss(args)
     elif args.command == "qa-reflect":
         cmd_qa_reflect(args)
     elif args.command == "qa-restore":
