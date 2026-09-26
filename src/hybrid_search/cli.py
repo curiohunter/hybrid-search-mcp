@@ -21,10 +21,10 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hybrid_search.config import Config, load_config
+from hybrid_search.config import DEFAULT_DATA_DIR, Config, load_config
 from hybrid_search.index.conversation_indexer import ConversationIndexer
 from hybrid_search.index.dag import generate_all_wiki_pages
-from hybrid_search.index.embedder import Embedder
+from hybrid_search.index.embedder import Embedder, MissingAPIKeyError
 from hybrid_search.index.pipeline import IndexingPipeline
 from hybrid_search.index.scanner import (
     excluded_paths_summary,
@@ -355,11 +355,32 @@ def cmd_reindex(args: argparse.Namespace) -> None:
         _reindex_locked(
             args, config, registry, project_path, project_name, cwd,
         )
+    except MissingAPIKeyError as exc:
+        print(_missing_key_help(exc), file=sys.stderr)
+        raise SystemExit(2) from None
     finally:
         try:
             lock_path.unlink()
         except OSError:
             pass
+
+
+def _missing_key_help(exc: MissingAPIKeyError) -> str:
+    """First-run guidance when the embedding provider has no key."""
+    config_file = DEFAULT_DATA_DIR / "config.toml"
+    return (
+        f"Indexing stopped: {exc.key_env} is not set "
+        f"(embedding provider: {exc.provider}).\n"
+        "Pick one, then run the same command again:\n"
+        f"  - OpenAI: export OPENAI_API_KEY=... (or put it in .env.local)\n"
+        f"  - Gemini: set backend = \"gemini\" under [embedding] in {config_file},\n"
+        "            then export GEMINI_API_KEY=...\n"
+        f"  - Ollama (no key, local or self-hosted): in {config_file} set\n"
+        "        [embedding]\n"
+        "        backend = \"ollama\"\n"
+        "        base_url = \"http://localhost:11434/v1\"   # your Ollama host\n"
+        "Switching providers later needs `index . --force`."
+    )
 
 
 def _reindex_locked(

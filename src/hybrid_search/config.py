@@ -412,8 +412,10 @@ log_level = "info"
 
 [embedding]
 # backend: which OpenAI-shaped provider serves embeddings AND the KO→EN
-# translation lane. "openai" (OPENAI_API_KEY) or "gemini" (GEMINI_API_KEY,
-# via Google's /v1beta/openai compatibility surface).
+# translation lane. "openai" (OPENAI_API_KEY), "gemini" (GEMINI_API_KEY,
+# via Google's /v1beta/openai compatibility surface), or "ollama" (no key;
+# local or self-hosted — add base_url = "http://<host>:11434/v1" if it is
+# not on localhost; it has no translation lane).
 # Switching providers invalidates every stored vector — the width may
 # match, but the semantic space does not. Run `index . --force` and then
 # `recalibrate` after changing this.
