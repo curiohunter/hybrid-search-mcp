@@ -476,6 +476,51 @@ class TestMergeMemoryPlacement:
         assert [r.chunk_id for r in out] == ["qa"]
 
 
+class TestMemoryHeadKeepsRank:
+    """The ambient slot guarantees exposure — it must never take it away.
+
+    2026-09-26: re-seating the head at insert_at=2 pulled a record the chunk
+    stream had at rank 1 down to rank 3, on 524 of 573 probe questions
+    (plan `docs/plans/2026-09-26-memory-head-keeps-rank.md`).
+    """
+
+    def _lane(self, *ids: str) -> list:
+        return [_mk(i, "qa_log" if i.startswith("qa") else "function", 1.0 - n / 10,
+                    mtime="2026-07-01T00:00:00+00:00") for n, i in enumerate(ids)]
+
+    @pytest.mark.parametrize("lane", [("qa", "c1", "c2"), ("c1", "qa", "c2")])
+    def test_head_above_insert_point_keeps_its_rank(self, lane) -> None:
+        chunks = self._lane(*lane)
+        qa = next(r for r in chunks if r.chunk_id == "qa")
+        out = _merge_memory_results(chunks, [qa], limit=10, head_limit=1, insert_at=2)
+        assert [r.chunk_id for r in out] == list(lane)
+
+    def test_head_below_insert_point_still_rises_to_it(self) -> None:
+        chunks = self._lane("c1", "c2", "c3", "qa")
+        out = _merge_memory_results(chunks, [chunks[3]], limit=10, head_limit=1, insert_at=2)
+        assert [r.chunk_id for r in out] == ["c1", "c2", "qa", "c3"]
+
+    def test_mixed_head_splits_between_kept_and_inserted(self) -> None:
+        chunks = self._lane("qa1", "c1", "c2", "c3")
+        qa2 = _mk("qa2", "qa_log", rrf=0.8, mtime="2026-07-02T00:00:00+00:00")
+        out = _merge_memory_results(chunks, [chunks[0], qa2], limit=10,
+                                    head_limit=2, insert_at=2)
+        assert [r.chunk_id for r in out] == ["qa1", "c1", "qa2", "c2", "c3"]
+
+    @pytest.mark.parametrize("lane,expected", [
+        # Pinned from the code before the change: insert_at=0 leads with the
+        # head wherever the chunk stream had it.
+        (("c1", "qa"), ["qa", "c1"]),
+        (("qa", "c1", "c2"), ["qa", "c1", "c2"]),
+        (("c1", "c2", "qa"), ["qa", "c1", "c2"]),
+    ])
+    def test_memory_intent_path_is_unchanged(self, lane, expected) -> None:
+        chunks = self._lane(*lane)
+        qa = next(r for r in chunks if r.chunk_id == "qa")
+        out = _merge_memory_results(chunks, [qa], limit=10, head_limit=1, insert_at=0)
+        assert [r.chunk_id for r in out] == expected
+
+
 class TestUnanchoredTerms:
     def test_absent_head_noun_is_unanchored(self) -> None:
         # A7: a 쿠폰 query whose hits only share generic process words.
