@@ -93,6 +93,19 @@ class TestReference:
         assert qj.first_hit_rank(items, ["PHRASE"]) == 2
         assert qj.first_hit_rank(items, ["absent"]) is None
 
+    def test_seen_rank_ignores_text_the_judge_is_not_shown(self) -> None:
+        # The phrase sits deep in a long pasted question: in the content,
+        # past the 200-char question window, outside the snippet.
+        long_q = "x " * 300 + "DEEP PHRASE"
+        items = [_item("a", _qa(long_q, "short"), node_type="qa_log"),
+                 _item("b", "has DEEP PHRASE")]
+        assert qj.first_hit_rank(items, ["DEEP PHRASE"]) == 1
+        assert qj.seen_hit_rank(items, ["DEEP PHRASE"]) == 2
+
+    def test_seen_rank_matches_across_collapsed_whitespace(self) -> None:
+        items = [_item("a", "two\n  words")]
+        assert qj.seen_hit_rank(items, ["two\nwords"]) == 1
+
     def test_gold_metrics(self) -> None:
         m = qj.gold_metrics([1, 4, None, 2])
         assert m == {"n": 4, "found": 0.75, "top3": 0.5, "mrr": round((1 + .25 + .5) / 4, 4)}
@@ -108,7 +121,19 @@ class TestRender:
     def test_answerless_qa_says_so(self) -> None:
         # The quotation under Top results holds the heading string — it must not count.
         text = qj.render_item(1, _item("q", _qa("q only", None), node_type="qa_log"))
-        assert "없음" in text and "elsewhere" not in text
+        assert "답: (답 없음)" in text and "elsewhere" not in text and "당시" not in text
+
+    def test_qa_shows_snippet_without_kind_labels(self) -> None:
+        item = {**_item("q", _qa("q", "a"), node_type="qa_log"),
+                "snippet": "[qa - stop_hook - decision - 3d ago]\n"
+                           "[needs_revalidation — x changed in abc]\nthe window [sic]"}
+        text = qj.render_item(1, item)
+        assert "스니펫: the window [sic]" in text
+        assert "stop_hook" not in text and "needs_revalidation" not in text
+
+    def test_empty_snippet_line_is_omitted(self) -> None:
+        text = qj.render_item(1, _item("q", _qa("q", "a"), node_type="qa_log"))
+        assert "스니펫" not in text
 
     def test_text_is_capped(self) -> None:
         text = qj.render_item(3, _item("c", "가" * 1000))
@@ -134,7 +159,8 @@ class TestBuildCases:
         built = qj.build_cases(self.QS, m, g)
         assert [c["qid"] for c in built["cases"]] == ["p:2", "A:C1"]
         assert built["ties"] == ["p:1"]
-        assert built["gold_ranks"]["A:C1"] == {"set": "A", "M": 2, "G": 1}
+        assert built["gold_ranks"]["A:C1"] == {"set": "A", "M": 2, "G": 1,
+                                                "M_seen": 2, "G_seen": 1}
         assert built["self_found"]["p:1"] == {"M": True, "G": True}
 
     def test_noise_is_set_aside_not_judged(self) -> None:
@@ -164,9 +190,10 @@ class TestScore:
                 {"cid": "c5", "qid": "A:C2", "set": "A", "query": "", "g_is_x": False},
             ],
             "ties": ["p:9", "A:C9"], "noisy": ["p:8"],
-            "gold_ranks": {"A:C1": {"set": "A", "M": 4, "G": 1},
-                           "A:C2": {"set": "A", "M": 1, "G": None},
-                           "A:C9": {"set": "A", "M": 2, "G": 2}},
+            "gold_ranks": {
+                "A:C1": {"set": "A", "M": 4, "G": 1, "M_seen": 4, "G_seen": 1},
+                "A:C2": {"set": "A", "M": 1, "G": None, "M_seen": 1, "G_seen": None},
+                "A:C9": {"set": "A", "M": 2, "G": 2, "M_seen": 2, "G_seen": 2}},
             "self_found": {"p:1": {"M": True, "G": True}, "p:2": {"M": False, "G": True}},
         }
 
@@ -187,6 +214,18 @@ class TestScore:
         assert (c["decisive_reference"], c["agree"], c["agreement"]) == (2, 1, 0.5)
         assert r["gold"]["A"]["G"]["found"] == round(2 / 3, 4)
         assert r["self_found"] == {"M": 1, "G": 2}
+
+    def test_calibration_reads_the_rendered_ranks(self) -> None:
+        cases = self._cases()
+        # Content says M wins C1; what the judge was shown says neither does.
+        cases["gold_ranks"]["A:C1"].update({"M": 1, "G": 3, "M_seen": None, "G_seen": None})
+        v = {"1": {"c4": "X", "c5": "same"}, "2": {"c4": "Y", "c5": "X"}}
+        c = qj.score(cases, v)["calibration"]
+        assert [r["qid"] for r in c["rows"]] == ["A:C2"]
+        assert c["hidden_answers"] == {"M": 1, "G": 1}
+
+    def test_calibration_targets(self) -> None:
+        assert qj.calibration_targets(self._cases()) == ["A:C1", "A:C2"]
 
     def test_missing_or_invalid_verdict_is_unjudged(self) -> None:
         r = qj.score(self._cases(), {"1": {"c1": "X"}, "2": {"c1": "maybe"}})
