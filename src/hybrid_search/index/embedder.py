@@ -46,6 +46,23 @@ class _BatchTooLargeError(Exception):
 _BULK_EMBED_DEADLINE = 300.0
 
 
+class MissingAPIKeyError(ValueError):
+    """The embedding provider needs a key and none is configured.
+
+    A ``ValueError`` so every existing handler (the search fail-open among
+    them) behaves exactly as before; the type exists so the CLI can answer
+    a first-run user with setup steps instead of a traceback.
+    """
+
+    def __init__(self, key_env: str, provider: str) -> None:
+        self.key_env = key_env
+        self.provider = provider
+        super().__init__(
+            f"{key_env} not found. Set it in environment "
+            f"or .env.local (embedding provider: {provider})"
+        )
+
+
 class Embedder:
     """Generates embeddings via OpenAI API. Zero local resource usage."""
 
@@ -95,10 +112,7 @@ class Embedder:
             return self._api_key
         key = providers.api_key(self._spec)
         if not key:
-            raise ValueError(
-                f"{self._spec.key_env} not found. Set it in environment "
-                f"or .env.local (embedding provider: {self._spec.name})"
-            )
+            raise MissingAPIKeyError(self._spec.key_env, self._spec.name)
         self._api_key = key
         return key
 
