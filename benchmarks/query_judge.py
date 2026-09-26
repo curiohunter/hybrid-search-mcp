@@ -65,6 +65,7 @@ TEXT_CHARS = 400
 BATCH_SIZE = 10
 ARMS = ("M", "G")
 VERDICTS = ("X", "Y", "same")
+MIN_CALIBRATION = 5
 
 # Final wording, registered before measuring (plan §3 · 2026-09-26).
 JUDGE_PROMPT = """\
@@ -158,6 +159,21 @@ def _flat(text: str, cap: int) -> str:
     return text if len(text) <= cap else text[:cap] + "…"
 
 
+_META_LINE = re.compile(r"^\[[^\n]*\]$")
+
+
+def snippet_body(snippet: str) -> str:
+    """The search snippet without its bracketed head lines.
+
+    The orchestrator prefixes ``[qa - stop_hook - decision - 3d ago]``-style
+    trust lines (and ``[needs_revalidation …]``) — kind labels the judge must
+    not see (§3.1). Only whole leading ``[…]`` lines are dropped."""
+    lines = snippet.split("\n")
+    while lines and _META_LINE.match(lines[0].strip()):
+        lines.pop(0)
+    return "\n".join(lines)
+
+
 def render_item(rank: int, item: dict) -> str:
     """One list entry as the judge sees it: kind, path, date, text."""
     content = item.get("content") or ""
@@ -169,12 +185,27 @@ def render_item(rank: int, item: dict) -> str:
     head += f" · {date}" if date else ""
     if item.get("node_type") == "qa_log":
         answer = qa_shape.answer_excerpt(content)
-        body = f"질문: {_flat(_qa_question(content), QUESTION_CHARS)}\n   답: "
-        body += _flat(answer, TEXT_CHARS) if answer else \
-            "(없음 — 질문과 당시 검색 결과만 담긴 기록)"
+        snip = snippet_body(item.get("snippet") or "")
+        body = f"질문: {_flat(_qa_question(content), QUESTION_CHARS)}"
+        if snip.strip():
+            body += f"\n   스니펫: {_flat(snip, TEXT_CHARS)}"
+        body += "\n   답: " + (_flat(answer, TEXT_CHARS) if answer else "(답 없음)")
     else:
         body = _flat(content or item.get("snippet") or "", TEXT_CHARS)
     return f"{head}\n   {body}"
+
+
+def seen_hit_rank(items: list[dict], phrases: list[str]) -> int | None:
+    """First-hit rank on what the JUDGE sees (the rendered entry), not on the
+    whole record. Calibration compares the judge against this: a phrase deep
+    in a long pasted question is invisible to the judge, and scoring it
+    there would charge the judge for text it was never shown (§3.1)."""
+    flat = [" ".join(p.split()) for p in phrases]
+    for i, item in enumerate(items, start=1):
+        text = render_item(i, item)
+        if any(p and p in text for p in flat):
+            return i
+    return None
 
 
 def build_cases(questions: list[dict], dump_m: dict, dump_g: dict,
@@ -192,7 +223,9 @@ def build_cases(questions: list[dict], dump_m: dict, dump_g: dict,
         g_ids = [i["chunk_id"] for i in g]
         if q.get("any_of"):
             ranks[qid] = {"set": q["set"], "M": first_hit_rank(m, q["any_of"]),
-                          "G": first_hit_rank(g, q["any_of"])}
+                          "G": first_hit_rank(g, q["any_of"]),
+                          "M_seen": seen_hit_rank(m, q["any_of"]),
+                          "G_seen": seen_hit_rank(g, q["any_of"])}
         if q.get("probe_chunk"):
             self_found[qid] = {a: q["probe_chunk"] in ids
                                for a, ids in (("M", m_ids), ("G", g_ids))}
@@ -217,6 +250,26 @@ def render_case(case: dict, m: list[dict], g: list[dict], swapped: bool) -> str:
     lines += ["", "### Y"]
     lines += [render_item(i, it) for i, it in enumerate(y, start=1)] or ["(결과 없음)"]
     return "\n".join(lines) + "\n"
+
+
+def calibration_targets(cases: dict) -> list[str]:
+    """Gold cases on which the judge-visible phrase ranks pick a side —
+    the calibration denominator. Counted at --pair time: fewer than
+    ``MIN_CALIBRATION`` and the judge is not run at all (§3.1)."""
+    out = []
+    for c in cases["cases"]:
+        ref = cases["gold_ranks"].get(c["qid"])
+        if ref and reference_arm(ref["M_seen"], ref["G_seen"]) != "same":
+            out.append(c["qid"])
+    return out
+
+
+def hidden_answers(gold_ranks: dict) -> dict[str, int]:
+    """Per arm: gold questions whose answer phrase is in a record's content
+    but in no rendered entry — the judge could not have seen it."""
+    return {arm: sum(1 for r in gold_ranks.values()
+                     if r[arm] is not None and r[f"{arm}_seen"] is None)
+            for arm in ARMS}
 
 
 def score(cases: dict, verdicts: dict[str, dict[str, str]]) -> dict:
@@ -250,7 +303,7 @@ def score(cases: dict, verdicts: dict[str, dict[str, str]]) -> dict:
     calib = []
     for r in gold:
         ref = cases["gold_ranks"][r["qid"]]
-        ref_arm = reference_arm(ref["M"], ref["G"])
+        ref_arm = reference_arm(ref["M_seen"], ref["G_seen"])
         if ref_arm != "same" and r["final"]:
             calib.append({"qid": r["qid"], "reference": ref_arm, "judge": r["final"],
                           "agree": r["final"] == ref_arm})
@@ -268,6 +321,7 @@ def score(cases: dict, verdicts: dict[str, dict[str, str]]) -> dict:
         "calibration": {
             **tally(gold), "decisive_reference": len(calib), "agree": agree,
             "agreement": round(agree / len(calib), 4) if calib else None,
+            "hidden_answers": hidden_answers(cases["gold_ranks"]),
             "rows": calib},
         "gold": {s: {arm: gold_metrics(v[arm]) for arm in ARMS}
                  for s, v in sorted(by_set.items())},
@@ -391,8 +445,15 @@ def cmd_pair(args) -> int:
                          for c in order[b:b + BATCH_SIZE]]
                 (d / f"batch-{n:03d}.md").write_text("\n".join(body), encoding="utf-8")
     _write(out / "cases.json", {**built, "m_code": qs_m["code"], "g_code": qs_g["code"]})
+    targets = calibration_targets(built)
     print(f"judged: calib {len(groups['calib'])} · probe {len(groups['probe'])} · "
           f"ties {len(built['ties'])} · noise {len(built['noisy'])} → {out}")
+    print(f"calibration targets: {len(targets)} · answer in content but not rendered: "
+          f"{hidden_answers(built['gold_ranks'])}")
+    if len(targets) < MIN_CALIBRATION:
+        print(f"STOP: fewer than {MIN_CALIBRATION} calibration targets — "
+              "the judge cannot be calibrated; do not run it (§3.1)")
+        return 2
     return 0
 
 
@@ -402,7 +463,7 @@ def cmd_score(args) -> int:
     verdicts: dict[str, dict[str, str]] = {"1": {}, "2": {}}
     for f in sorted(root.glob("*-p[12]/verdict-*.json")):
         verdicts[f.parent.name[-1]].update(parse_verdicts(f.read_text(encoding="utf-8")))
-    report = score(cases, verdicts)
+    report = {"judge_model": args.judge_model, **score(cases, verdicts)}
     _write(args.out, report)
     p, c = report["probes"], report["calibration"]
     print(f"calibration: agreement {c['agreement']} ({c['agree']}/{c['decisive_reference']}) "
@@ -435,6 +496,7 @@ def main() -> int:
     ap.add_argument("--g", help="G dump (pair)")
     ap.add_argument("--noise", help="a second M dump; questions it disagrees on are set aside")
     ap.add_argument("--cases", help="cases directory (score)")
+    ap.add_argument("--judge-model", help="the judge subagents' model id, recorded (score)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     if args.freeze:
@@ -443,6 +505,8 @@ def main() -> int:
         return cmd_dump(args)
     if args.pair:
         return cmd_pair(args)
+    if not args.judge_model:
+        ap.error("--score needs --judge-model")
     return cmd_score(args)
 
 
