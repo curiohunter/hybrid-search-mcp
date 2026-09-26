@@ -4,9 +4,65 @@ All notable changes to hybrid-search-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions are [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.9.0 — memory that carries an answer, and an instrument you can trust
+
+Memory records that never held an answer (pre-fetch stubs, question-only
+logs) no longer enter the index. The search pipeline also stopped demoting
+memory that the code lane had already ranked first. The self-evaluation
+instrument now counts what agents actually do (shell reads, quoting a
+memory hit), so "is this helping?" can finally be measured.
+
+### Upgrade impact — read before upgrading
+
+- **Answerless memory leaves the index on the first index run.** On the first
+  `index`/`reindex` after upgrading (including the post-commit hook), qa records
+  with no `## Answer excerpt` are deleted from the index once
+  (`index_meta.memory_gate = 1`). This only deletes: no embedding calls, cost 0.
+  The qa files on disk are untouched.
+- **MCP-only hosts lose their memory.** Claude Code and Codex write answer
+  records from their Stop hooks, so nothing changes there. A client that uses
+  only the MCP server with no Stop hook installed only ever produced answerless
+  records. After this upgrade it has no searchable memory. On Claude Code or
+  Codex, make sure the hooks are installed (`hybrid-search-mcp setup`,
+  `install-codex-hook`); other MCP clients have no Stop hook to install, so
+  they keep code/commit search but lose Q&A memory.
+- **Commit-aware revalidation is effectively inactive for now.** Its anchors
+  were written only on the records that are now withheld (on the measured
+  project: 290 anchored records, all answerless; 0 of 1,599 answer records
+  anchored). Nothing breaks; stale-code warnings simply stop appearing until
+  anchors move to answer records (an open decision).
+- **selfeval numbers change meaning.** Shell reads now count like `Read`, and
+  quoted memory hits are scored separately (see below). Scorecards from before
+  and after the upgrade are not directly comparable.
 
 ### Added
+
+- **`hybrid-search-mcp miss "<what you looked for>"`.** Logs a missed recall
+  to `~/.hybrid-search/benchmarks/misses-<project>.jsonl` (outside the repo).
+  Each entry includes the searches from the previous six hours. These cases
+  are meant to become regression questions. This is a CLI command, not a new
+  MCP tool.
+- **selfeval v1.2 — shell reads and quoted-hit adoption.** `grep -n X file`,
+  `sed -n`, `cat`, `head` on a file are scored exactly like `Read`: a result
+  path is adoption; an outside path or a search that names no file is
+  betrayal. Heredoc bodies and redirect targets are not arguments. Memory
+  hits quoted into the prompt (which the agent is told not to open) count as
+  adopted when the answer carries an id or two phrases unique to that hit —
+  reported as `quoted_served` / `quoted_adopted_rank` and `quoted a/s` in the
+  scorecard; `verdict` stays the file-lane judgement. Hand-checked precision
+  of quoted adoption was about 50% (n=8), so treat it as an upper bound.
+  Retro rescoring runner: `benchmarks/selfeval_rescore.py` (read-only).
+- **selfeval v1.1 — the pre-fetch lane is scored too.** A per-session sidecar
+  hands the served paths from UserPromptSubmit to the Stop hook; Edit/Write
+  count as adoption; `selfeval --retro` scores pre-fetches from before the
+  sidecar, idempotently.
+- **Conversation backfill guard.** `index-conversations --max-memory-ratio`
+  (default 0.40) refuses a backfill that would make the corpus mostly
+  self-generated, judged before anything is written.
+- **Query-grounded judging runner** (`benchmarks/query_judge.py`): compares
+  two versions of the code by asking real questions and having a local judge
+  pick the better top-10, only where the lists differ, twice with sides
+  swapped. Dumps refuse to pair when any search ran BM25-only.
 
 - **The displacement audit now counts answers pushed out of the window.**
   On 2026-09-23 it reported damage 0 while a gold answer had slid from rank 2
@@ -20,6 +76,30 @@ versions are [SemVer](https://semver.org/spec/v2.0.0.html).
   previous cycle's report and shows a `창 이탈` column.
 
 ### Fixed
+
+- **Memory already ranked first is no longer pushed to third.** On ordinary
+  (non-recall) queries the memory splice removed its head from the code lane
+  and re-inserted it at position 3, so a memory hit the code lane had put at
+  rank 1 or 2 moved down. Measured on 634 real questions with a local judge:
+  the fixed lists won 392, the old ones 22.
+- **Distilled notes lead their own raw material.** A Reflector note sat in the
+  same topic group as the qa records it summarised and was represented by
+  them, so it never became a candidate. Notes now leave the group, and in a
+  head filled only by raw qa the best note takes the first seat (Set A top3
+  0.20 → 0.70 on the regressed snapshot). Conversation turns splice in below
+  distilled memory instead of above it.
+- **A quoted answer is not the record's own answer.** A record that quotes
+  another qa record's `## Answer excerpt` was read as owning that answer in
+  six places; `memory/qa_shape.py` is now the one definition. Cards can no
+  longer be created from answerless qa.
+- **"Same words, different work" applies to re-ordering too, and the default
+  branch is not a work artifact.** Two records that name disjoint branches,
+  commits, files or worktrees are no longer treated as one topic by the
+  recency re-order. `main`/`master` no longer make every operational turn
+  look like the same work (6 → 0 labelled damage links).
+- **Displacement labels remember the successor they judged**, so a label is
+  not silently re-applied when the supersession map picks a different
+  successor.
 
 - **A frozen snapshot now freezes the clock too.** Ranking aged memory
   records against the wall clock (`_apply_memory_boost`'s 30-day half-life,
