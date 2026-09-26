@@ -825,28 +825,21 @@ class TestStopHook:
         assert rc == 0
         assert buf.getvalue() == ""
 
-    def test_dedups_against_recent_mcp_save(
-        self, project_root: Path, tmp_path: Path, monkeypatch
-    ) -> None:
-        """When the MCP tool already saved this query, Stop skips.
+    # Stop-vs-earlier-save rules (F4 asymmetry). Both tests read the Stop
+    # hook's own return value instead of counting files: qa filenames are
+    # second-resolution, so two saves of one query in the same second share a
+    # name and the second replaces the first. Counting files made the old
+    # single test pass by that collision and fail when the two writes fell in
+    # different seconds (docs/plans/2026-09-27-open-the-doors.md, known issues).
 
-        The window is widened for the test: the production value is 5s, and
-        the first hook call in a full-suite run can spend longer than that on
-        cold imports alone — which made this assert the wall clock rather
-        than the dedup logic it is here to pin.
-        """
-        from hybrid_search.memory import qa_log as qa_log_mod
-
-        monkeypatch.setattr(qa_log_mod, "_DEDUP_WINDOW_SECONDS", 3600)
-        # Simulate the MCP tool having already written a qa file for this query.
-        _write_log(project_root, "tuition ledger architecture")
-
+    @staticmethod
+    def _stop_turn(project_root: Path, tmp_path: Path, query: str) -> dict:
         transcript = tmp_path / "session.jsonl"
         transcript.write_text(
             "\n".join([
                 json.dumps({
                     "type": "user",
-                    "message": {"role": "user", "content": "tuition ledger architecture"},
+                    "message": {"role": "user", "content": query},
                 }),
                 json.dumps({
                     "type": "assistant",
@@ -855,16 +848,71 @@ class TestStopHook:
             ]) + "\n",
             encoding="utf-8",
         )
-        event = {
+        return {
             "hook_event_name": "Stop",
             "stop_hook_active": False,
             "transcript_path": str(transcript),
             "cwd": str(project_root),
         }
-        before = list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
-        hooks.run_hook(json.dumps(event))
-        after = list((project_root / ".hybrid-search" / "qa").rglob("*.md"))
-        assert len(after) == len(before), "dedup should prevent double-save"
+
+    @staticmethod
+    def _spy_record_turn(monkeypatch) -> list:
+        from hybrid_search.memory import qa_log as qa_log_mod
+
+        results: list = []
+        real = qa_log_mod.record_turn
+
+        def spy(**kwargs):
+            out = real(**kwargs)
+            results.append(out)
+            return out
+
+        monkeypatch.setattr(qa_log_mod, "record_turn", spy)
+        return results
+
+    def test_skips_when_an_answer_for_this_query_was_just_saved(
+        self, project_root: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A recent answer-bearing record already serves recall — Stop skips."""
+        from hybrid_search.memory import qa_log as qa_log_mod
+
+        # Production window is 5s; a cold first hook call can outlast that.
+        monkeypatch.setattr(qa_log_mod, "_DEDUP_WINDOW_SECONDS", 3600)
+        monkeypatch.setenv(qa_log_mod.ENV_TOGGLE, "1")
+        earlier = qa_log_mod.record_turn(
+            query="tuition ledger architecture",
+            cwd=str(project_root),
+            answer_excerpt="The ledger is append-only; totals are derived.",
+            dedup=False,
+        )
+        assert earlier is not None
+
+        results = self._spy_record_turn(monkeypatch)
+        hooks.run_hook(json.dumps(
+            self._stop_turn(project_root, tmp_path, "tuition ledger architecture")
+        ))
+
+        assert results == [None], "an answered duplicate must not be saved again"
+
+    def test_saves_the_answer_over_a_question_only_mcp_record(
+        self, project_root: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        """F4: the MCP tool's question-only record must not eat the answer."""
+        from hybrid_search.memory import qa_log as qa_log_mod
+
+        monkeypatch.setattr(qa_log_mod, "_DEDUP_WINDOW_SECONDS", 3600)
+        _write_log(project_root, "tuition ledger architecture")
+
+        results = self._spy_record_turn(monkeypatch)
+        hooks.run_hook(json.dumps(
+            self._stop_turn(project_root, tmp_path, "tuition ledger architecture")
+        ))
+
+        assert len(results) == 1 and results[0] is not None
+        saved = results[0].read_text(encoding="utf-8")
+        assert "trigger: stop_hook" in saved
+        assert "answer_excerpt_chars:" in saved
+        assert "done" in saved
 
 
 class TestAnswerExcerptCapturesConclusion:
