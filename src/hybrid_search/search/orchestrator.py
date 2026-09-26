@@ -21,6 +21,7 @@ from hybrid_search.config import Config
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.memory import quality
 from hybrid_search.memory.qa_shape import answer_excerpt, owns_answer
+from hybrid_search.memory.supersession import _artifacts, _disjoint_work
 from hybrid_search.memory.router import (
     classify_confidence,
     fallback_hint,
@@ -1047,7 +1048,12 @@ def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
         return (days is None, days if days is not None else 0.0)
 
     ordered = list(results)
-    for group in _qa_topic_groups([r for _, r in qa]):
+    groups = [
+        same_work
+        for group in _qa_topic_groups([r for _, r in qa])
+        for same_work in _split_by_work(group)
+    ]
+    for group in groups:
         if len(group) < 2:
             continue
         slots = sorted(position[id(r)] for r in group)
@@ -1055,6 +1061,36 @@ def _order_qa_by_recency(results: list[HybridResult]) -> list[HybridResult]:
         for slot, r in zip(slots, newest_first):
             ordered[slot] = r
     return ordered
+
+
+def _split_by_work(group: list[HybridResult]) -> list[list[HybridResult]]:
+    """Split a topic group where two members did different work.
+
+    The reorder above is supersession, and supersession has an owner's
+    rule since 2026-09-12: same words, different work is not an update —
+    two records that each name artifacts (branch, commit, file, worktree)
+    and share none are not one fact and its revision. The map obeyed it;
+    this stage did not, so a newer status report sharing a note's
+    vocabulary still moved above the note. With the answerless records
+    out of the list, that took two answering notes out of the top ten
+    (2026-09-23, plan `2026-09-23-answerless-memory-gate.md` §9.3).
+
+    Complete-link like the topic grouping, and the same predicate as the
+    map (`supersession._disjoint_work`): silence on either side keeps the
+    pair together, so a newer turn that names nothing still supersedes.
+    """
+    if len(group) < 2:
+        return [group]
+    work = {id(r): _artifacts(r.content or "") for r in group}
+    parts: list[list[HybridResult]] = []
+    for r in group:
+        for part in parts:
+            if not any(_disjoint_work(work[id(r)], work[id(m)]) for m in part):
+                part.append(r)
+                break
+        else:
+            parts.append([r])
+    return parts
 
 
 def _qa_topic_groups(qa: list[HybridResult]) -> list[list[HybridResult]]:
