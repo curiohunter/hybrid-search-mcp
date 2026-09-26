@@ -361,16 +361,13 @@ def _memory_tag(r) -> str:
     return _clip_one_line(" · ".join(parts[:3]), 48)
 
 
-def _render_hit(index: int, r) -> str:
-    """One pre-fetch hit, rendered so the agent can act on it without a tool call.
+def _is_virtual_hit(r) -> bool:
+    return (getattr(r, "node_type", "") or "").strip() in _VIRTUAL_NODE_TYPES
 
-    Memory hits are quoted because there is nothing to open; file hits get a
-    ``path:line`` locator plus one line of content so the decision to Read is
-    an informed one rather than a coin flip.
-    """
-    node_type = (getattr(r, "node_type", "") or "").strip()
-    virtual = node_type in _VIRTUAL_NODE_TYPES
-    tag = _memory_tag(r) if virtual else ""
+
+def _hit_body(r) -> str:
+    """The one line of content a pre-fetch hit shows."""
+    virtual = _is_virtual_hit(r)
     # Virtual hits prefer full content: their snippet is a window that often
     # lands inside the note's frontmatter, so the excerpt would quote
     # `timestamp:` and `sources_hash:` instead of the answer. File hits keep
@@ -380,10 +377,38 @@ def _render_hit(index: int, r) -> str:
         if virtual
         else (getattr(r, "snippet", "") or getattr(r, "content", "") or "")
     )
-    body = _clip_one_line(
+    return _clip_one_line(
         _clean_body(raw_body, "" if virtual else (getattr(r, "file_path", "") or "")),
         _MEMORY_EXCERPT_CHARS if virtual else _CODE_SNIPPET_CHARS,
     )
+
+
+def quoted_excerpts(response) -> list[dict]:
+    """``[{"rank", "excerpt"}]`` for the memory hits a pre-fetch quotes.
+
+    Selfeval scores quoted hits by whether the answer carries what they
+    said; the excerpt has to be the exact text injected, and only this
+    module knows it.
+    """
+    results = getattr(response, "results", None) or []
+    return [
+        {"rank": i, "excerpt": _hit_body(r)}
+        for i, r in enumerate(results[:_PREFETCH_RESULT_LIMIT], start=1)
+        if _is_virtual_hit(r)
+    ]
+
+
+def _render_hit(index: int, r) -> str:
+    """One pre-fetch hit, rendered so the agent can act on it without a tool call.
+
+    Memory hits are quoted because there is nothing to open; file hits get a
+    ``path:line`` locator plus one line of content so the decision to Read is
+    an informed one rather than a coin flip.
+    """
+    node_type = (getattr(r, "node_type", "") or "").strip()
+    virtual = _is_virtual_hit(r)
+    tag = _memory_tag(r) if virtual else ""
+    body = _hit_body(r)
     if virtual:
         head = f"{index}. [{tag}] quoted — no file to open"
     else:
