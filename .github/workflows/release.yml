@@ -1,0 +1,83 @@
+name: release
+
+# Release gate (issue #4): build → install the wheel into a clean venv →
+# smoke it from outside the source tree → validate the plugin manifests.
+# It never publishes. PyPI upload and tag push stay a manual step after
+# the owner signs off.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - .claude-plugin/**
+      - scripts/plugin-bootstrap.sh
+      - .github/workflows/release.yml
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: sdist carries no benchmark artifacts (CLAUDE.md)
+        run: |
+          if tar tzf dist/*.tar.gz | grep -E '/benchmarks/'; then
+            echo "benchmarks/ leaked into the sdist" >&2
+            exit 1
+          fi
+
+      - name: Versions agree (pyproject, plugin, marketplace, tag)
+        run: |
+          py=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          plugin=$(python -c "import json;print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          market=$(python -c "import json;print(json.load(open('.claude-plugin/marketplace.json'))['plugins'][0]['version'])")
+          echo "pyproject=$py plugin=$plugin marketplace=$market"
+          test "$py" = "$plugin" && test "$py" = "$market"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then test "v$py" = "${GITHUB_REF_NAME}"; fi
+
+      - name: Install the wheel into a clean venv
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install dist/*.whl pytest
+
+      - name: Smoke from outside the source tree
+        working-directory: /tmp
+        env:
+          HYBRID_SEARCH_HOME: /tmp/hs-home
+        run: |
+          /tmp/clean/bin/python -c "import hybrid_search, hybrid_search.server, hybrid_search.hooks; print(hybrid_search.__version__)"
+          /tmp/clean/bin/hybrid-search-mcp --help > /dev/null
+          /tmp/clean/bin/hybrid-search-mcp miss --cwd /tmp "release smoke" > /dev/null
+          test -s /tmp/hs-home/benchmarks/misses-tmp.jsonl
+
+      - name: Upgrade path — 0.7.1 BF16 index migrates to F32 on the installed wheel
+        working-directory: /tmp
+        run: |
+          cp "$GITHUB_WORKSPACE/tests/test_vector_dtype_migration.py" /tmp/
+          /tmp/clean/bin/python -m pytest -q /tmp/test_vector_dtype_migration.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate plugin manifests
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
