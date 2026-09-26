@@ -936,9 +936,23 @@ def _merge_memory_results(
             head.append(r)
             seen.add(r.chunk_id)
 
-    body = [r for r in chunk_results if r.chunk_id not in seen]
+    # A head record the chunk stream already ranks above the insert point
+    # keeps that rank. The ambient slot exists to GUARANTEE exposure; pulling
+    # a record out of rank 1 to re-seat it at rank 3 did the opposite. On
+    # 2026-09-26 this move took 524 of 573 probe questions' own answer from
+    # rank 1 to 2-3, and it was the first drop in 40 of the 48 questions the
+    # answerless-record gate lost (study `2026-09-23-distillate-vs-raw-log.md`
+    # §23) — answerless records had been keeping the chunk stream short
+    # enough to hide it. The memory-intent path (insert_at=0) is unchanged.
+    if insert_at > 0:
+        rank = {r.chunk_id: i for i, r in enumerate(chunk_results)}
+        movers = [r for r in head if rank.get(r.chunk_id, insert_at) >= insert_at]
+    else:
+        movers = head
+    mover_ids = {r.chunk_id for r in movers}
+    body = [r for r in chunk_results if r.chunk_id not in mover_ids]
     insert_at = max(0, min(insert_at, len(body)))
-    return body[:insert_at] + head + body[insert_at:]
+    return body[:insert_at] + movers + body[insert_at:]
 
 
 # A head smaller than this is left alone. The ambient lane has one memory
