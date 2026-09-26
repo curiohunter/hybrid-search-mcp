@@ -719,11 +719,8 @@ hooks only run after Codex trusts the project config layer, so use
 `hybrid-search-mcp status --cwd your-project/` and a smoke test before relying
 on a new install.
 
-Reports:
-- Phase 5 full write-up with per-query detail + honest failure modes:
-  [`benchmarks/valuein_report_v2_2026-04-22.md`](benchmarks/valuein_report_v2_2026-04-22.md)
-- Phase 4 baseline for comparison:
-  [`benchmarks/valuein_report_2026-04-22.md`](benchmarks/valuein_report_2026-04-22.md)
+The per-query reports measure a private corpus, so they are kept out of this
+repository; the runners in `benchmarks/` reproduce them on your own project.
 
 ### Coexisting with Claude Code auto memory
 
@@ -739,8 +736,7 @@ different jobs:**
 | Past conversations | not searchable; transcripts are cleaned up after `cleanupPeriodDays` | indexed per turn, searchable after the transcript is gone |
 
 **Do they inject the same thing twice?** We measured it on this repository
-(14 sessions, 416 pre-fetches, 2026-09-27;
-[study](docs/studies/2026-09-27-auto-memory-coexistence.md)). A lexical
+(14 sessions, 416 pre-fetches, 2026-09-27). A lexical
 matcher flagged 63% of pre-fetch hits as sharing text with a memory file.
 When we read samples, almost all of those matches were shared dates, paths
 or common identifiers, not the same fact. Real double injection does happen
