@@ -725,6 +725,33 @@ Reports:
 - Phase 4 baseline for comparison:
   [`benchmarks/valuein_report_2026-04-22.md`](benchmarks/valuein_report_2026-04-22.md)
 
+### Coexisting with Claude Code auto memory
+
+Claude Code has its own [auto memory](https://code.claude.com/docs/en/memory):
+the agent writes a few curated notes under `~/.claude/projects/<project>/memory/`
+and every session loads the `MEMORY.md` index. **Keep it on — the two do
+different jobs:**
+
+| | Claude Code auto memory | This Memory Layer |
+|---|---|---|
+| What gets in | rules and decisions the agent chose to write down | code, commits, docs, past Q&A and conversation turns |
+| When it reaches the model | the `MEMORY.md` index, every session; topic files when the agent opens them | search results before each exploratory prompt, plus a short SessionStart summary |
+| Past conversations | not searchable; transcripts are cleaned up after `cleanupPeriodDays` | indexed per turn, searchable after the transcript is gone |
+
+**Do they inject the same thing twice?** We measured it on this repository
+(14 sessions, 416 pre-fetches, 2026-09-27;
+[study](docs/studies/2026-09-27-auto-memory-coexistence.md)). A lexical
+matcher flagged 63% of pre-fetch hits as sharing text with a memory file.
+When we read samples, almost all of those matches were shared dates, paths
+or common identifiers, not the same fact. Real double injection does happen
+when one decision is written to a memory file, a Q&A log and a commit. It
+accounts for **at most about 13% of hits** (upper bound from a small sample).
+We don't filter against auto memory today. A filter with that little
+precision would delete evidence along with duplicates.
+
+The memory directory lives outside your repository, and this tool does not
+index it.
+
 ### Memory Layer
 
 Persist hybrid_search responses as markdown and use them as first-class search
