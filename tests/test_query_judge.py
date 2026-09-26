@@ -195,3 +195,13 @@ class TestScore:
     def test_parse_verdicts_drops_invalid(self) -> None:
         text = '[{"q": "c1", "better": "X", "why": "ok"}, {"q": "c2", "better": "both"}]'
         assert qj.parse_verdicts(text) == {"c1": "X"}
+
+
+def test_registered_prompt_matches_runner() -> None:
+    """The judge prompt is pre-registered in the plan (§3.2); the runner must
+    send exactly that text, or the registration means nothing."""
+    import re
+    plan = (_PATH.parents[1] / "docs" / "plans"
+            / "2026-09-25-query-grounded-judgment.md").read_text(encoding="utf-8")
+    registered = re.search(r"### 3\.2.*?```\n(.*?)```", plan, re.S).group(1)
+    assert registered == qj.JUDGE_PROMPT
