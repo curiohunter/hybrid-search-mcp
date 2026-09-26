@@ -27,7 +27,7 @@ head 선택(`_qa_topic_groups` · `_prio` · `_seat_a_distillate` · `head_limit
 # head: 지금처럼 memory_head[:head_limit] 에서 chunk_id 중복 없이 뽑은 목록
 if insert_at > 0:
     pos = {r.chunk_id: i for i, r in enumerate(chunk_results)}
-    stay = {r.chunk_id for r in head if pos.get(r.chunk_id, len(chunk_results)) < insert_at}
+    stay = {r.chunk_id for r in head if r.chunk_id in pos and pos[r.chunk_id] < insert_at}
     movers = [r for r in head if r.chunk_id not in stay]
 else:
     movers = head                      # memory_intent 경로: 지금과 한 글자도 다르지 않다
@@ -37,6 +37,9 @@ insert_at = max(0, min(insert_at, len(body)))
 return body[:insert_at] + movers + body[insert_at:]
 ```
 
+- 레인에 없는 head 항목은 항상 movers 다. (처음 적은 의사코드는 `pos.get(id, len(chunk_results))`
+  라서 레인이 insert 지점보다 짧으면 없는 항목을 stay 로 잘못 분류해 **떨어뜨렸다** — 구현
+  중 기존 테스트 3개가 잡아 측정 전에 고쳤다.)
 - `stay` 항목은 body 에 남고, 그 위의 항목은 하나도 빠지지 않으므로(movers 는 전부
   insert 지점 이하에 있었거나 레인에 없었다) **원래 인덱스를 정확히 유지**한다.
 - insert 지점 아래에 있던 head 항목의 동작은 지금과 같다(insert 지점으로 올라온다).
