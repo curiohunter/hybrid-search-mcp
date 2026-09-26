@@ -3,23 +3,25 @@
 [![tests](https://github.com/curiohunter/hybrid-search-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/curiohunter/hybrid-search-mcp/actions/workflows/tests.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![tests count](https://img.shields.io/badge/tests-1%2C093%20passed-brightgreen)
 
-> Most memory tools remember conversations. Most code-search tools index
-> code. **Memory Layer MCP does both — plus commits and docs — so Claude
-> Code and Codex can answer not just "where is this code?" but "why was
-> it built this way?"**
+> **Before every question, Claude Code gets the *why* — grounded in your
+> commits and code. When the evidence isn't there, it says so.**
 
-**One memory. Claude Code or Codex — doesn't matter.**
-Questions you ask in one agent become context the other agent sees tomorrow.
-Auto-save, auto-recall. Cross-language code search (tested heavily on
-Korean ↔ English codebases).
+Ask "why is refund capped here?" and, before the agent starts grepping,
+a hook has already put the decision in front of it: the commit that
+changed it, the conversation where it was argued, and the code as it is
+now. Each result carries a `strong` / `mixed` / `weak` label, and a weak
+match comes with a fallback hint instead of a confident-sounding guess.
 
-**Local by default:**
-- Q&A, memory, and indexes stay on your machine (`.hybrid-search/`, auto-gitignored)
-- Secret-shaped prompts are dropped; credential-shaped files never indexed
-- Only chunk text sent for embedding (OpenAI API) — no telemetry, nothing else
-- Kill switch: `HYBRID_SEARCH_QA_LOG=0`
+- **Grounded in what shipped.** Code, commit messages, docs, past Q&A and
+  conversation turns share one local index, so history questions come back
+  with the commit and the code next to the discussion.
+- **Automatic, not a tool the agent has to remember.** A `UserPromptSubmit`
+  hook pre-fetches for exploratory prompts; a `Stop` hook saves each
+  answered turn. No "save this" step.
+- **Says when it doesn't know.** A confidence contract on every response,
+  and a router that sends exact-identifier lookups to `grep`, because grep
+  is faster for those.
 
 *(Repo is named `hybrid-search-mcp` for historical reasons; the product
 and PyPI package are Memory Layer MCP / `memory-layer-mcp`. Both work as
@@ -32,39 +34,59 @@ conversations where it was decided (1–3), the working Q&A from build day
 (4–7), **the merge commit that shipped it (8)**, and the March design
 doc (9) — one query. Asked in Korean, found across an English codebase.*
 
-```
-Day 1 (Claude Code): "portal-v3 인증 흐름이 어떻게 되지?"
-                     → answers from code, saves Q&A to .hybrid-search/qa/
+## Where it stands (measured 2026-09-23 → 09-26, failures included)
 
-Day 2 (Codex):       "portal 인증 어디서 처리해?"
-                     → pre-fetch surfaces Day 1's exchange before Codex even searches
-```
+One Korean/English production codebase (the author's), frozen index
+snapshot, questions fixed before measuring. The raw data stays with that
+project; the method and runners are in this repo.
 
-The Day-2 turn didn't re-search the code fresh — yesterday's Claude Code
-answer surfaced as context inside Codex. Every answered query becomes a
-first-class search result for every future query, in either agent.
+| What we measured | Result | Source |
+|---|---|---|
+| Recall questions answered by a distilled note (Set A, 20) | found 0.80 · in top-3 0.75 · MRR 0.67 | [study](docs/studies/2026-09-23-distillate-vs-raw-log.md) §24, PR #24 |
+| Past questions that retrieve their own answer | 562 / 573 | same study, §24 |
+| Code questions (25): primary file in top-5 · recall@10 | 0.92 · 0.77 | same study |
+| **Recall from raw conversation turns only (Set B, 41)** | **found 0.12 · in top-3 0.00. This is weak.** | same study |
+| Does the pre-fetch actually help agents? | **Not known yet.** The usage instrument was just fixed ([selfeval v1.2](docs/plans/2026-09-27-selfeval-v1.2.md)); its quoted-hit numbers are an upper bound | PR #26 |
 
-**Trade-offs you should know up-front** (we've measured them):
-- First-query latency adds **~400 ms** of pre-fetch overhead (vs ~50 ms `grep`). Worth it for exploratory questions; not for `grep`-shaped lookups (and the router knows the difference).
-- Embedder = **OpenAI `text-embedding-3-small`** (API key required). **No local embedding backend — by choice, not neglect.** The first version ran local models; bulk-embedding tens of thousands of chunks pinned an M3 MacBook's fans for the entire run and made the machine unusable (CPU path was no better). A full reindex of a 2,000-file project via the API costs cents. If zero-API-key is a hard constraint, this tool isn't for you today; a `backend` config field is reserved and a local ONNX contribution is welcome.
-- **This is not "0-config", and we don't claim it.** Explicit prerequisites: macOS/Linux with **Python 3.11+** and **pipx or uv** already installed, plus an `OPENAI_API_KEY`. From there it's one install + `setup` (Claude) + `setup --codex` (Codex). A stock Mac without those prerequisites will fail at install — see Requirements above for the misleading pip error this produces.
+Known gaps: commit-aware revalidation is effectively inactive in 0.9.0
+(see [CHANGELOG](CHANGELOG.md#upgrade-impact--read-before-upgrading)).
+Finding a fact buried in one long raw conversation turn is the weak lane
+above.
 
-**Who this is for:** 1인 개발자가 Claude Code를 주력으로 + 가끔 Codex도 쓰면서, 같은 코드베이스에서 반복 질문을 줄이고 싶은 사람. Korean + English 코드베이스에서 검증됨 (valuein_homepage 708-commit, 1,307 files).
+**Local by default:**
+- Q&A, memory, and indexes stay on your machine (`.hybrid-search/`, auto-gitignored)
+- Secret-shaped prompts are dropped; credential-shaped files never indexed
+- Only chunk text goes to your embedding provider (OpenAI, Gemini, or your
+  own Ollama host), plus Korean queries to the translation model when that
+  lane is on (OpenAI/Gemini). No telemetry.
+- Kill switch: `HYBRID_SEARCH_QA_LOG=0`
 
-**v0.3.0 (2026-04-23): deterministic guarantees.** Four Claude Code hooks
-(PreToolUse, SessionStart, UserPromptSubmit, Stop) wire the memory layer
-into every turn — save is independent of Claude's tool choice, retrieval
-fires before Claude sees exploratory prompts. No stochastic "sometimes
-works" behaviour; every turn persists, every exploratory prompt gets
-pre-enriched.
+**Works in Claude Code and Codex.** Both read and write the same memory,
+so an answer from a Claude Code session shows up as context in Codex the
+next day. That's a convenience here, not the headline.
 
-> On a 20-query benchmark against `valuein_homepage`,
-> **memory surfaces past Q&A in 80% of repeated queries and 50% of
-> reworded follow-ups**, lifting end-user "answer found in top-10"
-> from 75% → 90% (paraphrase) / 80% → 90% (identity). Guaranteed-save
-> is unit-test verified (`TestStopHook` suite) since the bench drives
-> the orchestrator directly without hooks in the loop. See
-> [Compounding benchmark](#compounding-benchmark-2026-04-23).
+**Trade-offs you should know up-front:**
+- The pre-fetch adds latency to exploratory prompts (~400 ms when last
+  measured, April 2026; vs ~50 ms for `grep`). Its query embedding is capped
+  at 2.5 s, after which it falls back to keyword-only search and says so.
+  Exact-identifier prompts are routed to grep instead.
+- **Embeddings need a provider.** Supported: OpenAI (`OPENAI_API_KEY`), Gemini
+  (`GEMINI_API_KEY`), or Ollama (no key). An Ollama server can run on another
+  machine (`base_url`). We run ours on a separate Mac mini, because
+  bulk-embedding a real codebase on a laptop pinned the machine. The KO→EN
+  query-translation lane needs a chat model (OpenAI/Gemini); with Ollama,
+  cross-language search relies on the embedding alone.
+- **Not "0-config".** You need macOS/Linux with **Python 3.11+** and
+  **pipx or uv**, plus one of the embedding providers above. From there it's
+  one install + `setup` (Claude Code) + `setup --codex` (Codex).
+- **Keep Claude Code's own auto memory on.** It stores curated rules; this
+  stores searchable evidence. See
+  [Coexisting with Claude Code auto memory](#coexisting-with-claude-code-auto-memory).
+
+**Who this is for:** a solo developer who works mainly in Claude Code
+(sometimes Codex), keeps asking the same codebase "why is it like this?",
+and would rather get the answer from the commits than from a guess.
+Tested most heavily on Korean + English codebases.
 
 ---
 
@@ -79,15 +101,21 @@ your conversations, or (b) live inside one agent's UI:
 - ChatGPT Memory: personal preferences, no code context.
 - Mem0 / Letta: agent memory, but you wire it in and manage facts manually.
 
-Two things make this stack different:
+What this stack does differently:
 
-1. **Closed loop, automatic.** The answer to your last question becomes
+1. **History next to the code.** Commit messages are indexed with the files
+   they touched, alongside conversations, docs and the code itself, so a
+   "why" question can come back with the commit that decided it and the code
+   as it is now.
+2. **Closed loop, automatic.** The answer to your last question becomes
    indexed context for the next question. No "save this" command, no memory
    dashboard — every turn persists via the Stop hook, every prompt gets
    enriched via the UserPromptSubmit hook.
-2. **One memory, two agents.** Claude Code and Codex hooks both read and
-   write the same `.hybrid-search/qa/` directory. Yesterday's Claude session
-   informs today's Codex session, and vice versa.
+3. **Honest about confidence.** Every response carries `strong` / `mixed` /
+   `weak`; a weak match comes with a fallback hint rather than a confident
+   answer.
+4. **Works in both agents.** Claude Code and Codex hooks read and write the
+   same `.hybrid-search/qa/` directory.
 
 Your `.hybrid-search/qa/` directory is the log of every exchange, in plain
 markdown, grep-able and git-able.
@@ -124,24 +152,27 @@ projects are excellent and far more popular than this one.
 | mem0 / OpenMemory (60k) | ⚠️ agent-decides | ❌ | ❌ | ⚠️ | ❌ | ⚠️ cloud-leaning |
 | claude-context (12.1k) | ❌ | ✅ hybrid | ❌ | ✅ | ❌ | ❌ Zilliz/Milvus required |
 | Serena (26.3k) | ❌ | ⚠️ LSP symbols | ❌ | ✅ | ❌ | ✅ |
-| **memory-layer-mcp** | ✅ hooks + per-turn index | ✅ hybrid BM25+vector | **✅** | ✅ transcript-level | **✅** | ✅ (embedding API key only) |
+| **memory-layer-mcp** | ✅ hooks + per-turn index | ✅ hybrid BM25+vector | **✅** | ✅ transcript-level | **✅** | ✅ (embedding provider only; Ollama needs no key) |
 
 What this table says, plainly:
 
-- **The one thing nobody else does:** one index over your **code +
+- **What this does differently:** one index over your **code +
   conversations + commit messages + docs**, so "how was this feature
   built?" returns the discussion, the plan, the commit, and the code in a
-  single query. Conversation-memory tools stop at conversations;
-  code-index tools stop at code; git-search tools stop at git.
+  single query. Of the tools in this table, the conversation-memory ones
+  stop at conversations and the code-index ones stop at code.
 - **Where others are ahead:** claude-mem/agentmemory have far more users
   and integrations; Serena adds symbol-level *editing* we don't do —
   **install both; they compose well** (Serena edits symbols, this
   remembers why); claude-context scales to multi-million-LOC monorepos.
-- **Honest concessions:** OpenAI embedding key required (no local
-  backend — tried, laptop couldn't take the bulk load); pre-fetch adds
-  ~400 ms per prompt; and for exact-symbol lookups plain `grep` is still
-  faster — our router sends those to grep on purpose.
-- **Numbers you can re-run, not vendor slides:** stale-fact supersession
+- **Honest concessions:** you need an embedding provider (OpenAI, Gemini,
+  or an Ollama server; bulk indexing on a laptop was too heavy for us, so
+  ours runs on a separate machine); the pre-fetch adds latency to every
+  exploratory prompt; raw-conversation recall is weak (see
+  [Where it stands](#where-it-stands-measured-2026-09-23--09-26-failures-included));
+  and for exact-symbol lookups plain `grep` is still faster, so our router
+  sends those to grep on purpose.
+- **Numbers you can re-run, not vendor slides** (July 2026 run): stale-fact supersession
   6/6 on the Korean dev set and 6/6 synthetic on an untouched English
   OSS holdout (ripgrep, single run, published as-is — CHANGELOG-derived
   planted cases 3/5 with the misses diagnosed), zero false-`strong` across 27
@@ -176,14 +207,13 @@ loop work. Everything below is local, plain-text, and opt-out.
 | Indexed agent transcripts (Claude Code + Codex turns) | global index, from `index-conversations` / per-turn hooks | on when hooks installed |
 
 **What leaves your machine:** chunk text (code, docs, qa logs, conversation
-turns) is sent to the **OpenAI embeddings API** for embedding — nothing
-else. No telemetry, no other network calls. There is currently **no local
-embedding backend** — the first version ran locally, and bulk-embedding a
-real codebase on laptop hardware proved unusable (sustained fan-pinning
-load on an M3 MacBook; CPU path no better), so the API is a deliberate
-trade-off. If sending chunk text to OpenAI is unacceptable, do not install
-this tool yet; a local ONNX contribution is welcome (`[embedding] backend`
-field is reserved for it).
+turns) goes to the embedding provider you configure: OpenAI, Gemini, or an
+Ollama server (`[embedding] backend`, optional `base_url`). With OpenAI or
+Gemini, Korean queries are also sent to that provider's chat model for the
+KO→EN translation lane. No telemetry, no other network calls. With an Ollama
+server you control, nothing leaves your network. We run Ollama on a separate
+machine because bulk-embedding a real codebase on a laptop (an M3 MacBook)
+kept it pinned for the whole run.
 
 **Safety rails built in:**
 - A sensitive-query regex drops password/token/secret-shaped queries before
@@ -222,7 +252,10 @@ export HYBRID_SEARCH_ROUTER=0     # stop per-prompt pre-fetch injection
   `Could not find a version that satisfies tree-sitter-css>=0.25`).
   That error means "your pip is on an old Python", not a missing
   dependency. Use `pipx`/`uv`, or `brew install python@3.12` first.
-- OpenAI API key ([get one here](https://platform.openai.com/api-keys))
+- An embedding provider: an OpenAI API key ([get one here](https://platform.openai.com/api-keys)),
+  a Gemini API key, or an Ollama server (no key; set
+  `backend = "ollama"` and `base_url` under `[embedding]` in
+  `~/.hybrid-search/config.toml`). The examples below use OpenAI.
 
 ### Claude Code plugin (two commands)
 
@@ -827,9 +860,9 @@ authority_alpha = 0.3  # god-node boost weight. 0.0 disables.
 
 Ordered by how often people ask:
 
-1. **OpenAI-compatible embedding endpoint** — point `[embedding]` at any
-   `base_url` (Ollama, vLLM, LM Studio, Voyage/Jina proxies). Unblocks
-   local-only and no-OpenAI users without us shipping a model.
+1. ~~OpenAI-compatible embedding endpoint~~: shipped in 0.8.0.
+   `[embedding] backend = "ollama"` plus `base_url` (tested with Ollama; other
+   OpenAI-shaped endpoints use the same field but are untested).
 2. **Local ONNX embedding backend** — small multilingual model for
    privacy-hard environments (recall trade-off documented honestly).
 3. **Per-folder embedding policy** — mark subtrees (patient data,
@@ -842,7 +875,7 @@ Ordered by how often people ask:
 
 | Component | Stack |
 |-----------|-------|
-| Embedding | OpenAI `text-embedding-3-small` |
+| Embedding | OpenAI `text-embedding-3-small` (default), Gemini, or Ollama (`qwen3-embedding:0.6b` default) |
 | BM25 | tantivy-py (Rust) |
 | Vector DB | USearch HNSW (C++) |
 | AST parsing | tree-sitter (C), 14 languages |
@@ -926,7 +959,7 @@ pre-fetch entirely.
 
 | Problem | Solution |
 |---------|----------|
-| `OPENAI_API_KEY not found` | Set env var or create `~/.env.local` |
+| `Indexing stopped: OPENAI_API_KEY is not set` | Set the key (env var or `~/.env.local`), or switch `[embedding] backend` to `gemini` / `ollama`. The message prints the exact steps |
 | `externally-managed-environment` on pip install | Homebrew/system Python blocks global pip — use `pipx install memory-layer-mcp` |
 | "hook error (non-blocking)" on every Read/Edit | Pre-0.5.1 hooks exited non-zero when idle — upgrade, then re-run `hybrid-search-mcp setup` |
 | Results from wrong project | Use `--cwd` or `--project` to scope |
