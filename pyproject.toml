@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 authors = [{ name = "curiohunter" }]
 keywords = ["mcp", "claude-code", "memory", "hybrid-search", "bm25", "vector-search", "codex"]
 dependencies = [
-    "mcp[cli]>=1.0",
+    "mcp[cli]>=1.0,<2",
     "tantivy>=0.22",
     "usearch>=2.0",
     "tree-sitter>=0.23",
