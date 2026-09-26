@@ -258,3 +258,14 @@ def test_registered_prompt_matches_runner() -> None:
             / "2026-09-25-query-grounded-judgment.md").read_text(encoding="utf-8")
     registered = re.search(r"### 3\.2.*?```\n(.*?)```", plan, re.S).group(1)
     assert registered == qj.JUDGE_PROMPT
+
+
+class TestDegradedDumps:
+    def test_clean_dumps_pass(self) -> None:
+        assert qj.degraded_dumps({"M": {"degraded": []}, "G": {"degraded": []}}) == {}
+
+    def test_degraded_searches_are_counted(self) -> None:
+        assert qj.degraded_dumps({"M": {"degraded": []}, "G": {"degraded": ["p:1", "p:2"]}}) == {"G": 2}
+
+    def test_dump_without_the_field_is_unknown_not_clean(self) -> None:
+        assert qj.degraded_dumps({"M": {"results": {}}}) == {"M": -1}
