@@ -6,3 +6,8 @@
 # 아니다.
 benchmarks/*_gold.json
 benchmarks/*gold*.json
+
+# The private internal/ checkout is gitignored but IS the project's design
+# memory (plans, studies, handoffs) — keep it in the search index.
+!internal/
+!internal/**

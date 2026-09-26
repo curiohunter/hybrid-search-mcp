@@ -56,3 +56,21 @@ benchmarks/memory_bench_v2_cases.json
 benchmarks/round3_rerun/calibration_rows_*.jsonl
 benchmarks/authority_poc/external_queries.json
 benchmarks/agent_loop_*.json
+
+# Internal development material lives in a separate private repository,
+# checked out at internal/ (plans, studies, handoffs, SNS drafts, benchmark
+# reports). Never commit it here — this repository is public. 2026-09-27.
+internal/
+docs/plans/
+docs/plan/
+docs/studies/
+docs/handoff/
+docs/sns/
+docs/case-studies/
+HANDOFF.md
+benchmarks/*.md
+benchmarks/**/*.md
+benchmarks/**/*.jsonl
+benchmarks/**/*.tsv
+benchmarks/**/results*.json
+benchmarks/*_20[0-9][0-9]-*.json
