@@ -11,7 +11,7 @@ import hashlib
 import logging
 import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -20,7 +20,7 @@ import numpy as np
 from hybrid_search.config import Config
 from hybrid_search.index.ast_chunker import CodeChunk, chunk_code_file
 from hybrid_search.index.callgraph import resolve_call_edges
-from hybrid_search.index.doc_chunker import chunk_doc_file
+from hybrid_search.index.doc_chunker import chunk_doc_file, is_withheld_memory
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.module_synth import synthesize_modules
 from hybrid_search.index.modules import discover_modules
@@ -49,6 +49,12 @@ DOC_LANGUAGES = {"markdown", "json", "yaml", "toml"}
 # Flush embedding buffer and write to stores after accumulating this many chunks.
 # Keeps memory bounded while still batching efficiently across files.
 EMBED_FLUSH_THRESHOLD = 128
+
+# `index_meta` marker: the index holds no chunk the chunker withholds.
+# Bump the version when `is_withheld_memory` changes what it withholds.
+MEMORY_GATE_KEY = "memory_gate"
+MEMORY_GATE_VERSION = "1"
+_GATED_NODE_TYPES = ("qa_log", "memory_card", "domain_term", "episodic_example")
 
 
 @dataclass
@@ -357,6 +363,7 @@ class IndexingPipeline:
             self._record_vector_space(db, full_rebuild, project_id)
 
             self._process_deletions(db, vector_engine, bm25_engine, project_id, scan.deleted)
+            self._purge_withheld_memory(db, vector_engine, bm25_engine, project_id)
 
             all_files = scan.added + scan.changed
             total_files = len(all_files)
@@ -623,10 +630,13 @@ class IndexingPipeline:
         else:
             chunks = chunk_code_file(file_path, project_root, project_id, language, source)
 
-        if not chunks:
-            return None
-
         old_chunk_ids = db.get_chunk_ids_by_file(file_id)
+        # A file that yields nothing is skipped — unless it held chunks
+        # before (they would outlive the content that made them) or it is a
+        # withheld memory record. Both get a zero-chunk file row: the hash
+        # is kept, so the next scan does not read the file again.
+        if not chunks and not old_chunk_ids and not is_withheld_memory(rel_path, source):
+            return None
 
         return _FileChunkResult(
             file_id=file_id,
@@ -794,6 +804,47 @@ class IndexingPipeline:
 
         chunk_ids = [c.id for c in fcr.chunks]
         vector_engine.add_batch(chunk_ids, embeddings)
+
+    def _purge_withheld_memory(
+        self,
+        db: StoreDB,
+        vector_engine: VectorEngine,
+        bm25_engine: BM25Engine,
+        project_id: str,
+    ) -> int:
+        """Once per index: drop chunks the chunker now withholds.
+
+        An index built before the gate holds those records, and their files
+        are unchanged, so the delta scan never re-chunks them. Deletion only
+        — no embedding call, no cost. The file row keeps its hash with a
+        zero chunk count, the same state a new withheld file gets.
+        """
+        if db.get_meta(MEMORY_GATE_KEY) == MEMORY_GATE_VERSION:
+            return 0
+        purged = 0
+        for node_type in _GATED_NODE_TYPES:
+            for chunk in db.get_chunks_by_node_type(project_id, node_type):
+                file_rec = db.get_file(chunk.file_id)
+                if file_rec is None or file_rec.chunk_count == 0:
+                    continue
+                if not is_withheld_memory(file_rec.relative_path, chunk.content or ""):
+                    continue
+                with db.transaction() as conn:
+                    old_chunk_ids = db.delete_chunks_by_file(conn, file_rec.id)
+                    for cid in old_chunk_ids:
+                        db.delete_call_edges_by_callee(conn, cid)
+                    db.upsert_file(conn, replace(file_rec, chunk_count=0))
+                vector_engine.remove_batch(old_chunk_ids)
+                bm25_engine.delete_batch(old_chunk_ids)
+                purged += len(old_chunk_ids)
+        if purged:
+            # The engines reach disk before the marker does, so a crash in
+            # between leaves the purge to be redone, not half-recorded.
+            bm25_engine.commit()
+            vector_engine.save()
+            logger.info("Withheld memory: purged %d chunks", purged)
+        db.set_meta(MEMORY_GATE_KEY, MEMORY_GATE_VERSION)
+        return purged
 
     def _process_deletions(
         self,

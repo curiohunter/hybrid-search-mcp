@@ -133,6 +133,15 @@ def test_flags_survive_atomic_force_rebuild(env) -> None:
         async_write=False,
     )
     assert written is not None
+    # Anchors are written on the record the search makes, which owns no
+    # answer and stays out of the index (2026-09-23). Give it an answer so
+    # this keeps testing what it tests: flags surviving a rebuild.
+    text = written.read_text(encoding="utf-8")
+    written.write_text(text.replace(
+        "\n## Top results\n",
+        "\n## Answer excerpt\n\nsrc/auth.py 의 verify_token 이 처리한다.\n\n## Top results\n",
+        1,
+    ), encoding="utf-8")
 
     # 2. reindex picks the qa up as a qa_log chunk.
     pipeline.index_project(str(repo))
