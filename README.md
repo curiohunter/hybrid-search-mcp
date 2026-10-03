@@ -222,7 +222,10 @@ export HYBRID_SEARCH_ROUTER=0     # stop per-prompt pre-fetch injection
   `Could not find a version that satisfies tree-sitter-css>=0.25`).
   That error means "your pip is on an old Python", not a missing
   dependency. Use `pipx`/`uv`, or `brew install python@3.12` first.
-- OpenAI API key ([get one here](https://platform.openai.com/api-keys))
+- An embedding provider — one of: an OpenAI API key
+  ([get one here](https://platform.openai.com/api-keys)), a Gemini API
+  key, or an [Ollama](https://ollama.com) server (local or self-hosted,
+  no key). `setup` asks which and checks it with a real call.
 
 ### Claude Code plugin (two commands)
 
@@ -243,10 +246,26 @@ Don't combine with the pip setup below — pick one.
 ```bash
 pipx install memory-layer-mcp                # PyPI name; the CLI is `hybrid-search-mcp`
 
-echo "OPENAI_API_KEY=sk-..." >> ~/.env.local # once per machine — shared by all projects
-
 cd your-project/ && hybrid-search-mcp setup  # once per project (Claude Code)
+hybrid-search-mcp index .                    # first index — shows progress and time left
 hybrid-search-mcp setup --codex              # add this if you also use Codex
+```
+
+Run `setup` in your own terminal the first time: it asks for the
+embedding provider (OpenAI key / Ollama address / Gemini key — key input
+is hidden), makes **one real embedding call** to check the answer, and
+only then saves it (key → `~/.env.local`, provider →
+`~/.hybrid-search/config.toml`). A wrong key or an unreachable Ollama is
+reported right there, not minutes into the first index.
+
+No terminal (an agent or CI is running the install)? `setup` does not
+prompt there — pass the choice as a flag and it verifies and saves the
+same way. The key is read from the environment, never from the flag:
+
+```bash
+OPENAI_API_KEY=sk-... hybrid-search-mcp setup --backend openai
+GEMINI_API_KEY=...    hybrid-search-mcp setup --backend gemini
+hybrid-search-mcp setup --backend ollama --base-url http://localhost:11434
 ```
 
 `pip install memory-layer-mcp` works too — but Homebrew/system Pythons
@@ -922,7 +941,8 @@ pre-fetch entirely.
 
 | Problem | Solution |
 |---------|----------|
-| `OPENAI_API_KEY not found` | Set env var or create `~/.env.local` |
+| `OPENAI_API_KEY not found` / `is not set` | Run `hybrid-search-mcp setup` in a terminal — it asks for the provider, verifies it, and saves it (or `setup --backend …` without a terminal) |
+| `setup` says the provider is "NOT verified" | The line names the cause: rejected key (401), no billing yet (429), Ollama unreachable, or model missing (`ollama pull qwen3-embedding:0.6b`) |
 | `externally-managed-environment` on pip install | Homebrew/system Python blocks global pip — use `pipx install memory-layer-mcp` |
 | "hook error (non-blocking)" on every Read/Edit | Pre-0.5.1 hooks exited non-zero when idle — upgrade, then re-run `hybrid-search-mcp setup` |
 | Results from wrong project | Use `--cwd` or `--project` to scope |
