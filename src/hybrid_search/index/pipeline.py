@@ -20,6 +20,7 @@ import numpy as np
 from hybrid_search.config import Config
 from hybrid_search.index.ast_chunker import CodeChunk, chunk_code_file
 from hybrid_search.index.callgraph import resolve_call_edges
+from hybrid_search.index.conversation_carryover import carry_over_conversations
 from hybrid_search.index.doc_chunker import chunk_doc_file, is_withheld_memory
 from hybrid_search.index.embedder import Embedder
 from hybrid_search.index.module_synth import synthesize_modules
@@ -74,6 +75,12 @@ class IndexingResult:
     # had no such owner, so a single drift wiped 3,029 chunks of them
     # (2026-09-05).
     conversations_dropped: int = 0
+    # Sessions (and their chunks) the rebuild copied out of the previous
+    # index before the swap. Re-deriving alone restores only what the agent
+    # transcripts still hold, and those are cleaned up after ~30 days — so
+    # without this every rebuild cut conversation memory back to a month.
+    conversations_carried: int = 0
+    conversation_chunks_carried: int = 0
     errors: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -499,8 +506,21 @@ class IndexingPipeline:
                 reuse_from=project_dir,
             )
             gc.collect()
-            # Read before the swap: after it, the old index is gone.
-            result.conversations_dropped = self._count_conversation_files(project_dir)
+            # Read before the swap: after it, the old index is gone — and for
+            # a session whose transcript the agent has already cleaned up, the
+            # old index is the only copy left.
+            previous_sessions = self._count_conversation_files(project_dir)
+            if previous_sessions:
+                carried = carry_over_conversations(
+                    project_dir, rebuilding_dir, self._embedder, project_id
+                )
+                result.conversations_carried = carried.sessions
+                result.conversation_chunks_carried = carried.chunks
+                result.chunks_total += carried.chunks
+                gc.collect()
+            result.conversations_dropped = max(
+                0, previous_sessions - result.conversations_carried
+            )
             self._swap_project_dirs(project_dir, rebuilding_dir, backup_dir)
             file_count = self._read_project_file_count(project_dir, project_id)
             self._registry.update_stats(project_id, file_count, result.chunks_total)

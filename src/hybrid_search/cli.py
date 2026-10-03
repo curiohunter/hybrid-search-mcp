@@ -567,11 +567,25 @@ def _reindex_locked(
     # Commits are re-derived just above; conversations need the same owner or
     # a single consistency drift silently deletes the whole conversation
     # memory (2026-09-05: 3,029 chunks).
-    if getattr(result, "conversations_dropped", 0):
+    #
+    # Re-deriving only restores what the transcripts still hold, and the agent
+    # cleans those up after ~30 days — so the rebuild first carries every
+    # session over from the previous index, and the delta pass below then
+    # only has to catch up the ones whose transcript moved on.
+    carried = getattr(result, "conversations_carried", 0)
+    dropped = getattr(result, "conversations_dropped", 0)
+    if carried:
         print(
-            f"Rebuild dropped {result.conversations_dropped} conversation "
+            f"Rebuild carried over {carried} conversation session(s) "
+            f"({getattr(result, 'conversation_chunks_carried', 0)} chunks) "
+            "from the previous index."
+        )
+    if dropped:
+        print(
+            f"Rebuild dropped {dropped} conversation "
             "session(s) — re-deriving from transcripts."
         )
+    if carried or dropped:
         _reindex_conversations_after_rebuild(config, registry, project_name, project_path)
 
     # The Reflector is the one memory pass with no automatic trigger. Say so
