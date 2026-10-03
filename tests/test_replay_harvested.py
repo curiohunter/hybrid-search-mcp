@@ -116,3 +116,68 @@ class TestParseSince:
 
     def test_none_stays_none(self) -> None:
         assert rh.parse_since(None) is None
+
+
+def _prompt(text: str, stamp: str) -> dict:
+    return {"type": "user", "timestamp": stamp, "message": {"content": text}}
+
+
+def _tool(name: str, tool_input: dict, stamp: str = _T0) -> dict:
+    return {"type": "assistant", "timestamp": stamp, "message": {"content": [
+        {"type": "tool_use", "id": "t", "name": name, "input": tool_input}]}}
+
+
+class TestColdGold:
+    """Gold the session had already opened is not something a search missed."""
+
+    def _index(self) -> dict:
+        return rh.session_index([
+            _prompt("첫 질문 one two", "2026-01-10T00:00:00Z"),
+            _tool("Read", {"file_path": "/repo/src/a.py"}),
+            _prompt("둘째 질문 three four", "2026-01-10T00:05:00Z"),
+            _tool("mcp__hybrid-search__hybrid_search", {"query": "agent wrote this"}),
+            _tool("Edit", {"file_path": "/repo/src/b.py"}),
+        ])
+
+    def test_file_opened_earlier_in_the_session_is_warm(self) -> None:
+        rows = [{"ts": _T1, "query": "둘째 질문 three four", "gold_paths": ["src/a.py"]}]
+        kept, aside = rh.cold_rows(rows, self._index())
+        assert kept == []
+        assert aside == {"unmatched": 0, "warm": 1}
+
+    def test_only_the_new_files_stay_gold(self) -> None:
+        rows = [{"ts": _T1, "query": "둘째 질문 three four",
+                 "gold_paths": ["src/a.py", "src/b.py"]}]
+        kept, _ = rh.cold_rows(rows, self._index())
+        assert [r["gold_paths"] for r in kept] == [["src/b.py"]]
+
+    def test_first_question_of_a_session_is_all_cold(self) -> None:
+        rows = [{"ts": _T1, "query": "첫 질문 one two", "gold_paths": ["src/a.py"]}]
+        kept, _ = rh.cold_rows(rows, self._index())
+        assert kept[0]["gold_paths"] == ["src/a.py"]
+
+    def test_tool_lane_rows_match_on_the_search_query(self) -> None:
+        rows = [{"ts": _T1, "query": "agent wrote this", "gold_paths": ["src/a.py", "src/b.py"]}]
+        kept, _ = rh.cold_rows(rows, self._index())
+        # a.py was read before the search; b.py came after it.
+        assert kept[0]["gold_paths"] == ["src/b.py"]
+
+    def test_question_no_transcript_holds_is_left_out(self) -> None:
+        rows = [{"ts": _T1, "query": "아무 데도 없는 질문", "gold_paths": ["src/a.py"]}]
+        kept, aside = rh.cold_rows(rows, self._index())
+        assert kept == []
+        assert aside["unmatched"] == 1
+
+    def test_repeated_question_uses_the_asking_before_the_row(self) -> None:
+        index = rh.session_index([
+            _prompt("같은 질문 again", "2026-01-10T00:00:00Z"),
+            _tool("Read", {"file_path": "/repo/src/a.py"}),
+            _prompt("같은 질문 again", "2026-01-12T00:00:00Z"),
+        ])
+        early = {"ts": "2026-01-10T00:10:00+00:00", "query": "같은 질문 again",
+                 "gold_paths": ["src/a.py"]}
+        late = {"ts": "2026-01-12T00:10:00+00:00", "query": "같은 질문 again",
+                "gold_paths": ["src/a.py"]}
+        kept, aside = rh.cold_rows([early, late], index)
+        assert len(kept) == 1 and kept[0]["ts"] == early["ts"]
+        assert aside["warm"] == 1

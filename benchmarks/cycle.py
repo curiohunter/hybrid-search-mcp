@@ -312,10 +312,11 @@ def usage_lines(now: dict, prev: dict | None) -> list[str]:
                          f"{_pct(c['betrayed'], c['total'])} | {c['unservable']} | "
                          f"{c['no_followup']} |")
     lines += ["", "수집된 실패 문항을 지금 다시 물었을 때 — `이전 문항`은 지난 주기가 "
-              "잰 것과 같은 문항이라 나란히 볼 수 있다.", "",
-              "| 프로젝트 | 문항 | found | top3 | mrr | 이전 문항 found (지난→이번) "
-              "| 새 문항 found | 색인에 없음 |",
-              "|---|---|---|---|---|---|---|---|"]
+              "잰 것과 같은 문항이라 나란히 볼 수 있다. `처음 여는 파일`은 그 세션에서 "
+              "아직 열지 않았던 파일만 정답으로 센 것 — 검색 변경은 이 열로 판단한다.", "",
+              "| 프로젝트 | 문항 | found | top3 | mrr | 처음 여는 파일 found "
+              "| 이전 문항 found (지난→이번) | 새 문항 found | 색인에 없음 |",
+              "|---|---|---|---|---|---|---|---|---|"]
     for proj, u in usage.items():
         replay = u.get("replay") or {}
         every = replay.get("all") or {}
@@ -327,8 +328,10 @@ def usage_lines(now: dict, prev: dict | None) -> list[str]:
         if carried.get("n") and old is not None:
             pair = f"{old} → {carried['found']} (n={carried['n']})"
         new = f"{fresh['found']} (n={fresh['n']})" if fresh.get("n") else "—"
+        cold = replay.get("cold") or {}
+        first = f"{cold['found']} (n={cold['n']})" if cold.get("n") else "—"
         lines.append(f"| {proj} | {every['n']} | {every['found']} | {every['top3']} | "
-                     f"{every['mrr']} | {pair} | {new} | "
+                     f"{every['mrr']} | {first} | {pair} | {new} | "
                      f"{(u.get('set_aside') or {}).get('unindexed', 0)} |")
     return lines
 

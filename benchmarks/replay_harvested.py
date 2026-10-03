@@ -22,6 +22,14 @@ the rank of the files that turned out to matter. Items whose gold files are
 not in the index at all are reported as ``unindexed`` rather than as misses:
 that is a coverage gap, and ranking cannot fix it.
 
+**cold** — the harvest calls every file the agent opened "gold", including
+files it had already opened earlier in the same session. A search that had
+served those would have changed nothing. The transcripts say which files
+were new to the session at the moment of the question; the ``cold`` set
+keeps only those, and it is the figure a retrieval change should be judged
+by. Rows whose turn cannot be found in a transcript (they age out after 30
+days) are left out of it and counted.
+
 ``--since`` splits the replay in two. Items harvested before it are the
 ``carried`` set — the same questions the previous reading scored, so the two
 figures compare. Items after it are ``fresh``: failures the code has never
@@ -49,7 +57,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hybrid_search import clock  # noqa: E402
 from hybrid_search.config import load_config  # noqa: E402
+from hybrid_search.hooks import _extract_user_text  # noqa: E402
 from hybrid_search.index.embedder import Embedder  # noqa: E402
+from hybrid_search.index.transcript_source import discover_claude_transcripts  # noqa: E402
 from hybrid_search.memory import selfeval  # noqa: E402
 from hybrid_search.memory.quality import is_harness_noise  # noqa: E402
 from hybrid_search.project import ProjectRegistry  # noqa: E402
@@ -152,6 +162,104 @@ def build_items(rows: list[dict], indexed: set[str]) -> tuple[list[dict], dict]:
     return items, aside
 
 
+def session_index(records: list[dict]) -> dict[str, list[tuple[str, list[str]]]]:
+    """Question → what the session had already opened when it was asked.
+
+    One transcript in, a map out. A "question" is a prompt the user typed
+    (the pre-fetch lane's query) or the query of a ``hybrid_search`` call
+    (the tool lane's). Each maps to ``(timestamp, files opened before it)``,
+    one entry per time it was asked.
+    """
+    index: dict[str, list[tuple[str, list[str]]]] = {}
+    seen: list[str] = []
+
+    def note(text: str, stamp: str) -> None:
+        key = selfeval._match_key(text)
+        if key:
+            index.setdefault(key, []).append((stamp, list(seen)))
+
+    for rec in records:
+        stamp = rec.get("timestamp") or ""
+        if rec.get("type") == "user":
+            prompt = _extract_user_text(rec)
+            if prompt is not None:
+                note(prompt, stamp)
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if rec.get("type") != "assistant" or not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = block.get("name") or ""
+            tool_input = block.get("tool_input") or block.get("input") or {}
+            if selfeval._is_search_tool(name):
+                note(tool_input.get("query") or "", stamp)
+                continue
+            opened, _ = selfeval._followups(name, tool_input)
+            seen.extend(opened)
+    return index
+
+
+def seen_before(index: dict, row: dict) -> list[str] | None:
+    """Files open in the session when ``row``'s question was asked.
+
+    None when no transcript holds the question. Asked more than once, the
+    last asking at or before the row's own timestamp is the one it scored.
+    """
+    asked = index.get(selfeval._match_key(row.get("query") or ""))
+    if not asked:
+        return None
+    stamp = _ts(row)
+    earlier = [a for a in asked if stamp and (_ts({"ts": a[0]}) or stamp) <= stamp]
+    return (earlier or asked)[-1][1]
+
+
+def cold_rows(rows: list[dict], index: dict) -> tuple[list[dict], dict]:
+    """Keep each row's gold that was new to its session. (rows, set aside)."""
+    aside = {"unmatched": 0, "warm": 0}
+    kept: list[dict] = []
+    for row in rows:
+        seen = seen_before(index, row)
+        if seen is None:
+            aside["unmatched"] += 1
+            continue
+        cold = [g for g in row.get("gold_paths") or []
+                if not any(selfeval._paths_match(s, g) for s in seen)]
+        if not cold:
+            aside["warm"] += 1
+            continue
+        kept.append({**row, "gold_paths": cold})
+    return kept, aside
+
+
+def _read_records(path: Path) -> list[dict]:
+    records: list[dict] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict):
+                    records.append(rec)
+    except OSError:
+        return []
+    return records
+
+
+def project_session_index(root: Path) -> dict:
+    """``session_index`` merged over every transcript of the project."""
+    merged: dict[str, list[tuple[str, list[str]]]] = {}
+    for path in discover_claude_transcripts(root):
+        for key, asked in session_index(_read_records(path)).items():
+            merged.setdefault(key, []).extend(asked)
+    for asked in merged.values():
+        asked.sort(key=lambda a: a[0])
+    return merged
+
+
 def gold_rank(result_paths: list[str], gold: list[str]) -> int | None:
     """1-based rank of the first result that is one of the gold files."""
     for rank, path in enumerate(result_paths, start=1):
@@ -213,6 +321,16 @@ def measure_project(orch, pinfo, indexed: set[str], since: datetime | None,
 
     numbers["replay"] = {}
     numbers["replay"]["all"], numbers["set_aside"] = replay(harvested, "all")
+    # Only rows that could have been replayed at all — otherwise the warm
+    # and unmatched counts would be about harness chatter, not questions.
+    askable = [
+        r for r in harvested
+        if not is_harness_noise(r.get("query"))
+        and any(selfeval.is_usable_gold(g) for g in r.get("gold_paths") or [])
+    ]
+    fresh_to_session, cold_aside = cold_rows(askable, project_session_index(root))
+    numbers["replay"]["cold"], _ = replay(fresh_to_session, "cold")
+    numbers["set_aside"].update(cold_aside)
     if since is not None:
         before = [r for r in harvested if (_ts(r) or since) < since]
         after = [r for r in harvested if (_ts(r) or since) >= since]

@@ -43,3 +43,9 @@ class TestUsageLines:
         prev = {"date": "2026-01-02", "code_sha": "a", "usage": _usage(0.9)}
         _, regressed = cycle.report(now, prev)
         assert regressed is False
+
+    def test_cold_set_has_its_own_column(self) -> None:
+        usage = _usage(0.5)
+        usage["proj"]["replay"]["cold"] = {"n": 4, "found": 0.25}
+        text = "\n".join(cycle.usage_lines({"usage": usage}, None))
+        assert "| 0.25 (n=4) |" in text
