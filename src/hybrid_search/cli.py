@@ -371,7 +371,9 @@ def _missing_key_help(exc: MissingAPIKeyError) -> str:
     return (
         f"Indexing stopped: {exc.key_env} is not set "
         f"(embedding provider: {exc.provider}).\n"
-        "Pick one, then run the same command again:\n"
+        "Easiest: run `hybrid-search-mcp setup` in a terminal — it asks which\n"
+        "provider, checks it with a real call, and saves it.\n"
+        "Or by hand — pick one, then run the same command again:\n"
         f"  - OpenAI: export OPENAI_API_KEY=... (or put it in .env.local)\n"
         f"  - Gemini: set backend = \"gemini\" under [embedding] in {config_file},\n"
         "            then export GEMINI_API_KEY=...\n"
@@ -436,9 +438,9 @@ def _reindex_locked(
     start = time.monotonic()
     print(f"Reindexing: {project_name} ({project_path})")
 
-    def progress(current: int, total: int, path: str) -> None:
-        if total > 0 and current % 50 == 0:
-            print(f"  [{current}/{total}] {path}")
+    from hybrid_search.index.progress import ProgressReporter
+
+    progress = ProgressReporter()
 
     result = pipeline.index_project(
         project_path,
@@ -5401,7 +5403,41 @@ def cmd_setup(args: argparse.Namespace) -> None:
         f"Claude memory hooks: {health['claude_count']}/4; "
         f"Codex hooks: {'ready' if health['codex_ready'] else 'incomplete'}"
     )
+
+    embedding = _setup_embedding(args)
+    print()
+    if not embedding.ok:
+        print(
+            "Setup installed everything else, but the embedding provider is not "
+            "working — fix the line above and run setup again."
+        )
+        raise SystemExit(1)
     print("Setup complete. Restart Claude/Codex to apply changes.")
+    if embedding.configured:
+        print("Next: `hybrid-search-mcp index .` builds this project's index.")
+
+
+def _setup_embedding(args: argparse.Namespace):
+    """Embedding provider step of `setup`: ask and verify on a terminal,
+    verify-and-save when `--backend` is given, guidance otherwise."""
+    from hybrid_search import embedding_setup
+
+    config_path = DEFAULT_DATA_DIR / "config.toml"
+    config = load_config(config_path)
+    interactive = (
+        not getattr(args, "yes", False)
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+    )
+    return embedding_setup.configure(
+        config=config.embedding,
+        config_path=config_path,
+        env_file=Path.home() / ".env.local",
+        backend=getattr(args, "backend", None) or "",
+        base_url=getattr(args, "base_url", None) or "",
+        interactive=interactive,
+        has_index=config.projects_dir.is_dir() and any(config.projects_dir.iterdir()),
+    )
 
 
 _SKILL_MANIFEST_NAME = ".memory-layer-manifest.json"
@@ -6060,6 +6096,20 @@ def main() -> None:
         "--global-only",
         action="store_true",
         help="Register only the global surface (MCP, hooks, skills); skip project files",
+    )
+    p_setup.add_argument(
+        "--backend",
+        choices=("openai", "gemini", "ollama"),
+        help="Embedding provider to verify and save without prompting "
+             "(the key is read from the environment, never from this flag)",
+    )
+    p_setup.add_argument(
+        "--base-url",
+        help="Ollama address for --backend ollama (default http://localhost:11434)",
+    )
+    p_setup.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Never prompt, even on a terminal",
     )
     p_setup.add_argument(
         "--codex",

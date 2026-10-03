@@ -217,25 +217,35 @@ def resolve(name: str | None) -> ProviderSpec:
     return PROVIDERS.get(key, PROVIDERS[DEFAULT_PROVIDER])
 
 
+def _read_env_file(env_file: Path, key: str) -> str:
+    try:
+        lines = env_file.read_text().splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        line = line.strip()
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
 def load_dotenv_key(key: str) -> str:
-    """Read ``key`` from the nearest ``.env.local``, walking up from cwd."""
+    """Read ``key`` from the nearest ``.env.local``, walking up from cwd.
+
+    ``~/.env.local`` is read last regardless of where cwd is: `setup` saves
+    keys there, and a project outside the home directory (another volume,
+    /opt) would otherwise never see the key it was just told is saved.
+    """
     current = Path.cwd()
     for _ in range(10):  # max 10 levels up
-        env_file = current / ".env.local"
-        if env_file.exists():
-            try:
-                lines = env_file.read_text().splitlines()
-            except OSError:
-                lines = []
-            for line in lines:
-                line = line.strip()
-                if line.startswith(f"{key}="):
-                    return line.split("=", 1)[1].strip()
+        found = _read_env_file(current / ".env.local", key)
+        if found:
+            return found
         parent = current.parent
         if parent == current:
             break
         current = parent
-    return ""
+    return _read_env_file(Path.home() / ".env.local", key)
 
 
 def api_key(spec: ProviderSpec) -> str:

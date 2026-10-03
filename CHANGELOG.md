@@ -42,6 +42,19 @@ memory hit), so "is this helping?" can finally be measured.
 
 ### Added
 
+- **`setup` asks for the embedding provider and verifies it.** On a terminal
+  it offers OpenAI key / Ollama address / Gemini key (key input hidden), makes
+  one real embedding call, and saves only a choice that worked — key to
+  `~/.env.local`, provider to `config.toml`. Without a terminal it does not
+  prompt: `setup --backend openai|gemini|ollama [--base-url …]` verifies and
+  saves the same way, reading the key from the environment. `--yes` never
+  prompts. Provider error text is scrubbed, so a key is never printed.
+- **First-index progress with time remaining.** `index` reports
+  `[n/N] % · ~time left`, redrawn in place on a terminal and as a line every
+  ten seconds in a log, then says what it is doing after the last file.
+- `~/.env.local` is read even when the project lives outside the home
+  directory (another volume, `/opt`), where the upward walk never reached it.
+
 - **`hybrid-search-mcp miss "<what you looked for>"`.** Logs a missed recall
   to `~/.hybrid-search/benchmarks/misses-<project>.jsonl` (outside the repo).
   Each entry includes the searches from the previous six hours. These cases
