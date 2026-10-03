@@ -494,6 +494,26 @@ def test_crosstree_sql_attaches_to_feature_module(tmp_path):
     assert "crosstree_attached" in json.loads(mods["stats"].signals)
 
 
+def test_crosstree_does_not_reattach_a_file_to_its_own_module(tmp_path):
+    """A bucket-dir file whose name carries its own module's name used to be
+    attached to that module a second time. The duplicate (file, module) row
+    failed the whole write, and the pipeline logs that as non-fatal — so one
+    such file left a project with no modules at all."""
+    db = _make_db(tmp_path)
+    _seed_file(db, "db/schema/user_schema.sql")
+    _seed_file(db, "db/schema/order_schema.sql")
+    _seed_file(db, "db/schema/item_schema.sql")
+
+    stats = discover_modules(db, PROJECT_ID, tmp_path)
+
+    mods = {m.name: m for m in db.get_modules(PROJECT_ID)}
+    assert "schema" in mods
+    assert len(db.get_files_by_module(mods["schema"].id)) == 3
+    assert stats["files_assigned"] == 3
+    # Nothing was attached, so the module must not claim it was.
+    assert "crosstree_attached" not in json.loads(mods["schema"].signals)
+
+
 def test_crosstree_attach_respects_singular_plural(tmp_path):
     """Module named with a plural (``admissions``) should still pick up a
     singular token in a filename (``...create_admission_results.sql``)."""
