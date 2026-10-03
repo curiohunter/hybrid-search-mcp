@@ -117,6 +117,15 @@ def classify_prompt_for_memory(prompt: str) -> bool:
         return False
     if p.startswith("@") and " " not in p[:40]:
         return False
+    # The harness delivers task notifications as prompts, and their bodies
+    # are full of exploratory words. qa_log already refuses to store them;
+    # without the same gate here the search still ran and injected context
+    # into a turn nobody asked — 106 of 197 scored pre-fetches in one week
+    # of real use (2026-10-03), one of them adopted.
+    from hybrid_search.memory.quality import is_harness_noise
+
+    if is_harness_noise(p):
+        return False
     if any(tok in p for tok in _MEMORY_INTENT_TOKENS_KO):
         return True
     if _MEMORY_INTENT_TOKENS_EN_RE.search(p):

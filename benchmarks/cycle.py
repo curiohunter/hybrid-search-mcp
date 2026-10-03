@@ -131,8 +131,26 @@ def labelled_projects() -> dict[str, Path]:
     return found
 
 
+def measure_usage(config: Path, out: Path, since: str | None) -> dict:
+    """What real use recorded since the last cycle, and the failures replayed.
+
+    Numbers only come back — the runner's own output quotes real prompts and
+    stays in ``out``, which is outside every repo.
+    """
+    dst = out / "usage.json"
+    cmd = [sys.executable, "benchmarks/replay_harvested.py",
+           "--config", str(config), "--out", str(dst)]
+    if since:
+        cmd += ["--since", since]
+    _run(cmd)
+    if not dst.is_file():
+        return {}
+    return json.loads(dst.read_text(encoding="utf-8")).get("projects") or {}
+
+
 def measure(config: Path, out: Path, since: str | None, quick: bool,
-            sample: int = 600, prev_raw: Path | None = None) -> dict:
+            sample: int = 600, prev_raw: Path | None = None,
+            usage_since: str | None = None) -> dict:
     gold = HOME_BENCH
     rec: dict = {}
     py = sys.executable
@@ -174,6 +192,11 @@ def measure(config: Path, out: Path, since: str | None, quick: bool,
             "recall_at_10": round(hy["recall_at_10_mean"], 4),
             "memory_at_3": round(hy["memory_hit_rate_at_3"], 4),
         }
+
+    print("· 실사용 — selfeval 판독 + 수집 문항 재생")
+    usage = measure_usage(config, out, usage_since)
+    if usage:
+        rec["usage"] = usage
 
     if quick:
         return rec
@@ -261,6 +284,55 @@ def previous() -> dict | None:
         return None
 
 
+def _pct(part: int, total: int) -> str:
+    return f"{part} ({part / total:.0%})" if total else str(part)
+
+
+def usage_lines(now: dict, prev: dict | None) -> list[str]:
+    """The real-usage section. Report-only: it never fails the cycle.
+
+    The corpus is re-frozen every cycle, so the carried set can move without
+    any code change. Until two readings give that drift a size, calling a
+    drop a regression would be reading noise (2026-10-03 plan).
+    """
+    usage = now.get("usage") or {}
+    if not usage:
+        return []
+    lines = ["", "## 실사용", "",
+             "사람이 친 질문만 센다(작업 알림은 제외). `색인 밖` = 색인에 넣을 수 "
+             "없는 파일만 읽은 경우.", "",
+             "| 프로젝트 | 레인 | 질문 | 씀 | 버림 | 색인 밖 | 후속 없음 |",
+             "|---|---|---|---|---|---|---|"]
+    for proj, u in usage.items():
+        for lane, c in (u.get("usage") or {}).get("lanes", {}).items():
+            if not c["total"]:
+                continue
+            lines.append(f"| {proj} | {lane} | {c['total']} | "
+                         f"{_pct(c['adopted'], c['total'])} | "
+                         f"{_pct(c['betrayed'], c['total'])} | {c['unservable']} | "
+                         f"{c['no_followup']} |")
+    lines += ["", "수집된 실패 문항을 지금 다시 물었을 때 — `이전 문항`은 지난 주기가 "
+              "잰 것과 같은 문항이라 나란히 볼 수 있다.", "",
+              "| 프로젝트 | 문항 | found | top3 | mrr | 이전 문항 found (지난→이번) "
+              "| 새 문항 found | 색인에 없음 |",
+              "|---|---|---|---|---|---|---|---|"]
+    for proj, u in usage.items():
+        replay = u.get("replay") or {}
+        every = replay.get("all") or {}
+        if not every.get("n"):
+            continue
+        carried, fresh = replay.get("carried") or {}, replay.get("fresh") or {}
+        old = _dig(prev or {}, f"usage.{proj}.replay.all.found")
+        pair = "—"
+        if carried.get("n") and old is not None:
+            pair = f"{old} → {carried['found']} (n={carried['n']})"
+        new = f"{fresh['found']} (n={fresh['n']})" if fresh.get("n") else "—"
+        lines.append(f"| {proj} | {every['n']} | {every['found']} | {every['top3']} | "
+                     f"{every['mrr']} | {pair} | {new} | "
+                     f"{(u.get('set_aside') or {}).get('unindexed', 0)} |")
+    return lines
+
+
 def report(now: dict, prev: dict | None) -> tuple[str, bool]:
     lines: list[str] = []
     regressed = False
@@ -320,6 +392,7 @@ def report(now: dict, prev: dict | None) -> tuple[str, bool]:
             lines.append("")
             lines.append("판정 기준은 라벨 파일의 `criterion` 을 그대로 쓸 것. "
                          "실물(브랜치·커밋·파일)이 겹치지 않으면 같은 일이 아니다.")
+    lines += usage_lines(now, prev)
     return "\n".join(lines), regressed
 
 
@@ -386,7 +459,11 @@ def main() -> int:
     # A same-day rerun's "previous" raw dir is this run's own — no carry.
     prev_raw = (CYCLE_DIR / f"raw-{prev['date']}"
                 if prev and prev.get("date") != today else None)
-    now.update(measure(config, work, since, args.quick, args.sample, prev_raw))
+    # Usage is read from the last cycle on, holdout or not — it is a log of
+    # what happened since, not a sample of the corpus.
+    usage_since = (prev.get("ran_at") or prev.get("date")) if prev else None
+    now.update(measure(config, work, since, args.quick, args.sample, prev_raw,
+                       usage_since))
 
     text, regressed = report(now, prev)
     (CYCLE_DIR / f"{today}.json").write_text(
