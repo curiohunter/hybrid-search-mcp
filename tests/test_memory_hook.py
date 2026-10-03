@@ -424,6 +424,20 @@ class TestExploratoryClassifier:
     def test_classifies_non_exploratory_prompts(self, prompt: str) -> None:
         assert not hooks._is_exploratory_prompt(prompt)
 
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            # A background agent finishing is delivered as a prompt. Its body
+            # is full of exploratory words, and nobody asked it.
+            "<task-notification>\n<task-id>a1</task-id>\n<result>how the "
+            "billing flow works, 구조 정리 완료</result>\n</task-notification>",
+            "<system-reminder>explain what changed</system-reminder>",
+            "[Request interrupted by user for tool use] 왜 멈췄는지 설명",
+        ],
+    )
+    def test_harness_chatter_is_not_a_question(self, prompt: str) -> None:
+        assert not hooks._is_exploratory_prompt(prompt)
+
 
 class TestUserPromptSubmitHook:
     """G2 coverage — pre-fetch hybrid_search on exploratory prompts."""

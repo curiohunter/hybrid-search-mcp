@@ -453,6 +453,10 @@ def discover_modules(
     module_tokens_by_id: dict[str, set[str]] = {
         m.id: _module_name_tokens(m.name) for m in modules_out
     }
+    # A bucket file can already belong to the module its name points at
+    # (``db/schema/user_schema.sql`` in ``schema``). Attaching it again
+    # writes a duplicate (file, module) row, which fails the whole write.
+    assigned: set[tuple[str, str]] = {(fid, mid) for fid, mid, _ in file_module_rows}
     # Attach map: module_id → list[file_rel]
     crosstree_attach: dict[str, list[str]] = defaultdict(list)
     for rel, f in path_to_file.items():
@@ -476,6 +480,8 @@ def discover_modules(
         # Attach to top-1 only to avoid a file advertising in every module
         # that happens to share a generic token.
         target_mid = scored[0][0]
+        if (f.id, target_mid) in assigned:
+            continue
         if rel not in crosstree_attach[target_mid]:
             crosstree_attach[target_mid].append(rel)
 
