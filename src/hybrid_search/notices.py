@@ -40,9 +40,10 @@ def retention_notice(settings_path: Path | None = None) -> str | None:
         f"cleanupPeriodDays is {days}" if days is not None else "cleanupPeriodDays is not set (default 30)"
     )
     return (
-        f"{lifetime}: Claude Code deletes conversation transcripts after that, "
-        "so conversation memory only reaches back that far. "
-        'To keep it longer, set "cleanupPeriodDays" in ~/.claude/settings.json '
+        f"{lifetime}: Claude Code deletes original conversation transcripts after "
+        "that. Conversations already indexed are kept, but once a transcript is "
+        "gone it cannot be indexed. To keep originals longer, set "
+        '"cleanupPeriodDays" in ~/.claude/settings.json '
         "(a large number such as 3650; 0 turns retention off entirely)."
     )
 
