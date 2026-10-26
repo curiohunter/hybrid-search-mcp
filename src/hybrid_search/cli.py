@@ -1476,6 +1476,33 @@ def _print_doctor_report(health: dict[str, object]) -> None:
         print("Fix:")
         for fix in dict.fromkeys(fixes):
             print(f"  {fix}")
+    _print_notices(_doctor_notices(health["project_path"]))
+
+
+def _doctor_notices(project_path: Path) -> list[str]:
+    """Silent-failure warnings: transcript retention and an empty module set."""
+    from hybrid_search import notices
+
+    found = [notices.retention_notice()]
+    try:
+        config = load_config()
+        match = _detect_project(ProjectRegistry(config.global_dir), str(project_path))
+        pinfo = ProjectRegistry(config.global_dir).get_by_name(match[0]) if match else None
+        if pinfo is not None:
+            idx = IndexPaths(get_project_dir(config.projects_dir, pinfo.id))
+            found.append(notices.modules_notice(idx.store_db))
+    except Exception:
+        pass
+    return [n for n in found if n]
+
+
+def _print_notices(items: list[str]) -> None:
+    if not items:
+        return
+    print()
+    print("Notice:")
+    for item in items:
+        print(f"  - {item}")
 
 
 def _claude_memory_hook_status(paths: list[Path]) -> tuple[int, list[str]]:
@@ -5412,6 +5439,9 @@ def cmd_setup(args: argparse.Namespace) -> None:
             "working — fix the line above and run setup again."
         )
         raise SystemExit(1)
+    from hybrid_search import notices
+
+    _print_notices([notices.retention_notice()] if notices.retention_notice() else [])
     print("Setup complete. Restart Claude/Codex to apply changes.")
     if embedding.configured:
         print("Next: `hybrid-search-mcp index .` builds this project's index.")
